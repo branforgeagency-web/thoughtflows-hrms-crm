@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Phone, 
   MessageSquare, 
@@ -14,191 +14,116 @@ import {
   UserPlus
 } from 'lucide-react';
 
-export default function HrPipelineView({ onOpenCatalog }) {
+import { getLeads, updateLead } from '../services/api';
+
+export default function HrPipelineView({ leads: propLeads, onRefreshLeads, onOpenCatalog, onAddLeadClick }) {
   const [activeFilter, setActiveFilter] = useState('all'); // all, calls, overdue, audits
   const [actionNotice, setActionNotice] = useState(null);
   const [showCatalogModal, setShowCatalogModal] = useState(false);
+  const [leads, setLeads] = useState(propLeads || []);
+
+  useEffect(() => {
+    if (propLeads && propLeads.length > 0) {
+      setLeads(propLeads);
+    } else {
+      getLeads().then(res => {
+        if (res?.leads) setLeads(res.leads);
+      }).catch(err => console.error('Error fetching leads:', err));
+    }
+  }, [propLeads]);
 
   const triggerAction = (msg) => {
     setActionNotice(msg);
     setTimeout(() => setActionNotice(null), 3000);
   };
 
-  // Pipeline columns data matching screenshot
-  const PIPELINE_COLUMNS = [
-    {
-      id: 'new',
-      title: 'NEW',
-      count: 12,
-      dotColor: 'bg-slate-900',
-      cards: [
-        {
-          id: 'p1',
-          name: 'Priya R.',
-          isNew: true,
-          sub: '98•••• 12345 · 24F',
-          source: 'GOOGLE CALLS',
-          sourceClass: 'bg-cyan-50 text-cyan-800 border-cyan-200',
-          hasActions: true,
-          phone: '+91 98765 12345',
-          category: 'calls'
-        },
-        {
-          id: 'p2',
-          name: 'Manoj K.',
-          isNew: true,
-          sub: '97•••• 67890 · 23M',
-          source: 'JUSTDIAL',
-          sourceClass: 'bg-amber-50 text-amber-800 border-amber-200',
-          hasActions: true,
-          phone: '+91 97890 67890',
-          category: 'calls'
-        },
-        {
-          id: 'p3',
-          name: 'Keerthana S.',
-          isNew: false,
-          sub: '94•••• 44321 · 22F',
-          source: 'WEBSITE INQUIRY',
-          sourceClass: 'bg-teal-50 text-teal-800 border-teal-200',
-          hasActions: false,
-          category: 'all'
-        }
-      ]
-    },
-    {
-      id: 'contacted',
-      title: 'CONTACTED',
-      count: 18,
-      dotColor: 'bg-slate-900',
-      cards: [
-        {
-          id: 'c1',
-          name: 'Karthik V.',
-          sub: 'FU1 due today · BCom',
-          source: 'DIRECT',
-          sourceClass: 'bg-blue-50 text-blue-700 border-blue-200',
-          category: 'calls'
-        },
-        {
-          id: 'c2',
-          name: 'Divya M.',
-          sub: 'FU2 · interested · 26F',
-          source: 'FACEBOOK',
-          sourceClass: 'bg-indigo-50 text-indigo-700 border-indigo-200',
-          category: 'all'
-        },
-        {
-          id: 'c3',
-          name: 'Arun S.',
-          sub: 'Overdue by 2 hours · 25M',
-          source: 'GOOGLE ADS',
-          sourceClass: 'bg-rose-50 text-rose-700 border-rose-200',
-          category: 'overdue'
-        }
-      ]
-    },
-    {
-      id: 'pitched',
-      title: 'PITCHED',
-      count: 9,
-      dotColor: 'bg-slate-900',
-      cards: [
-        {
-          id: 'pi1',
-          name: 'Sneha P.',
-          sub: 'Budget OK · weekend',
-          source: 'REFERRAL',
-          sourceClass: 'bg-teal-50 text-teal-700 border-teal-200',
-          category: 'audits'
-        },
-        {
-          id: 'pi2',
-          name: 'Rajesh K.',
-          sub: 'Family discussion',
-          source: 'INSTAGRAM',
-          sourceClass: 'bg-pink-50 text-pink-700 border-pink-200',
-          category: 'all'
-        },
-        {
-          id: 'pi3',
-          name: 'Nandhini T.',
-          sub: 'Syllabus reviewed · CPC Intro',
-          source: 'LINKEDIN',
-          sourceClass: 'bg-sky-50 text-sky-700 border-sky-200',
-          category: 'audits'
-        }
-      ]
-    },
-    {
-      id: 'demo',
-      title: 'DEMO',
-      count: 5,
-      dotColor: 'bg-slate-900',
-      cards: [
-        {
-          id: 'd1',
-          name: 'Lakshmi N.',
-          sub: 'Today 14:30 · Online',
-          source: 'GOOGLE',
-          sourceClass: 'bg-blue-50 text-blue-700 border-blue-200',
-          category: 'calls'
-        },
-        {
-          id: 'd2',
-          name: 'Vignesh S.',
-          sub: 'Tomorrow 11:00 · SV',
-          source: 'WALK-IN',
-          sourceClass: 'bg-cyan-50 text-cyan-700 border-cyan-200',
-          category: 'all'
-        },
-        {
-          id: 'd3',
-          name: 'Swetha R.',
-          sub: 'Scheduled 17:00 · Offline',
-          source: 'SEMINAR',
-          sourceClass: 'bg-purple-50 text-purple-700 border-purple-200',
-          category: 'overdue'
-        }
-      ]
-    },
-    {
-      id: 'converted',
-      title: 'CONVERTED ✓',
-      count: 23,
-      dotColor: 'bg-emerald-600',
-      isConvertedCol: true,
-      cards: [
-        {
-          id: 'co1',
-          name: 'Pooja R. ✓',
-          sub: 'CPC Inter · ₹21K paid',
-          source: 'JUST ADMITTED',
-          sourceClass: 'bg-white text-emerald-800 border-emerald-300 font-bold',
-          isAdmitted: true,
-          category: 'all'
-        },
-        {
-          id: 'co2',
-          name: 'Ananya M. ✓',
-          sub: 'CPC Prep · ₹25K paid',
-          source: 'JUST ADMITTED',
-          sourceClass: 'bg-white text-emerald-800 border-emerald-300 font-bold',
-          isAdmitted: true,
-          category: 'all'
-        },
-        {
-          id: 'co3',
-          name: 'Siddharth K. ✓',
-          sub: 'Medical Terminology · Full Paid',
-          source: 'BATCH ALLOCATED',
-          sourceClass: 'bg-white text-teal-800 border-teal-300 font-bold',
-          isAdmitted: true,
-          category: 'all'
-        }
-      ]
+  const handleAdvanceStage = async (leadId, currentStage) => {
+    const stageSeq = ['new', 'contacted', 'demo_booked', 'demo_attended', 'fee_followup', 'admitted'];
+    const currentIdx = stageSeq.indexOf(currentStage);
+    const nextStage = currentIdx >= 0 && currentIdx < stageSeq.length - 1 ? stageSeq[currentIdx + 1] : 'admitted';
+
+    try {
+      await updateLead(leadId, { stage: nextStage });
+      setLeads(prev => prev.map(l => (l._id === leadId || l.id === leadId) ? { ...l, stage: nextStage } : l));
+      if (onRefreshLeads) onRefreshLeads();
+      triggerAction(`✓ Advanced lead to ${nextStage.replace('_', ' ').toUpperCase()}`);
+    } catch (err) {
+      console.error('Failed to advance lead stage:', err);
+      triggerAction('Error updating lead stage');
     }
-  ];
+  };
+
+  // Pipeline columns computed dynamically from live database leads
+  const PIPELINE_COLUMNS = React.useMemo(() => {
+    const cols = [
+      {
+        id: 'new',
+        title: 'NEW',
+        dotColor: 'bg-slate-900',
+        stageMatches: ['new']
+      },
+      {
+        id: 'contacted',
+        title: 'CONTACTED',
+        dotColor: 'bg-blue-600',
+        stageMatches: ['contacted']
+      },
+      {
+        id: 'pitched',
+        title: 'DEMO / PITCH',
+        dotColor: 'bg-purple-600',
+        stageMatches: ['demo_booked', 'demo_attended']
+      },
+      {
+        id: 'fees',
+        title: 'FEES TALK',
+        dotColor: 'bg-amber-600',
+        stageMatches: ['fee_followup']
+      },
+      {
+        id: 'admitted',
+        title: 'ADMITTED',
+        dotColor: 'bg-emerald-600',
+        stageMatches: ['admitted']
+      }
+    ];
+
+    return cols.map(c => {
+      const matchingLeads = leads.filter(l => c.stageMatches.includes(l.stage || 'new'));
+      return {
+        id: c.id,
+        title: c.title,
+        count: matchingLeads.length,
+        dotColor: c.dotColor,
+        cards: matchingLeads.map(lead => ({
+          id: lead._id || lead.id,
+          name: lead.fullName || lead.name,
+          isNew: lead.stage === 'new',
+          isAdmitted: lead.stage === 'admitted',
+          sub: `${lead.phone || ''} · ${lead.education || lead.age + ' yrs'}`,
+          source: (lead.sourceName || lead.source || 'DIRECT').toUpperCase(),
+          sourceClass: lead.stage === 'admitted'
+            ? 'bg-white text-teal-800 border-teal-300 font-bold'
+            : 'bg-cyan-50 text-cyan-800 border-cyan-200',
+          hasActions: lead.stage !== 'admitted',
+          phone: lead.phone,
+          category: 'calls',
+          rawLead: lead
+        }))
+      };
+    });
+  }, [leads]);
+
+  const stageCounts = React.useMemo(() => {
+    return {
+      total: leads.length,
+      newCount: leads.filter(l => (l.stage || 'new') === 'new').length,
+      contactedCount: leads.filter(l => l.stage === 'contacted').length,
+      pitchedCount: leads.filter(l => l.stage === 'demo_booked' || l.stage === 'demo_attended').length,
+      demoCount: leads.filter(l => l.stage === 'demo_booked').length,
+      convertedCount: leads.filter(l => l.stage === 'admitted').length
+    };
+  }, [leads]);
 
   return (
     <div className="space-y-4 pb-12">
@@ -211,13 +136,25 @@ export default function HrPipelineView({ onOpenCatalog }) {
       )}
 
       {/* Page Title & Subtitle */}
-      <div className="pt-1">
-        <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-slate-900">
-          My <span className="text-[#00897b]">Pipeline</span>
-        </h1>
-        <p className="text-xs sm:text-[13px] text-slate-500 font-medium mt-1 font-mono">
-          47 active leads · all stages, all daily tasks, all demos — one screen, filter by stage or task
-        </p>
+      <div className="pt-1 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-slate-900">
+            My <span className="text-[#00897b]">Pipeline</span>
+          </h1>
+          <p className="text-xs sm:text-[13px] text-slate-500 font-medium mt-1 font-mono">
+            {stageCounts.total} active leads in MongoDB database · live pipeline stage management
+          </p>
+        </div>
+
+        {onAddLeadClick && (
+          <button
+            onClick={onAddLeadClick}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-[#00897b] hover:bg-[#00796b] text-white shadow-xs transition-all active:scale-95 cursor-pointer self-start sm:self-auto"
+          >
+            <UserPlus className="w-4 h-4" />
+            <span>Add Lead</span>
+          </button>
+        )}
       </div>
 
       {/* Filter Buttons row ("SHOW") */}
@@ -308,27 +245,27 @@ export default function HrPipelineView({ onOpenCatalog }) {
           {/* NEW */}
           <div className="flex items-center justify-between px-3 py-2 border-r border-slate-100">
             <span className="text-[10px] sm:text-xs font-bold text-slate-500 tracking-wider">NEW</span>
-            <span className="text-lg sm:text-2xl font-black text-slate-900">12</span>
+            <span className="text-lg sm:text-2xl font-black text-slate-900">{stageCounts.newCount}</span>
           </div>
           {/* CONTACTED */}
           <div className="flex items-center justify-between px-3 py-2 border-r border-slate-100">
             <span className="text-[10px] sm:text-xs font-bold text-slate-500 tracking-wider">CONTACTED</span>
-            <span className="text-lg sm:text-2xl font-black text-slate-900">18</span>
+            <span className="text-lg sm:text-2xl font-black text-slate-900">{stageCounts.contactedCount}</span>
           </div>
           {/* PITCHED */}
           <div className="flex items-center justify-between px-3 py-2 border-r border-slate-100">
             <span className="text-[10px] sm:text-xs font-bold text-slate-500 tracking-wider">PITCHED</span>
-            <span className="text-lg sm:text-2xl font-black text-slate-900">9</span>
+            <span className="text-lg sm:text-2xl font-black text-slate-900">{stageCounts.pitchedCount}</span>
           </div>
           {/* DEMO */}
           <div className="flex items-center justify-between px-3 py-2 border-r border-slate-100">
             <span className="text-[10px] sm:text-xs font-bold text-slate-500 tracking-wider">DEMO</span>
-            <span className="text-lg sm:text-2xl font-black text-slate-900">5</span>
+            <span className="text-lg sm:text-2xl font-black text-slate-900">{stageCounts.demoCount}</span>
           </div>
           {/* CONVERTED (mint highlighted card) */}
           <div className="flex items-center justify-between px-3 py-2 bg-[#dcfce7] rounded-xl border border-emerald-200/60 shadow-xs">
             <span className="text-[10px] sm:text-xs font-bold text-[#15803d] tracking-wider">CONVERTED</span>
-            <span className="text-lg sm:text-2xl font-black text-[#15803d]">23</span>
+            <span className="text-lg sm:text-2xl font-black text-[#15803d]">{stageCounts.convertedCount}</span>
           </div>
         </div>
       </div>

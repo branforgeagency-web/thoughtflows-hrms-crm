@@ -31,7 +31,8 @@ export default function DashboardModal({
   onClose, 
   selectedDashboard, 
   currentUser,
-  onSwitchDepartment
+  onSwitchDepartment,
+  onSignOut
 }) {
   const [branches, setBranches] = useState([]);
   const [pipeline, setPipeline] = useState([]);
@@ -64,7 +65,8 @@ export default function DashboardModal({
       <HrDepartmentDashboard
         onClose={onClose}
         currentUser={currentUser}
-        onLogout={onSwitchDepartment}
+        onLogout={onSignOut || onSwitchDepartment}
+        onSwitchDepartment={onSwitchDepartment}
       />
     );
   }

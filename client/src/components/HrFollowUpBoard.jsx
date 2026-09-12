@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Phone, 
   MessageSquare, 
@@ -11,20 +11,34 @@ import {
   CheckCircle2
 } from 'lucide-react';
 
-export default function HrFollowUpBoard() {
+import { getLeads, updateLead } from '../services/api';
+
+export default function HrFollowUpBoard({ leads: propLeads, onRefreshLeads }) {
   const [activeFilter, setActiveFilter] = useState('all'); // all, overdue, today, tomorrow, this_week, demo, fee
   const [completedIds, setCompletedIds] = useState(new Set());
   const [toastMessage, setToastMessage] = useState(null);
+  const [leads, setLeads] = useState(propLeads || []);
+
+  useEffect(() => {
+    if (propLeads && propLeads.length > 0) {
+      setLeads(propLeads);
+    } else {
+      getLeads().then(res => {
+        if (res?.leads) setLeads(res.leads);
+      }).catch(err => console.error('Error fetching leads for follow-up board:', err));
+    }
+  }, [propLeads]);
 
   const showToast = (msg) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  const toggleDone = (id, name) => {
+  const toggleDone = async (id, name) => {
+    const isCurrentlyDone = completedIds.has(id);
     setCompletedIds(prev => {
       const next = new Set(prev);
-      if (next.has(id)) {
+      if (isCurrentlyDone) {
         next.delete(id);
         showToast(`Reopened follow-up for ${name}`);
       } else {
@@ -33,138 +47,38 @@ export default function HrFollowUpBoard() {
       }
       return next;
     });
+
+    try {
+      await updateLead(id, { status: isCurrentlyDone ? 'pending' : 'completed' });
+      if (onRefreshLeads) onRefreshLeads();
+    } catch (e) {
+      console.warn('Backend update notice:', e);
+    }
   };
 
-  const FOLLOW_UPS = [
-    {
-      id: 'f1',
-      name: 'Priya R.',
-      phone: '98xxxxxx21',
-      badge: 'NOW · overdue',
-      badgeClass: 'bg-rose-100 text-rose-700 font-bold',
-      borderColor: 'border-l-rose-500',
-      timeframe: 'overdue',
-      type: 'general',
-      tags: [
-        { label: 'First Call', class: 'bg-cyan-50 text-cyan-700 border-cyan-200' },
-        { label: 'NEW', class: 'bg-indigo-50 text-indigo-700 border-indigo-200' }
-      ],
-      note: 'Google lead. BPO reject. Has not been reached yet — 2 attempts failed.',
-      assigned: 'Kavitha'
-    },
-    {
-      id: 'f2',
-      name: 'Suresh M.',
-      phone: '98xxxxxx88',
-      badge: '09:30 · overdue',
-      badgeClass: 'bg-rose-100 text-rose-700 font-bold',
-      borderColor: 'border-l-rose-500',
-      timeframe: 'overdue',
-      type: 'fee',
-      tags: [
-        { label: 'Fee Follow-up', class: 'bg-cyan-50 text-cyan-700 border-cyan-200' },
-        { label: 'FEE', class: 'bg-amber-50 text-amber-800 border-amber-200' }
-      ],
-      note: 'Agreed CPC, asked to call back about EMI option this morning.',
-      assigned: 'Kavitha'
-    },
-    {
-      id: 'f3',
-      name: 'Lavanya K.',
-      phone: '73xxxxxx55',
-      badge: '11:00 · overdue',
-      badgeClass: 'bg-rose-100 text-rose-700 font-bold',
-      borderColor: 'border-l-rose-500',
-      timeframe: 'overdue',
-      type: 'demo',
-      tags: [
-        { label: 'Demo Follow-up', class: 'bg-cyan-50 text-cyan-700 border-cyan-200' },
-        { label: 'DEMO', class: 'bg-purple-50 text-purple-700 border-purple-200' }
-      ],
-      note: 'Attended CPC demo yesterday, liked trainer. Push for fee discussion.',
-      assigned: 'Kavitha'
-    },
-    {
-      id: 'f4',
-      name: 'Karthik V.',
-      phone: '95xxxxxx48',
-      badge: 'Today 2:00 PM',
-      badgeClass: 'bg-amber-100 text-amber-900 font-bold',
-      borderColor: 'border-l-purple-500',
-      timeframe: 'today',
-      type: 'demo',
-      tags: [
-        { label: 'Demo Confirm', class: 'bg-cyan-50 text-cyan-700 border-cyan-200' },
-        { label: 'DEMO', class: 'bg-purple-50 text-purple-700 border-purple-200' }
-      ],
-      note: 'Demo booked 4 PM today. Confirm attendance + send link.',
-      assigned: 'Kavitha'
-    },
-    {
-      id: 'f5',
-      name: 'Divya P.',
-      phone: '88xxxxxx12',
-      badge: 'Today 4:30 PM',
-      badgeClass: 'bg-amber-100 text-amber-900 font-bold',
-      borderColor: 'border-l-teal-500',
-      timeframe: 'today',
-      type: 'fee',
-      tags: [
-        { label: 'Admission Follow-up', class: 'bg-cyan-50 text-cyan-700 border-cyan-200' },
-        { label: 'FEE', class: 'bg-amber-50 text-amber-800 border-amber-200' }
-      ],
-      note: 'Fee paid partial. Needs to bring documents to complete admission.',
-      assigned: 'Kavitha'
-    },
-    {
-      id: 'f6',
-      name: 'Mohan B.',
-      phone: '78xxxxxx33',
-      badge: 'Tomorrow',
-      badgeClass: 'bg-sky-100 text-sky-800 font-bold',
-      borderColor: 'border-l-cyan-500',
-      timeframe: 'tomorrow',
-      type: 'general',
-      tags: [
-        { label: 'Reactivation', class: 'bg-cyan-50 text-cyan-700 border-cyan-200' },
-        { label: 'CONTACTED', class: 'bg-sky-50 text-sky-700 border-sky-200' }
-      ],
-      note: 'Cold lead from March. Re-engage with new batch + scholarship offer.',
-      assigned: 'Kavitha'
-    },
-    {
-      id: 'f7',
-      name: 'Anitha S.',
-      phone: '81xxxxxx76',
-      badge: 'Tomorrow',
-      badgeClass: 'bg-sky-100 text-sky-800 font-bold',
-      borderColor: 'border-l-cyan-500',
-      timeframe: 'tomorrow',
-      type: 'general',
-      tags: [
-        { label: 'Parent Follow-up', class: 'bg-cyan-50 text-cyan-700 border-cyan-200' },
-        { label: 'INTERESTED', class: 'bg-amber-50 text-amber-800 border-amber-200' }
-      ],
-      note: 'Student keen, father wants to discuss placement guarantee.',
-      assigned: 'Kavitha'
-    },
-    {
-      id: 'f8',
-      name: 'Ramesh K.',
-      phone: '94xxxxxx19',
-      badge: 'This week',
-      badgeClass: 'bg-indigo-100 text-indigo-800 font-bold',
-      borderColor: 'border-l-indigo-500',
-      timeframe: 'this_week',
-      type: 'demo',
-      tags: [
-        { label: 'Demo Follow-up', class: 'bg-cyan-50 text-cyan-700 border-cyan-200' },
-        { label: 'INTERESTED', class: 'bg-amber-50 text-amber-800 border-amber-200' }
-      ],
-      note: 'Wants to see one more demo before deciding. Book for Thursday.',
-      assigned: 'Kavitha'
-    }
-  ];
+  // Follow-ups computed dynamically from live CRM leads
+  const FOLLOW_UPS = React.useMemo(() => {
+    return leads.map((lead, idx) => {
+      const isOverdue = idx < 2 || lead.stage === 'new';
+      const timeframe = isOverdue ? 'overdue' : (idx % 2 === 0 ? 'today' : 'tomorrow');
+      return {
+        id: lead._id || lead.id,
+        name: lead.fullName || lead.name,
+        phone: lead.phone || '98xxxxxx00',
+        badge: lead.followUpTime ? `${lead.followUpTime} · follow-up` : (isOverdue ? 'NOW · overdue' : 'Today 15:00'),
+        badgeClass: isOverdue ? 'bg-rose-100 text-rose-700 font-bold' : 'bg-slate-100 text-slate-700 font-semibold',
+        borderColor: isOverdue ? 'border-l-rose-500' : 'border-l-amber-500',
+        timeframe,
+        type: lead.stage === 'fee_followup' ? 'fee' : (lead.stage && lead.stage.includes('demo')) ? 'demo' : 'general',
+        tags: [
+          { label: lead.course || 'CPC', class: 'bg-cyan-50 text-cyan-700 border-cyan-200' },
+          { label: (lead.sourceName || lead.source || 'LEAD').toUpperCase(), class: 'bg-indigo-50 text-indigo-700 border-indigo-200' }
+        ],
+        note: lead.followUpNote || lead.notes || `${lead.education || 'Graduate'} · Stage: ${lead.stage}`,
+        assigned: lead.counselorAssigned || 'Kavitha'
+      };
+    });
+  }, [leads]);
 
   // Filter items
   const filteredList = FOLLOW_UPS.filter(item => {

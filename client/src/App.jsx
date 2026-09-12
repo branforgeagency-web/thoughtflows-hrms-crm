@@ -11,20 +11,63 @@ import axios from 'axios';
 
 export default function App() {
   const [isDepartmentsOpen, setIsDepartmentsOpen] = useState(false);
-  const [isDashboardOpen, setIsDashboardOpen] = useState(false);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [loginDepartment, setLoginDepartment] = useState('hr');
-  const [selectedDashboard, setSelectedDashboard] = useState(null);
-  const [currentUser, setCurrentUser] = useState(null);
   const [selectedStaff, setSelectedStaff] = useState(null);
   const [backendHealth, setBackendHealth] = useState(null);
+
+  // Department card reference
+  const DEPT_CARDS = [
+    { id: 'hr', title: 'HR Department', status: 'LIVE', description: 'Academic counsellors who turn enquiries into futures · lead capture, calls, follow-ups & admissions' },
+    { id: 'training', title: 'Training Department', status: '3 LIVE', description: 'Trainers across 12 branches running batches, attendance, assessments & mastery tracking' },
+    { id: 'cccp', title: 'CCCP Dashboard', status: '8 TODAY', description: 'Placement Cell · Examination Cell · College & Company Cell — three cells, one career path' },
+    { id: 'marketing', title: 'Marketing Department', status: 'ACTIVE', description: 'Digital, outdoor & campaigns driving 100+ lead sources every month across all branches' },
+    { id: 'leadership', title: 'Leadership Hub', status: '4 ROLES', description: 'All the heads in one place — Operational, Department, Regional & Branch. Open to pick your role.' },
+    { id: 'student', title: 'Student Dashboard', status: '247 ONLINE', description: 'Students log in here to track attendance, syllabus, exam slot bookings, assignments & placement opportunities' },
+    { id: 'admin', title: 'Admin & Management', status: '3 ALERTS', description: "Founders' command bridge · back-office operations · strategy, red-line alerts & administration" }
+  ];
+
+  // Persistent user state across page refresh
+  const [currentUser, setCurrentUser] = useState(() => {
+    try {
+      const saved = localStorage.getItem('thoughtflows_user');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+
+  const [selectedDashboard, setSelectedDashboard] = useState(() => {
+    try {
+      const saved = localStorage.getItem('thoughtflows_dashboard');
+      if (saved) return JSON.parse(saved);
+      const userSaved = localStorage.getItem('thoughtflows_user');
+      if (userSaved) {
+        const u = JSON.parse(userSaved);
+        return DEPT_CARDS.find(c => c.id === u.department) || DEPT_CARDS[0];
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  });
+
+  const [isDashboardOpen, setIsDashboardOpen] = useState(() => {
+    try {
+      const userSaved = localStorage.getItem('thoughtflows_user');
+      // If user is logged in, remain in dashboard on page refresh
+      return !!userSaved;
+    } catch {
+      return false;
+    }
+  });
 
   useEffect(() => {
     // Check backend health on initial load
     axios.get('/api/health')
       .then(res => setBackendHealth(res.data))
       .catch(err => {
-        console.log('Backend starting up or running in offline mock mode');
+        console.log('Backend starting up or running in offline mode');
       });
   }, []);
 
@@ -34,6 +77,7 @@ export default function App() {
 
   const handleSelectDashboard = (card) => {
     setSelectedDashboard(card);
+    localStorage.setItem('thoughtflows_dashboard', JSON.stringify(card));
     // If user is already authenticated for this department (or is admin), grant immediate access
     if (currentUser && (currentUser.department === card.id || currentUser.department === 'admin')) {
       setIsDashboardOpen(true);
@@ -46,22 +90,23 @@ export default function App() {
 
   const handleLoginSuccess = (user) => {
     setCurrentUser(user);
+    localStorage.setItem('thoughtflows_user', JSON.stringify(user));
     setIsLoginOpen(false);
 
     // Open dashboard corresponding to the authenticated department
-    const deptCards = [
-      { id: 'hr', title: 'HR Department', status: 'LIVE', description: 'Academic counsellors who turn enquiries into futures · lead capture, calls, follow-ups & admissions' },
-      { id: 'training', title: 'Training Department', status: '3 LIVE', description: 'Trainers across 12 branches running batches, attendance, assessments & mastery tracking' },
-      { id: 'cccp', title: 'CCCP Dashboard', status: '8 TODAY', description: 'Placement Cell · Examination Cell · College & Company Cell — three cells, one career path' },
-      { id: 'marketing', title: 'Marketing Department', status: 'ACTIVE', description: 'Digital, outdoor & campaigns driving 100+ lead sources every month across all branches' },
-      { id: 'leadership', title: 'Leadership Hub', status: '4 ROLES', description: 'All the heads in one place — Operational, Department, Regional & Branch. Open to pick your role.' },
-      { id: 'student', title: 'Student Dashboard', status: '247 ONLINE', description: 'Students log in here to track attendance, syllabus, exam slot bookings, assignments & placement opportunities' },
-      { id: 'admin', title: 'Admin & Management', status: '3 ALERTS', description: "Founders' command bridge · back-office operations · strategy, red-line alerts & administration" }
-    ];
-
-    const matchedCard = deptCards.find(c => c.id === user.department) || deptCards[0];
+    const matchedCard = DEPT_CARDS.find(c => c.id === user.department) || DEPT_CARDS[0];
     setSelectedDashboard(matchedCard);
+    localStorage.setItem('thoughtflows_dashboard', JSON.stringify(matchedCard));
     setIsDashboardOpen(true);
+  };
+
+  const handleSignOut = () => {
+    localStorage.removeItem('thoughtflows_user');
+    localStorage.removeItem('thoughtflows_dashboard');
+    localStorage.removeItem('thoughtflows_hr_active_tab');
+    setCurrentUser(null);
+    setSelectedDashboard(null);
+    setIsDashboardOpen(false);
   };
 
   const handleOpenMyDashboardHero = () => {
@@ -123,10 +168,7 @@ export default function App() {
             window.scrollTo({ top: 0, behavior: 'smooth' });
           }}
           currentUser={currentUser}
-          onSignOut={() => {
-            setCurrentUser(null);
-            setIsDashboardOpen(false);
-          }}
+          onSignOut={handleSignOut}
           onSwitchDepartment={handleSwitchDepartment}
         />
 
@@ -186,11 +228,11 @@ export default function App() {
         isOpen={isDashboardOpen}
         onClose={() => {
           setIsDashboardOpen(false);
-          setSelectedDashboard(null);
         }}
         selectedDashboard={selectedDashboard}
         currentUser={currentUser}
         onSwitchDepartment={handleSwitchDepartment}
+        onSignOut={handleSignOut}
       />
 
       <LoginModal

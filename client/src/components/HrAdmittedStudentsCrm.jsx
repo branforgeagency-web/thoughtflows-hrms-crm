@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Share2, 
   UserPlus, 
@@ -17,157 +17,36 @@ import {
   BookOpen,
   Briefcase
 } from 'lucide-react';
+import GenerateStudentIdModal from './GenerateStudentIdModal';
+import WalkinRegistrationModal from './WalkinRegistrationModal';
+import StudentProfileModal from './StudentProfileModal';
 
-export default function HrAdmittedStudentsCrm() {
+import { getStudents, createStudent } from '../services/api';
+
+export default function HrAdmittedStudentsCrm({ students: propStudents, onRefreshStudents, currentUser }) {
   const [activeTabFilter, setActiveTabFilter] = useState('all'); // all, in_course, placed, on_hold
   const [searchQuery, setSearchQuery] = useState('');
   const [toastMessage, setToastMessage] = useState(null);
   const [showWalkinModal, setShowWalkinModal] = useState(false);
   const [showIdGenModal, setShowIdGenModal] = useState(false);
+  const [selectedStudent, setSelectedStudent] = useState(null);
+
+  const [students, setStudents] = useState(propStudents || []);
+
+  useEffect(() => {
+    if (propStudents && propStudents.length > 0) {
+      setStudents(propStudents);
+    } else {
+      getStudents().then(res => {
+        if (Array.isArray(res)) setStudents(res);
+      }).catch(err => console.error('Error fetching students:', err));
+    }
+  }, [propStudents]);
 
   const showToast = (msg) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3000);
   };
-
-  // Sample Admitted Students matching screenshot
-  const [students, setStudents] = useState([
-    {
-      id: 'TFMC0Y6001',
-      name: 'AJITH KUMAR A',
-      phone: '63•••• 18356',
-      course: 'IPDRG',
-      mode: 'Online',
-      batchDate: 'May 2',
-      hrName: 'Kalaiselvi',
-      batchTiming: '8-10 PM Weekdays',
-      qualification: 'BE Medical Electronics - 2020',
-      qualTag: 'Life Sci',
-      collegeCompany: 'S2M Health Care',
-      location: 'Namakkal',
-      email: 'ajith16124002@gmail.com',
-      dob: '16-07-1999',
-      enqDate: 'April',
-      source: 'OLD STUDENT',
-      onboardStatus: '7/7 ✓',
-      syllabusModule: 'Module 1',
-      mockInterview: 'Pending',
-      examStatus: 'Not Booked',
-      certified: 'Non-certified',
-      placementStatus: 'Placed · 32K',
-      feeStatus: 'Fully Paid',
-      feeAmount: '₹25,000',
-      statusGroup: 'placed'
-    },
-    {
-      id: 'TFMC0Y6002',
-      name: 'DHARSHINI S',
-      phone: '98•••• 88987',
-      course: 'CIC',
-      mode: 'Online',
-      batchDate: 'May 3',
-      hrName: 'Reshma',
-      batchTiming: '8-10 PM Weekdays',
-      qualification: 'BSc Optometry - 2024',
-      qualTag: 'Life Sci',
-      collegeCompany: 'Lotus Eye',
-      location: 'Hosur',
-      email: 'dharshateddy73@gmail.com',
-      dob: '02-07-2002',
-      enqDate: 'April',
-      source: 'OLD STUDENT',
-      onboardStatus: '7/7 ✓',
-      syllabusModule: 'Module 2',
-      mockInterview: 'Pending',
-      examStatus: 'Not Booked',
-      certified: 'Non-certified',
-      placementStatus: 'In course',
-      feeStatus: 'Part Paid',
-      feeAmount: '₹11,000 / ₹25,000',
-      statusGroup: 'in_course'
-    },
-    {
-      id: 'TFMC0Y6003',
-      name: 'POOJA R.',
-      phone: '97•••• 21345',
-      course: 'CPC Inter',
-      mode: 'Online',
-      batchDate: 'May 10',
-      hrName: 'Kavitha N.',
-      batchTiming: '10 AM-12 PM Daily',
-      qualification: 'BSc Biotechnology - 2023',
-      qualTag: 'Life Sci',
-      collegeCompany: 'PSG College of Arts & Science',
-      location: 'Coimbatore',
-      email: 'pooja.r.cpc@gmail.com',
-      dob: '14-04-2001',
-      enqDate: 'May',
-      source: 'DIRECT ENQUIRY',
-      onboardStatus: '7/7 ✓',
-      syllabusModule: 'Module 1',
-      mockInterview: 'Pending',
-      examStatus: 'Not Booked',
-      certified: 'Non-certified',
-      placementStatus: 'In course',
-      feeStatus: 'Fully Paid',
-      feeAmount: '₹21,000',
-      statusGroup: 'in_course'
-    },
-    {
-      id: 'TFMC0Y6004',
-      name: 'ANANYA M.',
-      phone: '94•••• 77654',
-      course: 'CPC Prep',
-      mode: 'Classroom',
-      batchDate: 'May 15',
-      hrName: 'Kavitha N.',
-      batchTiming: '2-4 PM Weekdays',
-      qualification: 'BPharm - 2022',
-      qualTag: 'Pharmacy',
-      collegeCompany: 'KMCH College of Pharmacy',
-      location: 'Saravanampatti',
-      email: 'ananya.m99@gmail.com',
-      dob: '28-11-1999',
-      enqDate: 'May',
-      source: 'REFERRAL',
-      onboardStatus: '7/7 ✓',
-      syllabusModule: 'Module 1',
-      mockInterview: 'Cleared ✓',
-      examStatus: 'AAPC CPC Booked',
-      certified: 'CPC Certified ✓',
-      placementStatus: 'Interviewing (Omega)',
-      feeStatus: 'Fully Paid',
-      feeAmount: '₹25,000',
-      statusGroup: 'in_course'
-    },
-    {
-      id: 'TFMC0Y6005',
-      name: 'KARTHIKEYAN V.',
-      phone: '99•••• 33211',
-      course: 'Comprehensive Medical Coding',
-      mode: 'Classroom',
-      batchDate: 'May 20',
-      hrName: 'Balaji R.',
-      batchTiming: '6-8 PM Weekdays',
-      qualification: 'BCom - 2021',
-      qualTag: 'Non-LifeSci',
-      collegeCompany: 'Rathinam College',
-      location: 'Coimbatore',
-      email: 'karthik.v.bcom@gmail.com',
-      dob: '05-09-2000',
-      enqDate: 'May',
-      source: 'WALK-IN',
-      onboardStatus: '4/7 Pending',
-      syllabusModule: 'Orientation',
-      mockInterview: 'Pending',
-      examStatus: 'Not Booked',
-      certified: 'Non-certified',
-      placementStatus: 'On Hold (Docs pending)',
-      feeStatus: 'Part Paid',
-      feeAmount: '₹15,000 / ₹32,000',
-      statusGroup: 'on_hold'
-    }
-  ]);
 
   // ID generator calculator state
   const [idGen, setIdGen] = useState({
@@ -545,15 +424,20 @@ export default function HrAdmittedStudentsCrm() {
             </thead>
             <tbody className="divide-y divide-slate-100 text-[11px]">
               {filteredStudents.map((s) => (
-                <tr key={s.id} className="hover:bg-slate-50/60 transition-colors">
+                <tr 
+                  key={s.id} 
+                  onClick={() => setSelectedStudent(s)}
+                  className="hover:bg-teal-50/60 cursor-pointer transition-colors group"
+                  title={`Click to view full profile for ${s.name}`}
+                >
                   {/* Student ID */}
-                  <td className="py-3 px-3 font-mono font-bold text-[#00897b] whitespace-nowrap">
+                  <td className="py-3 px-3 font-mono font-bold text-[#00897b] whitespace-nowrap group-hover:underline">
                     {s.id}
                   </td>
 
                   {/* Name · Contact */}
                   <td className="py-3 px-3 whitespace-nowrap">
-                    <div className="font-extrabold text-slate-900">{s.name}</div>
+                    <div className="font-extrabold text-slate-900 group-hover:text-[#00796b] transition-colors">{s.name}</div>
                     <div className="text-[10.5px] text-slate-400 font-mono">{s.phone}</div>
                   </td>
 
@@ -635,7 +519,9 @@ export default function HrAdmittedStudentsCrm() {
                   <td className="py-3 px-3 whitespace-nowrap">
                     <select
                       value={s.examStatus}
+                      onClick={(e) => e.stopPropagation()}
                       onChange={(e) => {
+                        e.stopPropagation();
                         const val = e.target.value;
                         setStudents(prev => prev.map(item => item.id === s.id ? { ...item, examStatus: val } : item));
                         showToast(`${s.name} Exam status updated`);
@@ -685,240 +571,57 @@ export default function HrAdmittedStudentsCrm() {
       </div>
 
       {/* Walk-in Registration Modal */}
-      {showWalkinModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl p-6 max-w-lg w-full shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div className="flex items-center gap-2">
-                <span className="text-xl">✨</span>
-                <h3 className="font-extrabold text-slate-900 text-base">Walk-In Student Registration</h3>
-              </div>
-              <button
-                onClick={() => setShowWalkinModal(false)}
-                className="w-7 h-7 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 flex items-center justify-center text-xs font-bold"
-              >
-                ✕
-              </button>
-            </div>
-
-            <form onSubmit={handleWalkinSubmit} className="space-y-3 text-xs">
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Student Full Name</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="e.g. PRIYANKA M"
-                    value={newWalkin.name}
-                    onChange={(e) => setNewWalkin({ ...newWalkin, name: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 outline-none focus:border-[#00897b] focus:bg-white"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Mobile Contact</label>
-                  <input
-                    type="tel"
-                    required
-                    placeholder="+91 98765 00000"
-                    value={newWalkin.phone}
-                    onChange={(e) => setNewWalkin({ ...newWalkin, phone: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 outline-none focus:border-[#00897b] focus:bg-white"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Email Address</label>
-                <input
-                  type="email"
-                  placeholder="student@gmail.com"
-                  value={newWalkin.email}
-                  onChange={(e) => setNewWalkin({ ...newWalkin, email: e.target.value })}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 outline-none focus:border-[#00897b] focus:bg-white"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Course</label>
-                  <select
-                    value={newWalkin.course}
-                    onChange={(e) => setNewWalkin({ ...newWalkin, course: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-slate-900 outline-none focus:border-[#00897b] focus:bg-white text-xs"
-                  >
-                    <option value="CPC Intensive Medical Coding">CPC Intensive</option>
-                    <option value="Comprehensive Medical Coding + Hospital Internship">Comprehensive + Internship</option>
-                    <option value="IPDRG Specialized Coding">IPDRG Specialized Coding</option>
-                    <option value="CIC Certified Inpatient Coder">CIC Inpatient</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Batch Mode</label>
-                  <select
-                    value={newWalkin.mode}
-                    onChange={(e) => setNewWalkin({ ...newWalkin, mode: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-slate-900 outline-none focus:border-[#00897b] focus:bg-white text-xs"
-                  >
-                    <option value="Classroom (Saravanampatti)">Classroom (Saravanampatti)</option>
-                    <option value="Online (Live Zoom)">Online (Live Zoom)</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Qualification</label>
-                  <input
-                    type="text"
-                    placeholder="BSc Nursing / BCom 2023"
-                    value={newWalkin.qualification}
-                    onChange={(e) => setNewWalkin({ ...newWalkin, qualification: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 outline-none focus:border-[#00897b] focus:bg-white text-xs"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">College / Location</label>
-                  <input
-                    type="text"
-                    placeholder="PSG College · Coimbatore"
-                    value={newWalkin.college}
-                    onChange={(e) => setNewWalkin({ ...newWalkin, college: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 outline-none focus:border-[#00897b] focus:bg-white text-xs"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Fee Amount Paid</label>
-                  <input
-                    type="text"
-                    value={newWalkin.feePaid}
-                    onChange={(e) => setNewWalkin({ ...newWalkin, feePaid: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 outline-none focus:border-[#00897b] focus:bg-white text-xs font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Batch Timing</label>
-                  <input
-                    type="text"
-                    value={newWalkin.timing}
-                    onChange={(e) => setNewWalkin({ ...newWalkin, timing: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 outline-none focus:border-[#00897b] focus:bg-white text-xs"
-                  />
-                </div>
-              </div>
-
-              <div className="pt-2 flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowWalkinModal(false)}
-                  className="w-1/2 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs transition-all"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="w-1/2 py-2.5 bg-[#00796b] hover:bg-[#00695c] text-white font-bold rounded-xl text-xs transition-all shadow-sm"
-                >
-                  Confirm Registration
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      <WalkinRegistrationModal
+        isOpen={showWalkinModal}
+        onClose={() => setShowWalkinModal(false)}
+        onRegister={async (newStudent) => {
+          try {
+            const created = await createStudent({
+              ...newStudent,
+              studentId: newStudent.id || newStudent.studentId,
+              hrName: currentUser?.name || newStudent.hrName || 'Kavitha N.'
+            });
+            setStudents(prev => [created, ...prev]);
+            if (onRefreshStudents) onRefreshStudents();
+            showToast(`✓ Registered real student: ${created.name} (${created.studentId || created.id})`);
+          } catch (err) {
+            console.error('Failed to create student in database:', err);
+            showToast('Error saving student to database');
+          }
+        }}
+      />
 
       {/* Generate Student ID Modal */}
-      {showIdGenModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div className="flex items-center gap-2">
-                <Settings className="w-5 h-5 text-[#00897b]" />
-                <h3 className="font-extrabold text-slate-900 text-base">Student ID Generator</h3>
-              </div>
-              <button
-                onClick={() => setShowIdGenModal(false)}
-                className="w-7 h-7 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 flex items-center justify-center text-xs font-bold"
-              >
-                ✕
-              </button>
-            </div>
+      <GenerateStudentIdModal
+        isOpen={showIdGenModal}
+        onClose={() => setShowIdGenModal(false)}
+        onConfirm={async (id) => {
+          try {
+            const created = await createStudent({
+              studentId: id,
+              name: `STUDENT ${id.slice(-4)}`,
+              phone: '98401 23456',
+              course: id.includes('C') ? 'CPC' : id.includes('I') ? 'IPDRG' : 'CIC',
+              mode: id.includes('O') ? 'Online' : 'Classroom',
+              hrName: currentUser?.name || 'Kavitha N.',
+              statusGroup: 'in_course'
+            });
+            setStudents(prev => [created, ...prev]);
+            if (onRefreshStudents) onRefreshStudents();
+            showToast(`✓ Generated & saved real student ID: ${id}`);
+          } catch (err) {
+            console.error('Failed to generate student ID in database:', err);
+            showToast('Error generating student ID');
+          }
+        }}
+      />
 
-            <div className="space-y-3 text-xs">
-              <div className="p-3.5 bg-slate-900 text-white rounded-2xl text-center">
-                <span className="text-[10px] text-teal-300 font-mono block mb-1">GENERATED ID</span>
-                <span className="text-xl font-mono font-black text-white tracking-widest bg-white/10 px-3 py-1 rounded-lg">
-                  {generatedId}
-                </span>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-[10.5px] font-bold text-slate-600 mb-1">Branch</label>
-                  <select
-                    value={idGen.branch}
-                    onChange={(e) => setIdGen({ ...idGen, branch: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-1.5"
-                  >
-                    <option value="S">S - Saravanampatti</option>
-                    <option value="H">H - Hopes</option>
-                    <option value="R">R - RS Puram</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[10.5px] font-bold text-slate-600 mb-1">Course</label>
-                  <select
-                    value={idGen.course}
-                    onChange={(e) => setIdGen({ ...idGen, course: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-1.5"
-                  >
-                    <option value="C">C - CPC</option>
-                    <option value="I">I - IPDRG</option>
-                    <option value="X">X - CIC</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-[10.5px] font-bold text-slate-600 mb-1">Type</label>
-                  <select
-                    value={idGen.type}
-                    onChange={(e) => setIdGen({ ...idGen, type: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-1.5"
-                  >
-                    <option value="O">O - Online</option>
-                    <option value="C">C - Classroom</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[10.5px] font-bold text-slate-600 mb-1">Serial</label>
-                  <input
-                    type="text"
-                    value={idGen.serial}
-                    onChange={(e) => setIdGen({ ...idGen, serial: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-1.5 font-mono"
-                  />
-                </div>
-              </div>
-
-              <button
-                onClick={() => {
-                  navigator.clipboard?.writeText(generatedId);
-                  showToast(`✓ Copied ID: ${generatedId}`);
-                  setShowIdGenModal(false);
-                }}
-                className="w-full py-2.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold rounded-xl text-xs transition-all shadow-sm"
-              >
-                Copy & Use This ID
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Student Profile Modal */}
+      <StudentProfileModal
+        isOpen={Boolean(selectedStudent)}
+        onClose={() => setSelectedStudent(null)}
+        student={selectedStudent}
+      />
     </div>
   );
 }

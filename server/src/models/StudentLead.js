@@ -9,33 +9,102 @@ const studentLeadSchema = new mongoose.Schema({
     type: String,
     required: true
   },
-  email: String,
+  email: {
+    type: String,
+    default: ''
+  },
+  age: {
+    type: String,
+    default: '24'
+  },
+  gender: {
+    type: String,
+    default: 'Female'
+  },
+  location: {
+    type: String,
+    default: 'Coimbatore'
+  },
+  education: {
+    type: String,
+    default: 'Fresh Graduate'
+  },
   branch: {
     type: String,
-    required: true
+    default: 'Saravanampatti (CBE)'
   },
-  counselorAssigned: String,
+  course: {
+    type: String,
+    default: 'CPC - Certified Professional Coder'
+  },
+  sourceId: {
+    type: String,
+    default: 's21'
+  },
+  sourceName: {
+    type: String,
+    default: 'Facebook Job Post'
+  },
+  sourceTier: {
+    type: String,
+    default: 'TIER C'
+  },
+  sourceBadge: {
+    type: String,
+    default: 'FB POST'
+  },
+  category: {
+    type: String,
+    default: 'Fresh Graduate'
+  },
   stage: {
     type: String,
     enum: [
-      'first_call',
-      'counseling_booked',
-      'enrolled',
-      'in_training',
-      'cpc_exam_passed',
-      'interview_prep',
-      'placed',
-      'first_paycheck'
+      'new',
+      'contacted',
+      'demo_booked',
+      'demo_attended',
+      'fee_followup',
+      'admitted',
+      'closed'
     ],
-    default: 'first_call'
+    default: 'new'
   },
-  courseEnrolled: {
+  status: {
     type: String,
-    default: 'CPC Certified Medical Coding Masterclass'
+    enum: ['pending', 'in_progress', 'completed', 'cancelled'],
+    default: 'pending'
   },
-  batchDate: Date,
-  placementCompany: String,
-  firstSalary: Number
+  counselorAssigned: {
+    type: String,
+    default: 'Kavitha N.'
+  },
+  followUpDate: {
+    type: String,
+    default: ''
+  },
+  followUpTime: {
+    type: String,
+    default: ''
+  },
+  followUpNote: {
+    type: String,
+    default: ''
+  },
+  callCount: {
+    type: Number,
+    default: 0
+  },
+  lastCallTime: {
+    type: Date
+  },
+  demoBookedDate: {
+    type: String
+  },
+  notes: {
+    type: String,
+    default: ''
+  }
 }, {
   timestamps: true
 });

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Plus, 
   Video, 
@@ -15,70 +15,45 @@ import {
   X,
   Phone
 } from 'lucide-react';
+import BookNewDemoModal from './BookNewDemoModal';
 
-export default function HrDemoDesk() {
+import { getDemos, createDemo, updateDemo } from '../services/api';
+
+export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDemoClick }) {
   const [activeFilter, setActiveFilter] = useState('all'); // all, booked, confirmed, attended, missed, fee
   const [showBookingModal, setShowBookingModal] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
 
-  const [demos, setDemos] = useState([
-    {
-      id: 'd1',
-      candidateName: 'Lakshmi N.',
-      phone: '+91 98765 43210',
-      course: 'CPC Intensive Medical Coding',
-      mode: 'Online (Zoom Live)',
-      time: 'Today 14:30',
-      trainer: 'Dr. Vikram C.',
-      status: 'confirmed', // booked, confirmed, attended, missed, fee
-      link: 'https://zoom.us/j/9823412345',
-      note: 'Allied health background. Link sent via WhatsApp.'
-    },
-    {
-      id: 'd2',
-      candidateName: 'Karthik V.',
-      phone: '+91 95432 10987',
-      course: 'Comprehensive Medical Coding',
-      mode: 'Classroom (Saravanampatti)',
-      time: 'Today 16:00',
-      trainer: 'Priyadharshini K.',
-      status: 'booked',
-      note: 'Demo booked 4 PM today. Confirm attendance + send location map.'
-    },
-    {
-      id: 'd3',
-      candidateName: 'Vignesh S.',
-      phone: '+91 98941 12345',
-      course: 'Fast-Track Life Sciences Batch',
-      mode: 'Walk-in Campus Tour',
-      time: 'Tomorrow 11:00',
-      trainer: 'Dr. Vikram C.',
-      status: 'booked',
-      note: 'Father visiting along with student.'
-    },
-    {
-      id: 'd4',
-      candidateName: 'Sneha P.',
-      phone: '+91 97890 54321',
-      course: 'CPC Prep & Anatomy Module',
-      mode: 'Online (Zoom Live)',
-      time: 'Yesterday 15:00',
-      trainer: 'Dr. Vikram C.',
-      status: 'attended',
-      note: 'Attended full session. Trainer rated high interest.'
-    },
-    {
-      id: 'd5',
-      candidateName: 'Divya P.',
-      phone: '+91 88765 43219',
-      course: 'CPC Professional Coding',
-      mode: 'Online (Zoom Live)',
-      time: 'Yesterday 17:30',
-      trainer: 'Priyadharshini K.',
-      status: 'fee',
-      note: 'Agreed on fee structure. ₹5,000 token paid, balancing today.'
+  const [demos, setDemos] = useState(propDemos || []);
+
+  useEffect(() => {
+    if (propDemos && propDemos.length > 0) {
+      setDemos(propDemos);
+    } else {
+      getDemos()
+        .then(res => {
+          if (Array.isArray(res)) setDemos(res);
+        })
+        .catch(err => console.error('Error fetching demos:', err));
     }
-  ]);
+  }, [propDemos]);
+
+  const showToast = (msg) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  const handleUpdateStatus = async (id, newStatus) => {
+    try {
+      await updateDemo(id, { status: newStatus });
+      setDemos(prev => prev.map(d => (d._id === id || d.id === id) ? { ...d, status: newStatus } : d));
+      if (onRefreshDemos) onRefreshDemos();
+      showToast(`✓ Demo marked as "${newStatus.toUpperCase()}"`);
+    } catch (err) {
+      console.error('Failed to update demo:', err);
+      showToast('Error updating demo status');
+    }
+  };
 
   // Form state for booking new demo
   const [newDemo, setNewDemo] = useState({
@@ -90,11 +65,6 @@ export default function HrDemoDesk() {
     trainer: 'Dr. Vikram C.',
     note: ''
   });
-
-  const showToast = (msg) => {
-    setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 3000);
-  };
 
   const handleCreateDemo = (e) => {
     e.preventDefault();
@@ -129,8 +99,14 @@ export default function HrDemoDesk() {
     showToast(`✓ Booked Demo for ${created.candidateName}`);
   };
 
-  const updateStatus = (id, newStatus, candidateName) => {
-    setDemos(prev => prev.map(d => d.id === id ? { ...d, status: newStatus } : d));
+  const updateStatus = async (id, newStatus, candidateName) => {
+    try {
+      await updateDemo(id, { status: newStatus });
+      if (onRefreshDemos) onRefreshDemos();
+    } catch (e) {
+      console.warn('Backend update notice:', e);
+    }
+    setDemos(prev => prev.map(d => (d._id === id || d.id === id) ? { ...d, status: newStatus } : d));
     const labelMap = {
       confirmed: 'Confirmed & Link Sent',
       attended: 'Marked Attended',
@@ -426,130 +402,41 @@ export default function HrDemoDesk() {
       </div>
 
       {/* Book New Demo Modal */}
-      {showBookingModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div className="flex items-center gap-2">
-                <Video className="w-5 h-5 text-[#00897b]" />
-                <h3 className="font-extrabold text-slate-900 text-base">Book Candidate Demo</h3>
-              </div>
-              <button
-                onClick={() => setShowBookingModal(false)}
-                className="w-7 h-7 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 flex items-center justify-center text-xs font-bold"
-              >
-                ✕
-              </button>
-            </div>
-
-            <form onSubmit={handleCreateDemo} className="space-y-3 text-xs">
-              <div>
-                <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Candidate Name</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Ramesh Kumar"
-                  value={newDemo.candidateName}
-                  onChange={(e) => setNewDemo({ ...newDemo, candidateName: e.target.value })}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 outline-none focus:border-[#00897b] focus:bg-white"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Phone Number</label>
-                <input
-                  type="tel"
-                  required
-                  placeholder="+91 98765 00000"
-                  value={newDemo.phone}
-                  onChange={(e) => setNewDemo({ ...newDemo, phone: e.target.value })}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 outline-none focus:border-[#00897b] focus:bg-white"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Mode</label>
-                  <select
-                    value={newDemo.mode}
-                    onChange={(e) => setNewDemo({ ...newDemo, mode: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-slate-900 outline-none focus:border-[#00897b] focus:bg-white text-xs"
-                  >
-                    <option value="Online (Zoom Live)">Online (Zoom Live)</option>
-                    <option value="Classroom (Saravanampatti)">Classroom Walk-in</option>
-                    <option value="Campus Tour + Counseling">Campus Tour</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Date & Time</label>
-                  <input
-                    type="text"
-                    placeholder="Today 17:00"
-                    value={newDemo.time}
-                    onChange={(e) => setNewDemo({ ...newDemo, time: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-slate-900 outline-none focus:border-[#00897b] focus:bg-white text-xs"
-                  >
-                  </input>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Course Program</label>
-                <select
-                  value={newDemo.course}
-                  onChange={(e) => setNewDemo({ ...newDemo, course: e.target.value })}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-slate-900 outline-none focus:border-[#00897b] focus:bg-white text-xs"
-                >
-                  <option value="CPC Intensive Medical Coding">CPC Intensive Medical Coding</option>
-                  <option value="Comprehensive Medical Coding + Hospital Internship">Comprehensive Medical Coding + Internship</option>
-                  <option value="Fast-Track Weekend Batch for Life Sciences">Fast-Track Weekend Batch</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Trainer</label>
-                <select
-                  value={newDemo.trainer}
-                  onChange={(e) => setNewDemo({ ...newDemo, trainer: e.target.value })}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-slate-900 outline-none focus:border-[#00897b] focus:bg-white text-xs"
-                >
-                  <option value="Dr. Vikram C.">Dr. Vikram C. (CPC Faculty Lead)</option>
-                  <option value="Priyadharshini K.">Priyadharshini K. (Senior Trainer)</option>
-                  <option value="Meenakshi R.">Meenakshi R. (Corporate Relations)</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Notes / Background</label>
-                <textarea
-                  rows="2"
-                  placeholder="e.g. BPO background, interested in 100% placement program"
-                  value={newDemo.note}
-                  onChange={(e) => setNewDemo({ ...newDemo, note: e.target.value })}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 outline-none focus:border-[#00897b] focus:bg-white text-xs"
-                />
-              </div>
-
-              <div className="pt-2 flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowBookingModal(false)}
-                  className="w-1/2 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs transition-all"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="w-1/2 py-2.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold rounded-xl text-xs transition-all shadow-sm"
-                >
-                  Save & Schedule
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      <BookNewDemoModal
+        isOpen={showBookingModal}
+        onClose={() => setShowBookingModal(false)}
+        initialData={{
+          studentName: '',
+          mobile: '',
+          course: 'CPC Intensive Medical Coding',
+          mode: 'Online Live',
+          timeSlot: '4:00–6:00 PM',
+          language: 'Tamil'
+        }}
+        onConfirm={async (demoData) => {
+          try {
+            const created = await createDemo({
+              candidateName: demoData.studentName,
+              phone: demoData.mobile,
+              course: demoData.course,
+              mode: demoData.mode,
+              time: `${demoData.preferredDate || 'Today'} ${demoData.timeSlot}`,
+              timeSlot: demoData.timeSlot,
+              language: demoData.language,
+              trainer: demoData.language === 'English' ? 'Karthik V.' : 'Dr. Vikram C.',
+              status: 'booked',
+              note: `Language: ${demoData.language}. Trainer mapped automatically.`
+            });
+            setDemos(prev => [created, ...prev]);
+            if (onRefreshDemos) onRefreshDemos();
+            setShowBookingModal(false);
+            showToast(`✓ Booked Demo for ${created.candidateName}`);
+          } catch (err) {
+            console.error('Failed to book demo:', err);
+            showToast('Error saving demo to database');
+          }
+        }}
+      />
     </div>
   );
 }

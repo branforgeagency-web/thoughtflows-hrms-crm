@@ -159,7 +159,7 @@ export default function HrMySchedule({ isOnBreak, setIsOnBreak }) {
             {SHIFT_DAYS.map((shift, idx) => (
               <div
                 key={idx}
-                className={`rounded-xl p-2 text-center border transition-all flex flex-col justify-between min-h-[58px] ${
+                className={`rounded-xl p-2 sm:p-2.5 text-center border transition-all flex flex-col justify-between min-h-[62px] sm:min-h-[68px] ${
                   shift.isToday
                     ? 'border-2 border-[#00897b] bg-[#e6fffa] text-[#00695c] shadow-xs'
                     : shift.isOff
@@ -167,10 +167,10 @@ export default function HrMySchedule({ isOnBreak, setIsOnBreak }) {
                       : 'bg-white border-slate-200 text-slate-700'
                 }`}
               >
-                <div className="text-[9.5px] font-extrabold tracking-wider font-mono">
+                <div className="text-[10px] sm:text-[11px] font-extrabold tracking-wider font-mono">
                   {shift.day}
                 </div>
-                <div className={`text-[11px] font-black ${
+                <div className={`text-xs sm:text-sm font-black ${
                   shift.isToday 
                     ? 'text-[#00695c]' 
                     : shift.isOff 
@@ -274,24 +274,37 @@ export default function HrMySchedule({ isOnBreak, setIsOnBreak }) {
 
       {/* Bottom Card: My Leave Requests */}
       <div className="bg-white rounded-2xl p-5 border border-slate-200/90 shadow-xs space-y-3">
-        <div>
-          <div className="flex items-center gap-2">
-            <span className="text-base">📋</span>
-            <h3 className="font-extrabold text-sm sm:text-base text-slate-900">My Leave Requests</h3>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-base">📋</span>
+              <h3 className="font-extrabold text-sm sm:text-base text-slate-900">My Leave Requests</h3>
+            </div>
+            <p className="text-[11px] text-slate-400 font-mono mt-0.5">
+              Recent applications and their status
+            </p>
           </div>
-          <p className="text-[11px] text-slate-400 font-mono mt-0.5">
-            Recent applications and their status
-          </p>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[10px] font-mono font-bold bg-teal-50 text-[#00695c] border border-teal-200/70 px-2.5 py-1 rounded-full">
+              CL Balance: <strong>4 days</strong>
+            </span>
+            <span className="text-[10px] font-mono font-bold bg-amber-50 text-amber-800 border border-amber-200/70 px-2.5 py-1 rounded-full">
+              SL Balance: <strong>5 days</strong>
+            </span>
+            <span className="text-[10px] font-mono font-bold bg-purple-50 text-purple-800 border border-purple-200/70 px-2.5 py-1 rounded-full">
+              EL Balance: <strong>12 days</strong>
+            </span>
+          </div>
         </div>
 
-        <div className="space-y-2 divide-y divide-slate-100">
+        <div className="space-y-1.5 divide-y divide-slate-100">
           {leaveRequests.map((req) => (
-            <div key={req.id} className="flex items-center justify-between pt-2.5 first:pt-0 text-xs">
+            <div key={req.id} className="flex items-center justify-between py-2 px-2 hover:bg-slate-50/80 rounded-xl transition-colors text-xs">
               <div className="flex items-center gap-4">
-                <span className="font-mono text-slate-400 text-[11px] w-14">{req.date}</span>
-                <span className="font-semibold text-slate-800">{req.title}</span>
+                <span className="font-mono text-slate-500 font-bold text-[11px] w-16 bg-slate-100 px-2 py-0.5 rounded-md text-center">{req.date}</span>
+                <span className="font-semibold text-slate-800 text-xs sm:text-[13px]">{req.title}</span>
               </div>
-              <span className={`text-[10px] font-black px-2.5 py-0.5 rounded-md uppercase tracking-wider ${req.statusClass}`}>
+              <span className={`text-[10px] font-black px-3 py-1 rounded-full uppercase tracking-wider ${req.statusClass}`}>
                 {req.status}
               </span>
             </div>
