@@ -10,7 +10,8 @@ import {
   Globe, 
   Flag,
   FileText,
-  Check
+  Check,
+  ChevronDown
 } from 'lucide-react';
 
 export default function HrMySchedule({ isOnBreak, setIsOnBreak }) {
@@ -61,11 +62,12 @@ export default function HrMySchedule({ isOnBreak, setIsOnBreak }) {
     }
   ]);
 
-  // New leave form
+  // New leave form matching screenshot
   const [newLeave, setNewLeave] = useState({
-    type: 'Casual Leave',
-    days: '1 day',
-    date: '10 Jun',
+    type: 'Casual Leave (CL)',
+    days: 'Half day',
+    fromDate: '',
+    toDate: '',
     reason: ''
   });
 
@@ -75,9 +77,12 @@ export default function HrMySchedule({ isOnBreak, setIsOnBreak }) {
       showToast('Please state a reason for your leave request');
       return;
     }
+    const displayDate = newLeave.fromDate
+      ? new Date(newLeave.fromDate + 'T00:00:00').toLocaleDateString('en-US', { day: 'numeric', month: 'short' })
+      : '10 Jun';
     const created = {
       id: `l-${Date.now()}`,
-      date: newLeave.date,
+      date: displayDate,
       title: `${newLeave.type} · ${newLeave.days} · ${newLeave.reason}`,
       status: 'PENDING',
       statusClass: 'bg-amber-100 text-amber-800'
@@ -85,9 +90,10 @@ export default function HrMySchedule({ isOnBreak, setIsOnBreak }) {
     setLeaveRequests([created, ...leaveRequests]);
     setShowLeaveModal(false);
     setNewLeave({
-      type: 'Casual Leave',
-      days: '1 day',
-      date: '10 Jun',
+      type: 'Casual Leave (CL)',
+      days: 'Half day',
+      fromDate: '',
+      toDate: '',
       reason: ''
     });
     showToast('✓ Submitted leave request to Priyadharshini');
@@ -325,91 +331,154 @@ export default function HrMySchedule({ isOnBreak, setIsOnBreak }) {
 
       {/* Apply for Leave Modal */}
       {showLeaveModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div className="flex items-center gap-2">
-                <span className="text-xl">✉️</span>
-                <h3 className="font-extrabold text-slate-900 text-base">Apply for Leave</h3>
-              </div>
+        <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl max-w-[430px] w-full shadow-2xl overflow-hidden border border-slate-100 animate-in zoom-in-95 duration-200">
+            
+            {/* Top Gradient Banner matching screenshot */}
+            <div className="relative bg-gradient-to-br from-[#00d5be] via-[#00a694] to-[#007f73] pt-7 pb-6 px-6 text-center text-white overflow-hidden select-none">
+              {/* Radial glow background shapes */}
+              <div className="absolute -top-10 -right-10 w-48 h-48 rounded-full bg-white/10 blur-xl pointer-events-none" />
+              <div className="absolute top-0 right-8 w-32 h-32 rounded-full bg-teal-300/20 blur-2xl pointer-events-none" />
+
+              {/* Close Button (subtle, top-right) */}
               <button
+                type="button"
                 onClick={() => setShowLeaveModal(false)}
-                className="w-7 h-7 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 flex items-center justify-center text-xs font-bold"
+                className="absolute top-3.5 right-3.5 text-white/70 hover:text-white p-1 rounded-full hover:bg-white/15 transition-all text-xs cursor-pointer z-20"
+                title="Close"
               >
                 ✕
               </button>
+
+              <h3 className="font-extrabold text-white text-xl tracking-tight relative z-10">
+                Apply for Leave
+              </h3>
+              <p className="text-[11px] text-rose-100/90 font-mono mt-1 relative z-10 leading-snug">
+                Goes to Priyadharshini (Branch Manager) for approval
+              </p>
+              <div className="text-white/90 text-sm font-extralight mt-0.5 animate-pulse relative z-10">
+                |
+              </div>
             </div>
 
-            <form onSubmit={handleApplyLeave} className="space-y-3 text-xs">
-              <div>
-                <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Leave Type</label>
-                <select
-                  value={newLeave.type}
-                  onChange={(e) => setNewLeave({ ...newLeave, type: e.target.value })}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 outline-none focus:border-[#00897b] focus:bg-white text-xs"
-                >
-                  <option value="Casual Leave">Casual Leave (CL)</option>
-                  <option value="Sick Leave">Sick Leave (SL)</option>
-                  <option value="Earned Leave">Earned Leave (EL)</option>
-                  <option value="Comp Off">Compensatory Off</option>
-                </select>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
+            {/* Form Body matching screenshot */}
+            <form onSubmit={handleApplyLeave} className="p-6 space-y-4 text-xs bg-white">
+              
+              {/* Row 1: LEAVE TYPE & DAYS */}
+              <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Duration</label>
-                  <select
-                    value={newLeave.days}
-                    onChange={(e) => setNewLeave({ ...newLeave, days: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-slate-900 outline-none focus:border-[#00897b] focus:bg-white text-xs"
-                  >
-                    <option value="1 day">1 day</option>
-                    <option value="2 days">2 days</option>
-                    <option value="3 days">3 days</option>
-                    <option value="Half day (Morning)">Half day (Morning)</option>
-                    <option value="Half day (Evening)">Half day (Evening)</option>
-                  </select>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
+                    LEAVE TYPE
+                  </label>
+                  <div className="relative">
+                    <select
+                      value={newLeave.type}
+                      onChange={(e) => setNewLeave({ ...newLeave, type: e.target.value })}
+                      className="w-full appearance-none bg-white border border-slate-200 rounded-xl px-3 py-2.5 pr-8 text-xs font-semibold text-slate-800 outline-none focus:border-[#00897b] focus:ring-1 focus:ring-[#00897b] transition-all cursor-pointer shadow-2xs"
+                    >
+                      <option value="Casual Leave (CL)">Casual Leave (CL)</option>
+                      <option value="Sick Leave (SL)">Sick Leave (SL)</option>
+                      <option value="Earned Leave (EL)">Earned Leave (EL)</option>
+                      <option value="Comp Off">Comp Off</option>
+                      <option value="Half Day">Half Day</option>
+                      <option value="Work From Home">Work From Home</option>
+                    </select>
+                    <ChevronDown className="w-4 h-4 text-slate-700 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none stroke-[2.5]" />
+                  </div>
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Date</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. 10 Jun"
-                    value={newLeave.date}
-                    onChange={(e) => setNewLeave({ ...newLeave, date: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-slate-900 outline-none focus:border-[#00897b] focus:bg-white text-xs"
-                  />
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
+                    DAYS
+                  </label>
+                  <div className="relative">
+                    <select
+                      value={newLeave.days}
+                      onChange={(e) => setNewLeave({ ...newLeave, days: e.target.value })}
+                      className="w-full appearance-none bg-white border border-slate-200 rounded-xl px-3 py-2.5 pr-8 text-xs font-semibold text-slate-800 outline-none focus:border-[#00897b] focus:ring-1 focus:ring-[#00897b] transition-all cursor-pointer shadow-2xs"
+                    >
+                      <option value="Half day">Half day</option>
+                      <option value="1 day">1 day</option>
+                      <option value="2 days">2 days</option>
+                      <option value="3 days">3 days</option>
+                      <option value="4 days">4 days</option>
+                      <option value="5+ days">5+ days</option>
+                    </select>
+                    <ChevronDown className="w-4 h-4 text-slate-700 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none stroke-[2.5]" />
+                  </div>
                 </div>
               </div>
 
+              {/* Row 2: FROM & TO */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
+                    FROM
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="date"
+                      value={newLeave.fromDate}
+                      onChange={(e) => setNewLeave({ ...newLeave, fromDate: e.target.value })}
+                      className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-semibold text-slate-800 outline-none focus:border-[#00897b] focus:ring-1 focus:ring-[#00897b] transition-all cursor-pointer shadow-2xs"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
+                    TO
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="date"
+                      value={newLeave.toDate}
+                      onChange={(e) => setNewLeave({ ...newLeave, toDate: e.target.value })}
+                      className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-semibold text-slate-800 outline-none focus:border-[#00897b] focus:ring-1 focus:ring-[#00897b] transition-all cursor-pointer shadow-2xs"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Row 3: REASON */}
               <div>
-                <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Reason</label>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
+                  REASON
+                </label>
                 <textarea
-                  rows="2"
+                  rows={3}
                   required
-                  placeholder="e.g. Family function, personal work, doctor appointment"
+                  placeholder="Brief reason for leave..."
                   value={newLeave.reason}
                   onChange={(e) => setNewLeave({ ...newLeave, reason: e.target.value })}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 outline-none focus:border-[#00897b] focus:bg-white text-xs"
+                  className="w-full bg-white border border-slate-200 rounded-xl p-3 text-xs text-slate-800 placeholder:text-slate-400 outline-none focus:border-[#00897b] focus:ring-1 focus:ring-[#00897b] transition-all resize-none shadow-2xs leading-relaxed"
                 />
               </div>
 
-              <div className="pt-2 flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowLeaveModal(false)}
-                  className="w-1/2 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs transition-all"
-                >
-                  Cancel
-                </button>
+              {/* Row 4: Leave Balance Pill Card matching screenshot */}
+              <div className="bg-[#e6faf5] border border-[#a7f3d0] rounded-xl px-3 py-2.5 flex items-center gap-2 shadow-2xs">
+                <span className="text-sm select-none">💼</span>
+                <div className="text-[11px] text-slate-600 font-medium">
+                  Your balance:{' '}
+                  <span className="font-extrabold text-[#00695c]">
+                    CL 6 · SL 4 · EL 12
+                  </span>{' '}
+                  <span className="text-slate-500">
+                    remaining this year
+                  </span>
+                </div>
+              </div>
+
+              {/* Row 5: Full Width Action Button matching screenshot */}
+              <div className="pt-1">
                 <button
                   type="submit"
-                  className="w-1/2 py-2.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold rounded-xl text-xs transition-all shadow-sm"
+                  className="w-full py-3.5 bg-[#007f73] hover:bg-[#00695c] text-white font-extrabold text-sm rounded-xl transition-all shadow-xs active:scale-[0.99] cursor-pointer"
                 >
-                  Submit Application
+                  Submit Leave Request
                 </button>
               </div>
+
             </form>
           </div>
         </div>
