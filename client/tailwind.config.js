@@ -18,6 +18,21 @@ export default {
           glow: '#5eead4'
         }
       },
+      boxShadow: {
+        'clay-card': '12px 16px 32px rgba(7, 55, 52, 0.07), -6px -6px 20px rgba(255, 255, 255, 0.95), inset 3px 3px 6px rgba(255, 255, 255, 0.9), inset -4px -4px 10px rgba(7, 55, 52, 0.06)',
+        'clay-card-hover': '18px 24px 44px rgba(7, 55, 52, 0.12), -8px -8px 24px rgba(255, 255, 255, 0.98), inset 4px 4px 8px rgba(255, 255, 255, 0.95), inset -5px -5px 12px rgba(7, 55, 52, 0.08)',
+        'clay-btn-primary': '0 10px 22px -3px rgba(11, 107, 102, 0.38), 0 4px 6px -2px rgba(0, 0, 0, 0.06), inset 2px 2px 4px rgba(255, 255, 255, 0.45), inset -3px -3px 6px rgba(0, 0, 0, 0.25)',
+        'clay-btn-primary-active': '0 4px 10px rgba(11, 107, 102, 0.3), inset 3px 3px 6px rgba(0, 0, 0, 0.3), inset -2px -2px 4px rgba(255, 255, 255, 0.2)',
+        'clay-btn-secondary': '6px 8px 18px rgba(7, 55, 52, 0.08), -4px -4px 12px rgba(255, 255, 255, 0.9), inset 2px 2px 4px rgba(255, 255, 255, 0.9), inset -2px -2px 5px rgba(7, 55, 52, 0.08)',
+        'clay-pill': '4px 6px 14px rgba(7, 55, 52, 0.06), -2px -2px 8px rgba(255, 255, 255, 0.85), inset 1.5px 1.5px 3px rgba(255, 255, 255, 0.8), inset -2px -2px 4px rgba(7, 55, 52, 0.06)',
+        'clay-input': 'inset 3px 3px 6px rgba(7, 55, 52, 0.08), inset -2px -2px 6px rgba(255, 255, 255, 0.9), 0 2px 6px rgba(0, 0, 0, 0.02)',
+        'clay-modal': '24px 32px 60px rgba(7, 55, 52, 0.18), -12px -12px 30px rgba(255, 255, 255, 0.95), inset 4px 4px 8px rgba(255, 255, 255, 0.9), inset -4px -4px 12px rgba(7, 55, 52, 0.06)',
+      },
+      borderRadius: {
+        'clay': '24px',
+        'clay-lg': '32px',
+        'clay-xl': '40px',
+      },
       animation: {
         'float-slow': 'float 8s ease-in-out infinite',
         'float-medium': 'float 5s ease-in-out infinite',

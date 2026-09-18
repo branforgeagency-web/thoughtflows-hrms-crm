@@ -22,12 +22,39 @@ export default function HrMyTargets() {
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  const SLABS = [
-    { slab: 'Slab 1', range: '1 – 10 Admissions', rate: '₹500 / admission', status: 'Completed ✓' },
-    { slab: 'Slab 2', range: '11 – 20 Admissions', rate: '₹700 / admission', status: 'Active (Current)', isCurrent: true },
-    { slab: 'Slab 3', range: '21 – 25 Admissions', rate: '₹1,000 / admission', status: 'Next Tier' },
-    { slab: 'Slab 4', range: '26+ Admissions', rate: '₹1,500 / admission + ₹8,000 Milestone Bonus', status: 'Super Performer' }
-  ];
+  const [slabsList] = useState(() => {
+    try {
+      const saved = localStorage.getItem('thoughtflows_admin_slabs');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return parsed.map(s => ({
+          slab: s.slab,
+          range: s.range,
+          rate: s.labelRate || `₹${s.rate} / admission`,
+          status: s.status,
+          isCurrent: s.isCurrent
+        }));
+      }
+    } catch (e) {}
+    return [
+      { slab: 'Slab 1', range: '1 – 10 Admissions', rate: '₹500 / admission', status: 'Completed ✓' },
+      { slab: 'Slab 2', range: '11 – 20 Admissions', rate: '₹700 / admission', status: 'Active (Current)', isCurrent: true },
+      { slab: 'Slab 3', range: '21 – 25 Admissions', rate: '₹1,000 / admission', status: 'Next Tier' },
+      { slab: 'Slab 4', range: '26+ Admissions', rate: '₹1,500 / admission + ₹8,000 Milestone Bonus', status: 'Super Performer' }
+    ];
+  });
+
+  const [incentivePolicy] = useState(() => {
+    try {
+      const saved = localStorage.getItem('thoughtflows_incentive_policy');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {}
+    return null;
+  });
+
+  const activeSlab = slabsList.find(s => s.isCurrent) || slabsList[1] || slabsList[0];
+  const currentTarget = incentivePolicy?.defaultTarget || 25;
+  const currentRate = incentivePolicy?.bands?.[0]?.rate ? `₹${incentivePolicy.bands[0].rate} / lead` : activeSlab.rate;
 
   return (
     <div className="space-y-4 pb-12">
@@ -57,13 +84,13 @@ export default function HrMyTargets() {
           </div>
           <div>
             <div className="text-[10px] font-extrabold font-mono tracking-widest uppercase text-amber-900/90">
-              CURRENT SLAB · SLAB 2
+              TARGET POLICY · {currentTarget} ADMISSIONS
             </div>
             <h3 className="text-sm sm:text-base font-black text-slate-950 mt-0.5">
-              ₹700 per admission · earnings update as you close admissions
+              {currentRate} · progressive past target ({currentTarget})
             </h3>
             <p className="text-xs text-amber-900/90 font-medium mt-0.5">
-              No admissions recorded yet this month
+              Target banner synced in real-time with Admin Incentive Policy
             </p>
           </div>
         </div>
@@ -186,7 +213,7 @@ export default function HrMyTargets() {
             </div>
 
             <div className="space-y-2.5 text-xs">
-              {SLABS.map((s, idx) => (
+              {slabsList.map((s, idx) => (
                 <div
                   key={idx}
                   className={`p-3 rounded-2xl border ${

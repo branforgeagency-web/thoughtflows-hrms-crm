@@ -68,7 +68,7 @@ const DASHBOARD_CARDS = [
     statusColor: 'text-[#10b981]',
     statusDotBg: 'bg-[#10b981]',
     description: 'Digital, outdoor & campaigns driving 100+ lead sources every month across all branches',
-    tag: 'AVG CPL —',
+    tag: '377 LEADS · ₹174 CPL',
     tagStyle: 'bg-[#f3e8ff]/70 text-[#9333ea] border-[#e9d5ff]',
     ctaText: 'ENTER DASHBOARD',
     ctaColor: 'text-[#9333ea] hover:text-[#7e22ce]',
@@ -127,19 +127,35 @@ const DASHBOARD_CARDS = [
   },
 ];
 
-export default function SevenDashboardsSection({ onSelectDashboard, currentUser }) {
+const CLAY_CARD_CLASSES = {
+  hr: 'clay-card-hr',
+  training: 'clay-card-training',
+  cccp: 'clay-card-cccp',
+  marketing: 'clay-card-marketing',
+  leadership: 'clay-card-leadership',
+  student: 'clay-card-student',
+  admin: 'clay-card-admin',
+};
+
+export default function SevenDashboardsSection({ onSelectDashboard, currentUser, theme = 'clay' }) {
+  const isClay = theme === 'clay';
   const rowOneCards = DASHBOARD_CARDS.slice(0, 4);
   const rowTwoCards = DASHBOARD_CARDS.slice(4);
 
   const renderCard = (card) => {
     const IconComponent = card.icon;
     const isAuthedForThisDept = currentUser && (currentUser.department === card.id || currentUser.department === 'admin');
+    const clayDeptClass = CLAY_CARD_CLASSES[card.id] || 'clay-card-student';
 
     return (
       <div
         key={card.id}
         onClick={() => onSelectDashboard && onSelectDashboard(card)}
-        className="group relative flex flex-col justify-between p-6 sm:p-7 rounded-[24px] bg-white border border-[#e2f0ee] shadow-[0_8px_30px_rgba(7,55,52,0.04)] hover:shadow-[0_22px_48px_rgba(7,55,52,0.09)] transition-all duration-300 hover:-translate-y-1.5 cursor-pointer overflow-hidden text-left"
+        className={`group relative flex flex-col justify-between p-6 sm:p-7 cursor-pointer overflow-hidden text-left transition-all duration-300 ${
+          isClay
+            ? `clay-card clay-card-interactive ${clayDeptClass} rounded-[28px]`
+            : 'rounded-[24px] bg-white border border-[#e2f0ee] shadow-[0_8px_30px_rgba(7,55,52,0.04)] hover:shadow-[0_22px_48px_rgba(7,55,52,0.09)] hover:-translate-y-1.5'
+        }`}
       >
         {/* Soft background glow */}
         <div 
@@ -149,26 +165,36 @@ export default function SevenDashboardsSection({ onSelectDashboard, currentUser 
         {/* Card Header: Icon & Status Badge */}
         <div>
           <div className="flex items-center justify-between">
-            {/* Squircle Gradient Icon */}
-            <div className={`w-12 h-12 rounded-2xl bg-gradient-to-br ${card.iconGradient} flex items-center justify-center text-white shadow-md ${card.iconShadow} transition-transform duration-300 group-hover:scale-105`}>
+            {/* 3D Squircle Gradient Icon */}
+            <div className={`w-12 h-12 rounded-2xl bg-gradient-to-br ${card.iconGradient} flex items-center justify-center text-white transition-all duration-300 group-hover:scale-110 ${
+              isClay ? 'clay-squircle' : `shadow-md ${card.iconShadow}`
+            }`}>
               <IconComponent className="w-5 h-5 stroke-[2.2]" />
             </div>
 
             {/* Top Right Live / Active Status & Auth Indicator */}
             <div className="flex items-center gap-1.5">
               {isAuthedForThisDept ? (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 text-[9.5px] font-bold text-emerald-700 border border-emerald-200">
+                <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[9.5px] font-extrabold ${
+                  isClay
+                    ? 'clay-pill text-emerald-700 bg-emerald-50/80 border-emerald-200/80'
+                    : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                }`}>
                   <CheckCircle2 className="w-2.5 h-2.5" />
                   LOGGED IN
                 </span>
               ) : (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 text-[9.5px] font-bold text-slate-500 border border-slate-200">
+                <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[9.5px] font-bold ${
+                  isClay
+                    ? 'clay-pill text-slate-500 bg-slate-50/90 border-slate-200/80'
+                    : 'bg-slate-100 text-slate-500 border border-slate-200'
+                }`}>
                   <Lock className="w-2.5 h-2.5 text-slate-400" />
                   LOGIN REQUIRED
                 </span>
               )}
-              <div className={`flex items-center gap-1 text-[10px] font-bold tracking-wider ${card.statusColor} uppercase ml-1`}>
-                <span className={`w-1.5 h-1.5 rounded-full ${card.statusDotBg} shadow-sm animate-pulse`} />
+              <div className={`flex items-center gap-1 text-[10px] font-extrabold tracking-wider ${card.statusColor} uppercase ml-1`}>
+                <span className={`w-2 h-2 rounded-full ${card.statusDotBg} shadow-sm animate-pulse`} />
                 <span>{card.status}</span>
               </div>
             </div>
@@ -187,14 +213,20 @@ export default function SevenDashboardsSection({ onSelectDashboard, currentUser 
         <div className="pt-2">
           {/* Pill Metric Tag */}
           <div className="mb-4">
-            <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold tracking-wide border ${card.tagStyle}`}>
+            <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-extrabold tracking-wide border transition-all ${
+              isClay 
+                ? `clay-pill ${card.tagStyle}` 
+                : card.tagStyle
+            }`}>
               <span className="w-1.5 h-1.5 rounded-full bg-current opacity-80" />
               <span>{card.tag}</span>
             </span>
           </div>
 
           {/* Action Link with Arrow */}
-          <div className={`inline-flex items-center gap-1.5 text-xs font-bold tracking-wider uppercase ${card.ctaColor} transition-all duration-200 group-hover:gap-2.5`}>
+          <div className={`inline-flex items-center gap-1.5 text-xs font-extrabold tracking-wider uppercase ${card.ctaColor} transition-all duration-200 group-hover:gap-2.5 ${
+            isClay ? 'py-1 px-2 -ml-2 rounded-lg' : ''
+          }`}>
             <span>{isAuthedForThisDept ? 'ENTER NOW' : `LOGIN & ${card.ctaText}`}</span>
             <ArrowRight className="w-3.5 h-3.5 stroke-[2.5]" />
           </div>
@@ -209,7 +241,11 @@ export default function SevenDashboardsSection({ onSelectDashboard, currentUser 
         {/* Section Header */}
         <div className="text-center max-w-2xl mx-auto mb-12 sm:mb-16">
           {/* Mini Pill Badge */}
-          <div className="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-[#dcfce7]/60 border border-[#86efac]/70 backdrop-blur-sm mb-4">
+          <div className={`inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full mb-4 transition-all ${
+            isClay
+              ? 'clay-pill clay-pill-mint'
+              : 'bg-[#dcfce7]/60 border border-[#86efac]/70 backdrop-blur-sm'
+          }`}>
             <span className="text-[10.5px] font-extrabold tracking-[0.22em] text-[#065f46] uppercase">
               SEVEN DASHBOARDS &nbsp;•&nbsp; ONE MISSION
             </span>

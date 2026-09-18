@@ -1,6 +1,22 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 
+export const TRAINER_PROFILES = [
+  {
+    trainerId: 'TR-CBG-001',
+    name: 'Srithar S',
+    email: 'srithar.brandforge@gmail.com',
+    password: 'Thoughtflows@2026',
+    role: 'Trainer',
+    courseKey: 'CPC',
+    expertCourse: 'CPC — Certified Professional Coder',
+    branch: 'Gandhipuram',
+    shift: '6:00 AM – 2:00 PM',
+    avatar: '👨‍🏫',
+    badge: 'Shift 6 AM – 2 PM'
+  }
+];
+
 export const DEPARTMENTS = [
   {
     id: 'hr',
@@ -22,13 +38,15 @@ export const DEPARTMENTS = [
     code: 'ACAD',
     shortName: 'Training',
     subtitle: '12-branch trainer & batch management',
-    roleName: 'Faculty Lead & Chief Trainer',
-    staffName: 'Dr. Vikram C.',
-    branch: 'Chennai - Guindy (HQ)',
-    email: 'training@thoughtflows.in',
-    password: 'train123',
-    color: '#0284c7',
-    badgeClassLight: 'bg-sky-50 text-sky-700 border-sky-200',
+    roleName: 'Trainer',
+    staffName: 'Srithar S',
+    trainerId: 'TR-CBG-001',
+    branch: 'Gandhipuram',
+    shift: '6:00 AM – 2:00 PM',
+    email: 'srithar.brandforge@gmail.com',
+    password: 'Thoughtflows@2026',
+    color: '#00897b',
+    badgeClassLight: 'bg-teal-50 text-teal-700 border-teal-200',
   },
   {
     id: 'cccp',
@@ -79,8 +97,9 @@ export const DEPARTMENTS = [
     shortName: 'Student',
     subtitle: 'AAPC CPC preparation & attendance tracking',
     roleName: 'Certified CPC Student Scholar',
-    staffName: 'Pooja J.',
-    branch: 'Chennai - Anna Nagar',
+    staffName: 'Keerthana R.',
+    studentId: 'TF-CBE-CPC-07-2026-3062',
+    branch: 'Coimbatore - Gandhipuram',
     email: 'student@thoughtflows.in',
     password: 'stu123',
     color: '#0d9488',
@@ -102,101 +121,278 @@ export const DEPARTMENTS = [
   }
 ];
 
-export default function LoginModal({ isOpen, onClose, onLoginSuccess, initialDepartment = 'training' }) {
+export default function LoginModal({ isOpen, onClose, onLoginSuccess, initialDepartment = 'training', theme = 'clay' }) {
+  const isClay = theme === 'clay';
   const [activeDeptId, setActiveDeptId] = useState(initialDepartment);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  // Sync state when initialDepartment changes or modal opens
+  // Reset inputs when modal opens or initialDepartment changes
   useEffect(() => {
     if (isOpen) {
-      const dept = DEPARTMENTS.find(d => d.id === initialDepartment) || DEPARTMENTS[1]; // default training or specified
+      const dept = DEPARTMENTS.find(d => d.id === initialDepartment) || DEPARTMENTS[1];
       setActiveDeptId(dept.id);
-      setEmail(dept.email);
-      setPassword(dept.password);
+      setEmail('');
+      setPassword('');
       setError('');
     }
   }, [isOpen, initialDepartment]);
 
   const activeDept = DEPARTMENTS.find(d => d.id === activeDeptId) || DEPARTMENTS[0];
 
-  const handleSelectDept = (dept) => {
-    setActiveDeptId(dept.id);
-    setEmail(dept.email);
-    setPassword(dept.password);
-    setError('');
-  };
-
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
     setError('');
 
+    const normalizedEmail = email.trim().toLowerCase();
+
+    // 1. Try server-side authentication first
     try {
       const res = await axios.post('/api/auth/login', { 
-        email, 
+        email: normalizedEmail, 
         password,
-        department: activeDept.id 
+        department: activeDept.id
       });
-      setLoading(false);
-      onLoginSuccess(res.data.user);
-      onClose();
+      if (res.data?.success && res.data?.user) {
+        setLoading(false);
+        onLoginSuccess(res.data.user);
+        onClose();
+        return;
+      }
     } catch (err) {
-      // Fallback mock login if server is starting or network fails
-      console.warn('Backend login fallback applied', err);
-      setLoading(false);
-      const fallbackUser = {
-        id: `usr_${activeDept.id}_mock`,
-        name: activeDept.staffName,
-        email: email || activeDept.email,
-        department: activeDept.id,
-        departmentCode: activeDept.code,
-        departmentName: activeDept.title,
-        role: activeDept.roleName,
-        branch: activeDept.branch,
-        color: activeDept.color,
-        token: `jwt_tf_${activeDept.id}_mock`
-      };
-      onLoginSuccess(fallbackUser);
-      onClose();
+      // If server explicitly returned an error message (e.g. 401 Unauthorized)
+      if (err.response?.data?.message) {
+        setLoading(false);
+        setError(err.response.data.message);
+        return;
+      }
     }
+
+    // 2. Client-side authentication using the Admin Registered User Accounts table
+    setLoading(false);
+
+    let registeredAccounts = [];
+    try {
+      const saved = localStorage.getItem('thoughtflows_admin_users');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          registeredAccounts = parsed;
+        }
+      }
+    } catch (err) {
+      console.warn('Error reading thoughtflows_admin_users', err);
+    }
+
+    // Find account in registered users table
+    const matchedAccount = registeredAccounts.find(
+      u => u.email?.trim().toLowerCase() === normalizedEmail
+    );
+
+    // Admin & Management authentication (handles admin@thoughtflows.in, admin, or activeDeptId admin)
+    if (activeDeptId === 'admin' || normalizedEmail === 'admin@thoughtflows.in' || normalizedEmail === 'admin') {
+      const validAdminPasswords = ['admin123', 'Admin@2026', 'Admin@HQ2026'];
+      const accountPwd = matchedAccount?.password;
+      const isValid = validAdminPasswords.includes(password) || (accountPwd && password === accountPwd);
+
+      if (!isValid) {
+        setError('Invalid admin password. Default password is admin123');
+        return;
+      }
+
+      const adminUser = {
+        id: matchedAccount?.id || 'usr_1',
+        name: matchedAccount?.name || 'Executive Founders Desk',
+        userName: matchedAccount?.name || 'Executive Founders Desk',
+        email: 'admin@thoughtflows.in',
+        department: 'admin',
+        departmentCode: 'ADM',
+        departmentName: 'Admin & Management',
+        role: 'Super Admin',
+        branch: matchedAccount?.branch || 'Thoughtflows Group HQ',
+        color: '#4338ca',
+        token: 'jwt_tf_admin_token'
+      };
+      onLoginSuccess(adminUser);
+      onClose();
+      return;
+    }
+
+    // Helper to map account role to target department
+    const mapAccountToDept = (account) => {
+      const role = (account?.role || '').toLowerCase();
+      const dept = (account?.department || '').toLowerCase();
+
+      if (role.includes('trainer') || role.includes('faculty') || dept.includes('faculty') || dept.includes('training')) {
+        return {
+          department: 'training',
+          departmentCode: 'ACAD',
+          departmentName: 'Training & Faculty Department',
+          color: '#00897b'
+        };
+      }
+      if (role.includes('admin') || dept.includes('admin')) {
+        return {
+          department: 'admin',
+          departmentCode: 'ADM',
+          departmentName: 'Admin & Management',
+          color: '#4338ca'
+        };
+      }
+      if (role.includes('counsel') || dept.includes('admission') || dept === 'hr') {
+        return {
+          department: 'hr',
+          departmentCode: 'HR',
+          departmentName: 'HR & Counseling',
+          color: '#ea580c'
+        };
+      }
+      if (role.includes('placement') || dept.includes('placement') || dept.includes('cccp')) {
+        return {
+          department: 'cccp',
+          departmentCode: 'CCCP',
+          departmentName: 'Corporate Career & Placement Cell (CCCP)',
+          color: '#059669'
+        };
+      }
+      if (role.includes('growth') || role.includes('marketing') || dept.includes('marketing')) {
+        return {
+          department: 'marketing',
+          departmentCode: 'MKT',
+          departmentName: 'Growth & Digital Marketing',
+          color: '#9333ea'
+        };
+      }
+      if (role.includes('regional') || role.includes('operations') || role.includes('leadership') || dept.includes('leadership')) {
+        return {
+          department: 'leadership',
+          departmentCode: 'LEAD',
+          departmentName: 'Leadership Hub',
+          color: '#ea580c'
+        };
+      }
+      if (role.includes('student') || role.includes('scholar') || dept.includes('student')) {
+        return {
+          department: 'student',
+          departmentCode: 'STU',
+          departmentName: 'Student Learning & Exam Portal',
+          color: '#0d9488'
+        };
+      }
+      return null;
+    };
+
+    // If not found in localStorage, check if it's the registered trainer Srithar S
+    if (!matchedAccount) {
+      if (normalizedEmail === 'srithar.brandforge@gmail.com') {
+        if (password !== 'Thoughtflows@2026') {
+          setError('Invalid password. Please check your credentials and try again.');
+          return;
+        }
+        const trainerUser = {
+          id: 'TR-CBG-001',
+          trainerId: 'TR-CBG-001',
+          name: 'Srithar S',
+          userName: 'Srithar S',
+          email: 'srithar.brandforge@gmail.com',
+          department: 'training',
+          departmentCode: 'ACAD',
+          departmentName: 'Training & Faculty Department',
+          role: 'Trainer',
+          courseKey: 'CPC',
+          expertCourse: 'CPC — Certified Professional Coder',
+          shift: '6:00 AM – 2:00 PM',
+          branch: 'Gandhipuram',
+          color: '#00897b',
+          token: 'jwt_tf_trainer_srithar_mock'
+        };
+        onLoginSuccess(trainerUser);
+        onClose();
+        return;
+      }
+
+      setError('Access denied. This account is not registered in Academy User Accounts.');
+      return;
+    }
+
+    // Verify password
+    const expectedPassword = matchedAccount.password || 'Thoughtflows@2026';
+    if (password !== expectedPassword) {
+      setError('Invalid password. Please check your credentials and try again.');
+      return;
+    }
+
+    const deptMapping = mapAccountToDept(matchedAccount) || {
+      department: activeDept.id,
+      departmentCode: activeDept.code,
+      departmentName: activeDept.title,
+      color: activeDept.color
+    };
+
+    const authenticatedUser = {
+      id: matchedAccount.id || `usr_${Date.now()}`,
+      name: matchedAccount.name,
+      userName: matchedAccount.name,
+      email: matchedAccount.email,
+      department: deptMapping.department,
+      departmentCode: deptMapping.departmentCode,
+      departmentName: deptMapping.departmentName,
+      role: matchedAccount.role || activeDept.roleName,
+      branch: matchedAccount.branch || activeDept.branch,
+      color: deptMapping.color,
+      courseKey: matchedAccount.courseKey || 'CPC',
+      expertCourse: matchedAccount.expertCourse || 'CPC — Certified Professional Coder',
+      shift: matchedAccount.shift || '6:00 AM – 2:00 PM',
+      token: `jwt_tf_${matchedAccount.id || 'usr'}_mock`
+    };
+    onLoginSuccess(authenticatedUser);
+    onClose();
   };
 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-[6px] animate-fadeIn">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-[6px] animate-fadeIn overflow-y-auto">
       {/* Modal Card */}
-      <div className="relative w-full max-w-[430px] bg-white rounded-[32px] shadow-[0_24px_70px_rgba(0,0,0,0.22)] p-7 sm:p-8 text-center border border-slate-100/80 my-auto">
+      <div className={`relative w-full max-w-[460px] p-6 sm:p-7 text-center my-auto transition-all ${
+        isClay
+          ? 'clay-modal'
+          : 'bg-white rounded-[32px] shadow-[0_24px_70px_rgba(0,0,0,0.22)] border border-slate-100/80'
+      }`}>
         
         {/* Top Actions: Back to Portal */}
-        <div className="flex items-center justify-start mb-4">
+        <div className="flex items-center justify-start mb-3">
           <button
             type="button"
             onClick={onClose}
-            className="inline-flex items-center gap-1 px-3.5 py-1.5 rounded-full border border-slate-200/90 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-all active:scale-[0.97]"
+            className={`inline-flex items-center gap-1 px-3.5 py-1.5 text-xs font-semibold transition-all cursor-pointer ${
+              isClay
+                ? 'clay-btn clay-btn-secondary'
+                : 'rounded-full border border-slate-200/90 text-slate-600 hover:text-slate-900 hover:bg-slate-50 active:scale-[0.97]'
+            }`}
           >
             ‹ Back to portal
           </button>
         </div>
 
         {/* Thoughtflows Logo */}
-        <div className="flex justify-center mb-4">
+        <div className="flex justify-center mb-3">
           <img
             src="/thoughtflows-logo.png"
-            alt="Thoughtflows No. 1 Medical Coding Academy"
-            className="h-11 sm:h-12 w-auto object-contain"
+            alt="Thoughtflows Medical Coding Academy"
+            className="h-10 w-auto object-contain"
           />
         </div>
 
         {/* Header Titles */}
-        <h2 className="text-2xl sm:text-[26px] font-extrabold text-slate-900 tracking-tight">
-          Welcome back
+        <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight">
+          Sign In to Portal
         </h2>
-        <p className="text-xs sm:text-[13px] text-slate-500 mt-1 mb-6">
-          Sign in to access your portal
+        <p className="text-xs text-slate-500 mt-0.5 mb-4 font-medium">
+          {activeDept.title} · {activeDept.subtitle}
         </p>
 
         {error && (
@@ -206,23 +402,33 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess, initialDep
         )}
 
         {/* Form Inputs */}
-        <form onSubmit={handleSubmit} className="text-left space-y-4">
+        <form onSubmit={handleSubmit} className="text-left space-y-3.5">
           <div>
-            <label className="block text-[11px] font-extrabold tracking-wider text-[#00695c] uppercase mb-1.5">
-              EMAIL
+            <label className="block text-[11px] font-extrabold tracking-wider text-[#00695c] uppercase mb-1">
+              EMAIL ADDRESS
             </label>
             <input
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
-              placeholder="you@thoughtflows.in"
-              className="w-full bg-white border-2 border-[#00897b] rounded-2xl px-4 py-3 text-sm text-slate-800 placeholder-slate-400 outline-none transition-all shadow-sm focus:ring-2 focus:ring-[#00897b]/20"
+              placeholder={
+                activeDeptId === 'admin' 
+                  ? 'admin@thoughtflows.in' 
+                  : activeDeptId === 'training' 
+                  ? 'srithar.brandforge@gmail.com' 
+                  : 'you@thoughtflows.in'
+              }
+              className={`w-full px-3.5 py-2.5 text-xs text-slate-800 placeholder-slate-400 outline-none transition-all ${
+                isClay
+                  ? 'clay-input'
+                  : 'bg-white border-2 border-[#00897b] rounded-xl shadow-xs focus:ring-2 focus:ring-[#00897b]/20 font-medium'
+              }`}
             />
           </div>
 
           <div>
-            <label className="block text-[11px] font-extrabold tracking-wider text-[#00695c] uppercase mb-1.5">
+            <label className="block text-[11px] font-extrabold tracking-wider text-[#00695c] uppercase mb-1">
               PASSWORD
             </label>
             <input
@@ -230,47 +436,35 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess, initialDep
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
-              placeholder="Your password"
-              className="w-full bg-[#f8fafc] border border-slate-200 rounded-2xl px-4 py-3 text-sm text-slate-800 placeholder-slate-400 outline-none transition-all focus:border-[#00897b] focus:bg-white"
+              placeholder={activeDeptId === 'admin' ? 'Enter admin password (e.g. admin123)' : 'Enter your password'}
+              className={`w-full px-3.5 py-2.5 text-xs text-slate-800 placeholder-slate-400 outline-none transition-all ${
+                isClay
+                  ? 'clay-input'
+                  : 'bg-[#f8fafc] border border-slate-200 rounded-xl focus:border-[#00897b] focus:bg-white font-medium'
+              }`}
             />
           </div>
 
           {/* Sign in Button */}
-          <div className="pt-2">
+          <div className="pt-1.5">
             <button
               type="submit"
               disabled={loading}
-              className="w-full py-3.5 px-6 rounded-2xl bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-[15px] flex items-center justify-center gap-2 shadow-[0_8px_20px_rgba(0,137,123,0.32)] transition-all active:scale-[0.98]"
+              className={`w-full py-3 px-6 font-bold text-xs sm:text-sm flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                isClay
+                  ? 'clay-btn clay-btn-primary'
+                  : 'rounded-xl bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white shadow-sm active:scale-[0.98]'
+              }`}
             >
-              <span>{loading ? 'Authenticating...' : 'Sign in →'}</span>
+              <span>{loading ? 'Authenticating...' : 'Sign In →'}</span>
             </button>
           </div>
         </form>
 
-        {/* Footer Actions matching the exact design */}
-        <div className="text-center mt-5 space-y-2.5">
-          <p className="text-xs text-slate-500 font-normal hover:text-slate-700 cursor-pointer">
-            Forgot password? Contact your branch admin.
-          </p>
-
-          <div>
-            <div className="inline-flex items-center gap-1.5 px-3.5 py-1 rounded-full bg-[#dcfce7] border border-[#bbf7d0] text-[#15803d] text-[11px] font-bold">
-              <span>🔒</span>
-              <span>Live · Firebase connected</span>
-            </div>
-          </div>
-
-          <div>
-            <button
-              type="button"
-              onClick={() => {
-                const adminDept = DEPARTMENTS.find(d => d.id === 'admin');
-                if (adminDept) handleSelectDept(adminDept);
-              }}
-              className="text-[11.5px] text-slate-500 hover:text-[#00897b] underline cursor-pointer transition-colors"
-            >
-              First-time setup: create admin account
-            </button>
+        {/* Footer info */}
+        <div className="text-center mt-4">
+          <div className="text-[11px] text-slate-500 font-normal">
+            Department: <span className="font-bold text-slate-800">{activeDept.title}</span>
           </div>
         </div>
 

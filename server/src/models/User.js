@@ -8,7 +8,9 @@ const userSchema = new mongoose.Schema({
   email: {
     type: String,
     required: true,
-    unique: true
+    unique: true,
+    trim: true,
+    lowercase: true
   },
   password: {
     type: String,
@@ -16,16 +18,23 @@ const userSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['admin', 'manager', 'counselor', 'trainer', 'staff'],
-    default: 'staff'
+    default: 'Staff'
   },
   department: {
     type: String,
-    default: 'Academics & Training'
+    default: 'Medical Coding Faculty'
   },
   branch: {
     type: String,
-    default: 'Main Branch'
+    default: 'Gandhipuram'
+  },
+  status: {
+    type: String,
+    default: 'Active'
+  },
+  lastLogin: {
+    type: String,
+    default: 'Never'
   },
   initials: {
     type: String,
@@ -33,7 +42,7 @@ const userSchema = new mongoose.Schema({
   },
   avatarBg: {
     type: String,
-    default: '#14b8a6'
+    default: 'bg-indigo-600'
   },
   active: {
     type: Boolean,

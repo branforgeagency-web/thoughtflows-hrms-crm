@@ -112,6 +112,14 @@ const studentSchema = new mongoose.Schema({
     type: String,
     default: 'Pending Handover'
   },
+  attendancePct: {
+    type: Number,
+    default: 92
+  },
+  readinessScore: {
+    type: Number,
+    default: 85
+  },
   checklist: {
     course: { type: Boolean, default: true },
     branch: { type: Boolean, default: true },

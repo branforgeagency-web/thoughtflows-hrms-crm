@@ -66,37 +66,42 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
     note: ''
   });
 
-  const handleCreateDemo = (e) => {
+  const handleCreateDemo = async (e) => {
     e.preventDefault();
     if (!newDemo.candidateName || !newDemo.phone) {
       showToast('Please fill in candidate name and phone number');
       return;
     }
 
-    const created = {
-      id: `d-${Date.now()}`,
-      candidateName: newDemo.candidateName,
-      phone: newDemo.phone,
-      course: newDemo.course,
-      mode: newDemo.mode,
-      time: newDemo.time,
-      trainer: newDemo.trainer,
-      status: 'booked',
-      note: newDemo.note || 'New demo scheduled via Demo Desk.'
-    };
+    try {
+      const created = await createDemo({
+        candidateName: newDemo.candidateName,
+        phone: newDemo.phone,
+        course: newDemo.course,
+        mode: newDemo.mode,
+        time: newDemo.time,
+        trainer: newDemo.trainer,
+        status: 'booked',
+        note: newDemo.note || 'New demo scheduled via Demo Desk.'
+      });
 
-    setDemos([created, ...demos]);
-    setShowBookingModal(false);
-    setNewDemo({
-      candidateName: '',
-      phone: '',
-      course: 'CPC Intensive Medical Coding',
-      mode: 'Online (Zoom Live)',
-      time: 'Today 17:00',
-      trainer: 'Dr. Vikram C.',
-      note: ''
-    });
-    showToast(`✓ Booked Demo for ${created.candidateName}`);
+      setDemos([created, ...demos]);
+      if (onRefreshDemos) onRefreshDemos();
+      setShowBookingModal(false);
+      setNewDemo({
+        candidateName: '',
+        phone: '',
+        course: 'CPC Intensive Medical Coding',
+        mode: 'Online (Zoom Live)',
+        time: 'Today 17:00',
+        trainer: 'Dr. Vikram C.',
+        note: ''
+      });
+      showToast(`✓ Booked Demo for ${created.candidateName}! Dispatched to course expert trainer.`);
+    } catch (err) {
+      console.error('Failed to create demo:', err);
+      showToast('Error booking demo in database');
+    }
   };
 
   const updateStatus = async (id, newStatus, candidateName) => {
@@ -155,7 +160,7 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
             onClick={() => setActiveFilter('all')}
             className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all ${
               activeFilter === 'all'
-                ? 'bg-[#00897b] text-white shadow-xs'
+                ? 'bg-[#0e6977] text-white shadow-xs'
                 : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
             }`}
           >
@@ -166,7 +171,7 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
             onClick={() => setActiveFilter('booked')}
             className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all ${
               activeFilter === 'booked'
-                ? 'bg-[#00897b] text-white shadow-xs'
+                ? 'bg-[#0e6977] text-white shadow-xs'
                 : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
             }`}
           >
@@ -177,7 +182,7 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
             onClick={() => setActiveFilter('confirmed')}
             className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all ${
               activeFilter === 'confirmed'
-                ? 'bg-[#00897b] text-white shadow-xs'
+                ? 'bg-[#0e6977] text-white shadow-xs'
                 : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
             }`}
           >
@@ -188,7 +193,7 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
             onClick={() => setActiveFilter('attended')}
             className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all ${
               activeFilter === 'attended'
-                ? 'bg-[#00897b] text-white shadow-xs'
+                ? 'bg-[#0e6977] text-white shadow-xs'
                 : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
             }`}
           >
@@ -221,7 +226,7 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
         {/* Action Button: + Book New Demo */}
         <button
           onClick={() => setShowBookingModal(true)}
-          className="flex-shrink-0 flex items-center gap-1.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs px-4 py-2 rounded-full shadow-sm transition-all hover:scale-[1.02] active:scale-95 self-start sm:self-auto"
+          className="flex-shrink-0 flex items-center gap-1.5 bg-[#0e6977] hover:bg-[#0a4f5a] text-white font-bold text-xs px-4 py-2 rounded-full shadow-sm transition-all hover:scale-[1.02] active:scale-95 self-start sm:self-auto"
         >
           <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
           <span>Book New Demo</span>
@@ -335,10 +340,36 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
                     </div>
                   </div>
 
-                  <div className="text-[11px] text-slate-600 bg-slate-50 p-2 rounded-xl border border-slate-100 flex items-start gap-1">
-                    <span className="text-xs">👨‍🏫</span>
-                    <span>Trainer: <strong className="text-slate-800">{demo.trainer}</strong></span>
+                  <div className="text-[11px] text-slate-700 bg-emerald-50/60 p-2.5 rounded-xl border border-emerald-100 flex items-start gap-1.5">
+                    <span className="text-xs">🎯</span>
+                    <div className="leading-tight">
+                      <div>Trainer: <strong className="text-slate-900 font-bold">{demo.trainer || 'Revathi K'}</strong> <span className="text-[10px] font-mono text-slate-500">({demo.trainerId || 'TR-CBG-001'})</span></div>
+                      <div className="text-[10px] text-emerald-700 font-semibold mt-0.5">★ Course Subject Matter Expert Assigned</div>
+                    </div>
                   </div>
+
+                  {/* Multi-condition notification status */}
+                  {demo.notificationSent === true ? (
+                    <div className="text-[10.5px] text-emerald-900 bg-emerald-50/90 p-2 rounded-xl border border-emerald-200 space-y-0.5">
+                      <div className="font-extrabold flex items-center gap-1 text-emerald-800">
+                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                        <span>Notification Sent to Trainer</span>
+                      </div>
+                      <div className="text-[9.5px] text-emerald-700 font-semibold">
+                        ✓ Experienced · In Shift · No Class Conflict
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-[10.5px] text-rose-900 bg-rose-50/90 p-2 rounded-xl border border-rose-200 space-y-0.5">
+                      <div className="font-extrabold flex items-center gap-1 text-rose-800">
+                        <span className="h-1.5 w-1.5 rounded-full bg-rose-500"></span>
+                        <span>Notification Suppressed</span>
+                      </div>
+                      <div className="text-[9.5px] text-rose-700 font-medium leading-tight">
+                        {demo.notificationBlockReason || demo.conflictReason || 'Demo slot has class overlap or is outside shift.'}
+                      </div>
+                    </div>
+                  )}
 
                   {demo.note && (
                     <div className="text-[10.5px] text-slate-500 italic">
@@ -352,7 +383,7 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
                   {demo.status === 'booked' && (
                     <button
                       onClick={() => updateStatus(demo.id, 'confirmed', demo.candidateName)}
-                      className="col-span-2 bg-[#00897b] hover:bg-[#00796b] text-white py-1.5 rounded-lg flex items-center justify-center gap-1 transition-all"
+                      className="col-span-2 bg-[#0e6977] hover:bg-[#0a4f5a] text-white py-1.5 rounded-lg flex items-center justify-center gap-1 transition-all"
                     >
                       <CheckCircle2 className="w-3 h-3" />
                       <span>Confirm & Link</span>
@@ -416,21 +447,32 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
         onConfirm={async (demoData) => {
           try {
             const created = await createDemo({
-              candidateName: demoData.studentName,
-              phone: demoData.mobile,
+              ...demoData,
+              candidateName: demoData.studentName || demoData.candidateName,
+              phone: demoData.mobile || demoData.phone,
               course: demoData.course,
               mode: demoData.mode,
               time: `${demoData.preferredDate || 'Today'} ${demoData.timeSlot}`,
               timeSlot: demoData.timeSlot,
               language: demoData.language,
-              trainer: demoData.language === 'English' ? 'Karthik V.' : 'Dr. Vikram C.',
+              trainer: demoData.trainer,
+              trainerId: demoData.trainerId,
+              trainerRole: demoData.trainerRole,
+              expertCourse: demoData.expertCourse,
+              isExpertMatched: true,
+              notificationSentTo: demoData.trainerId,
+              notificationSentToName: demoData.trainer,
+              priority: 'Urgent - Subject Matter Expert First',
               status: 'booked',
-              note: `Language: ${demoData.language}. Trainer mapped automatically.`
+              note: `Language: ${demoData.language}. Expert Trainer auto-mapped & notified first.`
             });
             setDemos(prev => [created, ...prev]);
             if (onRefreshDemos) onRefreshDemos();
-            setShowBookingModal(false);
-            showToast(`✓ Booked Demo for ${created.candidateName}`);
+            if (created.notificationSent) {
+              showToast(`✓ Booked Demo for ${created.candidateName}! Notification sent to ${created.trainer || 'trainer'} first.`);
+            } else {
+              showToast(`✓ Booked Demo for ${created.candidateName}. Notification not sent: ${created.notificationBlockReason || 'Criteria not met'}`);
+            }
           } catch (err) {
             console.error('Failed to book demo:', err);
             showToast('Error saving demo to database');

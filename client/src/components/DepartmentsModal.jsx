@@ -13,7 +13,8 @@ const ICON_MAP = {
   PieChart
 };
 
-export default function DepartmentsModal({ isOpen, onClose }) {
+export default function DepartmentsModal({ isOpen, onClose, theme = 'clay' }) {
+  const isClay = theme === 'clay';
   const [departments, setDepartments] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -36,12 +37,16 @@ export default function DepartmentsModal({ isOpen, onClose }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-slate-950/70 backdrop-blur-md transition-all animate-fadeIn">
       <div 
-        className="relative w-full max-w-4xl max-h-[88vh] flex flex-col bg-[#073c3b]/95 border border-teal-400/30 rounded-2xl shadow-2xl shadow-teal-950/80 overflow-hidden"
+        className={`relative w-full max-w-4xl max-h-[88vh] flex flex-col bg-[#073c3b]/95 border border-teal-400/30 overflow-hidden ${
+          isClay 
+            ? 'rounded-[32px] shadow-[20px_30px_60px_rgba(0,0,0,0.5),inset_2px_2px_4px_rgba(255,255,255,0.2),inset_-3px_-3px_6px_rgba(0,0,0,0.4)]' 
+            : 'rounded-2xl shadow-2xl shadow-teal-950/80'
+        }`}
       >
         {/* Modal Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-teal-400/20 bg-teal-950/40">
           <div className="flex items-center gap-3">
-            <div className="bg-white px-2.5 py-1 rounded-xl shadow-sm border border-white/60">
+            <div className={`px-2.5 py-1 rounded-xl shadow-sm border border-white/60 ${isClay ? 'clay-card' : 'bg-white'}`}>
               <img src="/thoughtflows-logo.png" alt="Thoughtflows" className="h-6 w-auto object-contain" />
             </div>
             <div>
@@ -68,10 +73,16 @@ export default function DepartmentsModal({ isOpen, onClose }) {
                 return (
                   <div
                     key={dept.id || dept.code}
-                    className="p-4 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-teal-400/40 transition-all duration-200 group flex items-start gap-4"
+                    className={`p-4 rounded-2xl transition-all duration-200 group flex items-start gap-4 ${
+                      isClay
+                        ? 'bg-white/[0.07] hover:bg-white/[0.12] border border-white/15 shadow-[inset_1.5px_1.5px_3px_rgba(255,255,255,0.18),inset_-2px_-2px_4px_rgba(0,0,0,0.25),0_6px_16px_rgba(0,0,0,0.18)] hover:-translate-y-1'
+                        : 'bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-teal-400/40'
+                    }`}
                   >
                     <div 
-                      className="p-3 rounded-xl bg-teal-900/50 border border-teal-500/30 text-teal-300 group-hover:scale-105 transition-transform"
+                      className={`p-3 rounded-2xl bg-teal-900/60 border border-teal-500/30 text-teal-300 group-hover:scale-105 transition-transform ${
+                        isClay ? 'clay-squircle' : ''
+                      }`}
                       style={{ color: dept.color }}
                     >
                       <IconComponent className="w-6 h-6" />
@@ -81,7 +92,11 @@ export default function DepartmentsModal({ isOpen, onClose }) {
                         <h3 className="text-sm font-bold text-white group-hover:text-teal-200 transition-colors">
                           {dept.name}
                         </h3>
-                        <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-teal-500/20 text-teal-300 border border-teal-500/30">
+                        <span className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full ${
+                          isClay
+                            ? 'clay-pill bg-teal-500/20 text-teal-200 border-teal-400/30'
+                            : 'bg-teal-500/20 text-teal-300 border border-teal-500/30'
+                        }`}>
                           {dept.code}
                         </span>
                       </div>
@@ -106,7 +121,11 @@ export default function DepartmentsModal({ isOpen, onClose }) {
           <span>Synced with HRMS & CRM Engine</span>
           <button
             onClick={onClose}
-            className="px-4 py-2 rounded-lg text-xs font-semibold bg-teal-600 hover:bg-teal-500 text-white transition-colors"
+            className={`px-5 py-2 text-xs font-bold text-white transition-all ${
+              isClay
+                ? 'clay-btn clay-btn-primary'
+                : 'rounded-lg bg-teal-600 hover:bg-teal-500'
+            }`}
           >
             Close
           </button>

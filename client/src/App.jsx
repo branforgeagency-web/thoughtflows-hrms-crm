@@ -39,13 +39,16 @@ export default function App() {
 
   const [selectedDashboard, setSelectedDashboard] = useState(() => {
     try {
-      const saved = localStorage.getItem('thoughtflows_dashboard');
-      if (saved) return JSON.parse(saved);
       const userSaved = localStorage.getItem('thoughtflows_user');
       if (userSaved) {
         const u = JSON.parse(userSaved);
-        return DEPT_CARDS.find(c => c.id === u.department) || DEPT_CARDS[0];
+        let dept = u.department;
+        if (!dept || dept === 'Medical Coding Faculty') dept = 'training';
+        const matched = DEPT_CARDS.find(c => c.id === dept);
+        if (matched) return matched;
       }
+      const saved = localStorage.getItem('thoughtflows_dashboard');
+      if (saved) return JSON.parse(saved);
       return null;
     } catch {
       return null;
@@ -61,6 +64,27 @@ export default function App() {
       return false;
     }
   });
+
+  // Claymorphism Theme State (default: 'clay')
+  const [theme, setTheme] = useState(() => {
+    try {
+      return localStorage.getItem('thoughtflows_theme') || 'clay';
+    } catch {
+      return 'clay';
+    }
+  });
+
+  const handleToggleTheme = () => {
+    setTheme(prev => {
+      const next = prev === 'clay' ? 'classic' : 'clay';
+      try {
+        localStorage.setItem('thoughtflows_theme', next);
+      } catch (e) {
+        console.warn('Failed to save theme to localStorage', e);
+      }
+      return next;
+    });
+  };
 
   useEffect(() => {
     // Check backend health on initial load
@@ -94,7 +118,9 @@ export default function App() {
     setIsLoginOpen(false);
 
     // Open dashboard corresponding to the authenticated department
-    const matchedCard = DEPT_CARDS.find(c => c.id === user.department) || DEPT_CARDS[0];
+    let targetDept = user.department;
+    if (!targetDept || targetDept === 'Medical Coding Faculty') targetDept = 'training';
+    const matchedCard = DEPT_CARDS.find(c => c.id === targetDept) || DEPT_CARDS[0];
     setSelectedDashboard(matchedCard);
     localStorage.setItem('thoughtflows_dashboard', JSON.stringify(matchedCard));
     setIsDashboardOpen(true);
@@ -159,8 +185,12 @@ export default function App() {
         {/* Top Navigation */}
         <Navbar
           onSignInClick={() => {
-            setLoginDepartment(currentUser?.department || 'hr');
-            setIsLoginOpen(true);
+            if (currentUser) {
+              setIsDashboardOpen(true);
+            } else {
+              setLoginDepartment(currentUser?.department || 'hr');
+              setIsLoginOpen(true);
+            }
           }}
           onHomeClick={() => {
             setIsDepartmentsOpen(false);
@@ -170,6 +200,8 @@ export default function App() {
           currentUser={currentUser}
           onSignOut={handleSignOut}
           onSwitchDepartment={handleSwitchDepartment}
+          theme={theme}
+          onToggleTheme={handleToggleTheme}
         />
 
         {/* Main Hero View */}
@@ -177,6 +209,7 @@ export default function App() {
           <PortalHero
             onOpenDashboard={handleOpenMyDashboardHero}
             onExploreDepartments={handleExploreDepartments}
+            theme={theme}
           />
         </main>
       </div>
@@ -185,10 +218,15 @@ export default function App() {
       <SevenDashboardsSection
         onSelectDashboard={handleSelectDashboard}
         currentUser={currentUser}
+        theme={theme}
       />
 
       {/* Footer */}
-      <footer className="relative z-20 py-8 px-6 text-center border-t border-teal-500/15 bg-white/40 backdrop-blur-sm mt-12">
+      <footer className={`relative z-20 py-8 px-6 text-center border-t transition-all ${
+        theme === 'clay' 
+          ? 'bg-white/70 border-white shadow-[0_-8px_24px_rgba(7,55,52,0.03)] backdrop-blur-md' 
+          : 'border-teal-500/15 bg-white/40 backdrop-blur-sm'
+      } mt-12`}>
         <div className="max-w-[1360px] mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
           <p className="text-[11px] font-semibold tracking-[0.25em] text-[#6b9691] uppercase select-none">
             PEOPLE &nbsp;&nbsp;|&nbsp;&nbsp; PROCESS &nbsp;&nbsp;|&nbsp;&nbsp; POSSIBILITIES
@@ -222,6 +260,7 @@ export default function App() {
       <DepartmentsModal
         isOpen={isDepartmentsOpen}
         onClose={() => setIsDepartmentsOpen(false)}
+        theme={theme}
       />
 
       <DashboardModal
@@ -233,6 +272,7 @@ export default function App() {
         currentUser={currentUser}
         onSwitchDepartment={handleSwitchDepartment}
         onSignOut={handleSignOut}
+        theme={theme}
       />
 
       <LoginModal
@@ -240,6 +280,7 @@ export default function App() {
         onClose={() => setIsLoginOpen(false)}
         initialDepartment={loginDepartment}
         onLoginSuccess={handleLoginSuccess}
+        theme={theme}
       />
     </div>
   );

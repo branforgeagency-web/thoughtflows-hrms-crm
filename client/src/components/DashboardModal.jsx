@@ -25,6 +25,12 @@ import {
 import axios from 'axios';
 
 import HrDepartmentDashboard from './HrDepartmentDashboard';
+import StudentPortalDashboard from './StudentPortalDashboard';
+import AdminManagementDashboard from './AdminManagementDashboard';
+import TrainingDepartmentDashboard from './TrainingDepartmentDashboard';
+import CccpDashboard from './CccpDashboard';
+import MarketingDepartmentDashboard from './MarketingDepartmentDashboard';
+import LeadershipHubDashboard from './LeadershipHubDashboard';
 
 export default function DashboardModal({ 
   isOpen, 
@@ -32,8 +38,10 @@ export default function DashboardModal({
   selectedDashboard, 
   currentUser,
   onSwitchDepartment,
-  onSignOut
+  onSignOut,
+  theme = 'clay'
 }) {
+  const isClay = theme === 'clay';
   const [branches, setBranches] = useState([]);
   const [pipeline, setPipeline] = useState([]);
   const [activeTab, setActiveTab] = useState('dept-view');
@@ -56,17 +64,90 @@ export default function DashboardModal({
     });
   }, [isOpen, selectedDashboard]);
 
-  if (!isOpen) return null;
+  let userDept = currentUser?.department;
+  if (!userDept || userDept === 'Medical Coding Faculty') userDept = 'training';
 
-  const deptId = selectedDashboard?.id || currentUser?.department || 'hr';
+  const deptId = (currentUser && currentUser.department !== 'admin')
+    ? userDept
+    : (selectedDashboard?.id || userDept || 'hr');
+
+  if (deptId === 'training') {
+    return (
+      <TrainingDepartmentDashboard
+        onClose={onClose}
+        currentUser={currentUser}
+        onLogout={onSignOut}
+        onSwitchDepartment={onSwitchDepartment}
+        theme={theme}
+      />
+    );
+  }
 
   if (deptId === 'hr') {
     return (
       <HrDepartmentDashboard
         onClose={onClose}
         currentUser={currentUser}
+        onLogout={onSignOut}
+        onSwitchDepartment={onSwitchDepartment}
+        theme={theme}
+      />
+    );
+  }
+
+  if (deptId === 'student') {
+    return (
+      <StudentPortalDashboard
+        onClose={onClose}
+        currentUser={currentUser}
         onLogout={onSignOut || onSwitchDepartment}
         onSwitchDepartment={onSwitchDepartment}
+        theme={theme}
+      />
+    );
+  }
+
+  if (deptId === 'admin') {
+    return (
+      <AdminManagementDashboard
+        onClose={onClose}
+        currentUser={currentUser}
+        onLogout={onSignOut}
+        onSwitchDepartment={onSwitchDepartment}
+        theme={theme}
+      />
+    );
+  }
+
+  if (deptId === 'cccp') {
+    return (
+      <CccpDashboard
+        onClose={onClose}
+        currentUser={currentUser}
+        onLogout={onSignOut}
+        onSwitchDepartment={onSwitchDepartment}
+        theme={theme}
+      />
+    );
+  }
+
+  if (deptId === 'marketing') {
+    return (
+      <MarketingDepartmentDashboard
+        onClose={onClose}
+        currentUser={currentUser}
+        onLogout={onSignOut}
+        onSwitchDepartment={onSwitchDepartment}
+        theme={theme}
+      />
+    );
+  }
+
+  if (deptId === 'leadership') {
+    return (
+      <LeadershipHubDashboard
+        onClose={onClose}
+        currentUser={currentUser}
       />
     );
   }
@@ -265,48 +346,6 @@ export default function DashboardModal({
           </div>
         );
 
-      case 'leadership':
-        return (
-          <div className="space-y-6">
-            <div className="bg-gradient-to-r from-orange-950/60 to-slate-900/60 p-4 rounded-xl border border-orange-500/30 flex items-center justify-between">
-              <div>
-                <span className="text-[10px] font-bold uppercase tracking-wider text-orange-300 bg-orange-500/20 px-2 py-0.5 rounded-full border border-orange-500/30">
-                  Leadership Hub
-                </span>
-                <h3 className="text-base font-bold text-white mt-1">Four Leadership Tiers • 12-Branch Governance</h3>
-                <p className="text-xs text-orange-200/70">Operational Heads, Department Leads, Regional Directors & Branch Principals.</p>
-              </div>
-              <div className="text-right hidden sm:block">
-                <div className="text-xl font-bold text-orange-400">12 Hubs</div>
-                <div className="text-[10px] text-slate-300">100% Operational</div>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-              <div className="p-4 rounded-xl bg-slate-900/50 border border-orange-500/20">
-                <div className="text-xs text-orange-300 font-bold">1. Operational Heads</div>
-                <div className="text-sm font-semibold text-white mt-2">P&L & Capacity</div>
-                <p className="text-[10px] text-slate-300 mt-1">Managing facility leases, lab infrastructure & state licensing across TN, KA, TS, KL & AP.</p>
-              </div>
-              <div className="p-4 rounded-xl bg-slate-900/50 border border-orange-500/20">
-                <div className="text-xs text-orange-300 font-bold">2. Department Heads</div>
-                <div className="text-sm font-semibold text-white mt-2">Quality & Curriculum</div>
-                <p className="text-[10px] text-slate-300 mt-1">Uniform training standards, mock AAPC exams & corporate recruiter SLAs.</p>
-              </div>
-              <div className="p-4 rounded-xl bg-slate-900/50 border border-orange-500/20">
-                <div className="text-xs text-orange-300 font-bold">3. Regional Directors</div>
-                <div className="text-sm font-semibold text-white mt-2">Zone Compliance</div>
-                <p className="text-[10px] text-slate-300 mt-1">Regional oversight: North TN, South TN, Bangalore Urban, Hyderabad Metro, Kerala.</p>
-              </div>
-              <div className="p-4 rounded-xl bg-slate-900/50 border border-orange-500/20">
-                <div className="text-xs text-orange-300 font-bold">4. Branch Heads</div>
-                <div className="text-sm font-semibold text-white mt-2">Daily Execution</div>
-                <p className="text-[10px] text-slate-300 mt-1">On-the-ground student welfare, local admissions counselling, batch timings.</p>
-              </div>
-            </div>
-          </div>
-        );
-
       case 'student':
         return (
           <div className="space-y-6">
@@ -420,18 +459,26 @@ export default function DashboardModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-950/80 backdrop-blur-md transition-all animate-fadeIn">
-      <div className="relative w-full max-w-5xl max-h-[90vh] flex flex-col bg-[#073c3b]/95 border border-teal-400/30 rounded-2xl shadow-2xl shadow-black/80 overflow-hidden text-white">
+      <div className={`relative w-full max-w-5xl max-h-[90vh] flex flex-col bg-[#073c3b]/95 border border-teal-400/30 overflow-hidden text-white transition-all ${
+        isClay
+          ? 'rounded-[32px] shadow-[24px_36px_70px_rgba(0,0,0,0.55),inset_2px_2px_4px_rgba(255,255,255,0.22),inset_-3px_-3px_6px_rgba(0,0,0,0.4)]'
+          : 'rounded-2xl shadow-2xl shadow-black/80'
+      }`}>
         
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-teal-400/20 bg-teal-950/60">
           <div className="flex items-center gap-3">
-            <div className="bg-white px-2.5 py-1 rounded-xl shadow-sm border border-white/60">
+            <div className={`px-2.5 py-1 rounded-xl shadow-sm border border-white/60 ${isClay ? 'clay-card' : 'bg-white'}`}>
               <img src="/thoughtflows-logo.png" alt="Thoughtflows" className="h-6 w-auto object-contain" />
             </div>
             <div>
               <h2 className="text-base font-bold text-white flex items-center gap-2">
                 {selectedDashboard ? selectedDashboard.title : 'Thoughtflows Department Operations'}
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                <span className={`text-[10px] px-2.5 py-0.5 rounded-full font-bold ${
+                  isClay 
+                    ? 'clay-pill bg-emerald-500/20 text-emerald-200 border-emerald-400/30'
+                    : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                }`}>
                   {selectedDashboard?.status ? selectedDashboard.status : 'ACTIVE'}
                 </span>
               </h2>
@@ -448,21 +495,24 @@ export default function DashboardModal({
             </div>
           </div>
           <div className="flex items-center gap-2">
-            {onSwitchDepartment && (
-              <button
-                onClick={onSwitchDepartment}
-                className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-white/10 hover:bg-white/20 text-teal-200 hover:text-white border border-white/10 transition-colors"
-                title="Switch Department Login"
-              >
-                <RefreshCw className="w-3.5 h-3.5" />
-                <span>Switch Dept</span>
-              </button>
-            )}
+            {/* Logout Button */}
             <button
-              onClick={onClose}
-              className="p-2 rounded-full text-teal-200 hover:text-white hover:bg-white/10 transition-colors"
+              onClick={() => {
+                if (onSignOut) {
+                  onSignOut();
+                } else if (onClose) {
+                  onClose();
+                }
+              }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all active:scale-95 cursor-pointer ${
+                isClay
+                  ? 'clay-btn clay-btn-danger text-rose-100 hover:text-white'
+                  : 'bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 hover:text-white border border-rose-500/30'
+              }`}
+              title="Logout"
             >
-              <X className="w-5 h-5" />
+              <LogOut className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Logout</span>
             </button>
           </div>
         </div>
@@ -502,7 +552,11 @@ export default function DashboardModal({
               {branches.map((b) => (
                 <div
                   key={b.id || b.name}
-                  className="p-4 rounded-xl bg-white/[0.03] border border-white/10 hover:border-teal-400/30 transition-all"
+                  className={`p-4 rounded-2xl transition-all ${
+                    isClay
+                      ? 'bg-white/[0.05] border border-white/10 shadow-[inset_1.5px_1.5px_3px_rgba(255,255,255,0.15),inset_-2px_-2px_4px_rgba(0,0,0,0.25)] hover:border-teal-400/40'
+                      : 'bg-white/[0.03] border border-white/10 hover:border-teal-400/30'
+                  }`}
                 >
                   <div className="flex items-start gap-2.5">
                     <MapPin className="w-4 h-4 text-teal-400 mt-0.5 flex-shrink-0" />
@@ -534,17 +588,13 @@ export default function DashboardModal({
             <span>Authenticated Scope: <strong>{selectedDashboard?.title || 'Department'}</strong></span>
           </div>
           <div className="flex items-center gap-3">
-            {onSwitchDepartment && (
-              <button
-                onClick={onSwitchDepartment}
-                className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-teal-900/60 hover:bg-teal-800 text-teal-200 transition-colors"
-              >
-                Switch Department Login
-              </button>
-            )}
             <button
               onClick={onClose}
-              className="px-4 py-1.5 rounded-lg text-xs font-semibold bg-teal-600 hover:bg-teal-500 text-white transition-colors"
+              className={`px-5 py-2 text-xs font-bold text-white transition-all ${
+                isClay
+                  ? 'clay-btn clay-btn-primary'
+                  : 'rounded-lg bg-teal-600 hover:bg-teal-500'
+              }`}
             >
               Close Dashboard
             </button>

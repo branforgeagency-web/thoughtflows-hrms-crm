@@ -180,7 +180,7 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
         }`}
       >
         {isSelected && (
-          <span className="absolute top-2.5 right-2.5 w-4 h-4 rounded-full bg-[#00897b] text-white flex items-center justify-center text-[10px] font-bold shadow-xs">
+          <span className="absolute top-2.5 right-2.5 w-4 h-4 rounded-full bg-[#0e6977] text-white flex items-center justify-center text-[10px] font-bold shadow-xs">
             <Check className="w-2.5 h-2.5 stroke-[3]" />
           </span>
         )}
@@ -241,7 +241,7 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
           <div className="space-y-4">
             <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
               <div className="flex items-center gap-2.5">
-                <span className="w-6 h-6 rounded-full bg-[#00897b] text-white flex items-center justify-center font-bold text-xs shadow-xs">
+                <span className="w-6 h-6 rounded-full bg-[#0e6977] text-white flex items-center justify-center font-bold text-xs shadow-xs">
                   1
                 </span>
                 <h3 className="font-extrabold text-slate-900 text-base sm:text-lg tracking-tight">
@@ -342,7 +342,7 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
           <div className="space-y-4 pt-4 border-t border-slate-100">
             <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
               <div className="flex items-center gap-2.5">
-                <span className="w-6 h-6 rounded-full bg-[#00897b] text-white flex items-center justify-center font-bold text-xs shadow-xs">
+                <span className="w-6 h-6 rounded-full bg-[#0e6977] text-white flex items-center justify-center font-bold text-xs shadow-xs">
                   2
                 </span>
                 <h3 className="font-extrabold text-slate-900 text-base sm:text-lg tracking-tight">
@@ -366,7 +366,7 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
                   placeholder="e.g. Priya Ramesh"
                   value={fullName}
                   onChange={(e) => setFullName(e.target.value)}
-                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all font-sans"
+                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#0e6977] transition-all font-sans"
                 />
               </div>
 
@@ -382,7 +382,7 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
                     placeholder="98••••••••"
                     value={mobileNumber}
                     onChange={(e) => setMobileNumber(e.target.value)}
-                    className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all font-sans"
+                    className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#0e6977] transition-all font-sans"
                   />
                 </div>
                 <div>
@@ -394,7 +394,7 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
                     placeholder="name@email.com"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all font-sans"
+                    className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#0e6977] transition-all font-sans"
                   />
                 </div>
               </div>
@@ -410,7 +410,7 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
                     placeholder="24"
                     value={age}
                     onChange={(e) => setAge(e.target.value)}
-                    className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all font-sans"
+                    className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#0e6977] transition-all font-sans"
                   />
                 </div>
                 <div>
@@ -420,7 +420,7 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
                   <select
                     value={gender}
                     onChange={(e) => setGender(e.target.value)}
-                    className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all font-sans cursor-pointer"
+                    className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#0e6977] transition-all font-sans cursor-pointer"
                   >
                     <option value="Female">Female</option>
                     <option value="Male">Male</option>
@@ -440,7 +440,7 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
                     placeholder="Coimbatore"
                     value={location}
                     onChange={(e) => setLocation(e.target.value)}
-                    className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all font-sans"
+                    className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#0e6977] transition-all font-sans"
                   />
                 </div>
                 <div>
@@ -450,7 +450,7 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
                   <select
                     value={education}
                     onChange={(e) => setEducation(e.target.value)}
-                    className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all font-sans cursor-pointer"
+                    className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#0e6977] transition-all font-sans cursor-pointer"
                   >
                     <option value="— Select graduation —">— Select graduation —</option>
                     <option value="BSc Life Sciences (Biotech, Micro, Biochem)">BSc Life Sciences (Biotech, Micro, Biochem)</option>
@@ -474,7 +474,7 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
                   <select
                     value={interestedCourse}
                     onChange={(e) => setInterestedCourse(e.target.value)}
-                    className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all font-sans cursor-pointer"
+                    className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#0e6977] transition-all font-sans cursor-pointer"
                   >
                     <option value="CPC - Certified Professional Coder">CPC - Certified Professional Coder</option>
                     <option value="Comprehensive Medical Coding + Hospital Internship">Comprehensive Medical Coding + Hospital Internship</option>
@@ -490,7 +490,7 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
                   <select
                     value={preferredBranch}
                     onChange={(e) => setPreferredBranch(e.target.value)}
-                    className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all font-sans cursor-pointer"
+                    className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#0e6977] transition-all font-sans cursor-pointer"
                   >
                     <option value="Saravanampatti (CBE)">Saravanampatti (CBE)</option>
                     <option value="Gandhipuram (CBE)">Gandhipuram (CBE)</option>
@@ -505,7 +505,7 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
           <div className="space-y-4 pt-4 border-t border-slate-100">
             <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
               <div className="flex items-center gap-2.5">
-                <span className="w-6 h-6 rounded-full bg-[#00897b] text-white flex items-center justify-center font-bold text-xs shadow-xs">
+                <span className="w-6 h-6 rounded-full bg-[#0e6977] text-white flex items-center justify-center font-bold text-xs shadow-xs">
                   3
                 </span>
                 <h3 className="font-extrabold text-slate-900 text-base sm:text-lg tracking-tight">
@@ -528,7 +528,7 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
                     onClick={() => setSelectedCategory(cat.label)}
                     className={`p-3 rounded-2xl border transition-all flex items-center gap-3 cursor-pointer text-left ${
                       isSelected
-                        ? 'border-2 border-[#00897b] bg-[#e6fffa] text-[#00695c] font-bold shadow-xs'
+                        ? 'border-2 border-[#0e6977] bg-[#e6fffa] text-[#00695c] font-bold shadow-xs'
                         : 'border-slate-200/90 bg-white hover:border-teal-300 text-slate-800'
                     }`}
                   >
@@ -544,20 +544,20 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
                 onClick={() => setShowMoreCategories(!showMoreCategories)}
                 className={`p-3 rounded-2xl border transition-all flex items-center justify-between gap-2 cursor-pointer text-left ${
                   showMoreCategories
-                    ? 'border-[#00897b] bg-teal-50/50 text-[#00897b] font-bold'
+                    ? 'border-[#0e6977] bg-teal-50/50 text-[#0e6977] font-bold'
                     : 'border-teal-400 bg-teal-50/20 hover:bg-teal-50/50 text-teal-800'
                 }`}
               >
                 <div className="flex items-center gap-2.5">
-                  <FileText className="w-4 h-4 text-[#00897b]" />
+                  <FileText className="w-4 h-4 text-[#0e6977]" />
                   <span className="text-xs font-bold">
                     {showMoreCategories ? 'Show Less' : '+ 11 more categories'}
                   </span>
                 </div>
                 {showMoreCategories ? (
-                  <ChevronUp className="w-4 h-4 text-[#00897b]" />
+                  <ChevronUp className="w-4 h-4 text-[#0e6977]" />
                 ) : (
-                  <ChevronDown className="w-4 h-4 text-[#00897b]" />
+                  <ChevronDown className="w-4 h-4 text-[#0e6977]" />
                 )}
               </button>
             </div>
@@ -574,7 +574,7 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
                       onClick={() => setSelectedCategory(cat.label)}
                       className={`p-3 rounded-2xl border transition-all flex items-center gap-3 cursor-pointer text-left ${
                         isSelected
-                          ? 'border-2 border-[#00897b] bg-[#e6fffa] text-[#00695c] font-bold shadow-xs'
+                          ? 'border-2 border-[#0e6977] bg-[#e6fffa] text-[#00695c] font-bold shadow-xs'
                           : 'border-slate-200/90 bg-white hover:border-teal-300 text-slate-800'
                       }`}
                     >
@@ -596,7 +596,7 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
 
             <button
               type="submit"
-              className="bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs sm:text-sm px-6 py-3 rounded-xl shadow-md transition-all active:scale-95 flex items-center justify-center gap-2 cursor-pointer"
+              className="bg-[#0e6977] hover:bg-[#0a4f5a] text-white font-bold text-xs sm:text-sm px-6 py-3 rounded-xl shadow-md transition-all active:scale-95 flex items-center justify-center gap-2 cursor-pointer"
             >
               <span>Add Lead to Dashboard</span>
               <ArrowRight className="w-4 h-4" />

@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
-  ArrowLeft, 
   Search, 
   Plus, 
   Bell, 
@@ -40,7 +39,7 @@ import BookNewDemoModal from './BookNewDemoModal';
 import AddLeadModal from './AddLeadModal';
 import { getStudents, getLeads, createLead, getDemos, createDemo } from '../services/api';
 
-export default function HrDepartmentDashboard({ onClose, currentUser, onLogout }) {
+export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, theme = 'clay' }) {
   // Persist active tab across browser refresh
   const [activeTab, setActiveTab] = useState(() => {
     try {
@@ -62,7 +61,25 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout }
   const [searchQuery, setSearchQuery] = useState('');
   const [isOnBreak, setIsOnBreak] = useState(false);
   const [closureSubmitted, setClosureSubmitted] = useState(false);
-  const [barTheme, setBarTheme] = useState('slate'); // 'slate' | 'teal' | 'light'
+  const [barTheme, setBarTheme] = useState(() => {
+    try {
+      return localStorage.getItem('thoughtflows_hr_theme') || (theme === 'clay' ? 'clay' : 'turquoise');
+    } catch {
+      return theme === 'clay' ? 'clay' : 'turquoise';
+    }
+  }); // 'clay' | 'turquoise' | 'slate' | 'teal' | 'light'
+
+  const handleCycleTheme = () => {
+    setBarTheme(prev => {
+      const next = prev === 'clay' ? 'turquoise' : prev === 'turquoise' ? 'slate' : prev === 'slate' ? 'teal' : prev === 'teal' ? 'light' : 'clay';
+      try {
+        localStorage.setItem('thoughtflows_hr_theme', next);
+      } catch (e) {
+        console.warn('Failed to save theme to localStorage', e);
+      }
+      return next;
+    });
+  };
   const [selectedCallLead, setSelectedCallLead] = useState(null);
   const [showBookDemoModal, setShowBookDemoModal] = useState(false);
   const [bookDemoInitialData, setBookDemoInitialData] = useState(null);
@@ -124,7 +141,11 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout }
       const created = await createDemo(demoData);
       setDemos(prev => [created, ...prev]);
       setShowBookDemoModal(false);
-      showToast(`✓ Booked demo for ${created.candidateName}`);
+      if (created.notificationSent) {
+        showToast(`✓ Booked demo for ${created.candidateName}! Notification sent to ${created.trainer}`);
+      } else {
+        showToast(`✓ Booked demo for ${created.candidateName}. Notification not sent: ${created.notificationBlockReason || 'Conditions not met'}`);
+      }
     } catch (err) {
       console.error('Failed to book demo:', err);
       showToast('Error saving demo to database');
@@ -158,7 +179,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout }
     const handoverCount = students.filter(s => s.handoverStatus !== 'Sent').length.toString();
 
     return [
-      { name: 'Home', badge: null, icon: Home, iconBg: 'bg-[#00897b]', color: 'teal' },
+      { name: 'Home', badge: null, icon: Home, iconBg: 'bg-[#0e6977]', color: 'teal' },
       { name: 'My Pipeline', badge: pipelineCount, icon: Filter, iconBg: 'bg-[#7c3aed]', badgeBg: 'bg-rose-500', color: 'purple' },
       { name: 'Follow-up Board', badge: followUpCount, icon: Clock, iconBg: 'bg-amber-500', badgeBg: 'bg-rose-500', color: 'orange' },
       { name: 'Demo Desk', badge: demos.length > 0 ? demos.length.toString() : null, icon: Monitor, iconBg: 'bg-cyan-600', color: 'cyan' },
@@ -236,34 +257,29 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout }
     <div className="fixed inset-0 z-50 overflow-y-auto bg-[#f0faf8] font-sans text-slate-800 animate-fadeIn">
       {/* Top Main Navigation Bar */}
       <header className={`sticky top-0 z-30 transition-colors duration-200 px-4 sm:px-6 lg:px-8 py-2.5 shadow-md flex items-center justify-between gap-3 flex-wrap ${
-        barTheme === 'slate'
-          ? 'bg-[#0f172a] text-slate-100 border-b border-slate-800'
-          : barTheme === 'teal'
-            ? 'bg-gradient-to-r from-[#042f2e] via-[#064e3b] to-[#042f2e] text-white border-b border-teal-800/60'
-            : 'bg-white/95 backdrop-blur-md text-slate-800 border-b border-slate-200/90'
+        barTheme === 'clay'
+          ? 'bg-white text-[#073734] border-b border-[#cce8e4] shadow-[0_6px_20px_rgba(7,55,52,0.06),inset_0_2px_4px_rgba(255,255,255,0.95)]'
+          : barTheme === 'turquoise'
+            ? 'bg-[#73C1CC] text-[#073138] border-b border-[#5cb6c2] shadow-sm'
+            : barTheme === 'slate'
+              ? 'bg-[#0f172a] text-slate-100 border-b border-slate-800'
+              : barTheme === 'teal'
+                ? 'bg-gradient-to-r from-[#042f2e] via-[#064e3b] to-[#042f2e] text-white border-b border-teal-800/60'
+                : 'bg-white/95 backdrop-blur-md text-slate-800 border-b border-slate-200/90'
       }`}>
-        {/* Left: Portal Home & Logo Pill */}
+        {/* Left: Logo Pill */}
         <div className="flex items-center gap-2.5 sm:gap-3">
-          <button
-            onClick={onClose}
-            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all active:scale-[0.97] ${
-              barTheme === 'slate'
-                ? 'bg-slate-800/90 hover:bg-slate-700 text-slate-200 border border-slate-700/80'
-                : barTheme === 'teal'
-                  ? 'bg-white/15 hover:bg-white/25 text-white border border-white/20'
-                  : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200'
-            }`}
-          >
-            <ArrowLeft className="w-3.5 h-3.5" />
-            <span>Portal Home</span>
-          </button>
 
           <div className={`flex items-center gap-2 px-3 py-1.5 rounded-xl shadow-xs border ${
-            barTheme === 'slate'
-              ? 'bg-slate-800/90 border-slate-700/80 text-white'
-              : barTheme === 'teal'
-                ? 'bg-white/15 border-white/20 text-white'
-                : 'bg-slate-50 border-slate-200 text-slate-800'
+            barTheme === 'clay'
+              ? 'clay-pill text-[#073734]'
+              : barTheme === 'turquoise'
+                ? 'bg-white/90 border-white/70 text-[#073138]'
+                : barTheme === 'slate'
+                  ? 'bg-slate-800/90 border-slate-700/80 text-white'
+                  : barTheme === 'teal'
+                    ? 'bg-white/15 border-white/20 text-white'
+                    : 'bg-slate-50 border-slate-200 text-slate-800'
           }`}>
             <img 
               src="/thoughtflows-logo.png" 
@@ -271,7 +287,17 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout }
               className="h-5 w-auto object-contain bg-white rounded px-1 py-0.5" 
             />
             <span className="text-[11px] font-bold tracking-tight hidden xs:inline">
-              Thoughtflows 2.0 <span className={barTheme === 'slate' ? 'text-teal-400' : barTheme === 'teal' ? 'text-teal-200' : 'text-[#00897b]'}>• HR</span>
+              Thoughtflows 2.0 <span className={
+                barTheme === 'clay'
+                  ? 'text-[#0d9488] font-extrabold'
+                  : barTheme === 'turquoise' 
+                    ? 'text-[#0e6977] font-extrabold' 
+                    : barTheme === 'slate' 
+                      ? 'text-teal-400' 
+                      : barTheme === 'teal' 
+                        ? 'text-teal-200' 
+                        : 'text-[#00897b]'
+              }>• HR</span>
             </span>
           </div>
         </div>
@@ -280,7 +306,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout }
         <div className="flex items-center gap-2 flex-1 max-w-md mx-auto justify-center">
           <div className="relative w-full max-w-xs">
             <Search className={`w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 ${
-              barTheme === 'light' ? 'text-slate-400' : 'text-slate-400'
+              barTheme === 'clay' ? 'text-teal-600' : barTheme === 'turquoise' ? 'text-[#1e606a]' : 'text-slate-400'
             }`} />
             <input
               type="text"
@@ -288,15 +314,25 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout }
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search leads, students..."
               className={`w-full rounded-xl pl-8 pr-12 py-1.5 text-xs outline-none transition-all ${
-                barTheme === 'slate'
-                  ? 'bg-slate-800/90 border border-slate-700 text-slate-100 placeholder-slate-400 focus:border-teal-400 focus:bg-slate-800'
-                  : barTheme === 'teal'
-                    ? 'bg-white/15 border border-white/20 text-white placeholder-teal-200/70 focus:bg-white/25 focus:border-teal-300'
-                    : 'bg-slate-100/90 border border-slate-200 text-slate-800 placeholder-slate-400 focus:bg-white focus:border-teal-500'
+                barTheme === 'clay'
+                  ? 'clay-input text-[#073138] placeholder-[#1e606a]/70'
+                  : barTheme === 'turquoise'
+                    ? 'bg-white/90 border border-white/70 text-[#073138] placeholder-[#1e606a]/70 focus:bg-white focus:border-[#0e6977] shadow-xs'
+                    : barTheme === 'slate'
+                      ? 'bg-slate-800/90 border border-slate-700 text-slate-100 placeholder-slate-400 focus:border-teal-400 focus:bg-slate-800'
+                      : barTheme === 'teal'
+                        ? 'bg-white/15 border border-white/20 text-white placeholder-teal-200/70 focus:bg-white/25 focus:border-teal-300'
+                        : 'bg-slate-100/90 border border-slate-200 text-slate-800 placeholder-slate-400 focus:bg-white focus:border-teal-500'
               }`}
             />
             <span className={`absolute right-2.5 top-1/2 -translate-y-1/2 text-[9px] font-mono px-1.5 py-0.5 rounded ${
-              barTheme === 'light' ? 'bg-slate-200 text-slate-600' : 'bg-white/10 text-white/80'
+              barTheme === 'clay'
+                ? 'clay-pill text-[#073138] font-bold'
+                : barTheme === 'turquoise'
+                  ? 'bg-[#73C1CC]/25 text-[#073138] font-bold'
+                  : barTheme === 'light'
+                    ? 'bg-slate-200 text-slate-600'
+                    : 'bg-white/10 text-white/80'
             }`}>
               ⌘K
             </span>
@@ -304,23 +340,31 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout }
 
           <button 
             onClick={() => setShowAddLeadModal(true)}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold shadow-xs transition-all flex-shrink-0 active:scale-95 cursor-pointer ${
-            barTheme === 'slate'
-              ? 'bg-gradient-to-r from-teal-500 to-emerald-600 hover:from-teal-600 hover:to-emerald-700 text-white'
-              : barTheme === 'teal'
-                ? 'bg-white hover:bg-teal-50 text-[#042f2e]'
-                : 'bg-[#00897b] hover:bg-[#00796b] text-white'
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold transition-all flex-shrink-0 active:scale-95 cursor-pointer ${
+            barTheme === 'clay'
+              ? 'clay-btn clay-btn-primary'
+              : barTheme === 'turquoise'
+                ? 'rounded-xl bg-[#08363e] hover:bg-[#052329] text-white shadow-sm font-extrabold'
+                : barTheme === 'slate'
+                  ? 'rounded-xl bg-gradient-to-r from-teal-500 to-emerald-600 hover:from-teal-600 hover:to-emerald-700 text-white'
+                  : barTheme === 'teal'
+                    ? 'rounded-xl bg-white hover:bg-teal-50 text-[#042f2e]'
+                    : 'rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white'
           }`}>
             <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
             <span>Add Lead</span>
           </button>
 
-          <button className={`p-2 rounded-xl border transition-colors relative flex-shrink-0 ${
-            barTheme === 'slate'
-              ? 'bg-slate-800/90 hover:bg-slate-700 border-slate-700/80 text-slate-300'
-              : barTheme === 'teal'
-                ? 'bg-white/15 hover:bg-white/25 border-white/20 text-white'
-                : 'bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-600'
+          <button className={`p-2 rounded-xl transition-colors relative flex-shrink-0 ${
+            barTheme === 'clay'
+              ? 'clay-btn clay-btn-secondary text-[#073734]'
+              : barTheme === 'turquoise'
+                ? 'border bg-white/90 hover:bg-white border-white/70 text-[#073138] shadow-xs'
+                : barTheme === 'slate'
+                  ? 'border bg-slate-800/90 hover:bg-slate-700 border-slate-700/80 text-slate-300'
+                  : barTheme === 'teal'
+                    ? 'border bg-white/15 hover:bg-white/25 border-white/20 text-white'
+                    : 'border bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-600'
           }`}>
             <Bell className="w-3.5 h-3.5" />
             <span className="w-1.5 h-1.5 rounded-full bg-amber-400 absolute top-1.5 right-1.5" />
@@ -331,13 +375,17 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout }
         <div className="flex items-center gap-2">
           {/* Theme Switcher Button */}
           <button
-            onClick={() => setBarTheme(prev => prev === 'slate' ? 'teal' : prev === 'teal' ? 'light' : 'slate')}
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-semibold border transition-all ${
-              barTheme === 'slate'
-                ? 'bg-slate-800/90 hover:bg-slate-700 border-slate-700/80 text-teal-400'
-                : barTheme === 'teal'
-                  ? 'bg-white/15 hover:bg-white/25 border-white/20 text-teal-200'
-                  : 'bg-slate-100 hover:bg-slate-200 border-slate-200 text-teal-700'
+            onClick={handleCycleTheme}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+              barTheme === 'clay'
+                ? 'clay-btn clay-btn-secondary text-[#0b6b66] border-teal-100'
+                : barTheme === 'turquoise'
+                  ? 'border bg-white/90 hover:bg-white border-white/70 text-[#073138] shadow-xs'
+                  : barTheme === 'slate'
+                    ? 'border bg-slate-800/90 hover:bg-slate-700 border-slate-700/80 text-teal-400'
+                    : barTheme === 'teal'
+                      ? 'border bg-white/15 hover:bg-white/25 border-white/20 text-teal-200'
+                      : 'border bg-slate-100 hover:bg-slate-200 border-slate-200 text-teal-700'
             }`}
             title={`Current theme: ${barTheme}. Click to switch theme.`}
           >
@@ -346,20 +394,36 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout }
           </button>
 
           {/* User Profile */}
-          <div className={`flex items-center gap-2.5 px-3 py-1 rounded-xl border ${
-            barTheme === 'slate'
-              ? 'bg-slate-800/90 border-slate-700/80 text-slate-100'
-              : barTheme === 'teal'
-                ? 'bg-white/15 border-white/20 text-white'
-                : 'bg-slate-50 border-slate-200 text-slate-800'
+          <div className={`flex items-center gap-2.5 px-3 py-1 rounded-xl ${
+            barTheme === 'clay'
+              ? 'clay-pill text-[#073734]'
+              : barTheme === 'turquoise'
+                ? 'border bg-white/90 border-white/70 text-[#073138] shadow-xs'
+                : barTheme === 'slate'
+                  ? 'border bg-slate-800/90 border-slate-700/80 text-slate-100'
+                  : barTheme === 'teal'
+                    ? 'border bg-white/15 border-white/20 text-white'
+                    : 'border bg-slate-50 border-slate-200 text-slate-800'
           }`}>
-            <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-teal-400 to-emerald-600 text-white font-black text-xs flex items-center justify-center shadow-xs">
+            <div className={`w-6 h-6 rounded-lg font-black text-xs flex items-center justify-center shadow-xs ${
+              barTheme === 'clay'
+                ? 'clay-squircle bg-teal-600 text-white'
+                : barTheme === 'turquoise'
+                  ? 'bg-[#08363e] text-[#73C1CC]'
+                  : 'bg-gradient-to-br from-teal-400 to-emerald-600 text-white'
+            }`}>
               {userFirstName[0]}
             </div>
             <div className="text-left text-[11px] leading-tight hidden sm:block">
               <div className="font-bold">{userName}</div>
               <div className={`text-[9.5px] uppercase tracking-wider flex items-center gap-1 mt-0.5 ${
-                barTheme === 'light' ? 'text-slate-500' : 'text-slate-400'
+                barTheme === 'clay'
+                  ? 'text-teal-700 font-semibold'
+                  : barTheme === 'turquoise'
+                    ? 'text-[#185d68]'
+                    : barTheme === 'light'
+                      ? 'text-slate-500'
+                      : 'text-slate-400'
               }`}>
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
                 SARAVANAMPATTI
@@ -370,14 +434,18 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout }
           {/* Break Button */}
           <button
             onClick={() => setIsOnBreak(!isOnBreak)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
               isOnBreak 
                 ? 'bg-amber-400 border-amber-300 text-amber-950 font-black shadow-xs' 
-                : barTheme === 'slate'
-                  ? 'bg-slate-800/90 hover:bg-slate-700 border-slate-700/80 text-slate-200'
-                  : barTheme === 'teal'
-                    ? 'bg-white/15 hover:bg-white/25 border-white/20 text-white'
-                    : 'bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-700'
+                : barTheme === 'clay'
+                  ? 'clay-btn clay-btn-secondary text-[#073734]'
+                  : barTheme === 'turquoise'
+                    ? 'border bg-white/90 hover:bg-white border-white/70 text-[#073138] shadow-xs'
+                    : barTheme === 'slate'
+                      ? 'border bg-slate-800/90 hover:bg-slate-700 border-slate-700/80 text-slate-200'
+                      : barTheme === 'teal'
+                        ? 'border bg-white/15 hover:bg-white/25 border-white/20 text-white'
+                        : 'border bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-700'
             }`}
           >
             <Coffee className="w-3.5 h-3.5" />
@@ -387,12 +455,16 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout }
           {/* Logout Button */}
           <button
             onClick={onLogout || onClose}
-            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl border text-xs font-semibold transition-all ${
-              barTheme === 'slate'
-                ? 'bg-slate-800/90 hover:bg-rose-900/40 hover:text-rose-300 hover:border-rose-500/40 border-slate-700/80 text-slate-400'
-                : barTheme === 'teal'
-                  ? 'bg-white/15 hover:bg-rose-500 hover:text-white border-white/20 text-white'
-                  : 'bg-slate-100 hover:bg-rose-50 hover:text-rose-600 hover:border-rose-200 border-slate-200 text-slate-600'
+            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+              barTheme === 'clay'
+                ? 'clay-btn clay-btn-danger'
+                : barTheme === 'turquoise'
+                  ? 'border bg-white/90 hover:bg-rose-50 hover:text-rose-600 border-white/70 text-[#073138] shadow-xs'
+                  : barTheme === 'slate'
+                    ? 'border bg-slate-800/90 hover:bg-rose-900/40 hover:text-rose-300 hover:border-rose-500/40 border-slate-700/80 text-slate-400'
+                    : barTheme === 'teal'
+                      ? 'border bg-white/15 hover:bg-rose-50 hover:text-white border-white/20 text-white'
+                      : 'border bg-slate-100 hover:bg-rose-50 hover:text-rose-600 hover:border-rose-200 border-slate-200 text-slate-600'
             }`}
             title="Log Out"
           >
@@ -403,10 +475,14 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout }
       </header>
 
       {/* Sub-Header Navigation Tabs Bar */}
-      <div className={`border-b px-4 sm:px-6 lg:px-8 py-2 shadow-xs relative z-20 ${
-        barTheme === 'teal'
-          ? 'bg-[#f0faf8] border-teal-200/80'
-          : 'bg-white border-slate-200/90'
+      <div className={`border-b px-4 sm:px-6 lg:px-8 py-2 relative z-20 transition-all ${
+        barTheme === 'clay'
+          ? 'bg-[#f4fcfb] border-teal-100 shadow-[inset_0_2px_4px_rgba(255,255,255,0.9)]'
+          : barTheme === 'turquoise'
+            ? 'bg-[#f0fafb] border-[#c2e8ee] shadow-xs'
+            : barTheme === 'teal'
+              ? 'bg-[#f0faf8] border-teal-200/80 shadow-xs'
+              : 'bg-white border-slate-200/90 shadow-xs'
       }`}>
         <div className="w-full flex items-center gap-2">
           {/* Scroll Left */}
@@ -415,7 +491,11 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout }
               const el = document.getElementById('hr-nav-tabs-container');
               if (el) el.scrollLeft -= 220;
             }}
-            className="w-7 h-7 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-800 flex items-center justify-center text-xs flex-shrink-0 transition-colors"
+            className={`w-7 h-7 flex items-center justify-center text-xs flex-shrink-0 transition-colors ${
+              barTheme === 'clay'
+                ? 'clay-btn clay-btn-secondary'
+                : 'rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-800'
+            }`}
             title="Scroll Left"
           >
             ◀
@@ -436,17 +516,29 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout }
                   onClick={() => handleTabChange(tab.name)}
                   className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs transition-all flex-shrink-0 ${
                     isActive
-                      ? barTheme === 'teal'
-                        ? 'bg-[#00796b] text-white font-bold shadow-xs border border-[#00695c]'
-                        : 'bg-slate-900 text-white font-bold shadow-xs border border-slate-900'
-                      : 'bg-slate-50/90 hover:bg-slate-100 text-slate-600 hover:text-slate-900 border border-slate-200/70 font-semibold'
+                      ? barTheme === 'clay'
+                        ? 'clay-btn clay-btn-primary text-white font-bold'
+                        : barTheme === 'turquoise'
+                          ? 'bg-[#08363e] text-white font-bold shadow-xs border border-[#08363e]'
+                          : barTheme === 'teal'
+                            ? 'bg-[#00796b] text-white font-bold shadow-xs border border-[#00695c]'
+                            : 'bg-slate-900 text-white font-bold shadow-xs border border-slate-900'
+                      : barTheme === 'clay'
+                        ? 'clay-btn clay-btn-secondary text-[#073734] hover:text-[#0b6b66] font-semibold'
+                        : barTheme === 'turquoise'
+                          ? 'bg-white/90 hover:bg-[#e4f5f8] text-slate-700 hover:text-[#08363e] border border-slate-200/70 font-semibold'
+                          : 'bg-slate-50/90 hover:bg-slate-100 text-slate-600 hover:text-slate-900 border border-slate-200/70 font-semibold'
                   }`}
                 >
                   {/* Clean Unified Icon */}
                   {IconComp && (
                     <IconComp className={`w-3.5 h-3.5 ${
                       isActive 
-                        ? 'text-teal-400 stroke-[2.4]' 
+                        ? barTheme === 'clay'
+                          ? 'text-teal-200 stroke-[2.4]'
+                          : barTheme === 'turquoise'
+                            ? 'text-[#73C1CC] stroke-[2.4]'
+                            : 'text-teal-400 stroke-[2.4]' 
                         : 'text-slate-400 group-hover:text-slate-600 stroke-[2]'
                     }`} />
                   )}
@@ -532,7 +624,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout }
         {/* Greeting & Quick Context */}
         <div className="text-left">
           <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
-            Good afternoon, <span className="text-[#00897b]">{userFirstName}</span>
+            Good afternoon, <span className="text-[#0e6977]">{userFirstName}</span>
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
             Mon • 21 May 2026 • {branchName} • You have <strong className="text-slate-800 font-semibold">12 calls</strong> to make today
@@ -564,7 +656,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout }
               <span className="text-amber-700">92%</span>
             </div>
             <div className="w-full h-2.5 bg-amber-200/60 rounded-full overflow-hidden">
-              <div className="h-full bg-gradient-to-r from-amber-400 to-[#00897b] rounded-full w-[92%]" />
+              <div className="h-full bg-gradient-to-r from-amber-400 to-[#73C1CC] rounded-full w-[92%]" />
             </div>
             <span className="text-[10px] font-bold text-amber-800 mt-1 uppercase tracking-wider">
               MAY MTD EARNED: <strong className="text-emerald-700">₹0</strong>
@@ -575,12 +667,12 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout }
         {/* 4 Metric Cards in a Row */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4">
           {/* Card 1 */}
-          <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs hover:border-[#00897b]/50 transition-all flex flex-col justify-between text-left">
+          <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs hover:border-[#73C1CC]/70 transition-all flex flex-col justify-between text-left">
             <div className="flex items-center justify-between mb-3">
               <span className="text-[11px] font-extrabold tracking-wider text-slate-500 uppercase">
                 CALLS TODAY
               </span>
-              <div className="w-7 h-7 rounded-full bg-teal-50 text-teal-600 flex items-center justify-center">
+              <div className="w-7 h-7 rounded-full bg-[#e6f7f9] text-[#0e6977] flex items-center justify-center">
                 <Phone className="w-3.5 h-3.5" />
               </div>
             </div>
@@ -603,20 +695,19 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout }
           </div>
 
           {/* Card 3 */}
-          {/* Card 3 */}
           <div 
             onClick={() => {
               setBookDemoInitialData(null);
               setShowBookDemoModal(true);
             }}
-            className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs hover:border-cyan-400/80 transition-all flex flex-col justify-between text-left cursor-pointer group"
+            className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs hover:border-[#73C1CC]/80 transition-all flex flex-col justify-between text-left cursor-pointer group"
             title="Click to schedule a new demo"
           >
             <div className="flex items-center justify-between mb-3">
               <span className="text-[11px] font-extrabold tracking-wider text-slate-500 uppercase">
                 DEMOS TODAY
               </span>
-              <div className="w-7 h-7 rounded-full bg-cyan-50 text-cyan-600 flex items-center justify-center group-hover:scale-110 transition-transform">
+              <div className="w-7 h-7 rounded-full bg-[#e6f7f9] text-[#0e6977] flex items-center justify-center group-hover:scale-110 transition-transform">
                 <Calendar className="w-3.5 h-3.5" />
               </div>
             </div>
@@ -625,17 +716,17 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout }
           </div>
 
           {/* Card 4 */}
-          <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs hover:border-emerald-400/50 transition-all flex flex-col justify-between text-left">
+          <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs hover:border-[#73C1CC]/70 transition-all flex flex-col justify-between text-left">
             <div className="flex items-center justify-between mb-3">
               <span className="text-[11px] font-extrabold tracking-wider text-slate-500 uppercase">
                 ADMISSIONS • MTD
               </span>
-              <div className="w-7 h-7 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center">
+              <div className="w-7 h-7 rounded-full bg-[#e6f7f9] text-[#0e6977] flex items-center justify-center">
                 <CheckCircle2 className="w-3.5 h-3.5" />
               </div>
             </div>
-            <div className="text-3xl font-extrabold text-[#00897b]">23</div>
-            <div className="text-xs text-emerald-600 mt-1 font-bold flex items-center gap-1">
+            <div className="text-3xl font-extrabold text-[#0e6977]">23</div>
+            <div className="text-xs text-[#0e6977] mt-1 font-bold flex items-center gap-1">
               <TrendingUp className="w-3 h-3" /> ↑ 12% vs last month
             </div>
           </div>
@@ -659,7 +750,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout }
               {/* Card Header */}
               <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-3">
                 <div className="flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-[#00897b] animate-pulse" />
+                  <span className="w-2 h-2 rounded-full bg-[#0e6977] animate-pulse" />
                   <h3 className="text-sm font-bold text-slate-900">Today's Priority Queue</h3>
                 </div>
                 <span className="text-xs text-slate-500 font-medium">
@@ -677,12 +768,12 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout }
                   priorityQueue.map((item, idx) => (
                     <div 
                       key={item.id || idx}
-                      className="p-3 rounded-xl bg-slate-50/60 hover:bg-teal-50/40 border border-slate-100 hover:border-teal-200 transition-all flex items-center justify-between gap-3 text-left"
+                      className="p-3 rounded-xl bg-slate-50/60 hover:bg-[#f0fafb] border border-slate-100 hover:border-[#bde6ed] transition-all flex items-center justify-between gap-3 text-left"
                     >
                       <div className="flex items-center gap-3 min-w-0">
                         <span className={`px-2 py-0.5 rounded-md text-[11px] font-extrabold flex-shrink-0 ${
                           item.isNow 
-                            ? 'bg-[#00897b] text-white' 
+                            ? 'bg-[#0e6977] text-white' 
                             : 'bg-slate-200/70 text-slate-700'
                         }`}>
                           {item.time}
@@ -771,7 +862,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout }
         </div>
 
         {/* Bottom Banner: End-of-Day Closure Card */}
-        <div className="bg-[#0b1f36] text-white rounded-2xl p-5 sm:p-6 shadow-xl border border-slate-800 text-left">
+        <div className="bg-[#082228] text-white rounded-2xl p-5 sm:p-6 shadow-xl border border-[#12424b] text-left">
           {/* Header */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
             <div>
@@ -790,7 +881,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout }
           {/* 6 Metric Boxes */}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 mb-4">
             <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center">
-              <div className="text-xl sm:text-2xl font-extrabold text-teal-300">
+              <div className="text-xl sm:text-2xl font-extrabold text-[#73C1CC]">
                 {closureMetrics.callsMade}
               </div>
               <div className="text-[9.5px] font-extrabold uppercase tracking-wider text-slate-400 mt-1">
@@ -799,7 +890,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout }
             </div>
 
             <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center">
-              <div className="text-xl sm:text-2xl font-extrabold text-teal-300">
+              <div className="text-xl sm:text-2xl font-extrabold text-[#73C1CC]">
                 {closureMetrics.connected}
               </div>
               <div className="text-[9.5px] font-extrabold uppercase tracking-wider text-slate-400 mt-1">
@@ -808,7 +899,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout }
             </div>
 
             <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center">
-              <div className="text-xl sm:text-2xl font-extrabold text-teal-300">
+              <div className="text-xl sm:text-2xl font-extrabold text-[#73C1CC]">
                 {closureMetrics.demosBooked}
               </div>
               <div className="text-[9.5px] font-extrabold uppercase tracking-wider text-slate-400 mt-1">
@@ -817,7 +908,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout }
             </div>
 
             <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center">
-              <div className="text-xl sm:text-2xl font-extrabold text-emerald-400">
+              <div className="text-xl sm:text-2xl font-extrabold text-[#73C1CC]">
                 {closureMetrics.admissions}
               </div>
               <div className="text-[9.5px] font-extrabold uppercase tracking-wider text-slate-400 mt-1">
@@ -855,7 +946,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout }
               <button
                 onClick={() => setClosureSubmitted(true)}
                 disabled={closureSubmitted}
-                className="px-4 py-2 rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs flex items-center gap-1.5 shadow-md transition-all active:scale-[0.98]"
+                className="px-4 py-2 rounded-xl bg-[#0e6977] hover:bg-[#0a4f5a] text-white font-bold text-xs flex items-center gap-1.5 shadow-md transition-all active:scale-[0.98]"
               >
                 <span>{closureSubmitted ? 'Closure Submitted ✓' : "Submit Today's Closure →"}</span>
               </button>

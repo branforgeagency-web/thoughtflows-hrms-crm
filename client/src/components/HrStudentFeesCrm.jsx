@@ -150,7 +150,7 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-1 border-b border-slate-200/80 pb-3">
         <div>
           <h1 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight flex items-center gap-2">
-            <span>Student <span className="text-[#00897b]">Fees</span></span>
+            <span>Student <span className="text-[#0e6977]">Fees</span></span>
             <span className="text-slate-300">·</span>
             <span className="text-slate-700 font-extrabold text-xl sm:text-2xl">CRM</span>
           </h1>
@@ -173,7 +173,7 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
 
           <button
             onClick={() => setShowAddModal(true)}
-            className="bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs px-4 py-2 rounded-xl shadow-xs transition-all active:scale-95 flex items-center gap-1.5 flex-shrink-0 cursor-pointer"
+            className="bg-[#0e6977] hover:bg-[#0a4f5a] text-white font-bold text-xs px-4 py-2 rounded-xl shadow-xs transition-all active:scale-95 flex items-center gap-1.5 flex-shrink-0 cursor-pointer"
           >
             <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
             <span>Add Fee Record</span>
@@ -198,7 +198,7 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
             placeholder="Search student ID, name, or course..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full bg-slate-50 border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-900 placeholder-slate-400 outline-none focus:bg-white focus:border-[#00897b] transition-all"
+            className="w-full bg-slate-50 border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-900 placeholder-slate-400 outline-none focus:bg-white focus:border-[#0e6977] transition-all"
           />
         </div>
         <div className="text-xs font-mono text-slate-500 font-bold">
@@ -284,7 +284,7 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
                 <td className="py-3.5 px-4 text-right text-slate-900 font-mono font-black">
                   ₹{totalExamFee.toLocaleString('en-IN')}
                 </td>
-                <td className="py-3.5 px-4 text-right text-[#00897b] font-mono font-black text-sm">
+                <td className="py-3.5 px-4 text-right text-[#0e6977] font-mono font-black text-sm">
                   ₹{grandTotal.toLocaleString('en-IN')}
                 </td>
               </tr>
@@ -311,7 +311,7 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
               setEditingCourse(null);
               setShowCourseRateModal(true);
             }}
-            className="bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs px-3.5 py-1.5 rounded-xl shadow-xs transition-all active:scale-95 flex items-center gap-1.5 flex-shrink-0 cursor-pointer"
+            className="bg-[#0e6977] hover:bg-[#0a4f5a] text-white font-bold text-xs px-3.5 py-1.5 rounded-xl shadow-xs transition-all active:scale-95 flex items-center gap-1.5 flex-shrink-0 cursor-pointer"
           >
             <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
             <span>Add Fees Rate</span>
@@ -390,7 +390,7 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
                   required
                   value={newRecord.id}
                   onChange={(e) => setNewRecord({ ...newRecord, id: e.target.value })}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 font-mono font-bold outline-none focus:border-[#00897b] focus:bg-white text-xs"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 font-mono font-bold outline-none focus:border-[#0e6977] focus:bg-white text-xs"
                 />
               </div>
 
@@ -402,7 +402,7 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
                   placeholder="e.g. PRIYA RAMESH"
                   value={newRecord.name}
                   onChange={(e) => setNewRecord({ ...newRecord, name: e.target.value.toUpperCase() })}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 uppercase font-bold outline-none focus:border-[#00897b] focus:bg-white text-xs"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 uppercase font-bold outline-none focus:border-[#0e6977] focus:bg-white text-xs"
                 />
               </div>
 
@@ -420,7 +420,7 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
                         courseFee: cr ? cr.courseFee : newRecord.courseFee
                       });
                     }}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-slate-900 outline-none focus:border-[#00897b] focus:bg-white text-xs font-semibold"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-slate-900 outline-none focus:border-[#0e6977] focus:bg-white text-xs font-semibold"
                   >
                     {courseRates.map(cr => (
                       <option key={cr.code} value={cr.code}>{cr.code}</option>
@@ -435,7 +435,7 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
                     required
                     value={newRecord.courseFee}
                     onChange={(e) => setNewRecord({ ...newRecord, courseFee: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-slate-900 font-mono font-bold outline-none focus:border-[#00897b] focus:bg-white text-xs"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-slate-900 font-mono font-bold outline-none focus:border-[#0e6977] focus:bg-white text-xs"
                   />
                 </div>
               </div>
@@ -447,7 +447,7 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
                   required
                   value={newRecord.counsellor}
                   onChange={(e) => setNewRecord({ ...newRecord, counsellor: e.target.value })}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 outline-none focus:border-[#00897b] focus:bg-white text-xs"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 outline-none focus:border-[#0e6977] focus:bg-white text-xs"
                 />
               </div>
 
@@ -476,7 +476,7 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
                 </button>
                 <button
                   type="submit"
-                  className="w-1/2 py-2.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold rounded-xl text-xs transition-all shadow-sm"
+                  className="w-1/2 py-2.5 bg-[#0e6977] hover:bg-[#00796b] text-white font-bold rounded-xl text-xs transition-all shadow-sm"
                 >
                   Add Record
                 </button>

@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 
 import BookNewDemoModal from './BookNewDemoModal';
+import { createDemo } from '../services/api';
 
 export default function LeadCallModal({ isOpen, onClose, leadData, onSave }) {
   if (!isOpen) return null;
@@ -507,9 +508,15 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave }) {
           course: 'CPC',
           mode: 'Online'
         }}
-        onConfirm={(demo) => {
+        onConfirm={async (demo) => {
           setSelectedOutcome('Demo Booked');
-          showToast(`✓ Demo booked for ${demo.studentName} on ${demo.preferredDate} (${demo.timeSlot})`);
+          try {
+            await createDemo(demo);
+            showToast(`✓ Demo booked for ${demo.studentName}! Routed to expert trainer ${demo.trainer || ''}.`);
+          } catch (e) {
+            console.warn('Failed to save demo in modal:', e);
+            showToast(`✓ Demo booked for ${demo.studentName} on ${demo.preferredDate} (${demo.timeSlot})`);
+          }
         }}
       />
     </div>
