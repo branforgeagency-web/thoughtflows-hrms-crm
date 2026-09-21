@@ -53,7 +53,7 @@ export default function CccpDashboard({
   currentUser,
   onLogout,
   onSwitchDepartment,
-  theme = 'clay'
+  theme = 'classic'
 }) {
   const [activeNav, setActiveNav] = useState('home'); // 'home', 'certification', 'campus', 'corporate', 'placement', 'billing', 'calendar', 'reports'
   const [selectedDetail, setSelectedDetail] = useState(null); // for modal/drawer drilldown

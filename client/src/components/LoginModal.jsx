@@ -134,7 +134,7 @@ export default function LoginModal({
   onLoginSuccess, 
   initialDepartment = 'training', 
   showDepartmentSelector = false,
-  theme = 'clay' 
+  theme = 'classic' 
 }) {
   const isClay = theme === 'clay';
   const [activeDeptId, setActiveDeptId] = useState(initialDepartment);

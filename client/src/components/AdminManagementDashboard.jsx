@@ -446,7 +446,7 @@ export default function AdminManagementDashboard({
   currentUser, 
   onLogout, 
   onSwitchDepartment, 
-  theme = 'clay' 
+  theme = 'classic' 
 }) {
   // Active module view: 'overview' | 'users' | 'slabs' | 'directory' | 'branches' | 'catalog' | 'founders' | 'audit'
   const [activeModule, setActiveModule] = useState('overview');

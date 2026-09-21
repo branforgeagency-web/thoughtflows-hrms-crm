@@ -73,7 +73,7 @@ export default function TrainingDepartmentDashboard({
   currentUser,
   onLogout,
   onSwitchDepartment,
-  theme = 'clay'
+  theme = 'classic'
 }) {
   const [dashMenuOpen, setDashMenuOpen] = useState(false);
   const trainerName = currentUser?.userName || currentUser?.name || 'Srithar S';

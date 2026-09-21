@@ -4,7 +4,7 @@ import { ArrowRight } from 'lucide-react';
 export default function PortalHero({ 
   onOpenDashboard, 
   onExploreDepartments, 
-  theme = 'clay' 
+  theme = 'classic' 
 }) {
   const isClay = theme === 'clay';
 

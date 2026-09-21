@@ -138,7 +138,7 @@ const CLAY_CARD_CLASSES = {
   admin: 'clay-card-admin',
 };
 
-export default function SevenDashboardsSection({ onSelectDashboard, currentUser, theme = 'clay' }) {
+export default function SevenDashboardsSection({ onSelectDashboard, currentUser, theme = 'classic' }) {
   const isClay = theme === 'clay';
   const rowOneCards = DASHBOARD_CARDS.slice(0, 4);
   const rowTwoCards = DASHBOARD_CARDS.slice(4);

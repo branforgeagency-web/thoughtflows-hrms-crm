@@ -39,7 +39,7 @@ export default function DashboardModal({
   currentUser,
   onSwitchDepartment,
   onSignOut,
-  theme = 'clay'
+  theme = 'classic'
 }) {
   const isClay = theme === 'clay';
   const [branches, setBranches] = useState([]);

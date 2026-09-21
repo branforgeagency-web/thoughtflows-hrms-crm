@@ -8,7 +8,7 @@ export default function Navbar({
   currentUser, 
   onSignOut, 
   onSwitchDepartment,
-  theme = 'clay',
+  theme = 'classic',
   onToggleTheme 
 }) {
   const isClay = theme === 'clay';

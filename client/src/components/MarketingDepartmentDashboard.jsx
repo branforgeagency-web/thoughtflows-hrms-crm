@@ -30,7 +30,7 @@ export default function MarketingDepartmentDashboard({
   currentUser,
   onLogout,
   onSwitchDepartment,
-  theme = 'clay'
+  theme = 'classic'
 }) {
   // Navigation Tabs: matching the user's reference image
   const [activeTab, setActiveTab] = useState('command-center');

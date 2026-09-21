@@ -13,7 +13,7 @@ const ICON_MAP = {
   PieChart
 };
 
-export default function DepartmentsModal({ isOpen, onClose, theme = 'clay' }) {
+export default function DepartmentsModal({ isOpen, onClose, theme = 'classic' }) {
   const isClay = theme === 'clay';
   const [departments, setDepartments] = useState([]);
   const [loading, setLoading] = useState(true);

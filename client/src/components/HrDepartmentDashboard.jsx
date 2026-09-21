@@ -39,7 +39,7 @@ import BookNewDemoModal from './BookNewDemoModal';
 import AddLeadModal from './AddLeadModal';
 import { getStudents, getLeads, createLead, getDemos, createDemo, onDataUpdate } from '../services/api';
 
-export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, onSwitchDepartment, theme = 'clay' }) {
+export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, onSwitchDepartment, theme = 'classic' }) {
   // Persist active tab across browser refresh
   const [activeTab, setActiveTab] = useState(() => {
     try {
@@ -64,15 +64,16 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   const [dashMenuOpen, setDashMenuOpen] = useState(false);
   const [barTheme, setBarTheme] = useState(() => {
     try {
-      return localStorage.getItem('thoughtflows_hr_theme') || (theme === 'clay' ? 'clay' : 'turquoise');
+      const saved = localStorage.getItem('thoughtflows_hr_theme');
+      return saved && saved !== 'clay' ? saved : 'turquoise';
     } catch {
-      return theme === 'clay' ? 'clay' : 'turquoise';
+      return 'turquoise';
     }
-  }); // 'clay' | 'turquoise' | 'slate' | 'teal' | 'light'
+  }); // 'turquoise' | 'slate' | 'teal' | 'light'
 
   const handleCycleTheme = () => {
     setBarTheme(prev => {
-      const next = prev === 'clay' ? 'turquoise' : prev === 'turquoise' ? 'slate' : prev === 'slate' ? 'teal' : prev === 'teal' ? 'light' : 'clay';
+      const next = prev === 'turquoise' ? 'slate' : prev === 'slate' ? 'teal' : prev === 'teal' ? 'light' : 'turquoise';
       try {
         localStorage.setItem('thoughtflows_hr_theme', next);
       } catch (e) {

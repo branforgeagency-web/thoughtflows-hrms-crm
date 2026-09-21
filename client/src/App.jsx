@@ -66,26 +66,9 @@ export default function App() {
     }
   });
 
-  // Claymorphism Theme State (default: 'clay')
-  const [theme, setTheme] = useState(() => {
-    try {
-      return localStorage.getItem('thoughtflows_theme') || 'clay';
-    } catch {
-      return 'clay';
-    }
-  });
-
-  const handleToggleTheme = () => {
-    setTheme(prev => {
-      const next = prev === 'clay' ? 'classic' : 'clay';
-      try {
-        localStorage.setItem('thoughtflows_theme', next);
-      } catch (e) {
-        console.warn('Failed to save theme to localStorage', e);
-      }
-      return next;
-    });
-  };
+  // Clay 3D theme removed – the classic flat theme is the only theme
+  const theme = 'classic';
+  const handleToggleTheme = () => {};
 
   useEffect(() => {
     // Check backend health on initial load
