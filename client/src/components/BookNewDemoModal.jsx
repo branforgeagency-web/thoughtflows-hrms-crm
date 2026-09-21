@@ -188,6 +188,7 @@ export default function BookNewDemoModal({ isOpen, onClose, initialData, onConfi
 
   const [studentName, setStudentName] = useState(initialData?.studentName || initialData?.name || initialData?.candidateName || '');
   const [mobile, setMobile] = useState(initialData?.mobile || initialData?.phone || '');
+  const [email, setEmail] = useState(initialData?.email || '');
   const [course, setCourse] = useState(initialData?.course || 'CPC');
   const [mode, setMode] = useState(initialData?.mode || 'Online');
   const [preferredDate, setPreferredDate] = useState(() => {
@@ -305,7 +306,13 @@ export default function BookNewDemoModal({ isOpen, onClose, initialData, onConfi
       return;
     }
 
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      showToast("Please enter the student's email");
+      return;
+    }
+
     const demoPayload = {
+      email: email.trim().toLowerCase(),
       candidateName: studentName,
       studentName,
       phone: mobile,
@@ -419,6 +426,21 @@ export default function BookNewDemoModal({ isOpen, onClose, initialData, onConfi
             </div>
           </div>
 
+          {/* Student email */}
+          <div>
+            <label className="block text-[11px] font-bold text-slate-600 font-mono mb-1">
+              Student Email *
+            </label>
+            <input
+              type="email"
+              required
+              placeholder="student's existing email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-slate-900 placeholder-slate-400 outline-none focus:border-[#0e6977] transition-all"
+            />
+          </div>
+
           {/* Row: Course & Mode */}
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -451,7 +473,20 @@ export default function BookNewDemoModal({ isOpen, onClose, initialData, onConfi
                 className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 font-semibold outline-none focus:border-[#0e6977] transition-all"
               >
                 <option value="Online">Online (Zoom Live)</option>
+                <option value="Classroom (Ameerpet)">Classroom (Ameerpet)</option>
+                <option value="Classroom (Dilsukhnagar)">Classroom (Dilsukhnagar)</option>
+                <option value="Classroom (Gandhipuram)">Classroom (Gandhipuram)</option>
+                <option value="Classroom (Hopes)">Classroom (Hopes)</option>
+                <option value="Classroom (Kochi)">Classroom (Kochi)</option>
+                <option value="Classroom (Salem)">Classroom (Salem)</option>
                 <option value="Classroom (Saravanampatti)">Classroom (Saravanampatti)</option>
+                <option value="Classroom (Tirupati)">Classroom (Tirupati)</option>
+                <option value="Classroom (Trichy)">Classroom (Trichy)</option>
+                <option value="Classroom (Trivandrum)">Classroom (Trivandrum)</option>
+                <option value="Classroom (Vizag)">Classroom (Vizag)</option>
+                <option value="Classroom (Pune)">Classroom (Pune)</option>
+                <option value="Classroom (Kollapur)">Classroom (Kollapur)</option>
+                <option value="Classroom (Theni)">Classroom (Theni)</option>
                 <option value="Campus Tour + Counseling">Campus Tour</option>
               </select>
             </div>

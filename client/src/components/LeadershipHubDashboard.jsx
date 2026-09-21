@@ -26,7 +26,11 @@ import {
   GitBranch,
   Activity,
   Wallet,
-  ClipboardList
+  ClipboardList,
+  LogOut,
+  ChevronDown,
+  ArrowRight,
+  Repeat
 } from 'lucide-react';
 import {
   getBranches,
@@ -46,7 +50,8 @@ import {
   setAttendanceBreak,
   getLeads,
   getDemos,
-  getStudents
+  getStudents,
+  onDataUpdate
 } from '../services/api';
 
 const DEPT_ICONS = { PhoneCall, GraduationCap, HeartHandshake, Award, Briefcase, Users, Server, PieChart };
@@ -140,12 +145,24 @@ function useDeskCounts(filter) {
   const [approvals, setApprovals] = useState(null);
   const [escalations, setEscalations] = useState(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     const f = JSON.parse(key);
     getApprovals(f).then((a) => setApprovals(Array.isArray(a) ? a : [])).catch(() => setApprovals([]));
     getEscalations(f).then((e) => setEscalations(Array.isArray(e) ? e : [])).catch(() => setEscalations([]));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  useEffect(() => {
+    const unsub = onDataUpdate((entity) => {
+      if (!entity || entity === 'approvals' || entity === 'escalations') {
+        load();
+      }
+    });
+    return () => unsub();
+  }, [load]);
 
   return {
     approvals,
@@ -164,7 +181,7 @@ function useDeskCounts(filter) {
  * demos, approvals, escalations, team, attendance). Nothing shown here is
  * fabricated: every figure traces back to a real MongoDB collection.
  */
-export default function LeadershipHubDashboard({ onClose, currentUser }) {
+export default function LeadershipHubDashboard({ onClose, currentUser, onLogout, onSwitchDepartment }) {
   const [view, setView] = useState('landing');
   const [branches, setBranches] = useState([]);
   const [departments, setDepartments] = useState([]);
@@ -174,8 +191,9 @@ export default function LeadershipHubDashboard({ onClose, currentUser }) {
   const [selectedBranch, setSelectedBranch] = useState(null);
   const [summary, setSummary] = useState({ pendingApprovals: 0, openEscalations: 0 });
   const [orgAttendance, setOrgAttendance] = useState(null);
+  const [dashboardsMenuOpen, setDashboardsMenuOpen] = useState(false);
 
-  useEffect(() => {
+  const fetchLiveLeadershipData = useCallback(() => {
     Promise.all([getBranches(), getDepartments()])
       .then(([b, d]) => {
         setBranches(Array.isArray(b) ? b : []);
@@ -186,6 +204,15 @@ export default function LeadershipHubDashboard({ onClose, currentUser }) {
     getLeadershipSummary().then(setSummary).catch(() => {});
     getOrgAttendanceSummary().then(setOrgAttendance).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    fetchLiveLeadershipData();
+
+    const unsub = onDataUpdate((entity) => {
+      fetchLiveLeadershipData();
+    });
+    return () => unsub();
+  }, [fetchLiveLeadershipData]);
 
   const regions = useMemo(() => {
     const map = {};
@@ -198,11 +225,43 @@ export default function LeadershipHubDashboard({ onClose, currentUser }) {
       .map(([state, list]) => ({
         state,
         branches: list,
-        totalStudents: list.reduce((s, b) => s + (b.activeStudents || 0), 0),
-        totalStaff: list.reduce((s, b) => s + (b.staffCount || 0), 0)
+        branchCount: list.length,
+        leadTotal: list.reduce((s, x) => s + (x.leadCount || 0), 0),
+        capacityTotal: list.reduce((s, x) => s + (x.capacity || 0), 0)
       }))
       .sort((a, b) => b.branches.length - a.branches.length);
   }, [branches]);
+
+  const onChanged = useCallback(() => {
+    getLeadershipSummary().then(setSummary).catch(() => {});
+  }, []);
+
+  function backToLanding() {
+    setView('landing');
+    setSelectedDept(null);
+    setSelectedRegion(null);
+    setSelectedBranch(null);
+  }
+  function openOperational() {
+    setView('operational');
+  }
+  function openDept(d) {
+    setSelectedDept(d);
+    setView('department');
+  }
+
+  function refreshSummary() {
+    getLeadershipSummary().then(setSummary).catch(() => {});
+  }
+
+  function openBranch(b) {
+    setSelectedBranch(b);
+    setView('branch');
+  }
+  function openRegion(r) {
+    setSelectedRegion(r);
+    setView('regional');
+  }
 
   const totals = useMemo(
     () => ({
@@ -222,30 +281,6 @@ export default function LeadershipHubDashboard({ onClose, currentUser }) {
     () => (branches.length ? [...branches].sort((a, b) => (a.activeStudents || 0) - (b.activeStudents || 0))[0] : null),
     [branches]
   );
-
-  function backToLanding() {
-    setView('landing');
-    setSelectedDept(null);
-    setSelectedRegion(null);
-    setSelectedBranch(null);
-  }
-
-  function refreshSummary() {
-    getLeadershipSummary().then(setSummary).catch(() => {});
-  }
-
-  function openBranch(b) {
-    setSelectedBranch(b);
-    setView('branch');
-  }
-  function openDept(d) {
-    setSelectedDept(d);
-    setView('department');
-  }
-  function openRegion(r) {
-    setSelectedRegion(r);
-    setView('regional');
-  }
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-[#F5F5FA] font-sans text-slate-800">
@@ -269,16 +304,30 @@ export default function LeadershipHubDashboard({ onClose, currentUser }) {
             <p className="text-[10px] font-bold tracking-[0.2em] text-indigo-200/70 uppercase">Allocate · Monitor · Approve</p>
           </div>
         </div>
-        <div className="flex items-center gap-2 bg-white/10 rounded-full pl-2 pr-4 py-1.5">
-          <span className="w-8 h-8 rounded-full grid place-items-center text-xs font-bold text-white bg-gradient-to-br from-violet-400 to-indigo-600 flex-shrink-0">
-            {(currentUser?.name || 'L')[0]}
-          </span>
-          <div>
-            <div className="text-xs font-bold text-white leading-tight">Leadership</div>
-            <div className="text-[9px] font-bold tracking-[0.15em] text-indigo-200/70 uppercase">
-              {view === 'landing' ? 'Select a role' : TIERS.find((t) => t.key === view)?.name || 'Browsing'}
+        <div className="flex items-center gap-2 relative">
+
+
+          <div className="flex items-center gap-2 bg-white/10 rounded-full pl-2 pr-4 py-1.5">
+            <span className="w-8 h-8 rounded-full grid place-items-center text-xs font-bold text-white bg-gradient-to-br from-violet-400 to-indigo-600 flex-shrink-0">
+              {(currentUser?.name || 'L')[0]}
+            </span>
+            <div>
+              <div className="text-xs font-bold text-white leading-tight">{currentUser?.name || 'Leadership'}</div>
+              <div className="text-[9px] font-bold tracking-[0.15em] text-indigo-200/70 uppercase">
+                {view === 'landing' ? 'Select a role' : TIERS.find((t) => t.key === view)?.name || 'Browsing'}
+              </div>
             </div>
           </div>
+          {(onLogout || onClose) && (
+            <button
+              onClick={onLogout || onClose}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 hover:text-white border border-rose-400/30 text-xs font-bold transition-all cursor-pointer"
+              title="Logout"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Logout</span>
+            </button>
+          )}
         </div>
       </header>
 
@@ -532,7 +581,13 @@ function ApprovalsDesk({ filter, scopeLabel, accent, onChanged }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+    const unsub = onDataUpdate((entity) => {
+      if (!entity || entity === 'approvals') load();
+    });
+    return () => unsub();
+  }, [load]);
 
   async function decide(id, action) {
     setBusyId(id);
@@ -609,7 +664,13 @@ function EscalationsDesk({ filter, scopeLabel, accent, onChanged }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+    const unsub = onDataUpdate((entity) => {
+      if (!entity || entity === 'escalations') load();
+    });
+    return () => unsub();
+  }, [load]);
 
   async function resolve(id) {
     setBusyId(id);
@@ -681,11 +742,19 @@ function LeadsPanel({ branchName, accent }) {
   const a = accent || ACCENTS.operational;
   const [data, setData] = useState(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     getLeads()
       .then((d) => setData(d && Array.isArray(d.leads) ? d : { leads: [], stages: [], totalCount: 0 }))
       .catch(() => setData({ leads: [], stages: [], totalCount: 0 }));
   }, []);
+
+  useEffect(() => {
+    load();
+    const unsub = onDataUpdate((entity) => {
+      if (!entity || entity === 'leads') load();
+    });
+    return () => unsub();
+  }, [load]);
 
   if (!data) return <div className="py-8 text-center text-slate-500 text-xs">Loading leads…</div>;
 
@@ -757,9 +826,17 @@ function LeadsPanel({ branchName, accent }) {
 function DemosPanel() {
   const [demos, setDemos] = useState(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     getDemos().then((d) => setDemos(Array.isArray(d) ? d : [])).catch(() => setDemos([]));
   }, []);
+
+  useEffect(() => {
+    load();
+    const unsub = onDataUpdate((entity) => {
+      if (!entity || entity === 'demos') load();
+    });
+    return () => unsub();
+  }, [load]);
 
   if (!demos) return <div className="py-8 text-center text-slate-500 text-xs">Loading demos…</div>;
 
@@ -1135,10 +1212,20 @@ function OperationalView({ totals, departments, branches, regions, summary, curr
   const [students, setStudents] = useState(null);
   const [demos, setDemos] = useState(null);
 
-  useEffect(() => {
+  const loadData = useCallback(() => {
     getStudents().then((s) => setStudents(Array.isArray(s) ? s : [])).catch(() => setStudents([]));
     getDemos().then((d) => setDemos(Array.isArray(d) ? d : [])).catch(() => setDemos([]));
   }, []);
+
+  useEffect(() => {
+    loadData();
+    const unsub = onDataUpdate((entity) => {
+      if (!entity || entity === 'students' || entity === 'demos') {
+        loadData();
+      }
+    });
+    return () => unsub();
+  }, [loadData]);
 
   const atRiskCount = useMemo(
     () => (students || []).filter((s) => typeof s.attendancePct === 'number' && s.attendancePct < AT_RISK_THRESHOLD).length,

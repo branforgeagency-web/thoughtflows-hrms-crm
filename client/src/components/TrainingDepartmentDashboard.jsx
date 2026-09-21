@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import ZoomMeeting from './ZoomMeeting';
 import { 
   Home, 
   PlayCircle, 
@@ -52,6 +53,8 @@ import {
   getDemos,
   updateDemo,
   acknowledgeDemo,
+  createDemoMeeting,
+  sendDemoLinkEmail,
   getLeads,
   getTrainerDoubts,
   replyTrainerDoubt,
@@ -61,7 +64,8 @@ import {
   updateAssessmentScores,
   updateAssessmentRationale,
   recordTrainerAttendance,
-  getTrainerAttendance
+  getTrainerAttendance,
+  onDataUpdate
 } from '../services/api';
 
 export default function TrainingDepartmentDashboard({
@@ -71,6 +75,7 @@ export default function TrainingDepartmentDashboard({
   onSwitchDepartment,
   theme = 'clay'
 }) {
+  const [dashMenuOpen, setDashMenuOpen] = useState(false);
   const trainerName = currentUser?.userName || currentUser?.name || 'Srithar S';
   const trainerRole = currentUser?.role || 'Trainer';
   const trainerBranch = currentUser?.branch || 'Gandhipuram';
@@ -88,6 +93,23 @@ export default function TrainingDepartmentDashboard({
 
   const [activeNav, setActiveNav] = useState('home');
   const [selectedSession, setSelectedSession] = useState(null);
+  // Restored after a page refresh so the trainer is put straight back into the demo (a refresh always drops the Zoom connection)
+  const [demoRoom, setDemoRoom] = useState(() => {
+    try { return JSON.parse(sessionStorage.getItem('tf_demo_room') || 'null'); } catch (_) { return null; }
+  });
+  const [demoMin, setDemoMin] = useState(false);
+
+  useEffect(() => {
+    try {
+      if (demoRoom) sessionStorage.setItem('tf_demo_room', JSON.stringify(demoRoom));
+      else sessionStorage.removeItem('tf_demo_room');
+    } catch (_) {}
+    if (!demoRoom) return undefined;
+    // Ask before refresh/close while a demo is live
+    const warn = (e) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [demoRoom]);
   const [isLiveClassActive, setIsLiveClassActive] = useState(false);
   const [sessionTimeSeconds, setSessionTimeSeconds] = useState(6438); // 1 hr 47 min 18 sec
   const [timerRunning, setTimerRunning] = useState(true);
@@ -213,6 +235,12 @@ export default function TrainingDepartmentDashboard({
 
   useEffect(() => {
     loadRealData();
+    const unsub = onDataUpdate((entity) => {
+      if (entity === 'students' || entity === 'doubts' || entity === 'assessments' || entity === 'leads') {
+        loadRealData();
+      }
+    });
+    return unsub;
   }, []);
 
   // Filter students by current trainer's course domain / allocation
@@ -338,6 +366,71 @@ export default function TrainingDepartmentDashboard({
       setDemoToast('✓ Demo slot acknowledged!');
       setTimeout(() => setDemoToast(null), 3500);
     }
+  };
+
+  // ---- Demo Zoom: create a unique meeting per booked demo, send link to student, join embedded ----
+  const handleCreateDemoMeeting = async (lead) => {
+    if (!lead._id) { setDemoToast('This demo is not saved in the database yet'); setTimeout(() => setDemoToast(null), 3500); return null; }
+    try {
+      setDemoToast('Creating Zoom meeting…');
+      const updated = await createDemoMeeting(lead._id);
+      setDemos(prev => prev.map(l => l._id === lead._id ? { ...l, ...updated } : l));
+      setDemoToast('✓ Zoom meeting created');
+      setTimeout(() => setDemoToast(null), 3000);
+      return { ...lead, ...updated };
+    } catch (e) {
+      setDemoToast(e?.response?.data?.error || 'Could not create Zoom meeting');
+      setTimeout(() => setDemoToast(null), 5000);
+      return null;
+    }
+  };
+
+  const handleSendDemoLink = async (lead) => {
+    let d = lead;
+    if (!d.zoomMeetingId) { d = await handleCreateDemoMeeting(lead); if (!d) return; }
+    let phone = String(lead.phone || '').replace(/\D/g, '');
+    if (phone.length === 10) phone = '91' + phone;
+    const text = `Hi ${lead.candidateName}, your ${lead.course} demo class with ${lead.trainer || trainerName} is scheduled for ${lead.time || lead.timeSlot || 'today'}. Join here: ${d.link}`;
+    try { await navigator.clipboard.writeText(d.link); } catch (_) {}
+    window.open(`https://wa.me/${phone}?text=${encodeURIComponent(text)}`, '_blank', 'noopener');
+    setDemoToast('Link copied · WhatsApp opened with the message');
+    setTimeout(() => setDemoToast(null), 3000);
+  };
+
+  const handleEmailDemoLink = async (lead) => {
+    if (!lead.email) { setDemoToast('No student email on this demo'); setTimeout(() => setDemoToast(null), 3500); return; }
+    let d = lead;
+    if (!d.zoomMeetingId) { d = await handleCreateDemoMeeting(lead); if (!d) return; }
+    try {
+      setDemoToast('Sending email…');
+      await sendDemoLinkEmail(d._id);
+      setDemoToast(`✓ Zoom link emailed to ${lead.email}`);
+    } catch (e) {
+      // SMTP not set up (or failed): fall back to opening the trainer's own mail app with the message ready
+      const when = lead.time || lead.timeSlot || 'today';
+      const subject = `Your ${lead.course} demo class link – Thoughtflows Academy`;
+      const body = `Hi ${lead.candidateName},\n\nYour ${lead.course} demo class with ${lead.trainer || trainerName} is scheduled for ${when}.\n\nJoin on Zoom: ${d.link}\n\nPlease join 5 minutes early.`;
+      window.open(`mailto:${lead.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`, '_self');
+      setDemoToast((e?.response?.data?.error || 'Email failed') + ' — opened your mail app instead');
+    }
+    setTimeout(() => setDemoToast(null), 5000);
+  };
+
+  // End the live demo: mark it Attended (server also moves the lead to "Demo Attended") and leave Zoom
+  const endDemo = async (room) => {
+    try { if (room?._id) await updateDemo(room._id, { status: 'Attended' }); } catch (e) { console.warn(e); }
+    setDemos(prev => prev.map(l => (room && l._id === room._id) ? { ...l, status: 'Attended' } : l));
+    setDemoToast(`✓ Demo ended · ${room?.candidateName || 'student'} marked Attended · lead moved to Demo Attended`);
+    setTimeout(() => setDemoToast(null), 4000);
+    setDemoRoom(null);
+    setDemoMin(false);
+  };
+
+  const handleJoinDemo = async (lead) => {
+    let d = lead;
+    if (!d.zoomMeetingId) { d = await handleCreateDemoMeeting(lead); if (!d) return; }
+    setDemoMin(false);
+    setDemoRoom(d);
   };
 
   // Live session timer countdown
@@ -679,7 +772,7 @@ export default function TrainingDepartmentDashboard({
         {/* Logout Bottom Action */}
         <div className="p-4 border-t border-[#172d3b]">
           <button
-            onClick={onLogout || onClose}
+            onClick={() => (onLogout ? onLogout() : onClose ? onClose() : null)}
             className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-2xl bg-rose-950/40 border border-rose-800/50 text-rose-300 hover:text-white hover:bg-rose-900/60 transition-all text-xs font-semibold cursor-pointer shadow-xs"
             title="Sign Out of Trainer Portal"
           >
@@ -734,8 +827,10 @@ export default function TrainingDepartmentDashboard({
           </div>
 
           <div className="flex items-center gap-3">
+
+
             <button
-              onClick={onLogout || onClose}
+              onClick={() => (onLogout ? onLogout() : onClose ? onClose() : null)}
               className="flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 shadow-xs transition-all active:scale-95 cursor-pointer"
               title="Logout"
             >
@@ -744,6 +839,39 @@ export default function TrainingDepartmentDashboard({
             </button>
           </div>
         </header>
+
+        {/* Demo Zoom room – lives at page level so it stays connected while the trainer browses other sections */}
+        {demoRoom && (
+          <>
+            {demoMin && (
+              <div className="fixed bottom-4 right-4 z-[80] bg-[#0f212d] text-white rounded-2xl border border-teal-500/60 shadow-2xl px-4 py-3 flex items-center gap-3">
+                <span className="relative flex h-2.5 w-2.5"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span><span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-400"></span></span>
+                <div className="leading-tight">
+                  <div className="text-xs font-bold">Demo live · {demoRoom.candidateName}</div>
+                  <div className="text-[10px] text-slate-300">Zoom still connected</div>
+                </div>
+                <button onClick={() => setDemoMin(false)} className="px-3 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-700 text-[11px] font-bold">Expand</button>
+                <button onClick={() => endDemo(demoRoom)} className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-[11px] font-bold">End</button>
+              </div>
+            )}
+            <div className={demoMin ? 'fixed top-0 -left-[4000px] w-[1100px] pointer-events-none' : 'fixed inset-0 z-[80] bg-black/70 flex items-center justify-center p-4'}>
+              <div className="bg-[#0f212d] rounded-2xl w-full max-w-5xl p-4 space-y-3 border border-[#1b3446]">
+                <div className="flex items-center justify-between gap-3 text-white">
+                  <div>
+                    <div className="text-sm font-bold">Demo · {demoRoom.candidateName}</div>
+                    <div className="text-[11px] text-slate-300">{demoRoom.course} · {demoRoom.time || demoRoom.timeSlot}</div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={() => handleEmailDemoLink(demoRoom)} className="px-3 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold">Email link to student</button>
+                    <button onClick={() => setDemoMin(true)} className="px-3 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold">Minimize</button>
+                    <button onClick={() => endDemo(demoRoom)} className="px-3 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold">End Demo</button>
+                  </div>
+                </div>
+                <ZoomMeeting demoId={demoRoom._id} userName={trainerName} height={520} />
+              </div>
+            </div>
+          </>
+        )}
 
         {/* Toast for Demo Actions */}
         {demoToast && (
@@ -1244,6 +1372,11 @@ export default function TrainingDepartmentDashboard({
                     {/* Main Presentation Board (8 cols) */}
                     <div className="lg:col-span-8 space-y-4">
                       
+                      <ZoomMeeting
+                        link={batches[0]?.zoomLink || batches[0]?.link || import.meta.env.VITE_ZOOM_MEETING_LINK || 'https://zoom.us/j/9823412345'}
+                        userName={trainerName}
+                      />
+
                       <div className="bg-slate-900 rounded-2xl border border-slate-800 p-6 min-h-[440px] flex flex-col justify-between text-white relative shadow-lg">
                         
                         <div className="flex items-center justify-between border-b border-slate-800 pb-3">
@@ -1705,6 +1838,7 @@ export default function TrainingDepartmentDashboard({
 
                           <div className="text-[11px] text-slate-500 font-medium">
                             <div>📞 <span className="font-mono text-slate-700">{lead.phone}</span></div>
+                            {lead.email && <div>✉️ <span className="text-slate-700">{lead.email}</span></div>}
                             <div>🕒 {lead.time || lead.timeSlot || 'Today'} · {lead.mode || 'Online'}</div>
                           </div>
 
@@ -1746,6 +1880,34 @@ export default function TrainingDepartmentDashboard({
                             </div>
                           )}
 
+                          {lead.status?.toLowerCase() === 'attended' ? (
+                            <div className="mt-1 py-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] font-bold text-center">
+                              ✓ Demo Completed
+                            </div>
+                          ) : (
+                            <>
+                          <div className="flex gap-1.5">
+                            <button
+                              onClick={() => handleJoinDemo(lead)}
+                              className="flex-1 py-1.5 rounded-lg bg-[#009688] hover:bg-[#00897b] text-white text-[10.5px] font-bold transition-colors cursor-pointer text-center"
+                            >
+                              ▶ Start Demo (Zoom)
+                            </button>
+                            <button
+                              onClick={() => handleEmailDemoLink(lead)}
+                              className="flex-1 py-1.5 rounded-lg bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-200 text-[10.5px] font-bold transition-colors cursor-pointer text-center"
+                            >
+                              ✉️ Email Link to Student
+                            </button>
+                            <button
+                              onClick={() => handleSendDemoLink(lead)}
+                              title="Send via WhatsApp"
+                              className="px-2.5 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-[10.5px] font-bold transition-colors cursor-pointer"
+                            >
+                              WhatsApp
+                            </button>
+                          </div>
+
                           <div className="flex gap-1.5 pt-1.5 border-t border-slate-100">
                             <button
                               onClick={async () => {
@@ -1774,6 +1936,8 @@ export default function TrainingDepartmentDashboard({
                               Missed
                             </button>
                           </div>
+                            </>
+                          )}
                         </div>
                       ))}
                     </div>

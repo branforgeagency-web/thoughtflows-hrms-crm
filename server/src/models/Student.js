@@ -131,6 +131,22 @@ const studentSchema = new mongoose.Schema({
     careerGoal: { type: Boolean, default: true },
     trainerNote: { type: Boolean, default: false },
     documents: { type: Boolean, default: false }
+  },
+  skills: {
+    type: [String],
+    default: ['Medical Coding Fundamentals', 'ICD-10 Basics']
+  },
+  certificates: {
+    type: [Object],
+    default: []
+  },
+  receipts: {
+    type: [Object],
+    default: []
+  },
+  rewardPoints: {
+    type: Number,
+    default: 0
   }
 }, {
   timestamps: true

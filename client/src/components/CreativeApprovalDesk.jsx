@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   X, 
   Plus, 
@@ -13,6 +13,7 @@ import {
   Upload,
   MessageSquare
 } from 'lucide-react';
+import { getCreatives, createCreative, updateCreative, onDataUpdate } from '../services/api';
 
 export const INITIAL_CREATIVES = [
   {
@@ -67,14 +68,38 @@ export default function CreativeApprovalDesk({
   onQueueCountChange,
   className = "" 
 }) {
-  const [creatives, setCreatives] = useState(() => {
-    try {
-      const saved = localStorage.getItem('thoughtflows_creatives');
-      return saved ? JSON.parse(saved) : INITIAL_CREATIVES;
-    } catch {
-      return INITIAL_CREATIVES;
-    }
-  });
+  const [creatives, setCreatives] = useState(INITIAL_CREATIVES);
+
+  useEffect(() => {
+    let isMounted = true;
+    const loadCreatives = async () => {
+      try {
+        const data = await getCreatives();
+        if (isMounted && Array.isArray(data) && data.length > 0) {
+          setCreatives(data);
+          if (onQueueCountChange) {
+            const pendingCount = data.filter(c => c.status === 'Submitted').length;
+            onQueueCountChange(pendingCount);
+          }
+        }
+      } catch (err) {
+        console.warn('Backend creatives fetch notice:', err.message);
+      }
+    };
+
+    loadCreatives();
+
+    const unsub = onDataUpdate((entity) => {
+      if (entity === 'creatives' || entity === 'marketing_creatives') {
+        loadCreatives();
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      unsub();
+    };
+  }, []);
 
   const [selectedCreativeForPreview, setSelectedCreativeForPreview] = useState(null);
   const [correctionModalItem, setCorrectionModalItem] = useState(null);
@@ -94,11 +119,6 @@ export default function CreativeApprovalDesk({
 
   const updateCreatives = (newCreatives) => {
     setCreatives(newCreatives);
-    try {
-      localStorage.setItem('thoughtflows_creatives', JSON.stringify(newCreatives));
-    } catch (e) {
-      console.warn('Failed to save creatives', e);
-    }
     if (onQueueCountChange) {
       const pendingCount = newCreatives.filter(c => c.status === 'Submitted').length;
       onQueueCountChange(pendingCount);
@@ -106,10 +126,15 @@ export default function CreativeApprovalDesk({
   };
 
   // One-click Approve
-  const handleApprove = (e, item) => {
+  const handleApprove = async (e, item) => {
     e.stopPropagation();
+    try {
+      await updateCreative(item._id || item.id, { status: 'Approved' });
+    } catch (err) {
+      console.warn('Update creative error:', err.message);
+    }
     const updated = creatives.map(c => {
-      if (c.id === item.id) {
+      if (c.id === item.id || (c._id && c._id === item._id)) {
         return { ...c, status: 'Approved' };
       }
       return c;
@@ -128,12 +153,21 @@ export default function CreativeApprovalDesk({
   };
 
   // Submit Correction Request
-  const handleSubmitCorrection = (e) => {
+  const handleSubmitCorrection = async (e) => {
     e.preventDefault();
     if (!correctionModalItem) return;
 
+    try {
+      await updateCreative(correctionModalItem._id || correctionModalItem.id, { 
+        status: 'Needs Correction',
+        notes: correctionNote 
+      });
+    } catch (err) {
+      console.warn('Update creative correction error:', err.message);
+    }
+
     const updated = creatives.map(c => {
-      if (c.id === correctionModalItem.id) {
+      if (c.id === correctionModalItem.id || (c._id && c._id === correctionModalItem._id)) {
         return { 
           ...c, 
           status: 'Needs Correction',
@@ -151,7 +185,7 @@ export default function CreativeApprovalDesk({
   };
 
   // Submit New Creative Asset
-  const handleCreateCreative = (e) => {
+  const handleCreateCreative = async (e) => {
     e.preventDefault();
     const nextIndex = creatives.length + 88;
     const padded = String(nextIndex).padStart(4, '0');
@@ -170,6 +204,13 @@ export default function CreativeApprovalDesk({
       branch: newCreativeForm.branch,
       notes: 'Initial submission awaiting marketing head compliance review.'
     };
+
+    try {
+      const created = await createCreative(item);
+      if (created && created._id) item._id = created._id;
+    } catch (err) {
+      console.warn('Backend creative save error:', err.message);
+    }
 
     const updated = [item, ...creatives];
     updateCreatives(updated);

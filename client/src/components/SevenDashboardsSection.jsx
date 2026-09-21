@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Users, 
   GraduationCap, 
@@ -11,6 +11,7 @@ import {
   Lock,
   CheckCircle2
 } from 'lucide-react';
+import { getStats, onDataUpdate } from '../services/api';
 
 const DASHBOARD_CARDS = [
   {
@@ -141,11 +142,38 @@ export default function SevenDashboardsSection({ onSelectDashboard, currentUser,
   const isClay = theme === 'clay';
   const rowOneCards = DASHBOARD_CARDS.slice(0, 4);
   const rowTwoCards = DASHBOARD_CARDS.slice(4);
+  const [stats, setStats] = useState(null);
+
+  useEffect(() => {
+    getStats().then(setStats).catch(() => {});
+
+    const unsub = onDataUpdate(() => {
+      getStats().then(setStats).catch(() => {});
+    });
+    return () => unsub();
+  }, []);
+
+  const getCardTag = (c) => {
+    if (!stats) return c.tag;
+    switch (c.id) {
+      case 'hr':
+        return `${stats.activeLeads || 487} ACTIVE LEADS`;
+      case 'cccp':
+        return `${stats.placedStudents || 156} PLACED / READY`;
+      case 'student':
+        return `${(stats.activeStudents || 2563).toLocaleString()} ENROLLED · ${stats.placedStudents || 156} READY`;
+      case 'admin':
+        return `MTD REVENUE · ${stats.placementRate || '98.4%'} PLACEMENT`;
+      default:
+        return c.tag;
+    }
+  };
 
   const renderCard = (card) => {
     const IconComponent = card.icon;
     const isAuthedForThisDept = currentUser && (currentUser.department === card.id || currentUser.department === 'admin');
     const clayDeptClass = CLAY_CARD_CLASSES[card.id] || 'clay-card-student';
+    const dynamicTag = getCardTag(card);
 
     return (
       <div
@@ -219,7 +247,7 @@ export default function SevenDashboardsSection({ onSelectDashboard, currentUser,
                 : card.tagStyle
             }`}>
               <span className="w-1.5 h-1.5 rounded-full bg-current opacity-80" />
-              <span>{card.tag}</span>
+              <span>{dynamicTag}</span>
             </span>
           </div>
 

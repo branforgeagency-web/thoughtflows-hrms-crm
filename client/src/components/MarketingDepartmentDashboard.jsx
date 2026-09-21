@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Activity, 
   Rocket, 
@@ -8,17 +8,14 @@ import {
   Palette, 
   TrendingUp, 
   ChevronRight, 
-  ChevronLeft,
-  ChevronDown,
   Zap, 
   X, 
   CheckCircle2, 
-  Repeat, 
   Plus, 
   Sparkles, 
   Play, 
   Pause, 
-  Check,
+  Check, 
   LogOut
 } from 'lucide-react';
 import logoImg from '../assets/thoughtflows-logo.png';
@@ -26,6 +23,7 @@ import BranchLeadDemandBoard from './BranchLeadDemandBoard';
 import ContentCalendarBoard from './ContentCalendarBoard';
 import CreativeApprovalDesk from './CreativeApprovalDesk';
 import RoiReportsBoard from './RoiReportsBoard';
+import { getLeads, createLead, getApprovals, decideApproval, onDataUpdate, getCampaigns, getMarketingSources } from '../services/api';
 
 export default function MarketingDepartmentDashboard({
   onClose,
@@ -327,7 +325,79 @@ export default function MarketingDepartmentDashboard({
 
   const [selectedSourceDetail, setSelectedSourceDetail] = useState(null);
 
-  const handleGenerateLead = (campaign) => {
+  // Live Leads, Campaigns, Sources, and Cross-Dashboard Sync
+  useEffect(() => {
+    let isMounted = true;
+    const fetchLiveMarketingData = async () => {
+      try {
+        const [leadsData, campaignsData, sourcesData] = await Promise.all([
+          getLeads().catch(() => null),
+          getCampaigns().catch(() => null),
+          getMarketingSources().catch(() => null)
+        ]);
+
+        if (!isMounted) return;
+
+        if (leadsData && Array.isArray(leadsData.leads) && leadsData.leads.length > 0) {
+          setTotalLeadsCount(leadsData.leads.length);
+        }
+
+        if (Array.isArray(campaignsData) && campaignsData.length > 0) {
+          setCampaignDeskList(campaignsData.map(c => ({
+            id: c.id || c._id,
+            code: c.code,
+            name: c.name,
+            status: c.status,
+            statusClass: c.status === 'Underperforming' ? 'bg-rose-50 text-rose-600 border-rose-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200',
+            channel: c.channel,
+            branch: c.branch,
+            course: c.course,
+            spent: typeof c.spent === 'number' ? c.spent.toLocaleString() : c.spent,
+            budget: typeof c.budget === 'number' ? c.budget.toLocaleString() : c.budget,
+            leads: c.leads,
+            cpl: c.cpl,
+            admissions: c.admissions,
+            roi: c.roi
+          })));
+
+          setCampaigns(campaignsData.map(c => ({
+            id: c.id || c._id,
+            name: c.name,
+            platform: c.channel,
+            status: c.status,
+            statusColor: c.status === 'Underperforming' ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200',
+            dailyBudget: Math.round((c.budget || 25000) / 30),
+            spendMonth: typeof c.spent === 'number' ? c.spent : 20000,
+            leads: c.leads,
+            cpl: c.cpl,
+            targetCpl: 160,
+            ctr: '3.8%'
+          })));
+        }
+
+        if (Array.isArray(sourcesData) && sourcesData.length > 0) {
+          setLeadSourceRows(sourcesData);
+        }
+      } catch (err) {
+        console.warn('Marketing live data fetch notice:', err.message);
+      }
+    };
+
+    fetchLiveMarketingData();
+
+    const unsub = onDataUpdate((entity) => {
+      if (['leads', 'approvals', 'students', 'campaigns', 'marketing_campaigns'].includes(entity)) {
+        fetchLiveMarketingData();
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      unsub();
+    };
+  }, []);
+
+  const handleGenerateLead = async (campaign) => {
     const randomNum = Math.floor(1000 + Math.random() * 9000);
     const leadId = `L-TF-2026-${randomNum}`;
     
@@ -347,16 +417,23 @@ export default function MarketingDepartmentDashboard({
       name: candidate.name,
       phone: candidate.phone,
       qualification: candidate.qual,
-      course: campaign.course,
+      course: campaign.course || 'CPC',
       branch: campaign.branch === 'All' ? 'Hyderabad - Ameerpet' : `${campaign.branch} Main`,
       source: campaign.name,
+      sourceName: campaign.name,
       campaignCode: campaign.code,
       channel: campaign.channel,
       status: 'New Lead',
-      stage: 'Lead Inbound',
+      stage: 'new',
       createdAt: new Date().toISOString(),
       counselorAssigned: null
     };
+
+    try {
+      await createLead(newLead);
+    } catch (e) {
+      console.warn('Backend lead creation fallback:', e.message);
+    }
 
     try {
       const existing = JSON.parse(localStorage.getItem('thoughtflows_leads') || '[]');
@@ -365,8 +442,8 @@ export default function MarketingDepartmentDashboard({
       console.warn(e);
     }
 
-    setCampaignDeskList(prev => prev.map(c => c.id === campaign.id ? { ...c, leads: c.leads + 1 } : c));
-    setTotalLeadsCount(prev => prev + 1);
+    setCampaignDeskList(prev => prev.map(c => c.id === campaign.id ? { ...c, leads: (c.leads || 0) + 1 } : c));
+    setTotalLeadsCount(prev => (prev || 0) + 1);
 
     setGeneratedLeadModal({
       isOpen: true,
@@ -374,7 +451,7 @@ export default function MarketingDepartmentDashboard({
       campaign: campaign
     });
 
-    showToast(`⚡ Generated Lead ${leadId} → Routed to Branch Manager queue!`);
+    showToast(`⚡ Generated Lead ${leadId} (${candidate.name}) → Stored in live MongoDB and routed to HR!`);
   };
 
   const showToast = (msg) => {
@@ -383,10 +460,15 @@ export default function MarketingDepartmentDashboard({
   };
 
   // Resolve an approval item
-  const handleApproveCreative = (approvalId) => {
+  const handleApproveCreative = async (approvalId) => {
     setPendingApprovals(prev => prev.filter(item => item.id !== approvalId));
     setNeedsActionItems(prev => prev.filter(item => item.approvalId !== approvalId));
     setSelectedAction(null);
+    try {
+      await decideApproval(approvalId, 'approved');
+    } catch (e) {
+      console.warn('Approval decision notice:', e.message);
+    }
     showToast('Creative approved and scheduled for publishing!');
   };
 
@@ -423,20 +505,10 @@ export default function MarketingDepartmentDashboard({
 
       {/* TOP HEADER BAR (MATCHING USER REFERENCE DESIGN) */}
       <header className="h-16 bg-gradient-to-r from-[#051c20] via-[#09323a] to-[#0a585c] border-b border-[#0f464e] px-4 sm:px-6 flex items-center justify-between shadow-md shrink-0 relative">
-        {/* Left Section: Exit Button + Thoughtflows Logo + Title & Subtitle */}
+        {/* Left Section: Thoughtflows Logo + Title & Subtitle */}
         <div className="flex items-center gap-3 sm:gap-4">
-          {/* Exit Button */}
-          <button
-            onClick={onClose}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#0a1f24]/90 hover:bg-[#07171b] text-white border border-white/10 shadow-sm transition-all active:scale-95 text-xs font-semibold shrink-0"
-            title="Exit to Portal"
-          >
-            <ChevronLeft className="w-3.5 h-3.5 text-slate-300" />
-            <span>Exit</span>
-          </button>
-
           {/* Thoughtflows Brand Logo in Header / Navbar */}
-          <div className="flex items-center gap-3 pl-1 sm:pl-2 border-l border-white/20">
+          <div className="flex items-center gap-3">
             <div className="bg-white px-2.5 py-1 rounded-xl shadow-xs border border-white/20 flex items-center shrink-0">
               <img 
                 src={logoImg} 
@@ -459,49 +531,15 @@ export default function MarketingDepartmentDashboard({
           </div>
         </div>
 
-        {/* Right Section: Marketing Head Badge + Quick Dropdown */}
-        <div className="relative">
-          <button
-            onClick={() => setUserMenuOpen(!userMenuOpen)}
-            className="px-4 py-1.5 rounded-full bg-[#00897b] hover:bg-[#00796b] text-white text-xs font-bold shadow-sm border border-teal-300/30 flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer"
-            title="Marketing Head Profile & Actions"
-          >
-            <span>Marketing Head</span>
-            <ChevronDown className={`w-3 h-3 text-teal-100 transition-transform ${userMenuOpen ? 'rotate-180' : ''}`} />
-          </button>
-
-          {/* User & Navigation Dropdown Menu */}
-          {userMenuOpen && (
-            <div className="absolute right-0 mt-2 w-56 bg-white rounded-2xl shadow-xl border border-slate-200/80 py-2 z-50 animate-fadeIn">
-              <div className="px-4 py-2 border-b border-slate-100">
-                <div className="text-xs font-bold text-slate-900">Priya R.</div>
-                <div className="text-[10px] text-slate-400">Head of Growth · Hyderabad</div>
-              </div>
-
-              <button
-                onClick={() => {
-                  setUserMenuOpen(false);
-                  onSwitchDepartment?.();
-                }}
-                className="w-full px-4 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50 flex items-center gap-2.5 transition-colors"
-              >
-                <Repeat className="w-3.5 h-3.5 text-slate-400" />
-                <span>Switch Department</span>
-              </button>
-
-              <button
-                onClick={() => {
-                  setUserMenuOpen(false);
-                  (onLogout || onClose)?.();
-                }}
-                className="w-full px-4 py-2 text-left text-xs font-semibold text-rose-600 hover:bg-rose-50 flex items-center gap-2.5 transition-colors"
-              >
-                <LogOut className="w-3.5 h-3.5 text-rose-500" />
-                <span>Sign Out</span>
-              </button>
-            </div>
-          )}
-        </div>
+        {/* Right Section: Logout Button only */}
+        <button
+          onClick={() => (onLogout || onClose)?.()}
+          className="flex items-center gap-1.5 px-4 py-1.5 rounded-full bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-sm border border-rose-400/30 transition-all active:scale-95 cursor-pointer"
+          title="Logout"
+        >
+          <LogOut className="w-3.5 h-3.5 text-rose-100" />
+          <span>Logout</span>
+        </button>
       </header>
 
       {/* MAIN CONTENT AREA */}

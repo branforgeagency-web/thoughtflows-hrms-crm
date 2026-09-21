@@ -1,7 +1,11 @@
 import React from 'react';
-import { ArrowRight, GraduationCap, Users, BarChart3 } from 'lucide-react';
+import { ArrowRight } from 'lucide-react';
 
-export default function PortalHero({ onOpenDashboard, onExploreDepartments, theme = 'clay' }) {
+export default function PortalHero({ 
+  onOpenDashboard, 
+  onExploreDepartments, 
+  theme = 'clay' 
+}) {
   const isClay = theme === 'clay';
 
   return (
@@ -43,7 +47,7 @@ export default function PortalHero({ onOpenDashboard, onExploreDepartments, them
             {/* Open My Dashboard Button */}
             <button
               onClick={onOpenDashboard}
-              className={`group flex items-center justify-center gap-2.5 px-8 py-3.5 text-sm font-bold transition-all duration-200 ${
+              className={`group flex items-center justify-center gap-2.5 px-8 py-3.5 text-sm font-bold transition-all duration-200 cursor-pointer ${
                 isClay
                   ? 'clay-btn clay-btn-primary'
                   : 'rounded-full bg-[#0b6b66] hover:bg-[#085551] text-white shadow-xl shadow-[#0b6b66]/25 hover:scale-[1.02] active:scale-[0.98]'
@@ -66,84 +70,33 @@ export default function PortalHero({ onOpenDashboard, onExploreDepartments, them
             </button>
           </div>
 
-          {/* Metrics & Indicator Stats */}
-          {isClay ? (
-            <div className="mt-10 sm:mt-12 flex flex-wrap items-center gap-3 sm:gap-4">
-              {/* Metric 1 */}
-              <div className="clay-card px-4 py-2.5 flex items-center gap-3 rounded-2xl hover:scale-[1.02] transition-transform">
-                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#0d9488] to-[#047857] text-white flex items-center justify-center clay-squircle">
-                  <GraduationCap className="w-5 h-5 stroke-[2.2]" />
+          {/* Stats Strip */}
+          <div className="mt-10 sm:mt-12 flex flex-nowrap items-center gap-5 sm:gap-8">
+            {[
+              { value: '35,000+', label: 'STUDENTS TRAINED' },
+              { value: '25,000+', label: 'PLACED IN CAREERS' },
+              { value: '15',      label: 'BRANCHES ACROSS INDIA' },
+              { value: '121',     label: 'ACTIVE COURSES' },
+            ].map((stat, i) => (
+              <React.Fragment key={stat.label}>
+                {i > 0 && (
+                  <div className="h-8 w-px bg-[#094743]/20 shrink-0" />
+                )}
+                <div className="text-left shrink-0">
+                  <div className={`text-2xl sm:text-3xl font-extrabold tracking-tight ${
+                    i === 0 ? 'text-[#f59e0b]' :
+                    i === 1 ? 'text-[#10b981]' :
+                    'text-[#073734]'
+                  }`}>
+                    {stat.value}
+                  </div>
+                  <div className="text-[10px] sm:text-[11px] font-bold tracking-[0.16em] text-[#4d7874] uppercase mt-0.5">
+                    {stat.label}
+                  </div>
                 </div>
-                <div className="text-left text-xs font-bold text-[#094743] leading-tight">
-                  <div>Students</div>
-                  <div className="text-[11px] font-medium text-[#557b77]">Empowered</div>
-                </div>
-              </div>
-
-              {/* Metric 2 */}
-              <div className="clay-card px-4 py-2.5 flex items-center gap-3 rounded-2xl hover:scale-[1.02] transition-transform">
-                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#0284c7] to-[#0369a1] text-white flex items-center justify-center clay-squircle">
-                  <Users className="w-5 h-5 stroke-[2.2]" />
-                </div>
-                <div className="text-left text-xs font-bold text-[#094743] leading-tight">
-                  <div>Branches</div>
-                  <div className="text-[11px] font-medium text-[#557b77]">United (12 Hubs)</div>
-                </div>
-              </div>
-
-              {/* Metric 3 */}
-              <div className="clay-card px-4 py-2.5 flex items-center gap-3 rounded-2xl hover:scale-[1.02] transition-transform">
-                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#f59e0b] to-[#ea580c] text-white flex items-center justify-center clay-squircle">
-                  <BarChart3 className="w-5 h-5 stroke-[2.2]" />
-                </div>
-                <div className="text-left text-xs font-bold text-[#094743] leading-tight">
-                  <div>Careers</div>
-                  <div className="text-[11px] font-medium text-[#557b77]">Transformed</div>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="mt-10 sm:mt-12 flex items-center gap-4 sm:gap-7">
-              {/* Metric 1 */}
-              <div className="flex items-center gap-3">
-                <div className="text-[#094743]">
-                  <GraduationCap className="w-6 h-6 stroke-[2.2]" />
-                </div>
-                <div className="text-left text-xs font-semibold text-[#094743] leading-tight">
-                  <div>Students</div>
-                  <div>Empowered</div>
-                </div>
-              </div>
-
-              {/* Vertical Divider */}
-              <div className="h-7 w-[1px] bg-[#094743]/25" />
-
-              {/* Metric 2 */}
-              <div className="flex items-center gap-3">
-                <div className="text-[#094743]">
-                  <Users className="w-6 h-6 stroke-[2.2]" />
-                </div>
-                <div className="text-left text-xs font-semibold text-[#094743] leading-tight">
-                  <div>Branches</div>
-                  <div>United</div>
-                </div>
-              </div>
-
-              {/* Vertical Divider */}
-              <div className="h-7 w-[1px] bg-[#094743]/25" />
-
-              {/* Metric 3 */}
-              <div className="flex items-center gap-3">
-                <div className="text-[#094743]">
-                  <BarChart3 className="w-6 h-6 stroke-[2.2]" />
-                </div>
-                <div className="text-left text-xs font-semibold text-[#094743] leading-tight">
-                  <div>Careers</div>
-                  <div>Transformed</div>
-                </div>
-              </div>
-            </div>
-          )}
+              </React.Fragment>
+            ))}
+          </div>
         </div>
       </div>
 

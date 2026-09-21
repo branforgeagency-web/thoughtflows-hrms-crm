@@ -37,9 +37,9 @@ import HrHandoverDesk from './HrHandoverDesk';
 import LeadCallModal from './LeadCallModal';
 import BookNewDemoModal from './BookNewDemoModal';
 import AddLeadModal from './AddLeadModal';
-import { getStudents, getLeads, createLead, getDemos, createDemo } from '../services/api';
+import { getStudents, getLeads, createLead, getDemos, createDemo, onDataUpdate } from '../services/api';
 
-export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, theme = 'clay' }) {
+export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, onSwitchDepartment, theme = 'clay' }) {
   // Persist active tab across browser refresh
   const [activeTab, setActiveTab] = useState(() => {
     try {
@@ -61,6 +61,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   const [searchQuery, setSearchQuery] = useState('');
   const [isOnBreak, setIsOnBreak] = useState(false);
   const [closureSubmitted, setClosureSubmitted] = useState(false);
+  const [dashMenuOpen, setDashMenuOpen] = useState(false);
   const [barTheme, setBarTheme] = useState(() => {
     try {
       return localStorage.getItem('thoughtflows_hr_theme') || (theme === 'clay' ? 'clay' : 'turquoise');
@@ -84,6 +85,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   const [showBookDemoModal, setShowBookDemoModal] = useState(false);
   const [bookDemoInitialData, setBookDemoInitialData] = useState(null);
   const [showAddLeadModal, setShowAddLeadModal] = useState(false);
+  const [studentLogin, setStudentLogin] = useState(null);
   const [toastMsg, setToastMsg] = useState(null);
 
   // Real database states
@@ -117,6 +119,12 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
 
   useEffect(() => {
     loadAllData();
+    const unsub = onDataUpdate((entity) => {
+      if (entity === 'leads' || entity === 'students' || entity === 'demos') {
+        loadAllData();
+      }
+    });
+    return unsub;
   }, []);
 
   const handleAddLeadSubmit = async (leadData) => {
@@ -129,7 +137,8 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       const created = await createLead(payload);
       setLeads(prev => [created, ...prev]);
       setShowAddLeadModal(false);
-      showToast(`✓ Added real lead: ${created.fullName}`);
+      if (created.studentLogin?.password) setStudentLogin({ name: created.fullName, phone: created.phone, ...created.studentLogin });
+      showToast(created.studentLogin?.existing ? `✓ Added lead: ${created.fullName} (login already exists for this email)` : `✓ Added real lead: ${created.fullName}`);
     } catch (err) {
       console.error('Failed to create lead:', err);
       showToast('Error saving lead to database');
@@ -371,8 +380,11 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
           </button>
         </div>
 
-        {/* Right: Theme Switcher, User Profile, Break, Logout */}
-        <div className="flex items-center gap-2">
+        {/* Right: Quick Controls & Session Actions */}
+        <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
+
+
+
           {/* Theme Switcher Button */}
           <button
             onClick={handleCycleTheme}
@@ -627,7 +639,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             Good afternoon, <span className="text-[#0e6977]">{userFirstName}</span>
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
-            Mon • 21 May 2026 • {branchName} • You have <strong className="text-slate-800 font-semibold">12 calls</strong> to make today
+            Mon • 21 May 2026 • {branchName} • You have <strong className="text-slate-800 font-semibold">{closureMetrics.pendingFus} pending follow-ups</strong> in your pipeline
           </p>
         </div>
 
@@ -639,27 +651,32 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             </div>
             <div>
               <span className="text-[10px] font-extrabold tracking-wider uppercase text-amber-800 bg-amber-200/60 px-2 py-0.5 rounded-full border border-amber-300/50">
-                MONTHLY TARGET • MAY
+                MONTHLY TARGET • CURRENT CYCLE
               </span>
               <h3 className="text-base sm:text-lg font-bold text-slate-900 mt-1">
-                Target 25 admissions • 23 closed
+                Target 25 admissions • {students.length} closed
               </h3>
               <p className="text-xs text-amber-900/80">
-                2 more to hit your target — then each extra admission earns incentive (from ₹500).
+                {students.length >= 25 
+                  ? `Goal achieved! ${students.length - 25} surplus admissions qualify for performance incentive.` 
+                  : `${25 - students.length} more to hit your target — then each extra admission earns incentive.`}
               </p>
             </div>
           </div>
 
           <div className="w-full sm:w-64 flex flex-col items-end">
             <div className="flex items-center justify-between w-full text-xs font-extrabold text-slate-800 mb-1">
-              <span>23 / 25</span>
-              <span className="text-amber-700">92%</span>
+              <span>{students.length} / 25</span>
+              <span className="text-amber-700">{Math.min(100, Math.round((students.length / 25) * 100))}%</span>
             </div>
             <div className="w-full h-2.5 bg-amber-200/60 rounded-full overflow-hidden">
-              <div className="h-full bg-gradient-to-r from-amber-400 to-[#73C1CC] rounded-full w-[92%]" />
+              <div 
+                className="h-full bg-gradient-to-r from-amber-400 to-[#73C1CC] rounded-full transition-all duration-500" 
+                style={{ width: `${Math.min(100, Math.round((students.length / 25) * 100))}%` }}
+              />
             </div>
             <span className="text-[10px] font-bold text-amber-800 mt-1 uppercase tracking-wider">
-              MAY MTD EARNED: <strong className="text-emerald-700">₹0</strong>
+              FEES COLLECTED: <strong className="text-emerald-700">{closureMetrics.feesCollected}</strong>
             </span>
           </div>
         </div>
@@ -670,14 +687,14 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
           <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs hover:border-[#73C1CC]/70 transition-all flex flex-col justify-between text-left">
             <div className="flex items-center justify-between mb-3">
               <span className="text-[11px] font-extrabold tracking-wider text-slate-500 uppercase">
-                CALLS TODAY
+                CALLS LOGGED
               </span>
               <div className="w-7 h-7 rounded-full bg-[#e6f7f9] text-[#0e6977] flex items-center justify-center">
                 <Phone className="w-3.5 h-3.5" />
               </div>
             </div>
-            <div className="text-3xl font-extrabold text-slate-900">12</div>
-            <div className="text-xs text-slate-500 mt-1 font-medium">6 done • 6 pending</div>
+            <div className="text-3xl font-extrabold text-slate-900">{closureMetrics.callsMade}</div>
+            <div className="text-xs text-slate-500 mt-1 font-medium">{closureMetrics.connected} connected</div>
           </div>
 
           {/* Card 2 */}
@@ -690,8 +707,8 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
                 <Clock className="w-3.5 h-3.5" />
               </div>
             </div>
-            <div className="text-3xl font-extrabold text-amber-600">8</div>
-            <div className="text-xs text-rose-500 mt-1 font-bold">3 overdue • act now</div>
+            <div className="text-3xl font-extrabold text-amber-600">{closureMetrics.pendingFus}</div>
+            <div className="text-xs text-rose-500 mt-1 font-bold">Active in pipeline</div>
           </div>
 
           {/* Card 3 */}
@@ -705,29 +722,29 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
           >
             <div className="flex items-center justify-between mb-3">
               <span className="text-[11px] font-extrabold tracking-wider text-slate-500 uppercase">
-                DEMOS TODAY
+                DEMOS BOOKED
               </span>
               <div className="w-7 h-7 rounded-full bg-[#e6f7f9] text-[#0e6977] flex items-center justify-center group-hover:scale-110 transition-transform">
                 <Calendar className="w-3.5 h-3.5" />
               </div>
             </div>
-            <div className="text-3xl font-extrabold text-slate-900">5</div>
-            <div className="text-xs text-slate-500 mt-1 font-medium">1 done • 4 upcoming</div>
+            <div className="text-3xl font-extrabold text-slate-900">{demos.length}</div>
+            <div className="text-xs text-slate-500 mt-1 font-medium">{demos.filter(d => d.status === 'booked').length} upcoming · {demos.filter(d => d.status === 'attended').length} attended</div>
           </div>
 
           {/* Card 4 */}
           <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs hover:border-[#73C1CC]/70 transition-all flex flex-col justify-between text-left">
             <div className="flex items-center justify-between mb-3">
               <span className="text-[11px] font-extrabold tracking-wider text-slate-500 uppercase">
-                ADMISSIONS • MTD
+                ADMISSIONS • LIVE
               </span>
               <div className="w-7 h-7 rounded-full bg-[#e6f7f9] text-[#0e6977] flex items-center justify-center">
                 <CheckCircle2 className="w-3.5 h-3.5" />
               </div>
             </div>
-            <div className="text-3xl font-extrabold text-[#0e6977]">23</div>
+            <div className="text-3xl font-extrabold text-[#0e6977]">{students.length}</div>
             <div className="text-xs text-[#0e6977] mt-1 font-bold flex items-center gap-1">
-              <TrendingUp className="w-3 h-3" /> ↑ 12% vs last month
+              <TrendingUp className="w-3 h-3" /> Live Enrolled Students
             </div>
           </div>
         </div>
@@ -1005,6 +1022,35 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       />
 
       {/* Add New Lead Modal */}
+      {studentLogin && (
+        <div className="fixed inset-0 z-[90] bg-black/60 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl w-full max-w-sm p-6 space-y-4 shadow-xl">
+            <h3 className="text-base font-bold text-slate-900">Student login created</h3>
+            <p className="text-xs text-slate-500">{studentLogin.name} has been added to Users. Share these dashboard credentials with the student.</p>
+            <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 text-xs space-y-1.5 font-mono">
+              <div><span className="text-slate-400">Email: </span><span className="font-bold text-slate-900">{studentLogin.email}</span></div>
+              <div><span className="text-slate-400">Password: </span><span className="font-bold text-slate-900">{studentLogin.password}</span></div>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => { try { navigator.clipboard.writeText(`Email: ${studentLogin.email}\nPassword: ${studentLogin.password}`); } catch (_) {} }}
+                className="flex-1 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold"
+              >Copy</button>
+              <button
+                onClick={() => {
+                  let p = String(studentLogin.phone || '').replace(/\D/g, '');
+                  if (p.length === 10) p = '91' + p;
+                  const text = `Hi ${studentLogin.name}, welcome to Thoughtflows! Your student dashboard login\nEmail: ${studentLogin.email}\nPassword: ${studentLogin.password}`;
+                  window.open(`https://wa.me/${p}?text=${encodeURIComponent(text)}`, '_blank', 'noopener');
+                }}
+                className="flex-1 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold"
+              >Send via WhatsApp</button>
+            </div>
+            <button onClick={() => setStudentLogin(null)} className="w-full py-2 rounded-xl bg-[#009688] hover:bg-[#00897b] text-white text-xs font-bold">Done</button>
+          </div>
+        </div>
+      )}
+
       <AddLeadModal
         isOpen={showAddLeadModal}
         onClose={() => setShowAddLeadModal(false)}

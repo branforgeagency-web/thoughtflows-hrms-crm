@@ -14,7 +14,7 @@ import {
   UserPlus
 } from 'lucide-react';
 
-import { getLeads, updateLead } from '../services/api';
+import { getLeads, updateLead, createStudent } from '../services/api';
 
 export default function HrPipelineView({ leads: propLeads, onRefreshLeads, onOpenCatalog, onAddLeadClick }) {
   const [activeFilter, setActiveFilter] = useState('all'); // all, calls, overdue, audits
@@ -26,9 +26,11 @@ export default function HrPipelineView({ leads: propLeads, onRefreshLeads, onOpe
     if (propLeads && propLeads.length > 0) {
       setLeads(propLeads);
     } else {
-      getLeads().then(res => {
-        if (res?.leads) setLeads(res.leads);
-      }).catch(err => console.error('Error fetching leads:', err));
+      getLeads()
+        .then(res => {
+          if (res && res.leads) setLeads(res.leads);
+        })
+        .catch(err => console.error('Error fetching leads:', err));
     }
   }, [propLeads]);
 
@@ -44,9 +46,45 @@ export default function HrPipelineView({ leads: propLeads, onRefreshLeads, onOpe
 
     try {
       await updateLead(leadId, { stage: nextStage });
+      const targetLead = leads.find(l => l._id === leadId || l.id === leadId);
+
+      // When advanced to 'admitted', auto-enroll as live Student in MongoDB
+      if (nextStage === 'admitted' && targetLead) {
+        try {
+          await createStudent({
+            studentId: `TFMC0Y${Math.floor(1000 + Math.random() * 9000)}`,
+            name: (targetLead.fullName || targetLead.name || 'Admitted Student').toUpperCase(),
+            phone: targetLead.phone || '99999 99999',
+            email: targetLead.email || `student.${Date.now().toString().slice(-4)}@thoughtflows.in`,
+            course: targetLead.course || 'CPC',
+            mode: 'Online',
+            batchDate: 'May 2026',
+            hrName: targetLead.counselorAssigned || 'Kavitha N.',
+            batchTiming: '8-10 PM Weekdays',
+            qualification: targetLead.education || 'Graduate',
+            qualTag: 'Life Sci',
+            location: targetLead.location || 'Coimbatore',
+            source: targetLead.sourceName || targetLead.source || 'LEAD PIPELINE',
+            onboardStatus: '7/7 ✓',
+            syllabusModule: 'Module 1',
+            mockInterview: 'Pending',
+            examStatus: 'Not Booked',
+            certified: 'Non-certified',
+            placementStatus: 'In course',
+            feeStatus: 'Part Paid',
+            feeAmount: '₹15,000 / ₹25,000',
+            courseFee: 25000,
+            statusGroup: 'in_course',
+            handoverStatus: 'Ready'
+          });
+        } catch (enrollErr) {
+          console.warn('Auto-enroll student notice:', enrollErr.message);
+        }
+      }
+
       setLeads(prev => prev.map(l => (l._id === leadId || l.id === leadId) ? { ...l, stage: nextStage } : l));
       if (onRefreshLeads) onRefreshLeads();
-      triggerAction(`✓ Advanced lead to ${nextStage.replace('_', ' ').toUpperCase()}`);
+      triggerAction(`✓ Advanced lead to ${nextStage.replace('_', ' ').toUpperCase()}${nextStage === 'admitted' ? ' & Enrolled as Student' : ''}`);
     } catch (err) {
       console.error('Failed to advance lead stage:', err);
       triggerAction('Error updating lead stage');

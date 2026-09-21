@@ -139,7 +139,13 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
       return;
     }
 
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      showToast("Please enter the student's email (used for their dashboard login)");
+      return;
+    }
+
     const newLead = {
+      createStudentLogin: true,
       id: `lead-${Date.now()}`,
       name: fullName.trim(),
       phone: mobileNumber.trim(),
@@ -387,15 +393,17 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
                 </div>
                 <div>
                   <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-400 uppercase mb-1.5">
-                    EMAIL
+                    STUDENT EMAIL *
                   </label>
                   <input
                     type="email"
-                    placeholder="name@email.com"
+                    required
+                    placeholder="student's existing email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#0e6977] transition-all font-sans"
                   />
+                  <p className="text-[10px] text-slate-400 mt-1">Student dashboard login: this email + an auto-generated TF password.</p>
                 </div>
               </div>
 
@@ -492,8 +500,20 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
                     onChange={(e) => setPreferredBranch(e.target.value)}
                     className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#0e6977] transition-all font-sans cursor-pointer"
                   >
-                    <option value="Saravanampatti (CBE)">Saravanampatti (CBE)</option>
-                    <option value="Gandhipuram (CBE)">Gandhipuram (CBE)</option>
+                    <option value="Ameerpet (Hyderabad)">Ameerpet (Hyderabad)</option>
+                    <option value="Dilsukhnagar (Hyderabad)">Dilsukhnagar (Hyderabad)</option>
+                    <option value="Gandhipuram (Coimbatore)">Gandhipuram (Coimbatore)</option>
+                    <option value="Hopes (Coimbatore)">Hopes (Coimbatore)</option>
+                    <option value="Kochi (Kerala)">Kochi (Kerala)</option>
+                    <option value="Salem (Tamil Nadu)">Salem (Tamil Nadu)</option>
+                    <option value="Saravanampatti (Coimbatore)">Saravanampatti (Coimbatore)</option>
+                    <option value="Tirupati (Andhra Pradesh)">Tirupati (Andhra Pradesh)</option>
+                    <option value="Trichy (Tamil Nadu)">Trichy (Tamil Nadu)</option>
+                    <option value="Trivandrum (Kerala)">Trivandrum (Kerala)</option>
+                    <option value="Vizag (Andhra Pradesh)">Vizag (Andhra Pradesh)</option>
+                    <option value="Pune (Maharashtra)">Pune (Maharashtra)</option>
+                    <option value="Kollapur (Maharashtra)">Kollapur (Maharashtra)</option>
+                    <option value="Theni (Tamil Nadu)">Theni (Tamil Nadu)</option>
                     <option value="Online Live (Virtual)">Online Live (Virtual)</option>
                   </select>
                 </div>

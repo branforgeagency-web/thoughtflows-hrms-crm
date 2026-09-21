@@ -9,6 +9,12 @@ const demoSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  email: {
+    type: String,
+    default: '',
+    trim: true,
+    lowercase: true
+  },
   course: {
     type: String,
     default: 'CPC Intensive Medical Coding'
@@ -108,6 +114,10 @@ const demoSchema = new mongoose.Schema({
   link: {
     type: String,
     default: 'https://zoom.us/j/9823412345'
+  },
+  zoomMeetingId: {
+    type: String,
+    default: ''
   },
   note: {
     type: String,

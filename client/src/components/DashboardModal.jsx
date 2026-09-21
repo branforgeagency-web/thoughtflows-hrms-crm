@@ -64,19 +64,27 @@ export default function DashboardModal({
     });
   }, [isOpen, selectedDashboard]);
 
+  if (!isOpen) return null;
+
+  const handleSignOutAction = () => {
+    if (onSignOut) {
+      onSignOut();
+    } else if (onClose) {
+      onClose();
+    }
+  };
+
   let userDept = currentUser?.department;
   if (!userDept || userDept === 'Medical Coding Faculty') userDept = 'training';
 
-  const deptId = (currentUser && currentUser.department !== 'admin')
-    ? userDept
-    : (selectedDashboard?.id || userDept || 'hr');
+  const deptId = selectedDashboard?.id || userDept || 'hr';
 
   if (deptId === 'training') {
     return (
       <TrainingDepartmentDashboard
         onClose={onClose}
         currentUser={currentUser}
-        onLogout={onSignOut}
+        onLogout={handleSignOutAction}
         onSwitchDepartment={onSwitchDepartment}
         theme={theme}
       />
@@ -88,7 +96,7 @@ export default function DashboardModal({
       <HrDepartmentDashboard
         onClose={onClose}
         currentUser={currentUser}
-        onLogout={onSignOut}
+        onLogout={handleSignOutAction}
         onSwitchDepartment={onSwitchDepartment}
         theme={theme}
       />
@@ -100,7 +108,7 @@ export default function DashboardModal({
       <StudentPortalDashboard
         onClose={onClose}
         currentUser={currentUser}
-        onLogout={onSignOut || onSwitchDepartment}
+        onLogout={handleSignOutAction}
         onSwitchDepartment={onSwitchDepartment}
         theme={theme}
       />
@@ -112,7 +120,7 @@ export default function DashboardModal({
       <AdminManagementDashboard
         onClose={onClose}
         currentUser={currentUser}
-        onLogout={onSignOut}
+        onLogout={handleSignOutAction}
         onSwitchDepartment={onSwitchDepartment}
         theme={theme}
       />
@@ -124,7 +132,7 @@ export default function DashboardModal({
       <CccpDashboard
         onClose={onClose}
         currentUser={currentUser}
-        onLogout={onSignOut}
+        onLogout={handleSignOutAction}
         onSwitchDepartment={onSwitchDepartment}
         theme={theme}
       />
@@ -136,7 +144,7 @@ export default function DashboardModal({
       <MarketingDepartmentDashboard
         onClose={onClose}
         currentUser={currentUser}
-        onLogout={onSignOut}
+        onLogout={handleSignOutAction}
         onSwitchDepartment={onSwitchDepartment}
         theme={theme}
       />
@@ -148,6 +156,8 @@ export default function DashboardModal({
       <LeadershipHubDashboard
         onClose={onClose}
         currentUser={currentUser}
+        onLogout={handleSignOutAction}
+        onSwitchDepartment={onSwitchDepartment}
       />
     );
   }

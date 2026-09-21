@@ -510,16 +510,20 @@ export default function BranchLeadDemandBoard({
                   onChange={(e) => setRequestForm({ ...requestForm, branch: e.target.value })}
                   className="w-full px-3 py-2 rounded-xl border border-slate-200 text-slate-800 text-xs focus:ring-2 focus:ring-teal-500 focus:outline-none"
                 >
-                  <option value="Hyderabad">Hyderabad (Madhapur &amp; Ameerpet)</option>
-                  <option value="Coimbatore">Coimbatore (Gandhipuram &amp; Hopes)</option>
-                  <option value="Salem">Salem Main Branch</option>
-                  <option value="Kochi">Kochi (MG Road)</option>
-                  <option value="Chennai (Guindy HQ)">Chennai (Guindy HQ)</option>
-                  <option value="Bangalore (Indiranagar)">Bangalore (Indiranagar)</option>
-                  <option value="Madurai">Madurai Branch</option>
-                  <option value="Trichy">Trichy Branch</option>
-                  <option value="Tirunelveli">Tirunelveli Branch</option>
-                  <option value="Vellore">Vellore Branch</option>
+                  <option value="Ameerpet">Ameerpet (Hyderabad)</option>
+                  <option value="Dilsukhnagar">Dilsukhnagar (Hyderabad)</option>
+                  <option value="Gandhipuram">Gandhipuram (Coimbatore)</option>
+                  <option value="Hopes">Hopes (Coimbatore)</option>
+                  <option value="Kochi">Kochi (Kerala)</option>
+                  <option value="Salem">Salem (Tamil Nadu)</option>
+                  <option value="Saravanampatti">Saravanampatti (Coimbatore)</option>
+                  <option value="Tirupati">Tirupati (Andhra Pradesh)</option>
+                  <option value="Trichy">Trichy (Tamil Nadu)</option>
+                  <option value="Trivandrum">Trivandrum (Kerala)</option>
+                  <option value="Vizag">Vizag (Andhra Pradesh)</option>
+                  <option value="Pune">Pune (Maharashtra)</option>
+                  <option value="Kollapur">Kollapur (Maharashtra)</option>
+                  <option value="Theni">Theni (Tamil Nadu)</option>
                 </select>
               </div>
 

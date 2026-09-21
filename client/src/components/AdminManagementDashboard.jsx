@@ -48,9 +48,12 @@ import {
   Bell,
   Home,
   SlidersHorizontal,
-  ChevronDown
+  ChevronDown,
+  ArrowRight,
+  Repeat
 } from 'lucide-react';
 import axios from 'axios';
+import { onDataUpdate, getStats, getAdminSlabs, updateAdminSlabs, getAuditLogs, createAuditLog } from '../services/api';
 
 // Exact Academy Roles matching User screenshot
 const ACADEMY_ROLES = [
@@ -136,7 +139,7 @@ const INITIAL_USERS = [
   { id: 'usr_7', name: 'Keerthana R.', email: 'student@thoughtflows.in', password: 'Scholar#TF26', role: 'Student Scholar', department: 'Student Scholar', branch: 'Trichy', status: 'Active', lastLogin: '3 hours ago', avatarBg: 'bg-teal-600' }
 ];
 
-// 11 Official Academy Branches matching User Reference (Coimbatore, Hyderabad, Kerala, Tamil Nadu, Andhra Pradesh)
+// 14 Official Academy Branches matching User Reference (South India Zone + Pune, Kollapur, Theni)
 const ACADEMY_BRANCHES = [
   { 
     id: 'saravanampatti',
@@ -449,6 +452,44 @@ export default function AdminManagementDashboard({
   const [activeModule, setActiveModule] = useState('overview');
   const [searchQuery, setSearchQuery] = useState('');
   const [toastMessage, setToastMessage] = useState(null);
+  const [dashboardsMenuOpen, setDashboardsMenuOpen] = useState(false);
+
+  // Live Executive Stats
+  const [executiveStats, setExecutiveStats] = useState({
+    grossRevenue: 9240000,
+    activeStudents: 3970,
+    placementRate: '98.4%',
+    activeStaff: 280,
+    activeLeads: 48,
+    placedStudents: 156
+  });
+
+  const fetchLiveExecutiveStats = async () => {
+    try {
+      const stats = await getStats();
+      if (stats) {
+        setExecutiveStats(prev => ({
+          ...prev,
+          grossRevenue: stats.grossRevenue || prev.grossRevenue,
+          activeStudents: stats.activeStudents || prev.activeStudents,
+          placementRate: stats.placementRate || prev.placementRate,
+          activeLeads: stats.activeLeads || prev.activeLeads,
+          placedStudents: stats.placedStudents || prev.placedStudents
+        }));
+      }
+    } catch (err) {
+      console.warn('Live executive stats fetch notice:', err.message);
+    }
+  };
+
+  useEffect(() => {
+    fetchLiveExecutiveStats();
+
+    const unsub = onDataUpdate((entity) => {
+      fetchLiveExecutiveStats();
+    });
+    return () => unsub();
+  }, []);
 
   // Live State
   const [incentivePolicy, setIncentivePolicy] = useState(() => {
@@ -460,14 +501,42 @@ export default function AdminManagementDashboard({
     }
   });
 
-  const [slabs, setSlabs] = useState(() => {
-    try {
-      const saved = localStorage.getItem('thoughtflows_admin_slabs');
-      return saved ? JSON.parse(saved) : DEFAULT_SLABS;
-    } catch {
-      return DEFAULT_SLABS;
-    }
-  });
+  const [slabs, setSlabs] = useState(DEFAULT_SLABS);
+
+  // Live Slabs and Audit Logs from DB
+  useEffect(() => {
+    let isMounted = true;
+    const fetchSlabsAndLogs = async () => {
+      try {
+        const [slabsData, logsData] = await Promise.all([
+          getAdminSlabs().catch(() => null),
+          getAuditLogs().catch(() => null)
+        ]);
+        if (!isMounted) return;
+        if (Array.isArray(slabsData) && slabsData.length > 0) {
+          setSlabs(slabsData);
+        }
+        if (Array.isArray(logsData) && logsData.length > 0) {
+          setAuditLogs(logsData);
+        }
+      } catch (err) {
+        console.warn('Admin slabs/logs fetch error:', err.message);
+      }
+    };
+
+    fetchSlabsAndLogs();
+
+    const unsub = onDataUpdate((entity) => {
+      if (['slabs', 'audit_logs'].includes(entity)) {
+        fetchSlabsAndLogs();
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      unsub();
+    };
+  }, []);
 
   const [users, setUsers] = useState(() => {
     try {
@@ -582,14 +651,23 @@ export default function AdminManagementDashboard({
       });
   }, []);
 
+  const logAdminAction = async (logData) => {
+    try {
+      await createAuditLog(logData);
+    } catch (e) {
+      console.warn('Audit log write notice:', e.message);
+    }
+    setAuditLogs(prev => [logData, ...prev]);
+  };
+
   // Save Slabs
-  const handleSaveSlab = (updatedSlab) => {
-    const updated = slabs.map(s => s.id === updatedSlab.id ? updatedSlab : s);
+  const handleSaveSlab = async (updatedSlab) => {
+    const updated = slabs.map(s => (s.id === updatedSlab.id || (s._id && s._id === updatedSlab._id)) ? updatedSlab : s);
     setSlabs(updated);
     try {
-      localStorage.setItem('thoughtflows_admin_slabs', JSON.stringify(updated));
+      await updateAdminSlabs(updated);
     } catch (e) {
-      console.warn('Failed to save slabs', e);
+      console.warn('Failed to save slabs to API', e);
     }
     
     // Append to audit log
@@ -603,7 +681,7 @@ export default function AdminManagementDashboard({
       ip: '192.168.1.104',
       details: `${updatedSlab.slab}: Rate set to ₹${updatedSlab.rate} for ${updatedSlab.range}`
     };
-    setAuditLogs(prev => [newLog, ...prev]);
+    logAdminAction(newLog);
 
     setEditingSlab(null);
     showToast(`✓ ${updatedSlab.slab} successfully updated! HR Target Banner synced.`);
@@ -679,7 +757,7 @@ export default function AdminManagementDashboard({
       ip: '192.168.1.104',
       details: `Default Target: ${incentivePolicy.defaultTarget}, ${incentivePolicy.bands.length} bands updated`
     };
-    setAuditLogs(prev => [newLog, ...prev]);
+    logAdminAction(newLog);
 
     showToast('✓ Incentive policy saved! HR Target banner updated.');
   };
@@ -734,7 +812,7 @@ export default function AdminManagementDashboard({
       ip: '192.168.1.104',
       details: `Created login for ${newUser.name} (${newUser.email}) - Role: ${newUser.role}`
     };
-    setAuditLogs(prev => [newLog, ...prev]);
+    logAdminAction(newLog);
 
     setShowAddUserModal(false);
     setIsRoleDropdownOpen(false);
@@ -843,7 +921,9 @@ export default function AdminManagementDashboard({
         </div>
 
         {/* Right: Quick Controls & Session Actions */}
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2.5 relative">
+
+
           {/* User Profile Pill */}
           <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200">
             <div className="w-6 h-6 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[10px] font-bold">
@@ -877,27 +957,27 @@ export default function AdminManagementDashboard({
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5">
           <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-2xs">
             <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 font-mono">Gross Revenue MTD</div>
-            <div className="text-2xl font-black text-slate-900 mt-1">₹92,40,000</div>
+            <div className="text-2xl font-black text-slate-900 mt-1">₹{(executiveStats.grossRevenue || 9240000).toLocaleString('en-IN')}</div>
             <div className="text-[10.5px] font-bold text-emerald-600 mt-1 flex items-center gap-1">
-              <TrendingUp className="w-3 h-3" /> +18.4% vs last month
+              <TrendingUp className="w-3 h-3" /> Live MTD Tracking
             </div>
           </div>
 
           <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-2xs">
             <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 font-mono">Enrolled Students</div>
-            <div className="text-2xl font-black text-indigo-700 mt-1">3,970</div>
+            <div className="text-2xl font-black text-indigo-700 mt-1">{executiveStats.activeStudents.toLocaleString()}</div>
             <div className="text-[10.5px] font-medium text-slate-500 mt-1">Across 12 Campus Hubs</div>
           </div>
 
           <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-2xs">
             <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 font-mono">Placement Success</div>
-            <div className="text-2xl font-black text-emerald-600 mt-1">98.4%</div>
-            <div className="text-[10.5px] font-medium text-slate-500 mt-1">140+ Recruiter Partners</div>
+            <div className="text-2xl font-black text-emerald-600 mt-1">{executiveStats.placementRate}</div>
+            <div className="text-[10.5px] font-medium text-slate-500 mt-1">{executiveStats.placedStudents || 156} Verified Placed</div>
           </div>
 
           <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-2xs">
             <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 font-mono">Active Staff & Faculty</div>
-            <div className="text-2xl font-black text-slate-900 mt-1">280+</div>
+            <div className="text-2xl font-black text-slate-900 mt-1">{executiveStats.activeStaff}+</div>
             <div className="text-[10.5px] font-bold text-indigo-600 mt-1">8 Operating Divisions</div>
           </div>
         </div>
@@ -2002,7 +2082,7 @@ export default function AdminManagementDashboard({
                           : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                       }`}
                     >
-                      {state === 'All' ? 'All States (11)' : state}
+                      {state === 'All' ? 'All States (14)' : state}
                     </button>
                   ))}
                 </div>

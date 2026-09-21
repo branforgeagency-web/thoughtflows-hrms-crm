@@ -25,7 +25,10 @@ export default function GenerateStudentIdModal({ isOpen, onClose, onConfirm }) {
     'T': 'Tirupati',
     'D': 'Hyderabad Dilsukhnagar',
     'R': 'Hyderabad Ameerpet',
-    'Z': 'Vizag'
+    'Z': 'Vizag',
+    'P': 'Pune',
+    'L': 'Kollapur',
+    'N': 'Theni'
   };
 
   const COURSE_MAP = {
@@ -202,6 +205,9 @@ export default function GenerateStudentIdModal({ isOpen, onClose, onConfirm }) {
                   <option value="D">D - Hyderabad Dilsukhnagar</option>
                   <option value="R">R - Hyderabad Ameerpet (DSNR)</option>
                   <option value="Z">Z - Vizag</option>
+                  <option value="P">P - Pune</option>
+                  <option value="L">L - Kollapur</option>
+                  <option value="N">N - Theni</option>
                 </select>
               </div>
 

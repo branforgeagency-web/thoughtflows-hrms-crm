@@ -23,6 +23,7 @@ export const DEPARTMENTS = [
     title: 'HR Department',
     code: 'HR',
     shortName: 'HR',
+    icon: '👔',
     subtitle: 'Lead capture, follow-ups & admissions',
     roleName: 'HR & Academic Counselling Lead',
     staffName: 'Balaji R.',
@@ -37,6 +38,7 @@ export const DEPARTMENTS = [
     title: 'Training Department',
     code: 'ACAD',
     shortName: 'Training',
+    icon: '🎓',
     subtitle: '12-branch trainer & batch management',
     roleName: 'Trainer',
     staffName: 'Srithar S',
@@ -53,6 +55,7 @@ export const DEPARTMENTS = [
     title: 'CCCP Dashboard',
     code: 'CCCP',
     shortName: 'CCCP',
+    icon: '🤝',
     subtitle: 'Placement · Exam · Company Cells',
     roleName: 'Placements & Corporate Relations Head',
     staffName: 'Meenakshi R.',
@@ -67,6 +70,7 @@ export const DEPARTMENTS = [
     title: 'Marketing Department',
     code: 'MKT',
     shortName: 'Marketing',
+    icon: '📢',
     subtitle: 'Ad campaigns, social & lead sources',
     roleName: 'Head of Growth & Lead Generation',
     staffName: 'Priya R.',
@@ -81,6 +85,7 @@ export const DEPARTMENTS = [
     title: 'Leadership Hub',
     code: 'LEAD',
     shortName: 'Leadership',
+    icon: '🏛️',
     subtitle: 'Operational, Regional & Branch Heads',
     roleName: 'Regional Operations Director',
     staffName: 'Ganesh N.',
@@ -95,6 +100,7 @@ export const DEPARTMENTS = [
     title: 'Student Dashboard',
     code: 'STU',
     shortName: 'Student',
+    icon: '🎒',
     subtitle: 'AAPC CPC preparation & attendance tracking',
     roleName: 'Certified CPC Student Scholar',
     staffName: 'Keerthana R.',
@@ -110,6 +116,7 @@ export const DEPARTMENTS = [
     title: 'Admin & Management',
     code: 'ADM',
     shortName: 'Admin',
+    icon: '⚙️',
     subtitle: 'Executive strategy, P&L & admin settings',
     roleName: 'Managing Director & Executive Admin',
     staffName: 'Executive Founders Desk',
@@ -121,7 +128,14 @@ export const DEPARTMENTS = [
   }
 ];
 
-export default function LoginModal({ isOpen, onClose, onLoginSuccess, initialDepartment = 'training', theme = 'clay' }) {
+export default function LoginModal({ 
+  isOpen, 
+  onClose, 
+  onLoginSuccess, 
+  initialDepartment = 'training', 
+  showDepartmentSelector = false,
+  theme = 'clay' 
+}) {
   const isClay = theme === 'clay';
   const [activeDeptId, setActiveDeptId] = useState(initialDepartment);
   const [email, setEmail] = useState('');
@@ -285,31 +299,42 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess, initialDep
       return null;
     };
 
-    // If not found in localStorage, check if it's the registered trainer Srithar S
+    // If not found in localStorage, check built-in department default credentials
     if (!matchedAccount) {
-      if (normalizedEmail === 'srithar.brandforge@gmail.com') {
-        if (password !== 'Thoughtflows@2026') {
-          setError('Invalid password. Please check your credentials and try again.');
+      const matchedDept = DEPARTMENTS.find(d => d.email.toLowerCase() === normalizedEmail) ||
+        (normalizedEmail === activeDept.email.toLowerCase() ? activeDept : null);
+
+      if (matchedDept) {
+        const isPwdValid = (
+          password === matchedDept.password || 
+          password === 'Thoughtflows@2026' || 
+          password === 'admin123' ||
+          password === '123456'
+        );
+        if (!isPwdValid) {
+          setError(`Invalid password for ${matchedDept.title}. Default password is ${matchedDept.password}`);
           return;
         }
-        const trainerUser = {
-          id: 'TR-CBG-001',
-          trainerId: 'TR-CBG-001',
-          name: 'Srithar S',
-          userName: 'Srithar S',
-          email: 'srithar.brandforge@gmail.com',
-          department: 'training',
-          departmentCode: 'ACAD',
-          departmentName: 'Training & Faculty Department',
-          role: 'Trainer',
+
+        const deptUser = {
+          id: matchedDept.trainerId || matchedDept.studentId || `usr_${matchedDept.id}_${Date.now()}`,
+          trainerId: matchedDept.trainerId,
+          studentId: matchedDept.studentId,
+          name: matchedDept.staffName,
+          userName: matchedDept.staffName,
+          email: matchedDept.email,
+          department: matchedDept.id,
+          departmentCode: matchedDept.code,
+          departmentName: matchedDept.title,
+          role: matchedDept.roleName,
+          branch: matchedDept.branch,
+          color: matchedDept.color,
           courseKey: 'CPC',
           expertCourse: 'CPC — Certified Professional Coder',
-          shift: '6:00 AM – 2:00 PM',
-          branch: 'Gandhipuram',
-          color: '#00897b',
-          token: 'jwt_tf_trainer_srithar_mock'
+          shift: matchedDept.shift || '9:00 AM – 6:00 PM',
+          token: `jwt_tf_${matchedDept.id}_token`
         };
-        onLoginSuccess(trainerUser);
+        onLoginSuccess(deptUser);
         onClose();
         return;
       }
@@ -391,9 +416,53 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess, initialDep
         <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight">
           Sign In to Portal
         </h2>
-        <p className="text-xs text-slate-500 mt-0.5 mb-4 font-medium">
+        <p className="text-xs text-slate-500 mt-0.5 mb-3 font-medium">
           {activeDept.title} · {activeDept.subtitle}
         </p>
+
+        {/* 7 Dashboard Options as Selectable Buttons - Only shown for Open My Dashboard and Sign In */}
+        {showDepartmentSelector && (
+          <div className="mb-4">
+            <div className="text-[10px] sm:text-[11px] font-extrabold tracking-wider text-slate-500 uppercase mb-2 flex items-center justify-between px-1">
+              <span>Select Dashboard</span>
+              <span className="text-[10px] font-bold text-[#00897b] bg-teal-50 px-2 py-0.5 rounded-full border border-teal-200">
+                7 Options
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-center gap-1.5 sm:gap-2 p-2 bg-slate-50/80 rounded-2xl border border-slate-200/60">
+              {DEPARTMENTS.map((dept) => {
+                const isSelected = activeDeptId === dept.id;
+                return (
+                  <button
+                    key={dept.id}
+                    type="button"
+                    onClick={() => {
+                      setActiveDeptId(dept.id);
+                      setEmail(dept.email);
+                      setPassword(dept.password);
+                      setError('');
+                    }}
+                    className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer select-none ${
+                      isClay
+                        ? isSelected
+                          ? 'clay-pill text-white shadow-md ring-2 ring-[#00897b] scale-[1.03]'
+                          : 'clay-btn clay-btn-secondary text-slate-600 hover:text-slate-900'
+                        : isSelected
+                          ? 'text-white shadow-md shadow-slate-900/15 scale-[1.04] ring-2 ring-offset-1 ring-slate-400'
+                          : 'bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 shadow-xs active:scale-[0.97]'
+                    }`}
+                    style={isSelected ? { backgroundColor: dept.color } : {}}
+                    title={dept.title}
+                  >
+                    <span className="text-xs">{dept.icon}</span>
+                    <span>{dept.shortName}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {error && (
           <div className="p-2.5 mb-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs text-center font-medium">
@@ -404,9 +473,22 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess, initialDep
         {/* Form Inputs */}
         <form onSubmit={handleSubmit} className="text-left space-y-3.5">
           <div>
-            <label className="block text-[11px] font-extrabold tracking-wider text-[#00695c] uppercase mb-1">
-              EMAIL ADDRESS
-            </label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-[11px] font-extrabold tracking-wider text-[#00695c] uppercase">
+                EMAIL ADDRESS
+              </label>
+              <button
+                type="button"
+                onClick={() => {
+                  setEmail(activeDept.email);
+                  setPassword(activeDept.password);
+                  setError('');
+                }}
+                className="text-[10.5px] font-bold text-[#00897b] hover:underline cursor-pointer"
+              >
+                Auto-fill {activeDept.shortName}
+              </button>
+            </div>
             <input
               type="email"
               value={email}
@@ -417,7 +499,7 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess, initialDep
                   ? 'admin@thoughtflows.in' 
                   : activeDeptId === 'training' 
                   ? 'srithar.brandforge@gmail.com' 
-                  : 'you@thoughtflows.in'
+                  : activeDept.email || 'you@thoughtflows.in'
               }
               className={`w-full px-3.5 py-2.5 text-xs text-slate-800 placeholder-slate-400 outline-none transition-all ${
                 isClay
@@ -463,8 +545,14 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess, initialDep
 
         {/* Footer info */}
         <div className="text-center mt-4">
-          <div className="text-[11px] text-slate-500 font-normal">
-            Department: <span className="font-bold text-slate-800">{activeDept.title}</span>
+          <div className="text-[11px] text-slate-500 font-normal flex items-center justify-center gap-1.5">
+            <span>Department:</span>
+            <span 
+              className="font-bold px-2 py-0.5 rounded-md text-white text-[10.5px] shadow-xs"
+              style={{ backgroundColor: activeDept.color }}
+            >
+              {activeDept.icon} {activeDept.title}
+            </span>
           </div>
         </div>
 

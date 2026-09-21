@@ -13,6 +13,7 @@ export default function App() {
   const [isDepartmentsOpen, setIsDepartmentsOpen] = useState(false);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [loginDepartment, setLoginDepartment] = useState('hr');
+  const [showLoginDeptSelector, setShowLoginDeptSelector] = useState(false);
   const [selectedStaff, setSelectedStaff] = useState(null);
   const [backendHealth, setBackendHealth] = useState(null);
 
@@ -102,12 +103,13 @@ export default function App() {
   const handleSelectDashboard = (card) => {
     setSelectedDashboard(card);
     localStorage.setItem('thoughtflows_dashboard', JSON.stringify(card));
-    // If user is already authenticated for this department (or is admin), grant immediate access
-    if (currentUser && (currentUser.department === card.id || currentUser.department === 'admin')) {
+    // If user is already authenticated (or is admin), grant immediate seamless access
+    if (currentUser) {
       setIsDashboardOpen(true);
     } else {
-      // Require department-specific login
+      // Require department-specific login (no 7 options selector for these individual cards)
       setLoginDepartment(card.id);
+      setShowLoginDeptSelector(false);
       setIsLoginOpen(true);
     }
   };
@@ -140,11 +142,19 @@ export default function App() {
       setIsDashboardOpen(true);
     } else {
       setLoginDepartment('hr');
+      setShowLoginDeptSelector(true);
       setIsLoginOpen(true);
     }
   };
 
-  const handleSwitchDepartment = () => {
+  const handleSwitchDepartment = (targetDeptId) => {
+    if (targetDeptId) {
+      const matchedCard = DEPT_CARDS.find(c => c.id === targetDeptId) || { id: targetDeptId, title: targetDeptId };
+      setSelectedDashboard(matchedCard);
+      localStorage.setItem('thoughtflows_dashboard', JSON.stringify(matchedCard));
+      setIsDashboardOpen(true);
+      return;
+    }
     setIsDashboardOpen(false);
     setLoginDepartment(currentUser?.department || 'hr');
     setIsLoginOpen(true);
@@ -189,6 +199,7 @@ export default function App() {
               setIsDashboardOpen(true);
             } else {
               setLoginDepartment(currentUser?.department || 'hr');
+              setShowLoginDeptSelector(true);
               setIsLoginOpen(true);
             }
           }}
@@ -279,6 +290,7 @@ export default function App() {
         isOpen={isLoginOpen}
         onClose={() => setIsLoginOpen(false)}
         initialDepartment={loginDepartment}
+        showDepartmentSelector={showLoginDeptSelector}
         onLoginSuccess={handleLoginSuccess}
         theme={theme}
       />

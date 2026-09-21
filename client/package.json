@@ -9,11 +9,16 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@zoom/meetingsdk": "^6.5.0",
     "axios": "^1.7.9",
     "clsx": "^2.1.1",
+    "lodash": "^4.17.21",
     "lucide-react": "^0.475.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-redux": "8.1.3",
+    "redux": "4.2.1",
+    "redux-thunk": "2.4.2",
     "tailwind-merge": "^3.0.1"
   },
   "devDependencies": {

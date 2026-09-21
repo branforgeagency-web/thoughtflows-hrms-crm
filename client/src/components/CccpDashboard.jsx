@@ -27,10 +27,26 @@ import {
   Check, 
   Sparkles,
   ExternalLink,
-  ChevronDown
+  ChevronDown,
+  ArrowRight
 } from 'lucide-react';
 import logoImg from '../assets/thoughtflows-logo.png';
-import { getStudents } from '../services/api';
+import { 
+  getStudents, 
+  updateStudent, 
+  getColleges, 
+  createCollege, 
+  getCompanies, 
+  createCompany, 
+  getPlacements, 
+  createPlacement, 
+  updatePlacement, 
+  getBillingDeals, 
+  createBillingDeal, 
+  getCccpFollowUps, 
+  createCccpFollowUp, 
+  onDataUpdate 
+} from '../services/api';
 
 export default function CccpDashboard({
   onClose,
@@ -42,63 +58,85 @@ export default function CccpDashboard({
   const [activeNav, setActiveNav] = useState('home'); // 'home', 'certification', 'campus', 'corporate', 'placement', 'billing', 'calendar', 'reports'
   const [selectedDetail, setSelectedDetail] = useState(null); // for modal/drawer drilldown
   const [searchQuery, setSearchQuery] = useState('');
+  const [dashMenuOpen, setDashMenuOpen] = useState(false);
+  const [toastMsg, setToastMsg] = useState(null);
   const [dateDisplay, setDateDisplay] = useState(
     new Date().toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' })
   );
 
+  const showToast = (msg) => {
+    setToastMsg(msg);
+    setTimeout(() => setToastMsg(null), 3500);
+  };
+
   // =========================================================================
-  // REAL DATA: ADMITTED STUDENTS (Live from MongoDB API /api/students)
+  // REAL LIVE DATA: CCCP VERTICALS (From MongoDB API)
   // =========================================================================
   const [students, setStudents] = useState([]);
   const [loadingStudents, setLoadingStudents] = useState(true);
+  const [collegesList, setCollegesList] = useState([]);
+  const [companiesList, setCompaniesList] = useState([]);
+  const [placementStudents, setPlacementStudents] = useState([]);
+  const [billingDeals, setBillingDeals] = useState([]);
+  const [followUps, setFollowUps] = useState([]);
+
+  const fetchLiveCccpData = async () => {
+    try {
+      setLoadingStudents(true);
+      const [stRes, clgRes, cmpRes, plcRes, bilRes, fuRes] = await Promise.all([
+        getStudents().catch(() => []),
+        getColleges().catch(() => []),
+        getCompanies().catch(() => []),
+        getPlacements().catch(() => []),
+        getBillingDeals().catch(() => []),
+        getCccpFollowUps().catch(() => [])
+      ]);
+      setStudents(Array.isArray(stRes) ? stRes : []);
+      setCollegesList(Array.isArray(clgRes) ? clgRes : []);
+      setCompaniesList(Array.isArray(cmpRes) ? cmpRes : []);
+      setPlacementStudents(Array.isArray(plcRes) ? plcRes : []);
+      setBillingDeals(Array.isArray(bilRes) ? bilRes : []);
+      setFollowUps(Array.isArray(fuRes) ? fuRes : []);
+    } catch (err) {
+      console.warn('CCCP live fetch notice:', err.message);
+    } finally {
+      setLoadingStudents(false);
+    }
+  };
 
   useEffect(() => {
-    let isMounted = true;
-    const fetchStudents = async () => {
-      try {
-        setLoadingStudents(true);
-        const data = await getStudents();
-        if (isMounted) {
-          setStudents(Array.isArray(data) ? data : []);
-        }
-      } catch (err) {
-        console.warn('Could not fetch students from API, checking local storage:', err);
-        try {
-          const local = localStorage.getItem('thoughtflows_admitted_students');
-          if (local && isMounted) {
-            setStudents(JSON.parse(local));
-          }
-        } catch (e) {
-          console.error(e);
-        }
-      } finally {
-        if (isMounted) setLoadingStudents(false);
+    fetchLiveCccpData();
+    const unsub = onDataUpdate((entity) => {
+      if (!entity || entity.startsWith('cccp') || entity === 'students') {
+        fetchLiveCccpData();
       }
-    };
-    fetchStudents();
-    return () => { isMounted = false; };
+    });
+    return unsub;
   }, []);
 
-  // =========================================================================
-  // REAL DATA: CAMPUS PARTNERSHIPS (Persisted in localStorage)
-  // =========================================================================
-  const [collegesList, setCollegesList] = useState(() => {
+  const handleUpdateStudentExam = async (studentId, examStatus, certified) => {
     try {
-      const saved = localStorage.getItem('thoughtflows_cccp_colleges');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
+      await updateStudent(studentId, { examStatus, certified });
+      setStudents(prev => prev.map(s => (s._id === studentId || s.studentId === studentId) ? { ...s, examStatus, certified } : s));
+      showToast(`✓ Updated certification status to "${certified}" for student!`);
+    } catch (err) {
+      console.error('Failed to update student exam status:', err);
+      showToast('Error saving exam status');
     }
-  });
+  };
 
-  useEffect(() => {
+  const handleUpdateStudentPlacement = async (studentId, placementStatus, statusGroup = 'placed') => {
     try {
-      localStorage.setItem('thoughtflows_cccp_colleges', JSON.stringify(collegesList));
-    } catch (e) {
-      console.warn(e);
+      await updateStudent(studentId, { placementStatus, statusGroup });
+      setStudents(prev => prev.map(s => (s._id === studentId || s.studentId === studentId) ? { ...s, placementStatus, statusGroup } : s));
+      showToast(`✓ Updated placement status to "${placementStatus}"!`);
+    } catch (err) {
+      console.error('Failed to update student placement status:', err);
+      showToast('Error saving placement status');
     }
-  }, [collegesList]);
+  };
 
+  // College handlers
   const [isAddCollegeOpen, setIsAddCollegeOpen] = useState(false);
   const [collegeForm, setCollegeForm] = useState({
     name: '',
@@ -110,55 +148,33 @@ export default function CccpDashboard({
     stage: 'College Identified'
   });
 
-  const handleSaveCollege = (e) => {
+  const handleSaveCollege = async (e) => {
     e?.preventDefault();
     if (!collegeForm.name) return;
     const cityCode = (collegeForm.city || 'CBG').substring(0, 3).toUpperCase();
     const newCode = `CLG-${cityCode}-00${collegesList.length + 1}`;
     const newCol = {
-      id: `clg-${Date.now()}`,
       name: collegeForm.name,
       code: newCode,
       city: collegeForm.city || 'Coimbatore',
       type: collegeForm.type || 'Arts & Science',
       decisionMaker: collegeForm.decisionMaker || 'Dr. Principal',
       studentStrength: collegeForm.studentStrength || '',
-      mou: collegeForm.mou || 'No',
-      stage: collegeForm.stage || 'College Identified'
+      mouStatus: collegeForm.mou === 'Yes' ? 'MOU Signed' : 'In Discussion',
+      stage: collegeForm.stage || 'Listed'
     };
-    setCollegesList(prev => [...prev, newCol]);
-    setIsAddCollegeOpen(false);
-    setCollegeForm({
-      name: '',
-      city: '',
-      type: 'Arts & Science',
-      decisionMaker: '',
-      studentStrength: '',
-      mou: 'No',
-      stage: 'College Identified'
-    });
+    try {
+      const created = await createCollege(newCol);
+      setCollegesList(prev => [created, ...prev]);
+      setIsAddCollegeOpen(false);
+      setCollegeForm({ name: '', city: '', type: 'Arts & Science', decisionMaker: '', studentStrength: '', mou: 'No', stage: 'College Identified' });
+      showToast(`✓ Added college partner: ${created.name}`);
+    } catch (err) {
+      showToast('Error creating college partner');
+    }
   };
 
-  // =========================================================================
-  // REAL DATA: CORPORATE PARTNERSHIPS (Persisted in localStorage)
-  // =========================================================================
-  const [companiesList, setCompaniesList] = useState(() => {
-    try {
-      const saved = localStorage.getItem('thoughtflows_cccp_companies');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('thoughtflows_cccp_companies', JSON.stringify(companiesList));
-    } catch (e) {
-      console.warn(e);
-    }
-  }, [companiesList]);
-
+  // Corporate Company handlers
   const [isAddCompanyOpen, setIsAddCompanyOpen] = useState(false);
   const [companyForm, setCompanyForm] = useState({
     name: '',
@@ -170,13 +186,12 @@ export default function CccpDashboard({
     stage: 'Identified'
   });
 
-  const handleSaveCompany = (e) => {
+  const handleSaveCompany = async (e) => {
     e?.preventDefault();
     if (!companyForm.name) return;
     const cityCode = (companyForm.city || 'HYD').substring(0, 3).toUpperCase();
     const newCode = `CMP-${cityCode}-00${companiesList.length + 1}`;
     const newCmp = {
-      id: `cmp-${Date.now()}`,
       name: companyForm.name,
       code: newCode,
       city: companyForm.city || 'Hyderabad',
@@ -186,39 +201,18 @@ export default function CccpDashboard({
       trainingInterest: companyForm.trainingInterest || 'No',
       stage: companyForm.stage || 'Identified'
     };
-    setCompaniesList(prev => [...prev, newCmp]);
-    setIsAddCompanyOpen(false);
-    setCompanyForm({
-      name: '',
-      city: '',
-      type: 'Medical Coding',
-      contact: '',
-      hiring: 'Actively Hiring',
-      trainingInterest: 'No',
-      stage: 'Identified'
-    });
+    try {
+      const created = await createCompany(newCmp);
+      setCompaniesList(prev => [created, ...prev]);
+      setIsAddCompanyOpen(false);
+      setCompanyForm({ name: '', city: '', type: 'Medical Coding', contact: '', hiring: 'Actively Hiring', trainingInterest: 'No', stage: 'Identified' });
+      showToast(`✓ Added corporate partner: ${created.name}`);
+    } catch (err) {
+      showToast('Error creating corporate partner');
+    }
   };
 
-  // =========================================================================
-  // REAL DATA: PLACEMENT MOVEMENTS (Persisted in localStorage)
-  // =========================================================================
-  const [placementStudents, setPlacementStudents] = useState(() => {
-    try {
-      const saved = localStorage.getItem('thoughtflows_cccp_placements');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('thoughtflows_cccp_placements', JSON.stringify(placementStudents));
-    } catch (e) {
-      console.warn(e);
-    }
-  }, [placementStudents]);
-
+  // Placement handlers
   const [isMapStudentOpen, setIsMapStudentOpen] = useState(false);
   const [mapForm, setMapForm] = useState({
     studentId: '',
@@ -227,17 +221,15 @@ export default function CccpDashboard({
     interviewDate: ''
   });
 
-  const handleSaveMapping = (e) => {
+  const handleSaveMapping = async (e) => {
     e.preventDefault();
     if (!mapForm.studentId) return;
 
-    // Find student details from real students array
     const targetStudent = students.find(s => s.studentId === mapForm.studentId || `${s.name} · ${s.studentId}` === mapForm.studentId);
     const candidateName = targetStudent ? targetStudent.name : (mapForm.studentId.split('·')[0]?.trim() || mapForm.studentId);
     const candidateTfId = targetStudent ? targetStudent.studentId : (mapForm.studentId.split('·')[1]?.trim() || 'TF-GEN-001');
 
     const newRecord = {
-      id: `pl-${Date.now()}`,
       studentId: candidateTfId,
       name: candidateName,
       tfId: candidateTfId,
@@ -248,61 +240,48 @@ export default function CccpDashboard({
       interview: mapForm.interviewDate 
         ? new Date(mapForm.interviewDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) 
         : '—',
+      interviewDate: mapForm.interviewDate ? new Date(mapForm.interviewDate) : null,
       status: mapForm.interviewDate ? 'Interview Scheduled' : 'Company Mapped'
     };
 
-    setPlacementStudents(prev => {
-      // If student already mapped, update their company & interview
-      const exists = prev.find(p => p.tfId === candidateTfId || p.studentId === candidateTfId);
-      if (exists) {
-        return prev.map(p => (p.tfId === candidateTfId || p.studentId === candidateTfId) ? newRecord : p);
-      }
-      return [newRecord, ...prev];
-    });
-
-    setIsMapStudentOpen(false);
-    setMapForm({ studentId: '', company: '', role: 'Medical Coder', interviewDate: '' });
-  };
-
-  const handleAdvanceStudent = (id) => {
-    setPlacementStudents(prev => prev.map(s => {
-      if (s.id !== id && s.studentId !== id) return s;
-      if (s.status === 'Not Ready') {
-        return { ...s, status: 'Company Mapped', trainerRec: 'Ready' };
-      }
-      if (s.status === 'Company Mapped') {
-        return { ...s, status: 'Interview Scheduled', interview: new Date(Date.now() + 86400000 * 3).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) };
-      }
-      if (s.status === 'Interview Scheduled') {
-        return { ...s, status: 'Selected' };
-      }
-      if (s.status === 'Selected') {
-        return { ...s, status: 'Joined' };
-      }
-      return s;
-    }));
-  };
-
-  // =========================================================================
-  // REAL DATA: BILLING DEALS (Persisted in localStorage)
-  // =========================================================================
-  const [billingDeals, setBillingDeals] = useState(() => {
     try {
-      const saved = localStorage.getItem('thoughtflows_cccp_billing');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
+      const created = await createPlacement(newRecord);
+      setPlacementStudents(prev => [created, ...prev.filter(p => p.studentId !== candidateTfId)]);
+      setIsMapStudentOpen(false);
+      setMapForm({ studentId: '', company: '', role: 'Medical Coder', interviewDate: '' });
+      showToast(`✓ Mapped ${candidateName} to ${newRecord.company}`);
+    } catch (err) {
+      showToast('Error saving placement mapping');
     }
-  });
+  };
 
-  useEffect(() => {
+  const handleAdvanceStudent = async (id) => {
+    const target = placementStudents.find(s => s._id === id || s.id === id || s.studentId === id);
+    if (!target) return;
+    let newStatus = target.status;
+    let interviewStr = target.interview;
+
+    if (target.status === 'Not Ready') {
+      newStatus = 'Company Mapped';
+    } else if (target.status === 'Company Mapped') {
+      newStatus = 'Interview Scheduled';
+      interviewStr = new Date(Date.now() + 86400000 * 3).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+    } else if (target.status === 'Interview Scheduled') {
+      newStatus = 'Selected';
+    } else if (target.status === 'Selected') {
+      newStatus = 'Joined';
+    }
+
     try {
-      localStorage.setItem('thoughtflows_cccp_billing', JSON.stringify(billingDeals));
+      await updatePlacement(target._id || target.id, { status: newStatus, interview: interviewStr });
+      setPlacementStudents(prev => prev.map(s => (s._id === id || s.id === id || s.studentId === id) ? { ...s, status: newStatus, interview: interviewStr } : s));
+      showToast(`✓ Advanced ${target.name} to ${newStatus}`);
     } catch (e) {
-      console.warn(e);
+      setPlacementStudents(prev => prev.map(s => (s._id === id || s.id === id || s.studentId === id) ? { ...s, status: newStatus, interview: interviewStr } : s));
     }
-  }, [billingDeals]);
+  };
 
+  // Billing handlers
   const [isAddBillingOpen, setIsAddBillingOpen] = useState(false);
   const [billingForm, setBillingForm] = useState({
     deal: '',
@@ -310,40 +289,28 @@ export default function CccpDashboard({
     status: 'Payment Pending'
   });
 
-  const handleSaveBilling = (e) => {
+  const handleSaveBilling = async (e) => {
     e?.preventDefault();
     if (!billingForm.deal) return;
     const newDeal = {
-      id: `bill-${Date.now()}`,
       deal: billingForm.deal,
       type: billingForm.type,
-      status: billingForm.status
+      status: billingForm.status,
+      amount: billingForm.type === 'Campus' ? 180000 : 250000,
+      invoiceDate: new Date().toISOString().split('T')[0]
     };
-    setBillingDeals(prev => [newDeal, ...prev]);
-    setIsAddBillingOpen(false);
-    setBillingForm({ deal: '', type: 'Campus', status: 'Payment Pending' });
+    try {
+      const created = await createBillingDeal(newDeal);
+      setBillingDeals(prev => [created, ...prev]);
+      setIsAddBillingOpen(false);
+      setBillingForm({ deal: '', type: 'Campus', status: 'Payment Pending' });
+      showToast(`✓ Created billing record: ${created.deal}`);
+    } catch (err) {
+      showToast('Error saving billing deal');
+    }
   };
 
-  // =========================================================================
-  // REAL DATA: FOLLOW-UPS (Persisted in localStorage)
-  // =========================================================================
-  const [followUps, setFollowUps] = useState(() => {
-    try {
-      const saved = localStorage.getItem('thoughtflows_cccp_followups');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('thoughtflows_cccp_followups', JSON.stringify(followUps));
-    } catch (e) {
-      console.warn(e);
-    }
-  }, [followUps]);
-
+  // Follow-up handlers
   const [isAddFollowUpOpen, setIsAddFollowUpOpen] = useState(false);
   const [followUpForm, setFollowUpForm] = useState({
     time: '11:00',
@@ -352,19 +319,32 @@ export default function CccpDashboard({
     action: ''
   });
 
-  const handleSaveFollowUp = (e) => {
+  const handleSaveFollowUp = async (e) => {
     e?.preventDefault();
     if (!followUpForm.who || !followUpForm.action) return;
     const newFollowUp = {
-      id: `flw-${Date.now()}`,
+      title: followUpForm.action,
+      action: followUpForm.action,
+      who: followUpForm.who,
+      targetName: followUpForm.who,
       time: followUpForm.time || '11:00',
       vertical: followUpForm.vertical,
-      who: followUpForm.who,
-      action: followUpForm.action
+      type: followUpForm.vertical,
+      status: 'Upcoming',
+      date: new Date().toISOString().split('T')[0]
     };
-    setFollowUps(prev => [newFollowUp, ...prev]);
-    setIsAddFollowUpOpen(false);
-    setFollowUpForm({ time: '11:00', vertical: 'Campus', who: '', action: '' });
+    try {
+      const created = await createCccpFollowUp(newFollowUp);
+      setFollowUps(prev => [created, ...prev]);
+      setIsAddFollowUpOpen(false);
+      setFollowUpForm({ time: '11:00', vertical: 'Campus', who: '', action: '' });
+      showToast(`✓ Scheduled follow-up: ${created.action || created.title}`);
+    } catch (err) {
+      setFollowUps(prev => [{ ...newFollowUp, id: `flw-${Date.now()}` }, ...prev]);
+      setIsAddFollowUpOpen(false);
+      setFollowUpForm({ time: '11:00', vertical: 'Campus', who: '', action: '' });
+      showToast('Scheduled follow-up');
+    }
   };
 
   // =========================================================================
@@ -691,7 +671,7 @@ export default function CccpDashboard({
         </div>
 
         {/* Bottom Sidebar User Info & Logout */}
-        <div className="pt-3 border-t border-slate-100 space-y-2">
+        <div className="pt-3 border-t border-slate-100 space-y-2 relative">
           <div className="px-2.5 py-1.5 rounded-lg bg-slate-50 flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-full bg-[#102a45] text-white text-xs font-bold flex items-center justify-center shrink-0">
               MR
@@ -702,10 +682,12 @@ export default function CccpDashboard({
             </div>
           </div>
 
+
+
           <button
             onClick={onLogout || onClose}
             title="Sign Out"
-            className="w-full text-xs font-bold text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100/80 border border-rose-100 py-2 px-3 rounded-xl transition-all flex items-center justify-center gap-2 active:scale-[0.99] shadow-sm"
+            className="w-full text-xs font-bold text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100/80 border border-rose-100 py-2 px-3 rounded-xl transition-all flex items-center justify-center gap-2 active:scale-[0.99] shadow-sm cursor-pointer"
           >
             <LogOut className="w-3.5 h-3.5" />
             <span>Logout</span>
@@ -1365,7 +1347,35 @@ export default function CccpDashboard({
                                   </span>
                                 </td>
                                 <td className="py-3.5 px-4 font-semibold text-slate-800">
-                                  {action}
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    {stage !== 'Certified' && stage !== 'Voucher Booked' && (
+                                      <button
+                                        onClick={() => handleUpdateStudentExam(st._id || st.studentId, 'AAPC CPC Booked', 'Exam Scheduled')}
+                                        className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-sky-50 text-sky-700 hover:bg-sky-100 border border-sky-200 transition-all active:scale-95 cursor-pointer"
+                                      >
+                                        Book AAPC Exam
+                                      </button>
+                                    )}
+                                    {stage === 'Voucher Booked' && (
+                                      <button
+                                        onClick={() => handleUpdateStudentExam(st._id || st.studentId, 'Cleared', 'CPC Certified ✓')}
+                                        className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-emerald-600 text-white hover:bg-emerald-700 shadow-xs transition-all active:scale-95 cursor-pointer"
+                                      >
+                                        Mark Certified ✓
+                                      </button>
+                                    )}
+                                    {stage === 'Certified' && (
+                                      <button
+                                        onClick={() => {
+                                          handleUpdateStudentPlacement(st._id || st.studentId, 'Interviewing (Omega Health)', 'placed');
+                                          setActiveNav('placement');
+                                        }}
+                                        className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200 transition-all active:scale-95 cursor-pointer"
+                                      >
+                                        Forward to Placements →
+                                      </button>
+                                    )}
+                                  </div>
                                 </td>
                               </tr>
                             );

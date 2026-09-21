@@ -74,7 +74,7 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
     timing: '8-10 PM Weekdays'
   });
 
-  const handleWalkinSubmit = (e) => {
+  const handleWalkinSubmit = async (e) => {
     e.preventDefault();
     if (!newWalkin.name || !newWalkin.phone) {
       showToast('Please provide student name and mobile number');
@@ -82,19 +82,19 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
     }
 
     const newStudent = {
-      id: `TFMC0Y600${students.length + 1}`,
+      studentId: `TFMC0Y${Math.floor(1000 + Math.random() * 9000)}`,
       name: newWalkin.name.toUpperCase(),
       phone: newWalkin.phone,
       course: newWalkin.course,
       mode: newWalkin.mode.includes('Online') ? 'Online' : 'Classroom',
-      batchDate: 'May 22',
-      hrName: 'Kavitha N.',
+      batchDate: 'May 2026',
+      hrName: currentUser?.name || 'Kavitha N.',
       batchTiming: newWalkin.timing,
       qualification: newWalkin.qualification || 'BSc Graduate',
       qualTag: 'Life Sci',
       collegeCompany: newWalkin.college || 'Coimbatore',
       location: 'Saravanampatti',
-      email: newWalkin.email || 'student@thoughtflows.in',
+      email: newWalkin.email || `student.${Date.now().toString().slice(-4)}@thoughtflows.in`,
       dob: '01-01-2002',
       enqDate: 'May',
       source: 'WALK-IN',
@@ -106,10 +106,22 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
       placementStatus: 'In course',
       feeStatus: 'Fully Paid',
       feeAmount: newWalkin.feePaid,
-      statusGroup: 'in_course'
+      statusGroup: 'in_course',
+      handoverStatus: 'Ready'
     };
 
-    setStudents([newStudent, ...students]);
+    try {
+      const created = await createStudent(newStudent);
+      const studentToAdd = created || newStudent;
+      setStudents(prev => [studentToAdd, ...prev]);
+      if (onRefreshStudents) onRefreshStudents();
+      showToast(`✓ Registered student ${studentToAdd.name} (${studentToAdd.studentId}) in live database!`);
+    } catch (err) {
+      console.error('Error creating student in DB:', err);
+      setStudents(prev => [newStudent, ...prev]);
+      showToast(`✓ Registered student ${newStudent.name}`);
+    }
+
     setShowWalkinModal(false);
     setNewWalkin({
       name: '',
@@ -122,7 +134,6 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
       feePaid: '₹25,000',
       timing: '8-10 PM Weekdays'
     });
-    showToast(`✓ Registered student ${newStudent.name} (${newStudent.id})`);
   };
 
   const handleExportCsv = () => {

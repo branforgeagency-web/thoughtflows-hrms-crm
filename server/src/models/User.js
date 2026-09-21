@@ -44,6 +44,10 @@ const userSchema = new mongoose.Schema({
     type: String,
     default: 'bg-indigo-600'
   },
+  createdFrom: {
+    type: String,
+    default: ''
+  },
   active: {
     type: Boolean,
     default: true
