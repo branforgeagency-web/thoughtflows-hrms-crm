@@ -138,6 +138,25 @@ export const deleteRecording = async (id) => {
   return res.data;
 };
 
+// Daily End-of-Day Closures API
+export const getTodayClosure = async (counselorName, date) => {
+  const params = { counselor: counselorName };
+  if (date) params.date = date;
+  const res = await api.get('/closures/today', { params });
+  return res.data;
+};
+
+export const saveDailyClosure = async (closureData) => {
+  const res = await api.post('/closures', closureData);
+  notifyDataUpdate('closures');
+  return res.data;
+};
+
+export const getDailyClosures = async (params) => {
+  const res = await api.get('/closures', { params });
+  return res.data;
+};
+
 export const createDemo = async (demoData) => {
   const res = await api.post('/demos', demoData);
   notifyDataUpdate('demos');

@@ -54,6 +54,7 @@ import {
 } from 'lucide-react';
 import axios from 'axios';
 import { onDataUpdate, getStats, getAdminSlabs, updateAdminSlabs, getAuditLogs, createAuditLog } from '../services/api';
+import { COURSE_CATEGORIES, ALL_COURSES, TRAINER_COURSES } from '../constants/courses';
 
 // Exact Academy Roles matching User screenshot
 const ACADEMY_ROLES = [
@@ -89,17 +90,6 @@ const ROLE_TO_DEPARTMENT = {
 // Extra inputs a Trainer login needs beyond the generic staff account —
 // these seed the Trainer roster (used for demo-booking eligibility,
 // course matching & shift checks) at the same time the login is created.
-const TRAINER_COURSES = [
-  { key: 'CPC', label: 'CPC — Certified Professional Coder' },
-  { key: 'CIC', label: 'CIC — Certified Inpatient Coder' },
-  { key: 'CPB', label: 'CPB — Certified Professional Biller & RCM' },
-  { key: 'CPMA', label: 'CPMA — Certified Medical Auditor' },
-  { key: 'CCS', label: 'CCS — Certified Coding Specialist' },
-  { key: 'CRC', label: 'CRC — Certified Risk Adjustment' },
-  { key: 'COC', label: 'COC — Certified Outpatient Coder' },
-  { key: 'EMCT', label: 'EMCT Intermediate & Terminology' }
-];
-
 const TRAINER_LANGUAGES = ['Tamil', 'English', 'Telugu', 'Malayalam', 'Hindi', 'Kannada'];
 
 const timeToMinutes = (hhmm) => {
@@ -669,15 +659,16 @@ export default function AdminManagementDashboard({
         setLoadingRates(false);
       })
       .catch(() => {
-        setCourseRates([
-          { code: 'CPC', name: 'Certified Professional Coder', duration: '3 Months', registrationFee: 2000, trainingFee: 19000, examFee: 22000, courseFee: 21000, totalPayable: 43000 },
-          { code: 'CCS', name: 'Certified Coding Specialist', duration: '4 Months', registrationFee: 2000, trainingFee: 23000, examFee: 22000, courseFee: 25000, totalPayable: 47000 },
-          { code: 'CRC', name: 'Certified Risk Adjustment Coder', duration: '2 Months', registrationFee: 2000, trainingFee: 16000, examFee: 22000, courseFee: 18000, totalPayable: 40000 },
-          { code: 'COC', name: 'Certified Outpatient Coder', duration: '3 Months', registrationFee: 2000, trainingFee: 19000, examFee: 22000, courseFee: 21000, totalPayable: 43000 },
-          { code: 'CIC', name: 'Certified Inpatient Coder', duration: '4 Months', registrationFee: 2000, trainingFee: 23000, examFee: 22000, courseFee: 25000, totalPayable: 47000 },
-          { code: 'CPMA', name: 'Practice Medical Coding', duration: '2 Months', registrationFee: 2000, trainingFee: 16000, examFee: 22000, courseFee: 18000, totalPayable: 40000 },
-          { code: 'EMCT Intermediate', name: 'AAPC Medical Coding Training', duration: '3 Months', registrationFee: 2000, trainingFee: 16000, examFee: 22000, courseFee: 18000, totalPayable: 40000 }
-        ]);
+        setCourseRates(ALL_COURSES.map(c => ({
+          code: c.code,
+          name: c.name,
+          duration: c.duration,
+          registrationFee: 2000,
+          trainingFee: Math.max(0, c.fee - 2000),
+          examFee: c.examFee,
+          courseFee: c.fee,
+          totalPayable: c.total
+        })));
         setLoadingRates(false);
       });
   }, []);
@@ -2745,8 +2736,14 @@ export default function AdminManagementDashboard({
                         onChange={(e) => setNewUserForm({ ...newUserForm, expertCourse: e.target.value })}
                         className="w-full px-4 py-2.5 pr-10 rounded-xl border border-slate-200 hover:border-slate-300 focus:border-blue-500 bg-white text-slate-800 focus:outline-none text-sm shadow-2xs font-medium appearance-none cursor-pointer transition-all"
                       >
-                        {TRAINER_COURSES.map((c) => (
-                          <option key={c.key} value={c.key}>{c.label}</option>
+                        {COURSE_CATEGORIES.map((cat) => (
+                          <optgroup key={cat.category} label={cat.title}>
+                            {cat.courses.map((c) => (
+                              <option key={c.code} value={c.code}>
+                                {c.code} — {c.name}
+                              </option>
+                            ))}
+                          </optgroup>
                         ))}
                       </select>
                       <ChevronDown className="w-4 h-4 text-slate-500 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none stroke-[2.5]" />

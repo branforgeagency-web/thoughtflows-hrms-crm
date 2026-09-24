@@ -16,19 +16,9 @@ import {
 } from 'lucide-react';
 
 import { getEligibleTrainers } from '../services/api';
+import { COURSE_CATEGORIES, TRAINER_COURSES } from '../constants/courses';
 
-// Course dropdown options (display only — the backend independently ranks
-// eligible trainers by course expertise once language/location/time match)
-const COURSES = [
-  { key: 'CPC', label: 'CPC — Certified Professional Coder' },
-  { key: 'CIC', label: 'CIC — Certified Inpatient Coder' },
-  { key: 'CPB', label: 'CPB — Certified Professional Biller & RCM' },
-  { key: 'CPMA', label: 'CPMA — Certified Medical Auditor' },
-  { key: 'CCS', label: 'CCS — Certified Coding Specialist' },
-  { key: 'CRC', label: 'CRC — Certified Risk Adjustment' },
-  { key: 'COC', label: 'COC — Certified Outpatient Coder' },
-  { key: 'EMCT', label: 'EMCT Intermediate & Terminology' }
-];
+const COURSES = TRAINER_COURSES;
 
 const TIME_SLOTS = [
   '6:00–8:00 AM',
@@ -252,8 +242,14 @@ export default function BookNewDemoModal({ isOpen, onClose, initialData, onConfi
                 onChange={(e) => setCourse(e.target.value)}
                 className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 font-semibold outline-none focus:border-[#0e6977] transition-all"
               >
-                {COURSES.map((c) => (
-                  <option key={c.key} value={c.key}>{c.label}</option>
+                {COURSE_CATEGORIES.map((cat) => (
+                  <optgroup key={cat.category} label={cat.title}>
+                    {cat.courses.map((c) => (
+                      <option key={c.code} value={c.code}>
+                        {c.code} — {c.name}
+                      </option>
+                    ))}
+                  </optgroup>
                 ))}
               </select>
             </div>

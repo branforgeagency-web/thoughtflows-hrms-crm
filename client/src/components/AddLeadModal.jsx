@@ -12,6 +12,7 @@ import {
   ChevronDown,
   ChevronUp
 } from 'lucide-react';
+import { COURSE_CATEGORIES } from '../constants/courses';
 
 export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
   if (!isOpen) return null;
@@ -523,11 +524,18 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
                     onChange={(e) => setInterestedCourse(e.target.value)}
                     className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#0e6977] transition-all font-sans cursor-pointer"
                   >
-                    <option value="CPC - Certified Professional Coder">CPC - Certified Professional Coder</option>
-                    <option value="Comprehensive Medical Coding + Hospital Internship">Comprehensive Medical Coding + Hospital Internship</option>
-                    <option value="Fast-Track Weekend Batch for Life Sciences">Fast-Track Weekend Batch for Life Sciences</option>
-                    <option value="Inpatient Coding & DRG Specialty">Inpatient Coding & DRG Specialty</option>
-                    <option value="Medical Billing & RCM Executive">Medical Billing & RCM Executive</option>
+                    {COURSE_CATEGORIES.map((cat) => (
+                      <optgroup key={cat.category} label={cat.title}>
+                        {cat.courses.map((c) => {
+                          const val = `${c.code} - ${c.name}`;
+                          return (
+                            <option key={c.code} value={val}>
+                              {val}
+                            </option>
+                          );
+                        })}
+                      </optgroup>
+                    ))}
                   </select>
                 </div>
                 <div>

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, Sparkles, ArrowRight, Check, ShieldCheck } from 'lucide-react';
+import { COURSE_CATEGORIES } from '../constants/courses';
 
 export default function CompleteRegistrationModal({
   isOpen,
@@ -61,6 +62,9 @@ export default function CompleteRegistrationModal({
   useEffect(() => {
     if (initialData?.generatedId) {
       setStudentId(initialData.generatedId);
+      if (initialData.courseName) setCourse(initialData.courseName);
+      if (initialData.branchName) setBranch(initialData.branchName);
+      if (initialData.typeName) setCourseType(initialData.typeName);
       if (initialData.branchName && initialData.courseName) {
         setIdSubtext(`TF · ${initialData.branchName} · ${initialData.courseName} · ${initialData.typeName || 'Online'} · ${initialData.monthName || 'May'} · ${initialData.yearVal || '2026'} · serial ${initialData.serial || '001'}`);
       }
@@ -380,12 +384,18 @@ export default function CompleteRegistrationModal({
                   className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer"
                 >
                   <option value="">— Select course —</option>
-                  <option value="CPC - Certified Professional Coder">CPC - Certified Professional Coder</option>
-                  <option value="AMCT - Advanced Medical Coding">AMCT - Advanced Medical Coding</option>
-                  <option value="IPDRG Hospital Coding">IPDRG Hospital Coding</option>
-                  <option value="CIC - Certified Inpatient Coder">CIC - Certified Inpatient Coder</option>
-                  <option value="CRC - Risk Adjustment Coding">CRC - Risk Adjustment Coding</option>
-                  <option value="CCS - Certified Coding Specialist">CCS - Certified Coding Specialist</option>
+                  {COURSE_CATEGORIES.map((cat) => (
+                    <optgroup key={cat.category} label={cat.title}>
+                      {cat.courses.map((c) => {
+                        const val = `${c.code} - ${c.name}`;
+                        return (
+                          <option key={c.code} value={val}>
+                            {val}
+                          </option>
+                        );
+                      })}
+                    </optgroup>
+                  ))}
                 </select>
               </div>
 

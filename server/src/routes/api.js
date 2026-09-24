@@ -13,6 +13,7 @@ import Student from '../models/Student.js';
 import Demo from '../models/Demo.js';
 import Trainer from '../models/Trainer.js';
 import CourseFeeRate from '../models/CourseFeeRate.js';
+import { DEFAULT_COURSE_FEE_RATES } from '../constants/courses.js';
 import Approval from '../models/Approval.js';
 import Escalation from '../models/Escalation.js';
 import TeamMember from '../models/TeamMember.js';
@@ -29,6 +30,7 @@ import TrainerAssessment from '../models/TrainerAssessment.js';
 import IncentiveSlab from '../models/IncentiveSlab.js';
 import AuditLog from '../models/AuditLog.js';
 import CallRecording from '../models/CallRecording.js';
+import DailyClosure from '../models/DailyClosure.js';
 
 const router = express.Router();
 
@@ -442,6 +444,73 @@ router.delete('/recordings/:id', async (req, res) => {
       }
     }
     res.json({ success: true, message: 'Recording deleted successfully' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==========================================
+// DAILY END-OF-DAY CLOSURES API
+// ==========================================
+router.get('/closures/today', async (req, res) => {
+  try {
+    const counselorName = req.query.counselor;
+    const date = req.query.date || new Date().toISOString().split('T')[0];
+    if (!counselorName) {
+      return res.status(400).json({ error: 'counselor query param is required' });
+    }
+    const closure = await DailyClosure.findOne({
+      counselorName: { $regex: new RegExp(`^${counselorName.trim()}$`, 'i') },
+      date
+    });
+    res.json(closure || null);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/closures', async (req, res) => {
+  try {
+    const { counselorName, date, callsMade, connected, demosBooked, admissions, feesCollected, pendingFus, notes, branch } = req.body;
+    if (!counselorName || !date) {
+      return res.status(400).json({ error: 'counselorName and date are required' });
+    }
+    const closure = await DailyClosure.findOneAndUpdate(
+      {
+        counselorName: { $regex: new RegExp(`^${counselorName.trim()}$`, 'i') },
+        date
+      },
+      {
+        $set: {
+          counselorName: counselorName.trim(),
+          date,
+          callsMade: Number(callsMade) || 0,
+          connected: Number(connected) || 0,
+          demosBooked: Number(demosBooked) || 0,
+          admissions: Number(admissions) || 0,
+          feesCollected: Number(feesCollected) || 0,
+          pendingFus: Number(pendingFus) || 0,
+          branch: branch || 'Saravanampatti Branch (CBE)',
+          status: 'submitted',
+          submittedAt: new Date(),
+          notes: notes || ''
+        }
+      },
+      { new: true, upsert: true }
+    );
+    res.status(200).json(closure);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/closures', async (req, res) => {
+  try {
+    const query = {};
+    if (req.query.date) query.date = req.query.date;
+    if (req.query.counselor) query.counselorName = { $regex: new RegExp(req.query.counselor, 'i') };
+    const closures = await DailyClosure.find(query).sort({ date: -1, createdAt: -1 });
+    res.json(closures);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1564,6 +1633,35 @@ router.delete('/demos/:id', async (req, res) => {
 router.get('/fees/rates', async (req, res) => {
   try {
     let rates = await CourseFeeRate.find().sort({ createdAt: 1 });
+    if (!rates || rates.length === 0) {
+      await CourseFeeRate.insertMany(DEFAULT_COURSE_FEE_RATES);
+      rates = await CourseFeeRate.find().sort({ createdAt: 1 });
+    } else {
+      const existingCodes = new Set(rates.map(r => (r.code || '').toUpperCase()));
+      const missing = DEFAULT_COURSE_FEE_RATES.filter(r => !existingCodes.has(r.code.toUpperCase()));
+      if (missing.length > 0) {
+        await CourseFeeRate.insertMany(missing);
+      }
+      // Also ensure existing rates have originalFee & standardFee populated if missing
+      for (const def of DEFAULT_COURSE_FEE_RATES) {
+        const existing = rates.find(r => (r.code || '').toUpperCase() === def.code.toUpperCase());
+        if (existing && (!existing.originalFee || !existing.standardFee)) {
+          await CourseFeeRate.updateOne(
+            { _id: existing._id },
+            { 
+              $set: { 
+                originalFee: def.originalFee, 
+                standardFee: def.standardFee,
+                courseFee: def.courseFee,
+                trainingFee: def.trainingFee,
+                totalPayable: def.totalPayable
+              } 
+            }
+          );
+        }
+      }
+      rates = await CourseFeeRate.find().sort({ createdAt: 1 });
+    }
     res.json(rates);
   } catch (err) {
     res.status(500).json({ error: err.message });

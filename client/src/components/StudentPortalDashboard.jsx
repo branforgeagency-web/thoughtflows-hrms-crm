@@ -47,6 +47,7 @@ import {
   createEscalation, 
   onDataUpdate 
 } from '../services/api';
+import { COURSE_CATEGORIES } from '../constants/courses';
 
 export default function StudentPortalDashboard({ onClose, currentUser, onLogout, onSwitchDepartment }) {
   // Navigation State
@@ -3645,10 +3646,15 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
                   onChange={(e) => setReferralCourse(e.target.value)}
                   className="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-900 focus:outline-none focus:border-[#483ec7]"
                 >
-                  <option>CPC — Certified Professional Coder</option>
-                  <option>CIC — Certified Inpatient Coder</option>
-                  <option>IPDRG — Medical Coding Specialist</option>
-                  <option>CPMA — Medical Auditor</option>
+                  {COURSE_CATEGORIES.map((cat) => (
+                    <optgroup key={cat.category} label={cat.title}>
+                      {cat.courses.map((c) => (
+                        <option key={c.code} value={`${c.code} — ${c.name}`}>
+                          {c.code} — {c.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
                 </select>
               </div>
 

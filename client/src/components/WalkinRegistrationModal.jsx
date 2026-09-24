@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, Sparkles, Check, ArrowRight } from 'lucide-react';
 import logoImg from '../assets/thoughtflows-logo.png';
+import { COURSE_CATEGORIES } from '../constants/courses';
 
 export default function WalkinRegistrationModal({ isOpen, onClose, onRegister, currentUser }) {
   if (!isOpen) return null;
@@ -35,19 +36,17 @@ export default function WalkinRegistrationModal({ isOpen, onClose, onRegister, c
 
   const [toastMsg, setToastMsg] = useState(null);
 
-  const COURSES = [
-    'MCT',
-    'AMCT',
-    'CPC',
-    'CCS',
-    'CPMA',
-    'CIC',
-    'ED',
-    'E/M',
-    'IP-DRG',
-    'SURGERY',
-    'COC',
-    'Others'
+  const WALKIN_CATEGORIES = [
+    ...COURSE_CATEGORIES.map(cat => ({
+      category: cat.category,
+      title: cat.title,
+      items: cat.courses.map(c => c.code)
+    })),
+    {
+      category: 'Others',
+      title: 'Other Tracks',
+      items: ['MCT', 'Others']
+    }
   ];
 
   const SOURCES = [
@@ -441,24 +440,33 @@ export default function WalkinRegistrationModal({ isOpen, onClose, onRegister, c
               </div>
             </div>
 
-            {/* Course Radios */}
+            {/* Course Radios Grouped by Category */}
             <div>
-              <div className="text-xs font-black uppercase text-[#00695c] tracking-wider mb-2">
+              <div className="text-xs font-black uppercase text-[#00695c] tracking-wider mb-2.5">
                 COURSE
               </div>
-              <div className="flex flex-wrap items-center gap-x-5 gap-y-2.5">
-                {COURSES.map((c) => (
-                  <label key={c} className="flex items-center gap-2 cursor-pointer text-slate-800 font-semibold select-none">
-                    <input
-                      type="radio"
-                      name="course"
-                      value={c}
-                      checked={course === c}
-                      onChange={() => setCourse(c)}
-                      className="w-4 h-4 accent-[#00796b] cursor-pointer"
-                    />
-                    <span>{c}</span>
-                  </label>
+              <div className="space-y-3 bg-slate-50/50 p-3 rounded-xl border border-slate-100">
+                {WALKIN_CATEGORIES.map((cat) => (
+                  <div key={cat.category} className="space-y-1.5">
+                    <div className="text-[10px] font-black uppercase tracking-wider text-teal-800">
+                      {cat.title}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                      {cat.items.map((c) => (
+                        <label key={c} className="flex items-center gap-1.5 cursor-pointer text-slate-800 font-semibold select-none text-xs hover:text-teal-800 transition-colors">
+                          <input
+                            type="radio"
+                            name="course"
+                            value={c}
+                            checked={course === c}
+                            onChange={() => setCourse(c)}
+                            className="w-3.5 h-3.5 accent-[#00796b] cursor-pointer"
+                          />
+                          <span>{c}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
                 ))}
               </div>
             </div>

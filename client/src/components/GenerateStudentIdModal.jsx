@@ -32,26 +32,49 @@ export default function GenerateStudentIdModal({ isOpen, onClose, onConfirm }) {
   };
 
   const COURSE_MAP = {
-    'C': 'CPC',
-    'A': 'AMCT',
+    // AAPC
+    'C': 'CPC - Certified Professional Coder',
+    'E': 'CIC - Certified Inpatient Coder',
+    'P': 'CPMA - Certified Professional Medical Auditor',
+    'B': 'COC - Certified Outpatient Coder',
+    'R': 'CRC - Certified Risk Adjustment Coder',
+    'PB': 'CPB - Certified Professional Biller',
+    'EDC': 'CEDC - Certified Emergency Department Coder',
+    'CN': 'CEMC - Certified Evaluation and Management Coder',
+    'CDO': 'CDEO - Certified Documentation Expert Outpatient',
+    'CDEI': 'CDEI - Certified Documentation Expert Inpatient',
+    'PPM': 'CPPM - Certified Physician Practice Manager',
+
+    // Speciality
+    'Y': 'Surgery - Specialty Surgery Coding',
+    'D': 'ED - Emergency Department Coding',
+    'N': 'EM - Evaluation and Management Coding',
+    'RD': 'Radiology - Radiology Coding',
+    'AN': 'Anesthesia - Anesthesia Coding',
+    'I': 'IP DRG - Inpatient DRG Coding',
+    'H': 'HCC - Risk Adjustment Coding',
+    'IVR': 'IVR - Interventional Radiology Coding',
+    'CDI': 'CDI - Clinical Documentation Improvement',
+
+    // AHIMA
+    'S': 'CCS - Certified Coding Specialist',
+    'CSP': 'CCS-P - Certified Coding Specialist – Physician-based',
+    'RIA': 'RHIA - Registered Health Information Administrator',
+    'RIT': 'RHIT - Registered Health Information Technician',
+
+    // HIMAA
+    'CCC': 'CCC - Certified Clinical Coder',
+    'HIM': 'HIM - Health Information Management',
+
+    // Foundation & Other
+    'A': 'AMCT - Advanced Medical Coding',
     'AB': 'AMCT Beginner',
     'AI': 'AMCT Intermediate',
     'AA': 'AMCT Advanced',
     'F': 'CPC Crash Course',
-    'D': 'ED Coding',
-    'N': 'E/M Coding',
-    'I': 'IPDRG',
-    'S': 'CCS',
-    'P': 'CPMA',
-    'E': 'CIC',
-    'R': 'CRC',
-    'Y': 'Surgical',
-    'T': 'CPT',
-    'Z': 'ICD',
-    'H': 'HCC',
-    'O': 'Anatomy',
-    'CN': 'CEMC',
-    'B': 'COC'
+    'T': 'CPT Coding',
+    'Z': 'ICD-10 Coding',
+    'O': 'Anatomy & Physiology'
   };
 
   const TYPE_MAP = {
@@ -233,26 +256,54 @@ export default function GenerateStudentIdModal({ isOpen, onClose, onConfirm }) {
                   onChange={(e) => setCourse(e.target.value)}
                   className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer font-sans"
                 >
-                  <option value="C">C - CPC Intermediate</option>
-                  <option value="A">A - AMCT</option>
-                  <option value="AB">AB - AMCT Beginner</option>
-                  <option value="AI">AI - AMCT Intermediate</option>
-                  <option value="AA">AA - AMCT Advanced</option>
-                  <option value="F">F - CPC Crash Course</option>
-                  <option value="D">D - ED Coding</option>
-                  <option value="N">N - E/M Coding</option>
-                  <option value="I">I - IPDRG</option>
-                  <option value="S">S - CCS</option>
-                  <option value="P">P - CPMA</option>
-                  <option value="E">E - CIC</option>
-                  <option value="R">R - CRC</option>
-                  <option value="Y">Y - Surgical</option>
-                  <option value="T">T - CPT</option>
-                  <option value="Z">Z - ICD</option>
-                  <option value="H">H - HCC</option>
-                  <option value="O">O - Anatomy</option>
-                  <option value="CN">CN - CEMC</option>
-                  <option value="B">B - COC</option>
+                  <optgroup label="AAPC Certifications">
+                    <option value="C">C - CPC (Certified Professional Coder)</option>
+                    <option value="E">E - CIC (Certified Inpatient Coder)</option>
+                    <option value="P">P - CPMA (Certified Professional Medical Auditor)</option>
+                    <option value="B">B - COC (Certified Outpatient Coder)</option>
+                    <option value="R">R - CRC (Certified Risk Adjustment Coder)</option>
+                    <option value="PB">PB - CPB (Certified Professional Biller)</option>
+                    <option value="EDC">EDC - CEDC (Certified Emergency Dept Coder)</option>
+                    <option value="CN">CN - CEMC (Certified Evaluation & Management)</option>
+                    <option value="CDO">CDO - CDEO (Certified Documentation Outpatient)</option>
+                    <option value="CDEI">CDEI - CDEI (Certified Documentation Inpatient)</option>
+                    <option value="PPM">PPM - CPPM (Physician Practice Manager)</option>
+                  </optgroup>
+
+                  <optgroup label="Speciality Tracks">
+                    <option value="Y">Y - Surgery Coding</option>
+                    <option value="D">D - ED (Emergency Department)</option>
+                    <option value="N">N - EM (Evaluation & Management)</option>
+                    <option value="RD">RD - Radiology Coding</option>
+                    <option value="AN">AN - Anesthesia Coding</option>
+                    <option value="I">I - IP DRG Hospital Coding</option>
+                    <option value="H">H - HCC Risk Adjustment</option>
+                    <option value="IVR">IVR - Interventional Radiology</option>
+                    <option value="CDI">CDI - Clinical Documentation Improvement</option>
+                  </optgroup>
+
+                  <optgroup label="AHIMA Certifications">
+                    <option value="S">S - CCS (Certified Coding Specialist)</option>
+                    <option value="CSP">CSP - CCS-P (Physician-based)</option>
+                    <option value="RIA">RIA - RHIA (Health Info Administrator)</option>
+                    <option value="RIT">RIT - RHIT (Health Info Technician)</option>
+                  </optgroup>
+
+                  <optgroup label="HIMAA Certifications">
+                    <option value="CCC">CCC - Certified Clinical Coder</option>
+                    <option value="HIM">HIM - Health Information Management</option>
+                  </optgroup>
+
+                  <optgroup label="Foundation & Prep Tracks">
+                    <option value="AB">AB - AMCT Beginner</option>
+                    <option value="AI">AI - AMCT Intermediate</option>
+                    <option value="AA">AA - AMCT Advanced</option>
+                    <option value="A">A - AMCT Foundation</option>
+                    <option value="F">F - CPC Crash Course</option>
+                    <option value="T">T - CPT Coding</option>
+                    <option value="Z">Z - ICD-10 Coding</option>
+                    <option value="O">O - Anatomy & Physiology</option>
+                  </optgroup>
                 </select>
               </div>
             </div>

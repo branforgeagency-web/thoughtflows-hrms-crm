@@ -10,6 +10,8 @@ export default function AddCourseRateModal({ isOpen, onClose, onSave, initialDat
   const [courseName, setCourseName] = useState(initialData?.name || '');
 
   // Fee Components
+  const [originalFee, setOriginalFee] = useState(initialData?.originalFee !== undefined ? initialData.originalFee : '');
+  const [standardFee, setStandardFee] = useState(initialData?.standardFee !== undefined ? initialData.standardFee : '');
   const [registrationFee, setRegistrationFee] = useState(initialData?.registrationFee !== undefined ? initialData.registrationFee : '2000');
   const [trainingFee, setTrainingFee] = useState(initialData?.trainingFee !== undefined ? initialData.trainingFee : '45000');
   const [studyMaterialFee, setStudyMaterialFee] = useState(initialData?.studyMaterialFee !== undefined ? initialData.studyMaterialFee : '3000');
@@ -60,6 +62,8 @@ export default function AddCourseRateModal({ isOpen, onClose, onSave, initialDat
       code: courseCode.trim().toUpperCase(),
       name: courseName.trim(),
       duration: duration.trim(),
+      originalFee: Number(originalFee) || 0,
+      standardFee: Number(standardFee) || 0,
       registrationFee: Number(registrationFee) || 0,
       trainingFee: Number(trainingFee) || 0,
       courseFee: (Number(registrationFee) || 0) + (Number(trainingFee) || 0) + (Number(studyMaterialFee) || 0) + (Number(membershipFee) || 0),
@@ -169,7 +173,35 @@ export default function AddCourseRateModal({ isOpen, onClose, onSave, initialDat
           {/* SECTION 2: FEE COMPONENTS (₹) */}
           <div className="space-y-3 pt-2">
             <div className="text-[11px] font-mono font-bold uppercase tracking-wider text-teal-600">
-              FEE COMPONENTS (₹)
+              3-TIER PRICING & FEE COMPONENTS (₹)
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 bg-amber-50/60 rounded-xl border border-amber-200/80">
+              <div>
+                <label className="block text-[10.5px] font-mono font-bold text-amber-900 uppercase mb-1">
+                  Original Course Fee (₹)
+                </label>
+                <input
+                  type="number"
+                  placeholder="e.g. 35000"
+                  value={originalFee}
+                  onChange={(e) => setOriginalFee(e.target.value)}
+                  className="w-full bg-white border border-amber-200 rounded-xl px-3.5 py-2 text-slate-900 outline-none focus:border-amber-500 transition-all font-sans text-xs"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10.5px] font-mono font-bold text-amber-900 uppercase mb-1">
+                  Current Standard Fee (₹)
+                </label>
+                <input
+                  type="number"
+                  placeholder="e.g. 23000"
+                  value={standardFee}
+                  onChange={(e) => setStandardFee(e.target.value)}
+                  className="w-full bg-white border border-amber-200 rounded-xl px-3.5 py-2 text-slate-900 outline-none focus:border-amber-500 transition-all font-sans text-xs"
+                />
+              </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

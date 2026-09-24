@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/zoom-signature",
+      "destination": "/api/zoom-signature"
+    },
+    {
+      "source": "/((?!api/).*)",
+      "destination": "/index.html"
+    }
+  ]
+}

@@ -695,6 +695,10 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
         isOpen={Boolean(selectedStudent)}
         onClose={() => setSelectedStudent(null)}
         student={selectedStudent}
+        onUpdateStudent={(updated) => {
+          setSelectedStudent(updated);
+          setStudents(prev => prev.map(s => (s._id === updated._id || s.studentId === updated.studentId) ? updated : s));
+        }}
       />
     </div>
   );

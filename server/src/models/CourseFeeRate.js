@@ -50,6 +50,14 @@ const courseFeeRateSchema = new mongoose.Schema({
     type: String,
     default: 'INR'
   },
+  originalFee: {
+    type: Number,
+    default: 0
+  },
+  standardFee: {
+    type: Number,
+    default: 0
+  },
   courseFee: {
     type: Number,
     default: 21000

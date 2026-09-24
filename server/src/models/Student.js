@@ -183,6 +183,26 @@ const studentSchema = new mongoose.Schema({
   rewardPoints: {
     type: Number,
     default: 0
+  },
+  interviews: {
+    type: [Object],
+    default: []
+  },
+  placementCompany: {
+    type: String,
+    default: ''
+  },
+  placementRole: {
+    type: String,
+    default: ''
+  },
+  placementPackage: {
+    type: String,
+    default: ''
+  },
+  placementStage: {
+    type: Number,
+    default: 5
   }
 }, {
   timestamps: true

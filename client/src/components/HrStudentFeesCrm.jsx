@@ -112,12 +112,21 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
 
     if (matched) {
       const rawCourse = (matched.course || 'CPC').toUpperCase();
-      let normalizedCourse = 'CPC';
-      if (rawCourse.includes('AMCT')) normalizedCourse = 'AMCT';
-      else if (rawCourse.includes('IPDRG')) normalizedCourse = 'IPDRG';
-      else if (rawCourse.includes('CIC')) normalizedCourse = 'CIC';
-      else if (rawCourse.includes('CRC')) normalizedCourse = 'CRC';
+      let normalizedCourse = rawCourse;
+      const exactCr = courseRates.find(c => (c.code || '').toUpperCase() === rawCourse || (c.name || '').toUpperCase() === rawCourse);
+      if (exactCr) {
+        normalizedCourse = exactCr.code;
+      } else if (rawCourse.includes('AMCT-INT') || rawCourse.includes('INTERMEDIATE')) normalizedCourse = 'AMCT-INT';
+      else if (rawCourse.includes('AMCT-ADV') || rawCourse.includes('ADVANCED')) normalizedCourse = 'AMCT-ADV';
+      else if (rawCourse.includes('AMCT-BEG') || rawCourse.includes('BEGINNER')) normalizedCourse = 'AMCT-BEG';
+      else if (rawCourse.includes('AMCT')) normalizedCourse = 'AMCT-INT';
+      else if (rawCourse.includes('CCS-FRESHER')) normalizedCourse = 'CCS-Fresher';
+      else if (rawCourse.includes('CCS-OTHER')) normalizedCourse = 'CCS-Other';
       else if (rawCourse.includes('CCS')) normalizedCourse = 'CCS';
+      else if (rawCourse.includes('ED')) normalizedCourse = 'ED';
+      else if (rawCourse.includes('E/M') || rawCourse.includes('EM')) normalizedCourse = 'E/M';
+      else if (rawCourse.includes('SURGERY')) normalizedCourse = 'Surgery';
+      else if (rawCourse.includes('IP-DRG') || rawCourse.includes('IPDRG')) normalizedCourse = 'IP-DRG';
       else if (rawCourse.includes('CPC')) normalizedCourse = 'CPC';
 
       const cr = courseRateMap[normalizedCourse];
@@ -435,7 +444,9 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
               <tr className="bg-slate-100/75 text-slate-500 font-extrabold uppercase text-[10px] tracking-wider border-b border-slate-200">
                 <th className="py-3 px-4">CODE</th>
                 <th className="py-3 px-4">COURSE NAME</th>
-                <th className="py-3 px-4 text-right">COURSE FEE</th>
+                <th className="py-3 px-4 text-right">ORIGINAL FEE</th>
+                <th className="py-3 px-4 text-right">STANDARD FEE</th>
+                <th className="py-3 px-4 text-right">DISCOUNTED FEE</th>
                 <th className="py-3 px-4 text-right">EXAM FEE (CCCP)</th>
                 <th className="py-3 px-4 text-center">ACTION</th>
               </tr>
@@ -449,12 +460,18 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
                   <td className="py-3 px-4 font-semibold text-slate-700">
                     {cr.name}
                   </td>
-                  <td className="py-3 px-4 text-right font-bold text-slate-800 font-mono">
-                    ₹{cr.courseFee.toLocaleString('en-IN')}
+                  <td className="py-3 px-4 text-right font-medium text-slate-400 line-through font-mono">
+                    {cr.originalFee ? `₹${Number(cr.originalFee).toLocaleString('en-IN')}` : '—'}
+                  </td>
+                  <td className="py-3 px-4 text-right font-bold text-slate-600 font-mono">
+                    {cr.standardFee ? `₹${Number(cr.standardFee).toLocaleString('en-IN')}` : '—'}
+                  </td>
+                  <td className="py-3 px-4 text-right font-black text-emerald-700 font-mono">
+                    ₹{Number(cr.courseFee).toLocaleString('en-IN')}
                   </td>
                   <td className="py-3 px-4 text-right font-bold text-slate-800 font-mono">
                     <span className="inline-flex items-center gap-1">
-                      <span>₹{cr.examFee.toLocaleString('en-IN')}</span>
+                      <span>₹{(cr.examFee || 0).toLocaleString('en-IN')}</span>
                       <span className="text-[9px] bg-blue-100 text-blue-800 px-1.5 py-0.2 rounded font-black">
                         CCCP
                       </span>
@@ -463,7 +480,7 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
                   <td className="py-3 px-4 text-center">
                     <button
                       onClick={() => setEditingCourse({ ...cr })}
-                      className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-slate-100 hover:bg-teal-50 hover:text-teal-800 text-slate-700 font-bold text-[11px] border border-slate-200 transition-all"
+                      className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-slate-100 hover:bg-teal-50 hover:text-teal-800 text-slate-700 font-bold text-[11px] border border-slate-200 transition-all cursor-pointer"
                     >
                       <Edit2 className="w-3 h-3" />
                       <span>Edit</span>

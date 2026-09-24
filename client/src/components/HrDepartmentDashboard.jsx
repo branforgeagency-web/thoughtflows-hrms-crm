@@ -40,7 +40,7 @@ import HrCallRecordingsTable from './HrCallRecordingsTable';
 import LeadCallModal from './LeadCallModal';
 import BookNewDemoModal from './BookNewDemoModal';
 import AddLeadModal from './AddLeadModal';
-import { getStudents, getLeads, createLead, updateLead, getDemos, createDemo, onDataUpdate } from '../services/api';
+import { getStudents, getLeads, createLead, updateLead, getDemos, createDemo, getRecordings, getTodayClosure, saveDailyClosure, onDataUpdate } from '../services/api';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 
 export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, onSwitchDepartment, theme = 'classic' }) {
@@ -62,9 +62,57 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     }
   };
 
+  const userName = currentUser?.name || 'Kavitha N.';
+  const userFirstName = userName.split(' ')[0] || 'Kavitha';
+  const branchName = currentUser?.branch || 'Saravanampatti Branch (CBE)';
+
+  // Current Day Date Key for Daily Reset (e.g. '2026-09-24')
+  const todayKey = useMemo(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }, []);
+
+  const todayDisplay = useMemo(() => {
+    return new Date().toLocaleDateString('en-IN', {
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric'
+    });
+  }, []);
+
+  // Helper: check if a date string/Date object is from today
+  const isToday = (dateInput) => {
+    if (!dateInput) return false;
+    const d = new Date(dateInput);
+    if (isNaN(d.getTime())) return false;
+    const now = new Date();
+    return (
+      d.getFullYear() === now.getFullYear() &&
+      d.getMonth() === now.getMonth() &&
+      d.getDate() === now.getDate()
+    );
+  };
+
   const [searchQuery, setSearchQuery] = useState('');
   const [isOnBreak, setIsOnBreak] = useState(false);
   const [closureSubmitted, setClosureSubmitted] = useState(false);
+  const [closureSubmittedAt, setClosureSubmittedAt] = useState('');
+  const [customMetrics, setCustomMetrics] = useState(null);
+  const [editingMetric, setEditingMetric] = useState(null);
+  const [callRecordings, setCallRecordings] = useState([]);
+  
+  // Local daily calls cache for instant reactivity when calling through modal
+  const [todayCallLogs, setTodayCallLogs] = useState(() => {
+    try {
+      const dKey = new Date().toISOString().split('T')[0];
+      const saved = localStorage.getItem(`thoughtflows_daily_calls_${dKey}_${userName}`);
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
   const [dashMenuOpen, setDashMenuOpen] = useState(false);
   const [barTheme, setBarTheme] = useState(() => {
     try {
@@ -117,14 +165,55 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       setLoading(true);
       const counselorFilter = currentUser?.name?.trim();
       const shouldFilterOnServer = counselorFilter && (!isElevatedUser || scopeMode === 'mine');
-      const [stRes, ldRes, dmRes] = await Promise.all([
+      const dKey = new Date().toISOString().split('T')[0];
+
+      const [stRes, ldRes, dmRes, recRes, closureRes] = await Promise.all([
         getStudents(shouldFilterOnServer ? { hrName: counselorFilter } : undefined),
         getLeads(shouldFilterOnServer ? { counselor: counselorFilter } : undefined),
-        getDemos()
+        getDemos(),
+        getRecordings(shouldFilterOnServer ? { counselor: counselorFilter } : undefined).catch(() => []),
+        getTodayClosure(counselorFilter || 'Kavitha N.', dKey).catch(() => null)
       ]);
       setStudents(Array.isArray(stRes) ? stRes : []);
       setLeads(ldRes?.leads || []);
       setDemos(Array.isArray(dmRes) ? dmRes : []);
+      setCallRecordings(Array.isArray(recRes) ? recRes : []);
+
+      // Check if closure was submitted today
+      if (closureRes) {
+        setClosureSubmitted(true);
+        if (closureRes.submittedAt) {
+          setClosureSubmittedAt(new Date(closureRes.submittedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }));
+        }
+        setCustomMetrics({
+          callsMade: closureRes.callsMade,
+          connected: closureRes.connected,
+          demosBooked: closureRes.demosBooked,
+          admissions: closureRes.admissions,
+          feesCollected: closureRes.feesCollected,
+          pendingFus: closureRes.pendingFus
+        });
+      } else {
+        // Check localStorage for today's submission
+        try {
+          const localSaved = localStorage.getItem(`thoughtflows_closure_${dKey}_${counselorFilter || 'Kavitha N.'}`);
+          if (localSaved) {
+            const parsed = JSON.parse(localSaved);
+            if (parsed.submitted) {
+              setClosureSubmitted(true);
+              setClosureSubmittedAt(parsed.submittedAt || '');
+              if (parsed.metrics) setCustomMetrics(parsed.metrics);
+            }
+          } else {
+            // New day reset!
+            setClosureSubmitted(false);
+            setClosureSubmittedAt('');
+            setCustomMetrics(null);
+          }
+        } catch {
+          setClosureSubmitted(false);
+        }
+      }
       setLoading(false);
     } catch (err) {
       console.error('Error fetching HR CRM live data:', err);
@@ -135,7 +224,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   useEffect(() => {
     loadAllData();
     const unsub = onDataUpdate((entity) => {
-      if (entity === 'leads' || entity === 'students' || entity === 'demos') {
+      if (entity === 'leads' || entity === 'students' || entity === 'demos' || entity === 'recordings' || entity === 'closures') {
         loadAllData();
       }
     });
@@ -176,10 +265,6 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     }
   };
 
-  const userName = currentUser?.name || 'Kavitha N.';
-  const userFirstName = userName.split(' ')[0] || 'Kavitha';
-  const branchName = currentUser?.branch || 'Saravanampatti Branch (CBE)';
-
   // Counselor Scoping: Strictly filter leads, students, and demos for the logged-in counselor
   const scopedLeads = useMemo(() => {
     if (scopeMode === 'all' && isElevatedUser) return leads;
@@ -218,20 +303,115 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     });
   }, [demos, scopedLeads, scopeMode, isElevatedUser, currentUser?.name]);
 
-  // End of day numbers (real calculations from scoped data)
-  const closureMetrics = useMemo(() => {
-    const admittedCount = scopedStudents.length;
-    const demosCount = scopedDemos.length;
-    const pendingCount = scopedLeads.filter(l => l.stage !== 'admitted' && l.stage !== 'closed').length;
+  // Dynamic priorities for tomorrow
+  const overdueCount = useMemo(() => {
+    return scopedLeads.filter(l => l.followUpDate && l.followUpDate < todayKey && l.stage !== 'admitted' && l.stage !== 'closed').length;
+  }, [scopedLeads, todayKey]);
+
+  const feePendingCount = useMemo(() => {
+    return scopedLeads.filter(l => l.stage === 'fee_followup' || l.stage === 'demo_attended').length;
+  }, [scopedLeads]);
+
+  // End of day numbers (strictly calculated for TODAY - resets each day)
+  const computedDailyMetrics = useMemo(() => {
+    // 1. Calls made TODAY (recordings created today, leads with lastCallTime today, or logged session calls today)
+    const leadCallsTodayCount = scopedLeads.filter(l => isToday(l.lastCallTime)).length;
+    const recordingsTodayCount = callRecordings.filter(r => isToday(r.createdAt)).length;
+    const sessionCallsCount = todayCallLogs.length;
+    const callsMadeToday = Math.max(leadCallsTodayCount, recordingsTodayCount, sessionCallsCount);
+
+    // 2. Connected calls TODAY
+    const sessionConnected = todayCallLogs.filter(c => c.connected).length;
+    const recordingsConnected = callRecordings.filter(r => isToday(r.createdAt) && r.outcome !== 'Not Reachable').length;
+    const leadsConnected = scopedLeads.filter(l => isToday(l.lastCallTime) && l.stage !== 'new').length;
+    const connectedToday = Math.max(sessionConnected, recordingsConnected, leadsConnected);
+
+    // 3. Demos booked TODAY
+    const demosBookedToday = scopedDemos.filter(d => isToday(d.createdAt) || (d.preferredDate && d.preferredDate === todayKey)).length;
+
+    // 4. Admissions TODAY
+    const todayAdmissions = scopedStudents.filter(s => isToday(s.createdAt) || isToday(s.admissionDate));
+    const admissionsToday = todayAdmissions.length;
+
+    // 5. Fees collected TODAY (from today's admissions/payments only)
+    const feesTodayNum = todayAdmissions.reduce((acc, s) => acc + (Number(s.courseFee) || Number(s.paidAmount) || 0), 0);
+
+    // 6. Pending follow-ups due TODAY or overdue
+    const pendingToday = scopedLeads.filter(l => {
+      if (l.stage === 'admitted' || l.stage === 'closed') return false;
+      if (l.followUpDate) return l.followUpDate <= todayKey;
+      return l.stage === 'new' || l.stage === 'contacted';
+    }).length;
+
     return {
-      callsMade: scopedLeads.reduce((acc, l) => acc + (l.callCount || 0), 0),
-      connected: scopedLeads.filter(l => l.stage !== 'new').length,
-      demosBooked: demosCount,
-      admissions: admittedCount,
-      feesCollected: `₹${(admittedCount * 21000).toLocaleString('en-IN')}`,
-      pendingFus: pendingCount
+      callsMade: callsMadeToday,
+      connected: connectedToday,
+      demosBooked: demosBookedToday,
+      admissions: admissionsToday,
+      rawFeesCollected: feesTodayNum,
+      feesCollected: `₹${feesTodayNum.toLocaleString('en-IN')}`,
+      pendingFus: pendingToday
     };
-  }, [scopedStudents, scopedDemos, scopedLeads]);
+  }, [scopedLeads, scopedStudents, scopedDemos, callRecordings, todayCallLogs, todayKey]);
+
+  // If user corrected/edited numbers, use customMetrics; otherwise use live computed daily metrics
+  const closureMetrics = useMemo(() => {
+    if (customMetrics) {
+      const rawFees = typeof customMetrics.feesCollected === 'number' 
+        ? customMetrics.feesCollected 
+        : (parseInt(String(customMetrics.feesCollected).replace(/\D/g, '')) || 0);
+      return {
+        callsMade: customMetrics.callsMade ?? computedDailyMetrics.callsMade,
+        connected: customMetrics.connected ?? computedDailyMetrics.connected,
+        demosBooked: customMetrics.demosBooked ?? computedDailyMetrics.demosBooked,
+        admissions: customMetrics.admissions ?? computedDailyMetrics.admissions,
+        rawFeesCollected: rawFees,
+        feesCollected: typeof customMetrics.feesCollected === 'string' && customMetrics.feesCollected.startsWith('₹') 
+          ? customMetrics.feesCollected 
+          : `₹${rawFees.toLocaleString('en-IN')}`,
+        pendingFus: customMetrics.pendingFus ?? computedDailyMetrics.pendingFus
+      };
+    }
+    return computedDailyMetrics;
+  }, [customMetrics, computedDailyMetrics]);
+
+  // Submit today's closure to database and command center
+  const handleDailyClosureSubmit = async () => {
+    try {
+      const payload = {
+        counselorName: userName,
+        counselorEmail: currentUser?.email || '',
+        branch: branchName || 'Saravanampatti Branch (CBE)',
+        date: todayKey,
+        callsMade: closureMetrics.callsMade,
+        connected: closureMetrics.connected,
+        demosBooked: closureMetrics.demosBooked,
+        admissions: closureMetrics.admissions,
+        feesCollected: closureMetrics.rawFeesCollected,
+        pendingFus: closureMetrics.pendingFus,
+        status: 'submitted',
+        notes: `Daily closure submitted by ${userName} on ${todayKey}`
+      };
+      await saveDailyClosure(payload);
+      setClosureSubmitted(true);
+      const timeStr = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+      setClosureSubmittedAt(timeStr);
+      try {
+        localStorage.setItem(`thoughtflows_closure_${todayKey}_${userName}`, JSON.stringify({
+          submitted: true,
+          submittedAt: timeStr,
+          metrics: payload
+        }));
+      } catch (e) {}
+      showToast(`✓ Today's closure (${todayKey}) submitted to Command Center!`);
+    } catch (err) {
+      console.error('Failed to submit daily closure:', err);
+      setClosureSubmitted(true);
+      const timeStr = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+      setClosureSubmittedAt(timeStr);
+      showToast(`✓ Today's closure saved locally for ${todayKey}`);
+    }
+  };
 
   // Dynamic Navigation Tabs with real database counts
   const NAV_TABS = useMemo(() => {
@@ -700,7 +880,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
                 Good afternoon, <span className="text-[#0e6977]">{userFirstName}</span>
               </h1>
               <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
-                Mon • 21 May 2026 • {branchName} • You have <strong className="text-slate-800 font-semibold">{closureMetrics.pendingFus} pending follow-ups</strong> in your pipeline
+                {todayDisplay} • {branchName} • You have <strong className="text-slate-800 font-semibold">{closureMetrics.pendingFus} pending follow-ups</strong> in your pipeline
               </p>
             </div>
             {/* Scoping status pill */}
@@ -970,69 +1150,201 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
           {/* Header */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2.5 flex-wrap">
                 <span className="text-base">🌙</span>
                 <h3 className="text-sm sm:text-base font-extrabold text-white tracking-wide">
                   End-of-Day Closure
                 </h3>
+                <span className="px-2.5 py-0.5 rounded-full bg-[#12424b] text-[#73C1CC] text-[10.5px] font-bold font-mono border border-[#1d5c68]">
+                  {todayDisplay}
+                </span>
+                <span className="text-[10px] text-teal-300 font-semibold bg-white/5 px-2 py-0.5 rounded-md flex items-center gap-1">
+                  <span>↺</span>
+                  <span>Resets Daily</span>
+                </span>
               </div>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Submit your day before logging out. This rolls up to your Branch Manager's Command Center.
+              <p className="text-xs text-slate-400 mt-1">
+                Submit your day before logging out. Only activity performed today is counted and rolls up to your Branch Manager's Command Center.
               </p>
             </div>
+            {closureSubmitted && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-emerald-400 font-bold bg-emerald-950/60 border border-emerald-500/40 px-3 py-1 rounded-xl">
+                  ✓ Submitted for {todayKey} ({closureSubmittedAt || 'Done'})
+                </span>
+                <button
+                  onClick={() => setClosureSubmitted(false)}
+                  className="text-[11px] text-slate-300 hover:text-white underline cursor-pointer"
+                >
+                  Edit / Update
+                </button>
+              </div>
+            )}
           </div>
 
           {/* 6 Metric Boxes */}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 mb-4">
-            <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center">
-              <div className="text-xl sm:text-2xl font-extrabold text-[#73C1CC]">
-                {closureMetrics.callsMade}
-              </div>
+            {/* Box 1: Calls Made */}
+            <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center transition-all hover:bg-white/10">
+              {editingMetric === 'callsMade' ? (
+                <input
+                  type="number"
+                  min="0"
+                  autoFocus
+                  value={closureMetrics.callsMade}
+                  onChange={(e) => setCustomMetrics(prev => ({ ...(prev || closureMetrics), callsMade: Math.max(0, parseInt(e.target.value) || 0) }))}
+                  onBlur={() => setEditingMetric(null)}
+                  onKeyDown={(e) => e.key === 'Enter' && setEditingMetric(null)}
+                  className="w-16 bg-white/20 text-center text-xl font-extrabold text-[#73C1CC] rounded outline-none border border-[#73C1CC] mx-auto block"
+                />
+              ) : (
+                <div 
+                  onClick={() => !closureSubmitted && setEditingMetric('callsMade')}
+                  className={`text-xl sm:text-2xl font-extrabold text-[#73C1CC] ${!closureSubmitted ? 'cursor-pointer hover:scale-105' : ''} transition-transform`}
+                  title={!closureSubmitted ? "Click to correct calls made today" : "Calls made today"}
+                >
+                  {closureMetrics.callsMade}
+                </div>
+              )}
               <div className="text-[9.5px] font-extrabold uppercase tracking-wider text-slate-400 mt-1">
                 CALLS MADE
               </div>
             </div>
 
-            <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center">
-              <div className="text-xl sm:text-2xl font-extrabold text-[#73C1CC]">
-                {closureMetrics.connected}
-              </div>
+            {/* Box 2: Connected */}
+            <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center transition-all hover:bg-white/10">
+              {editingMetric === 'connected' ? (
+                <input
+                  type="number"
+                  min="0"
+                  autoFocus
+                  value={closureMetrics.connected}
+                  onChange={(e) => setCustomMetrics(prev => ({ ...(prev || closureMetrics), connected: Math.max(0, parseInt(e.target.value) || 0) }))}
+                  onBlur={() => setEditingMetric(null)}
+                  onKeyDown={(e) => e.key === 'Enter' && setEditingMetric(null)}
+                  className="w-16 bg-white/20 text-center text-xl font-extrabold text-[#73C1CC] rounded outline-none border border-[#73C1CC] mx-auto block"
+                />
+              ) : (
+                <div 
+                  onClick={() => !closureSubmitted && setEditingMetric('connected')}
+                  className={`text-xl sm:text-2xl font-extrabold text-[#73C1CC] ${!closureSubmitted ? 'cursor-pointer hover:scale-105' : ''} transition-transform`}
+                  title={!closureSubmitted ? "Click to correct connected calls today" : "Connected calls today"}
+                >
+                  {closureMetrics.connected}
+                </div>
+              )}
               <div className="text-[9.5px] font-extrabold uppercase tracking-wider text-slate-400 mt-1">
                 CONNECTED
               </div>
             </div>
 
-            <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center">
-              <div className="text-xl sm:text-2xl font-extrabold text-[#73C1CC]">
-                {closureMetrics.demosBooked}
-              </div>
+            {/* Box 3: Demos Booked */}
+            <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center transition-all hover:bg-white/10">
+              {editingMetric === 'demosBooked' ? (
+                <input
+                  type="number"
+                  min="0"
+                  autoFocus
+                  value={closureMetrics.demosBooked}
+                  onChange={(e) => setCustomMetrics(prev => ({ ...(prev || closureMetrics), demosBooked: Math.max(0, parseInt(e.target.value) || 0) }))}
+                  onBlur={() => setEditingMetric(null)}
+                  onKeyDown={(e) => e.key === 'Enter' && setEditingMetric(null)}
+                  className="w-16 bg-white/20 text-center text-xl font-extrabold text-[#73C1CC] rounded outline-none border border-[#73C1CC] mx-auto block"
+                />
+              ) : (
+                <div 
+                  onClick={() => !closureSubmitted && setEditingMetric('demosBooked')}
+                  className={`text-xl sm:text-2xl font-extrabold text-[#73C1CC] ${!closureSubmitted ? 'cursor-pointer hover:scale-105' : ''} transition-transform`}
+                  title={!closureSubmitted ? "Click to correct demos booked today" : "Demos booked today"}
+                >
+                  {closureMetrics.demosBooked}
+                </div>
+              )}
               <div className="text-[9.5px] font-extrabold uppercase tracking-wider text-slate-400 mt-1">
                 DEMOS BOOKED
               </div>
             </div>
 
-            <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center">
-              <div className="text-xl sm:text-2xl font-extrabold text-[#73C1CC]">
-                {closureMetrics.admissions}
-              </div>
+            {/* Box 4: Admissions */}
+            <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center transition-all hover:bg-white/10">
+              {editingMetric === 'admissions' ? (
+                <input
+                  type="number"
+                  min="0"
+                  autoFocus
+                  value={closureMetrics.admissions}
+                  onChange={(e) => setCustomMetrics(prev => ({ ...(prev || closureMetrics), admissions: Math.max(0, parseInt(e.target.value) || 0) }))}
+                  onBlur={() => setEditingMetric(null)}
+                  onKeyDown={(e) => e.key === 'Enter' && setEditingMetric(null)}
+                  className="w-16 bg-white/20 text-center text-xl font-extrabold text-[#73C1CC] rounded outline-none border border-[#73C1CC] mx-auto block"
+                />
+              ) : (
+                <div 
+                  onClick={() => !closureSubmitted && setEditingMetric('admissions')}
+                  className={`text-xl sm:text-2xl font-extrabold text-[#73C1CC] ${!closureSubmitted ? 'cursor-pointer hover:scale-105' : ''} transition-transform`}
+                  title={!closureSubmitted ? "Click to correct admissions done today" : "Admissions done today"}
+                >
+                  {closureMetrics.admissions}
+                </div>
+              )}
               <div className="text-[9.5px] font-extrabold uppercase tracking-wider text-slate-400 mt-1">
                 ADMISSIONS
               </div>
             </div>
 
-            <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center">
-              <div className="text-xl sm:text-2xl font-extrabold text-white">
-                {closureMetrics.feesCollected}
-              </div>
+            {/* Box 5: Fees Collected */}
+            <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center transition-all hover:bg-white/10">
+              {editingMetric === 'feesCollected' ? (
+                <input
+                  type="number"
+                  min="0"
+                  step="1000"
+                  autoFocus
+                  value={closureMetrics.rawFeesCollected}
+                  onChange={(e) => {
+                    const val = Math.max(0, parseInt(e.target.value) || 0);
+                    setCustomMetrics(prev => ({ ...(prev || closureMetrics), feesCollected: val, rawFeesCollected: val }));
+                  }}
+                  onBlur={() => setEditingMetric(null)}
+                  onKeyDown={(e) => e.key === 'Enter' && setEditingMetric(null)}
+                  className="w-24 bg-white/20 text-center text-lg font-extrabold text-white rounded outline-none border border-white/40 mx-auto block font-mono"
+                />
+              ) : (
+                <div 
+                  onClick={() => !closureSubmitted && setEditingMetric('feesCollected')}
+                  className={`text-xl sm:text-2xl font-extrabold text-white ${!closureSubmitted ? 'cursor-pointer hover:scale-105' : ''} transition-transform font-mono`}
+                  title={!closureSubmitted ? "Click to correct fees collected today" : "Fees collected today"}
+                >
+                  {closureMetrics.feesCollected}
+                </div>
+              )}
               <div className="text-[9.5px] font-extrabold uppercase tracking-wider text-slate-400 mt-1">
                 FEES COLLECTED
               </div>
             </div>
 
-            <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center">
-              <div className="text-xl sm:text-2xl font-extrabold text-amber-400">
-                {closureMetrics.pendingFus}
-              </div>
+            {/* Box 6: Pending Follow-ups */}
+            <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center transition-all hover:bg-white/10">
+              {editingMetric === 'pendingFus' ? (
+                <input
+                  type="number"
+                  min="0"
+                  autoFocus
+                  value={closureMetrics.pendingFus}
+                  onChange={(e) => setCustomMetrics(prev => ({ ...(prev || closureMetrics), pendingFus: Math.max(0, parseInt(e.target.value) || 0) }))}
+                  onBlur={() => setEditingMetric(null)}
+                  onKeyDown={(e) => e.key === 'Enter' && setEditingMetric(null)}
+                  className="w-16 bg-white/20 text-center text-xl font-extrabold text-amber-400 rounded outline-none border border-amber-400 mx-auto block"
+                />
+              ) : (
+                <div 
+                  onClick={() => !closureSubmitted && setEditingMetric('pendingFus')}
+                  className={`text-xl sm:text-2xl font-extrabold text-amber-400 ${!closureSubmitted ? 'cursor-pointer hover:scale-105' : ''} transition-transform`}
+                  title={!closureSubmitted ? "Click to correct pending follow-ups due today" : "Pending follow-ups due today"}
+                >
+                  {closureMetrics.pendingFus}
+                </div>
+              )}
               <div className="text-[9.5px] font-extrabold uppercase tracking-wider text-slate-400 mt-1">
                 PENDING FUS
               </div>
@@ -1048,14 +1360,18 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
 
             <div className="flex items-center gap-3 flex-wrap">
               <button
-                onClick={() => setClosureSubmitted(true)}
+                onClick={handleDailyClosureSubmit}
                 disabled={closureSubmitted}
-                className="px-4 py-2 rounded-xl bg-[#0e6977] hover:bg-[#0a4f5a] text-white font-bold text-xs flex items-center gap-1.5 shadow-md transition-all active:scale-[0.98]"
+                className={`px-4 py-2 rounded-xl ${
+                  closureSubmitted 
+                    ? 'bg-emerald-700/80 text-white cursor-default' 
+                    : 'bg-[#0e6977] hover:bg-[#0a4f5a] text-white shadow-md active:scale-[0.98] cursor-pointer'
+                } font-bold text-xs flex items-center gap-1.5 transition-all`}
               >
-                <span>{closureSubmitted ? 'Closure Submitted ✓' : "Submit Today's Closure →"}</span>
+                <span>{closureSubmitted ? `Closure Submitted (${closureSubmittedAt || 'Done'}) ✓` : "Submit Today's Closure →"}</span>
               </button>
               <span className="text-[11px] text-slate-400">
-                Tomorrow's priority: 6 overdue follow-ups + 2 fee-pending students
+                Tomorrow's priority: {overdueCount} overdue follow-ups + {feePendingCount} fee-pending students
               </span>
             </div>
           </div>
@@ -1132,6 +1448,23 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
 
           const updated = await updateLead(leadId, update);
           setLeads((prev) => prev.map((l) => ((l._id || l.id) === leadId ? updated : l)));
+
+          // Record call into today's local log for instant daily closure reactivity
+          const newCallEntry = {
+            id: leadId,
+            time: new Date().toISOString(),
+            outcome: data.outcome,
+            duration: data.durationSeconds || 0,
+            connected: data.outcome !== 'Not Reachable'
+          };
+          setTodayCallLogs((prev) => {
+            const next = [newCallEntry, ...prev];
+            try {
+              localStorage.setItem(`thoughtflows_daily_calls_${todayKey}_${userName}`, JSON.stringify(next));
+            } catch (e) {}
+            return next;
+          });
+
           showToast(`✓ Call outcome saved for ${data.leadForm?.name || selectedCallLead.name} (${data.outcome}, ${Math.round(data.durationSeconds)}s)`);
         }}
       />

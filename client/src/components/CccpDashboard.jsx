@@ -47,6 +47,7 @@ import {
   createCccpFollowUp, 
   onDataUpdate 
 } from '../services/api';
+import { COURSE_CATEGORIES } from '../constants/courses';
 
 export default function CccpDashboard({
   onClose,
@@ -60,6 +61,7 @@ export default function CccpDashboard({
   const [searchQuery, setSearchQuery] = useState('');
   const [dashMenuOpen, setDashMenuOpen] = useState(false);
   const [toastMsg, setToastMsg] = useState(null);
+  const [examCourseCategory, setExamCourseCategory] = useState('ALL');
   const [dateDisplay, setDateDisplay] = useState(
     new Date().toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' })
   );
@@ -1164,36 +1166,52 @@ export default function CccpDashboard({
                   </div>
                 </div>
 
-                {/* 7 Course Cards Grid */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
-                  {[
-                    { code: 'CPC', name: 'Certified Professional Coder', fee: '₹22,000' },
-                    { code: 'CCS', name: 'Certified Coding Specialist', fee: '₹24,000' },
-                    { code: 'CRC', name: 'Certified Risk Adjustment Coder', fee: '₹21,000' },
-                    { code: 'COC', name: 'Certified Outpatient Coder', fee: '₹23,000' },
-                    { code: 'CIC', name: 'Certified Inpatient Coder', fee: '₹26,000' },
-                    { code: 'IPDRG', name: 'Inpatient DRG Coding', fee: '₹20,000' },
-                    { code: 'AMCT Intermediate', name: 'AAPC Medical Coding Training', fee: '₹19,000', special: true }
-                  ].map((c, i) => (
-                    <div 
-                      key={i} 
-                      className={`bg-white/95 backdrop-blur-md rounded-2xl p-4 border shadow-[0_4px_16px_-4px_rgba(15,23,42,0.03)] hover:shadow-md hover:-translate-y-0.5 flex flex-col justify-between text-center transition-all ${
-                        c.special ? 'border-purple-300 ring-1 ring-purple-100' : 'border-slate-200/80'
+                {/* Category Filter Pills */}
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+                  {['ALL', 'AAPC', 'Speciality', 'AHIMA', 'HIMAA', 'Foundation'].map((cat) => (
+                    <button
+                      key={cat}
+                      type="button"
+                      onClick={() => setExamCourseCategory(cat)}
+                      className={`px-3 py-1 rounded-full text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
+                        examCourseCategory === cat
+                          ? 'bg-slate-900 text-white shadow-xs'
+                          : 'bg-white border border-slate-200 text-slate-600 hover:border-slate-300'
                       }`}
                     >
+                      {cat === 'ALL' ? 'All Accreditations' : cat}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Course Cards Grid */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                  {(examCourseCategory === 'ALL'
+                    ? COURSE_CATEGORIES.flatMap(cat => cat.courses.map(c => ({ ...c, cat: cat.category })))
+                    : (COURSE_CATEGORIES.find(cat => cat.category === examCourseCategory)?.courses || []).map(c => ({ ...c, cat: examCourseCategory }))
+                  ).map((c, i) => (
+                    <div 
+                      key={c.code || i} 
+                      className="bg-white/95 backdrop-blur-md rounded-2xl p-3.5 border border-slate-200/80 shadow-[0_4px_16px_-4px_rgba(15,23,42,0.03)] hover:shadow-md hover:-translate-y-0.5 flex flex-col justify-between text-center transition-all"
+                    >
                       <div>
-                        <span className={`inline-block px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider mb-1.5 ${
-                          c.special ? 'bg-purple-100 text-purple-800' : 'bg-slate-100 text-slate-700'
-                        }`}>
-                          {c.code}
-                        </span>
-                        <div className="text-[10px] text-slate-500 min-h-[26px] line-clamp-2 leading-tight font-medium">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="inline-block px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-slate-100 text-slate-700">
+                            {c.code}
+                          </span>
+                          <span className="text-[9px] font-bold text-teal-700 bg-teal-50 px-1.5 py-0.5 rounded">
+                            {c.cat}
+                          </span>
+                        </div>
+                        <div className="text-[10.5px] text-slate-600 line-clamp-2 leading-tight font-medium mt-1">
                           {c.name}
                         </div>
                       </div>
-                      <div className="mt-3 pt-2.5 border-t border-slate-100">
-                        <div className="text-base font-black text-slate-900">{c.fee}</div>
-                        <div className="text-[9px] text-slate-400 mt-0.5 uppercase tracking-wide">Standard Fee</div>
+                      <div className="mt-2.5 pt-2 border-t border-slate-100">
+                        <div className="text-sm font-black text-slate-900">
+                          {c.examFee > 0 ? `₹${c.examFee.toLocaleString('en-IN')}` : 'Included'}
+                        </div>
+                        <div className="text-[9px] text-slate-400 mt-0.5 uppercase tracking-wide">Exam Voucher</div>
                       </div>
                     </div>
                   ))}

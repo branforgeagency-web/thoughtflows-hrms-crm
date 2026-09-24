@@ -30,6 +30,7 @@ import {
 import BookNewDemoModal from './BookNewDemoModal';
 import { createDemo, dialCall, getCallStatus, hangupCall, getRecordings, saveRecording } from '../services/api';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
+import { COURSE_CATEGORIES } from '../constants/courses';
 
 // Maps a real call outcome to a real pipeline stage change.
 const OUTCOME_STAGE = {
@@ -773,12 +774,18 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                     onChange={(e) => setLeadForm({ ...leadForm, course: e.target.value })}
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 outline-none focus:border-[#0e6977] focus:bg-white"
                   >
-                    <option value="CPC - Certified Professional Coder">CPC - Certified Professional Coder</option>
-                    <option value="AMCT - Advanced Medical Coding">AMCT - Advanced Medical Coding</option>
-                    <option value="IPDRG - Inpatient DRG Coding">IPDRG - Inpatient DRG Coding</option>
-                    <option value="CIC - Certified Inpatient Coder">CIC - Certified Inpatient Coder</option>
-                    <option value="CRC - Certified Risk Adjustment">CRC - Certified Risk Adjustment</option>
-                    <option value="CCS - Certified Coding Specialist">CCS - Certified Coding Specialist</option>
+                    {COURSE_CATEGORIES.map((cat) => (
+                      <optgroup key={cat.category} label={cat.title}>
+                        {cat.courses.map((c) => {
+                          const val = `${c.code} - ${c.name}`;
+                          return (
+                            <option key={c.code} value={val}>
+                              {val}
+                            </option>
+                          );
+                        })}
+                      </optgroup>
+                    ))}
                   </select>
                 </div>
                 <div className="col-span-4">
