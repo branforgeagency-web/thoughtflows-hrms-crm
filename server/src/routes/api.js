@@ -2714,7 +2714,15 @@ function signZoom(meetingNumber, role = 0) {
   const iat = Math.floor(Date.now() / 1000) - 30;
   const exp = iat + 60 * 60 * 2;
   const signature = jwt.sign(
-    { appKey: ZOOM_SDK_KEY, mn: String(meetingNumber).replace(/\s/g, ''), role, iat, exp, tokenExp: exp },
+    { 
+      appKey: ZOOM_SDK_KEY, 
+      sdkKey: ZOOM_SDK_KEY, 
+      mn: String(meetingNumber).replace(/\s/g, ''), 
+      role: Number(role) || 0, 
+      iat, 
+      exp, 
+      tokenExp: exp 
+    },
     ZOOM_SDK_SECRET,
     { algorithm: 'HS256' }
   );
