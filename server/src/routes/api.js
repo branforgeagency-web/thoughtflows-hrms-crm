@@ -2,12 +2,16 @@ import express from 'express';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import mongoose from 'mongoose';
+import fs from 'fs';
+import path from 'path';
+import dotenv from 'dotenv';
 import Department from '../models/Department.js';
 import Branch from '../models/Branch.js';
 import User from '../models/User.js';
 import StudentLead from '../models/StudentLead.js';
 import Student from '../models/Student.js';
 import Demo from '../models/Demo.js';
+import Trainer from '../models/Trainer.js';
 import CourseFeeRate from '../models/CourseFeeRate.js';
 import Approval from '../models/Approval.js';
 import Escalation from '../models/Escalation.js';
@@ -24,777 +28,12 @@ import TrainerDoubt from '../models/TrainerDoubt.js';
 import TrainerAssessment from '../models/TrainerAssessment.js';
 import IncentiveSlab from '../models/IncentiveSlab.js';
 import AuditLog from '../models/AuditLog.js';
+import CallRecording from '../models/CallRecording.js';
 
 const router = express.Router();
 
 // Real Academy Seed Data (Seed once to MongoDB if collections are empty)
-const SEED_DEPARTMENTS = [
-  { id: '1', code: 'ADM', name: 'Admissions & Counseling', head: 'Pooja J.', memberCount: 38, icon: 'PhoneCall', color: '#14b8a6', description: 'Handling initial student inquiries, career advisory, and enrolments.' },
-  { id: '2', code: 'ACAD', name: 'Medical Coding Faculty', head: 'Dr. Vikram C.', memberCount: 52, icon: 'GraduationCap', color: '#06b6d4', description: 'AAPC certified trainers guiding ICD-10-CM, CPT, and HCPCS coding.' },
-  { id: '3', code: 'SUCC', name: 'Student Mentorship & Support', head: 'Priya R.', memberCount: 24, icon: 'HeartHandshake', color: '#10b981', description: 'Daily 1-on-1 doubt clearing, study schedules, and attendance tracking.' },
-  { id: '4', code: 'EXAM', name: 'CPC Examination Cell', head: 'Suresh V.', memberCount: 16, icon: 'Award', color: '#f59e0b', description: 'Mock tests, AAPC exam bookings, and certification readiness drills.' },
-  { id: '5', code: 'CORP', name: 'Corporate Relations & Placements', head: 'Meenakshi R.', memberCount: 29, icon: 'Briefcase', color: '#8b5cf6', description: 'Partnered with 140+ US healthcare RCM companies and hospital networks.' },
-  { id: '6', code: 'HR', name: 'HR & Talent Acquisition', head: 'Balaji R.', memberCount: 14, icon: 'Users', color: '#ec4899', description: 'Staffing faculty, branch coordinators, and employee growth programs.' },
-  { id: '7', code: 'SYS', name: 'IT Infrastructure & LMS', head: 'Dinesh P.', memberCount: 18, icon: 'Server', color: '#3b82f6', description: 'Managing student LMS portal, video lectures, and secure servers.' },
-  { id: '8', code: 'FIN', name: 'Finance & Branch Operations', head: 'Kavitha V.', memberCount: 15, icon: 'PieChart', color: '#6366f1', description: 'Fee installments, scholarships, and branch facilities operations.' }
-];
-
-const SEED_BRANCHES = [
-  { id: 'b1', name: 'Saravanampatti', city: 'Coimbatore', state: 'Tamil Nadu', activeStudents: 430, staffCount: 28 },
-  { id: 'b2', name: 'Gandhipuram', city: 'Coimbatore', state: 'Tamil Nadu', activeStudents: 410, staffCount: 26 },
-  { id: 'b3', name: 'Hopes', city: 'Coimbatore', state: 'Tamil Nadu', activeStudents: 340, staffCount: 22 },
-  { id: 'b4', name: 'Ameerpet', city: 'Hyderabad', state: 'Telangana', activeStudents: 380, staffCount: 24 },
-  { id: 'b5', name: 'Dilsukhnagar', city: 'Hyderabad', state: 'Telangana', activeStudents: 310, staffCount: 19 },
-  { id: 'b6', name: 'Kochi', city: 'Kochi', state: 'Kerala', activeStudents: 290, staffCount: 18 },
-  { id: 'b7', name: 'Salem', city: 'Salem', state: 'Tamil Nadu', activeStudents: 260, staffCount: 16 },
-  { id: 'b8', name: 'Tirupati', city: 'Tirupati', state: 'Andhra Pradesh', activeStudents: 235, staffCount: 14 },
-  { id: 'b9', name: 'Trichy', city: 'Trichy', state: 'Tamil Nadu', activeStudents: 275, staffCount: 17 },
-  { id: 'b10', name: 'Trivandrum', city: 'Trivandrum', state: 'Kerala', activeStudents: 240, staffCount: 15 },
-  { id: 'b11', name: 'Vizag', city: 'Visakhapatnam', state: 'Andhra Pradesh', activeStudents: 310, staffCount: 20 },
-  { id: 'b12', name: 'Kollapur', city: 'Kolhapur', state: 'Maharashtra', activeStudents: 230, staffCount: 14 },
-  { id: 'b13', name: 'Pune', city: 'Pune', state: 'Maharashtra', activeStudents: 310, staffCount: 19 },
-  { id: 'b14', name: 'Theni', city: 'Theni', state: 'Tamil Nadu', activeStudents: 215, staffCount: 13 }
-];
-
-const SEED_STUDENTS = [
-  {
-    studentId: 'TFMC0Y6001',
-    name: 'AJITH KUMAR A',
-    phone: '63801 18356',
-    email: 'ajith16124002@gmail.com',
-    course: 'IPDRG',
-    mode: 'Online',
-    batchDate: 'May 2',
-    batchTiming: '8-10 PM Weekdays',
-    qualification: 'BE Medical Electronics - 2020',
-    qualTag: 'Life Sci',
-    collegeCompany: 'S2M Health Care',
-    location: 'Namakkal',
-    hrName: 'Kalaiselvi',
-    source: 'OLD STUDENT',
-    dob: '16-07-1999',
-    enqDate: 'April',
-    onboardStatus: '7/7 ✓',
-    syllabusModule: 'Module 1',
-    mockInterview: 'Pending',
-    examStatus: 'Not Booked',
-    certified: 'Non-certified',
-    placementStatus: 'Placed · 32K',
-    feeStatus: 'Fully Paid',
-    feeAmount: '₹25,000',
-    courseFee: 25000,
-    statusGroup: 'placed',
-    handoverStatus: 'Ready'
-  },
-  {
-    studentId: 'TFMC0Y6002',
-    name: 'DHARSHINI S',
-    phone: '98402 88987',
-    email: 'dharshateddy73@gmail.com',
-    course: 'CIC',
-    mode: 'Online',
-    batchDate: 'May 3',
-    batchTiming: '8-10 PM Weekdays',
-    qualification: 'BSc Optometry - 2024',
-    qualTag: 'Life Sci',
-    collegeCompany: 'Lotus Eye',
-    location: 'Hosur',
-    hrName: 'Reshma',
-    source: 'OLD STUDENT',
-    dob: '02-07-2002',
-    enqDate: 'April',
-    onboardStatus: '7/7 ✓',
-    syllabusModule: 'Module 2',
-    mockInterview: 'Pending',
-    examStatus: 'Not Booked',
-    certified: 'Non-certified',
-    placementStatus: 'In course',
-    feeStatus: 'Part Paid',
-    feeAmount: '₹11,000 / ₹25,000',
-    courseFee: 25000,
-    statusGroup: 'in_course',
-    handoverStatus: 'Pending Handover'
-  },
-  {
-    studentId: 'TFMC0Y6003',
-    name: 'POOJA R.',
-    phone: '97891 21345',
-    email: 'pooja.r.cpc@gmail.com',
-    course: 'CPC Inter',
-    mode: 'Online',
-    batchDate: 'May 10',
-    batchTiming: '10 AM-12 PM Daily',
-    qualification: 'BSc Biotechnology - 2023',
-    qualTag: 'Life Sci',
-    collegeCompany: 'PSG College of Arts & Science',
-    location: 'Coimbatore',
-    hrName: 'Kavitha N.',
-    source: 'DIRECT ENQUIRY',
-    dob: '14-04-2001',
-    enqDate: 'May',
-    onboardStatus: '7/7 ✓',
-    syllabusModule: 'Module 1',
-    mockInterview: 'Pending',
-    examStatus: 'Not Booked',
-    certified: 'Non-certified',
-    placementStatus: 'In course',
-    feeStatus: 'Fully Paid',
-    feeAmount: '₹21,000',
-    courseFee: 21000,
-    statusGroup: 'in_course',
-    handoverStatus: 'Ready'
-  },
-  {
-    studentId: 'TFMC0Y6004',
-    name: 'ANANYA M.',
-    phone: '94432 77654',
-    email: 'ananya.m99@gmail.com',
-    course: 'CPC Prep',
-    mode: 'Classroom',
-    batchDate: 'May 15',
-    batchTiming: '2-4 PM Weekdays',
-    qualification: 'BPharm - 2022',
-    qualTag: 'Pharmacy',
-    collegeCompany: 'KMCH College of Pharmacy',
-    location: 'Saravanampatti',
-    hrName: 'Kavitha N.',
-    source: 'REFERRAL',
-    dob: '28-11-1999',
-    enqDate: 'May',
-    onboardStatus: '7/7 ✓',
-    syllabusModule: 'Module 1',
-    mockInterview: 'Cleared ✓',
-    examStatus: 'AAPC CPC Booked',
-    certified: 'CPC Certified ✓',
-    placementStatus: 'Interviewing (Omega)',
-    feeStatus: 'Fully Paid',
-    feeAmount: '₹25,000',
-    courseFee: 25000,
-    statusGroup: 'in_course',
-    handoverStatus: 'Ready'
-  },
-  {
-    studentId: 'TFMC0Y6005',
-    name: 'KARTHIKEYAN V.',
-    phone: '99441 33211',
-    email: 'karthik.v.bcom@gmail.com',
-    course: 'Comprehensive Medical Coding',
-    mode: 'Classroom',
-    batchDate: 'May 20',
-    batchTiming: '6-8 PM Weekdays',
-    qualification: 'BCom - 2021',
-    qualTag: 'Non-LifeSci',
-    collegeCompany: 'Rathinam College',
-    location: 'Coimbatore',
-    hrName: 'Balaji R.',
-    source: 'WALK-IN',
-    dob: '05-09-2000',
-    enqDate: 'May',
-    onboardStatus: '4/7 Pending',
-    syllabusModule: 'Orientation',
-    mockInterview: 'Pending',
-    examStatus: 'Not Booked',
-    certified: 'Non-certified',
-    placementStatus: 'On Hold (Docs pending)',
-    feeStatus: 'Part Paid',
-    feeAmount: '₹15,000 / ₹32,000',
-    courseFee: 32000,
-    statusGroup: 'on_hold',
-    handoverStatus: 'Pending Handover'
-  },
-  {
-    studentId: 'TF-CBG-CPC-OF-2603-0042',
-    name: 'Keerthana R.',
-    phone: '+91 98421 65042',
-    email: 'keerthana.r@gmail.com',
-    course: 'CPC — Certified Professional Coder',
-    mode: 'Offline',
-    batchDate: '20 May 2026',
-    batchTiming: 'Mon – Fri · 7:00 PM – 9:00 PM',
-    qualification: 'B.Sc Nursing - 2024',
-    qualTag: 'Life Sci',
-    collegeCompany: 'Anna University',
-    location: 'Coimbatore Gandhipuram',
-    hrName: 'Kavitha N.',
-    source: 'DIRECT ADMISSION',
-    dob: '12-08-2001',
-    enqDate: 'May',
-    onboardStatus: '7/7 ✓',
-    syllabusModule: 'CPT Coding',
-    mockInterview: '74/100 (Faith A.)',
-    examStatus: 'Target Aug 2026',
-    certified: 'In Preparation',
-    placementStatus: 'In Preparation (Readiness 60/100)',
-    feeStatus: 'Part Paid',
-    feeAmount: '₹30,000 / ₹45,000',
-    courseFee: 45000,
-    statusGroup: 'in_course',
-    handoverStatus: 'Ready'
-  },
-  {
-    studentId: 'TFMC0Y6007',
-    name: 'MANOJ K.',
-    phone: '97890 67890',
-    email: 'manoj.k.billing@gmail.com',
-    course: 'CPB — Certified Professional Biller',
-    mode: 'Online',
-    batchDate: 'May 12',
-    batchTiming: '8:00–10:00 AM Daily',
-    qualification: 'BCom - 2023',
-    qualTag: 'Non-LifeSci',
-    collegeCompany: 'PSG College of Technology',
-    location: 'Coimbatore',
-    hrName: 'Kavitha N.',
-    source: 'DIRECT ENQUIRY',
-    dob: '18-03-2001',
-    enqDate: 'May',
-    onboardStatus: '7/7 ✓',
-    syllabusModule: 'Hospital Claims & RCM',
-    mockInterview: 'Pending',
-    examStatus: 'Not Booked',
-    certified: 'Non-certified',
-    placementStatus: 'In course',
-    feeStatus: 'Fully Paid',
-    feeAmount: '₹24,000',
-    courseFee: 24000,
-    statusGroup: 'in_course',
-    handoverStatus: 'Ready'
-  },
-  {
-    studentId: 'TFMC0Y6008',
-    name: 'DIVYA P.',
-    phone: '98412 34567',
-    email: 'divya.p.cpb@gmail.com',
-    course: 'CPB — Certified Professional Biller',
-    mode: 'Classroom',
-    batchDate: 'May 15',
-    batchTiming: '8:00–10:00 AM Daily',
-    qualification: 'BBA Finance - 2022',
-    qualTag: 'Non-LifeSci',
-    collegeCompany: 'GRD College',
-    location: 'Saravanampatti',
-    hrName: 'Balaji R.',
-    source: 'WALK-IN',
-    dob: '22-09-2000',
-    enqDate: 'May',
-    onboardStatus: '7/7 ✓',
-    syllabusModule: 'Denial Management & CMS-1500',
-    mockInterview: 'Pending',
-    examStatus: 'Not Booked',
-    certified: 'Non-certified',
-    placementStatus: 'In course',
-    feeStatus: 'Part Paid',
-    feeAmount: '₹14,000 / ₹24,000',
-    courseFee: 24000,
-    statusGroup: 'in_course',
-    handoverStatus: 'Ready'
-  },
-  {
-    studentId: 'TFMC0Y6009',
-    name: 'NAVEEN S.',
-    phone: '99432 88776',
-    email: 'naveen.cpma@gmail.com',
-    course: 'CPMA — Certified Professional Medical Auditor',
-    mode: 'Online',
-    batchDate: 'May 18',
-    batchTiming: '10:00 AM–12:00 PM Daily',
-    qualification: 'MSc Biochemistry - 2021',
-    qualTag: 'Life Sci',
-    collegeCompany: 'Bharathiar University',
-    location: 'Hopes, Coimbatore',
-    hrName: 'Kavitha N.',
-    source: 'REFERRAL',
-    dob: '11-11-1998',
-    enqDate: 'May',
-    onboardStatus: '7/7 ✓',
-    syllabusModule: 'Chart Auditing Standards',
-    mockInterview: 'Cleared ✓',
-    examStatus: 'Target Sep 2026',
-    certified: 'In Preparation',
-    placementStatus: 'Interviewing',
-    feeStatus: 'Fully Paid',
-    feeAmount: '₹28,000',
-    courseFee: 28000,
-    statusGroup: 'in_course',
-    handoverStatus: 'Ready'
-  },
-  {
-    studentId: 'TFMC0Y6010',
-    name: 'HARINI V.',
-    phone: '94421 99881',
-    email: 'harini.crc@gmail.com',
-    course: 'CRC — Certified Risk Adjustment Coder',
-    mode: 'Online',
-    batchDate: 'May 20',
-    batchTiming: '7:00–9:00 AM Daily',
-    qualification: 'BSc Nursing - 2023',
-    qualTag: 'Life Sci',
-    collegeCompany: 'Sri Ramakrishna College of Nursing',
-    location: 'Chennai',
-    hrName: 'Pooja J.',
-    source: 'WEBSITE',
-    dob: '08-05-2001',
-    enqDate: 'May',
-    onboardStatus: '7/7 ✓',
-    syllabusModule: 'HCC Models & Risk Adjustment',
-    mockInterview: 'Pending',
-    examStatus: 'Not Booked',
-    certified: 'Non-certified',
-    placementStatus: 'In course',
-    feeStatus: 'Fully Paid',
-    feeAmount: '₹26,000',
-    courseFee: 26000,
-    statusGroup: 'in_course',
-    handoverStatus: 'Ready'
-  }
-];
-
-const SEED_LEADS = [
-  {
-    fullName: 'Priya R.',
-    phone: '+91 98765 12345',
-    email: 'priya.r@gmail.com',
-    age: '24',
-    gender: 'Female',
-    location: 'Coimbatore',
-    education: 'BSc Microbiology',
-    branch: 'Saravanampatti (CBE)',
-    course: 'CPC - Certified Professional Coder',
-    sourceId: 's1',
-    sourceName: 'Google Calls / GMB',
-    sourceTier: 'TIER A',
-    sourceBadge: 'GOOGLE',
-    category: 'Fresh Graduate',
-    stage: 'new',
-    status: 'pending',
-    counselorAssigned: 'Kavitha N.',
-    followUpDate: 'Today',
-    followUpTime: 'NOW',
-    followUpNote: 'First call pending · BPO reject · Interested in CPC classroom'
-  },
-  {
-    fullName: 'Manoj K.',
-    phone: '+91 97890 67890',
-    email: 'manoj.k@gmail.com',
-    age: '25',
-    gender: 'Male',
-    location: 'Coimbatore',
-    education: 'BCom Graduate',
-    branch: 'Saravanampatti (CBE)',
-    course: 'Comprehensive Medical Coding',
-    sourceId: 's4',
-    sourceName: 'Justdial',
-    sourceTier: 'TIER A',
-    sourceBadge: 'JUSTDIAL',
-    category: 'Career Gap',
-    stage: 'new',
-    status: 'pending',
-    counselorAssigned: 'Kavitha N.',
-    followUpDate: 'Today',
-    followUpTime: '15:30',
-    followUpNote: 'Justdial inquiry · 2-year gap · Deciding on EMI options'
-  },
-  {
-    fullName: 'Karthik V.',
-    phone: '+91 95432 10987',
-    email: 'karthik.v@gmail.com',
-    age: '22',
-    gender: 'Male',
-    location: 'Saravanampatti',
-    education: 'BCom 2024',
-    branch: 'Saravanampatti (CBE)',
-    course: 'CPC Intensive Medical Coding',
-    sourceId: 's3',
-    sourceName: 'Referral',
-    sourceTier: 'TIER A',
-    sourceBadge: 'REFERRAL',
-    category: 'Fresh Graduate',
-    stage: 'demo_booked',
-    status: 'in_progress',
-    counselorAssigned: 'Kavitha N.',
-    followUpDate: 'Today',
-    followUpTime: '16:00',
-    followUpNote: 'Attending Demo today at 4 PM with Priyadharshini K.'
-  },
-  {
-    fullName: 'Sneha P.',
-    phone: '+91 97890 54321',
-    email: 'sneha.p@gmail.com',
-    age: '21',
-    gender: 'Female',
-    location: 'Coimbatore',
-    education: 'BSc Biotechnology',
-    branch: 'Saravanampatti (CBE)',
-    course: 'CPC Intensive Medical Coding',
-    sourceId: 's5',
-    sourceName: 'WhatsApp — Direct from Student',
-    sourceTier: 'TIER B',
-    sourceBadge: 'WHATSAPP',
-    category: 'Final Year Student',
-    stage: 'demo_attended',
-    status: 'in_progress',
-    counselorAssigned: 'Kavitha N.',
-    followUpDate: 'Today',
-    followUpTime: '14:00',
-    followUpNote: 'Attended CPC demo yesterday, high interest. Call for fee pitch.'
-  },
-  {
-    fullName: 'Lakshmi N.',
-    phone: '+91 98765 43210',
-    email: 'lakshmi.n@gmail.com',
-    age: '25',
-    gender: 'Female',
-    location: 'Coimbatore',
-    education: 'BSc Nursing',
-    branch: 'Saravanampatti (CBE)',
-    course: 'CPC Intensive Medical Coding',
-    sourceId: 's6',
-    sourceName: 'Direct Walk-in',
-    sourceTier: 'TIER B',
-    sourceBadge: 'WALK-IN',
-    category: 'Allied Health',
-    stage: 'fee_followup',
-    status: 'in_progress',
-    counselorAssigned: 'Kavitha N.',
-    followUpDate: 'Today',
-    followUpTime: '16:30',
-    followUpNote: 'Walk-in tour completed. ₹21K ready. Ready to enroll today.'
-  }
-];
-
-const SEED_DEMOS = [
-  {
-    candidateName: 'Lakshmi N.',
-    phone: '+91 98765 43210',
-    course: 'CPC Intensive Medical Coding',
-    mode: 'Online (Zoom Live)',
-    time: 'Today 14:30',
-    timeSlot: '4:00–6:00 PM',
-    language: 'Tamil',
-    trainer: 'Dr. Vikram C.',
-    trainerMapping: 'Maps to Revathi K · Tamil · Anatomy + ICD-10-CM · 90% · load 2/5',
-    status: 'confirmed',
-    link: 'https://zoom.us/j/9823412345',
-    note: 'Allied health background. Link sent via WhatsApp.'
-  },
-  {
-    candidateName: 'Karthik V.',
-    phone: '+91 95432 10987',
-    course: 'Comprehensive Medical Coding',
-    mode: 'Classroom (Saravanampatti)',
-    time: 'Today 16:00',
-    timeSlot: '4:00–6:00 PM',
-    language: 'Tamil',
-    trainer: 'Priyadharshini K.',
-    trainerMapping: 'Maps to Priyadharshini K · Tamil · CPC & CPT Coding',
-    status: 'booked',
-    note: 'Demo booked 4 PM today. Confirm attendance + send location map.'
-  },
-  {
-    candidateName: 'Vignesh S.',
-    phone: '+91 98941 12345',
-    course: 'Fast-Track Life Sciences Batch',
-    mode: 'Walk-in Campus Tour',
-    time: 'Tomorrow 11:00',
-    timeSlot: '9:00–11:00 AM',
-    language: 'Tamil',
-    trainer: 'Dr. Vikram C.',
-    trainerMapping: 'Maps to Dr. Vikram C. · Life Science Specialist',
-    status: 'booked',
-    note: 'Father visiting along with student.'
-  },
-  {
-    candidateName: 'Sneha P.',
-    phone: '+91 97890 54321',
-    course: 'CPC Prep & Anatomy Module',
-    mode: 'Online (Zoom Live)',
-    time: 'Yesterday 15:00',
-    timeSlot: '4:00–6:00 PM',
-    language: 'Tamil',
-    trainer: 'Dr. Vikram C.',
-    trainerMapping: 'Maps to Revathi K · Anatomy + ICD-10-CM',
-    status: 'attended',
-    note: 'Attended full session. Trainer rated high interest.'
-  },
-  {
-    candidateName: 'Divya P.',
-    phone: '+91 88765 43219',
-    course: 'CPC Professional Coding',
-    mode: 'Online (Zoom Live)',
-    time: 'Yesterday 17:30',
-    timeSlot: '6:30–8:30 PM',
-    language: 'English',
-    trainer: 'Karthik V.',
-    trainerMapping: 'Maps to Karthik V · English · CPC & CPT Coding',
-    status: 'fee',
-    note: 'Agreed on fee structure. ₹5,000 token paid, balancing today.'
-  }
-];
-
-const SEED_COURSE_RATES = [
-  { code: 'CPC', name: 'Certified Professional Coder', duration: '3 Months', registrationFee: 2000, trainingFee: 19000, examFee: 22000, courseFee: 21000, totalPayable: 43000 },
-  { code: 'CCS', name: 'Certified Coding Specialist', duration: '4 Months', registrationFee: 2000, trainingFee: 23000, examFee: 22000, courseFee: 25000, totalPayable: 47000 },
-  { code: 'CRC', name: 'Certified Risk Adjustment Coder', duration: '2 Months', registrationFee: 2000, trainingFee: 16000, examFee: 22000, courseFee: 18000, totalPayable: 40000 },
-  { code: 'COC', name: 'Certified Outpatient Coder', duration: '3 Months', registrationFee: 2000, trainingFee: 19000, examFee: 22000, courseFee: 21000, totalPayable: 43000 },
-  { code: 'CIC', name: 'Certified Inpatient Coder', duration: '4 Months', registrationFee: 2000, trainingFee: 23000, examFee: 22000, courseFee: 25000, totalPayable: 47000 },
-  { code: 'CPMA', name: 'Practice Medical Coding', duration: '2 Months', registrationFee: 2000, trainingFee: 16000, examFee: 22000, courseFee: 18000, totalPayable: 40000 },
-  { code: 'EMCT Intermediate', name: 'AAPC Medical Coding Training', duration: '3 Months', registrationFee: 2000, trainingFee: 16000, examFee: 22000, courseFee: 18000, totalPayable: 40000 }
-];
-
-const SEED_USERS = [
-  {
-    name: 'Srithar S',
-    email: 'srithar.brandforge@gmail.com',
-    password: 'Thoughtflows@2026',
-    role: 'Trainer',
-    department: 'Medical Coding Faculty',
-    branch: 'Gandhipuram',
-    status: 'Active',
-    lastLogin: 'Never',
-    avatarBg: 'bg-indigo-600'
-  },
-  {
-    name: 'Executive Founders Desk',
-    email: 'admin@thoughtflows.in',
-    password: 'admin123',
-    role: 'Super Admin',
-    department: 'Admin & Management',
-    branch: 'Saravanampatti Hub',
-    status: 'Active',
-    lastLogin: 'Just now',
-    avatarBg: 'bg-indigo-600'
-  },
-  {
-    name: 'Kavitha N.',
-    email: 'hr@thoughtflows.in',
-    password: 'Kavitha@HR2026',
-    role: 'Counseling Lead',
-    department: 'Admissions & Counseling',
-    branch: 'Gandhipuram',
-    status: 'Active',
-    lastLogin: '10 mins ago',
-    avatarBg: 'bg-rose-500'
-  },
-  {
-    name: 'Dr. Vikram C.',
-    email: 'training@thoughtflows.in',
-    password: 'Faculty#2026',
-    role: 'Faculty Lead',
-    department: 'Medical Coding Faculty',
-    branch: 'Saravanampatti',
-    status: 'Active',
-    lastLogin: '25 mins ago',
-    avatarBg: 'bg-sky-500'
-  },
-  {
-    name: 'Meenakshi R.',
-    email: 'cccp@thoughtflows.in',
-    password: 'Placement@2026',
-    role: 'Placement Head',
-    department: 'Corporate Placements',
-    branch: 'Hopes',
-    status: 'Active',
-    lastLogin: '1 hour ago',
-    avatarBg: 'bg-emerald-600'
-  },
-  {
-    name: 'Priya R.',
-    email: 'marketing@thoughtflows.in',
-    password: 'Growth#TF2026',
-    role: 'Growth Lead',
-    department: 'Growth & Marketing',
-    branch: 'Dilsukhnagar',
-    status: 'Active',
-    lastLogin: '2 hours ago',
-    avatarBg: 'bg-purple-600'
-  },
-  {
-    name: 'Aswanth V K',
-    email: 'aswanth@thoughtflows.in',
-    password: 'Aswanth#Lead26',
-    role: 'Regional head',
-    department: 'Leadership & Operations',
-    branch: '14 Hubs Overseer',
-    status: 'Active',
-    lastLogin: 'Yesterday',
-    avatarBg: 'bg-orange-500'
-  },
-  {
-    name: 'Keerthana R.',
-    email: 'student@thoughtflows.in',
-    password: 'Scholar#TF26',
-    role: 'Student Scholar',
-    department: 'Student Scholar',
-    branch: 'Trichy',
-    status: 'Active',
-    lastLogin: '3 hours ago',
-    avatarBg: 'bg-teal-600'
-  }
-];
-
 // CCCP Seed Data
-const SEED_COLLEGES = [
-  { name: 'PSG College of Arts & Science', city: 'Coimbatore', type: 'Arts & Science', decisionMaker: 'Dr. R. Rajendran (Principal)', phone: '0422 4303300', email: 'principal@psgcas.ac.in', mouStatus: 'MOU Signed', workshopCount: 4, stage: 'MOU', status: 'Active', notes: 'MOU signed for B.Sc Biotech & Biochem students.' },
-  { name: 'SRM Institute of Science & Technology', city: 'Chennai', type: 'Life Science', decisionMaker: 'Prof. K. Ramasamy', phone: '044 27417000', email: 'dean.lifesciences@srmist.edu.in', mouStatus: 'MOU Signed', workshopCount: 3, stage: 'MOU', status: 'Active', notes: 'Regular campus placement drives scheduled.' },
-  { name: 'Loyola College', city: 'Chennai', type: 'Arts & Science', decisionMaker: 'Rev. Dr. A. Thomas', phone: '044 28178200', email: 'placement@loyolacollege.edu', mouStatus: 'In Discussion', workshopCount: 2, stage: 'Demo done', status: 'Active', notes: 'AAPC CPC awareness webinar completed.' },
-  { name: 'St. Joseph College of Pharmacy', city: 'Kochi', type: 'Pharmacy', decisionMaker: 'Dr. Sr. Mary', phone: '0478 2816281', email: 'principal@stjoseph.edu.in', mouStatus: 'In Discussion', workshopCount: 1, stage: 'Appt fixed', status: 'Active', notes: 'Meeting fixed with final year B.Pharm batch.' },
-  { name: 'Nizam College', city: 'Hyderabad', type: 'Life Science', decisionMaker: 'Prof. B. Sudhakar', phone: '040 23234231', email: 'principal@nizamcollege.ac.in', mouStatus: 'Lead', workshopCount: 0, stage: 'Contacted', status: 'Active', notes: 'Introduction email sent regarding medical coding careers.' }
-];
-
-const SEED_CORPORATES = [
-  { name: 'Omega Healthcare Management Services', city: 'Chennai / Coimbatore', type: 'US Healthcare RCM', contact: 'Karthik Narayanan (HR Director)', phone: '+91 44 4567 8900', email: 'careers@omegahms.com', hiring: 'Actively Hiring', trainingInterest: 'Yes', stage: 'Training Active', activeVacancies: 45, notes: 'Ongoing bulk hiring for CPC certified freshers.' },
-  { name: 'Optum Global Solutions (UnitedHealth Group)', city: 'Hyderabad', type: 'Healthcare Analytics & RCM', contact: 'Swathi Reddy (Campus Talent Head)', phone: '+91 40 6789 0123', email: 'talent.acquisition@optum.com', hiring: 'Actively Hiring', trainingInterest: 'Yes', stage: 'Requirement Received', activeVacancies: 30, notes: 'Shared requirement for 30 inpatient coders (CIC).' },
-  { name: 'Access Healthcare', city: 'Chennai', type: 'Revenue Cycle Management', contact: 'Venkatesh R.', phone: '+91 44 3090 4000', email: 'hiring@accesshealthcare.com', hiring: 'Actively Hiring', trainingInterest: 'No', stage: 'Meeting Fixed', activeVacancies: 25, notes: 'Meeting scheduled with branch placement head.' },
-  { name: 'AGS Health', city: 'Hyderabad / Chennai', type: 'Medical Billing & Coding', contact: 'Deepa Krishnan', phone: '+91 44 4599 0000', email: 'careers@agshealth.com', hiring: 'Actively Hiring', trainingInterest: 'Yes', stage: 'Decision-Maker Connected', activeVacancies: 20, notes: 'Connected with VP of Medical Operations.' },
-  { name: 'GeBBS Healthcare Solutions', city: 'Mumbai / Pune', type: 'HIM & RCM', contact: 'Nitin Sharma', phone: '+91 22 4099 5000', email: 'hr@gebbs.com', hiring: 'Quarterly Hiring', trainingInterest: 'No', stage: 'Contacted', activeVacancies: 15, notes: 'Requirement discussed for upcoming quarter.' }
-];
-
-const SEED_PLACEMENTS = [
-  { studentId: 'TF-CBG-CPC-OF-2603-0042', tfId: 'TF-CBG-CPC-OF-2603-0042', name: 'Keerthana R.', company: 'Omega Healthcare Management Services', role: 'Medical Coder — Surgery & IP', interview: '24 Sep', interviewDate: new Date('2026-09-24'), readiness: '96%', trainerRec: 'Ready', status: 'Interview Scheduled' },
-  { studentId: 'TFMC0Y6001', tfId: 'TFMC0Y6001', name: 'AJITH KUMAR A', company: 'Optum Global Solutions', role: 'Inpatient Coding Specialist (CIC)', interview: '26 Sep', interviewDate: new Date('2026-09-26'), readiness: '92%', trainerRec: 'Ready', status: 'Interview Scheduled' },
-  { studentId: 'TFMC0Y6002', tfId: 'TFMC0Y6002', name: 'DHARSHINI S', company: 'Access Healthcare', role: 'Junior Medical Coder', interview: '28 Sep', interviewDate: new Date('2026-09-28'), readiness: '88%', trainerRec: 'Ready', status: 'Company Mapped' },
-  { studentId: 'TFMC0Y6003', tfId: 'TFMC0Y6003', name: 'POOJA R', company: 'AGS Health', role: 'Medical Coding Trainee', interview: '30 Sep', interviewDate: new Date('2026-09-30'), readiness: '90%', trainerRec: 'Ready', status: 'Company Mapped' }
-];
-
-const SEED_BILLING = [
-  { deal: 'PSG CAS — B.Sc Batch Certification Training', type: 'Campus', amount: 180000, status: 'Payment Pending', invoiceDate: '2026-09-10', notes: 'First milestone invoice raised.' },
-  { deal: 'Omega Healthcare — 15 Hire-Train-Deploy Retainer', type: 'Corporate', amount: 300000, status: 'Invoice Raised', invoiceDate: '2026-09-12', notes: 'Retainer billing for Batch 4.' },
-  { deal: 'SRM Institute — Faculty Development Program', type: 'Campus', amount: 95000, status: 'Paid', invoiceDate: '2026-09-01', paidDate: '2026-09-08', notes: 'Payment completed via NEFT.' }
-];
-
-const SEED_CCCP_FOLLOWUPS = [
-  { title: 'PSG College — Final MOU Signing & Dates', date: '2026-09-22', time: '11:00 AM', targetName: 'Dr. R. Rajendran', type: 'Campus', status: 'Upcoming' },
-  { title: 'Omega Healthcare — Shortlist Review for 20 Coders', date: '2026-09-23', time: '02:30 PM', targetName: 'Karthik Narayanan', type: 'Corporate', status: 'Upcoming' },
-  { title: 'Optum — Technical Assessment Link Dispatch', date: '2026-09-24', time: '10:00 AM', targetName: 'Swathi Reddy', type: 'Corporate', status: 'Upcoming' }
-];
-
-const SEED_CAMPAIGNS = [
-  { code: 'CAM-TF-2026-1001', name: 'CPC Weekend Job Drive — Hyderabad', status: 'Live', statusClass: 'bg-emerald-50 text-emerald-700 border-emerald-200', channel: 'Instagram Ads', branch: 'Hyderabad', course: 'CPC', dailyBudget: 3500, spent: 28400, budget: 35000, leads: 142, cpl: 200, targetCpl: 160, admissions: 9, roi: '565%', ctr: '4.8%' },
-  { code: 'CAM-TF-2026-1002', name: 'Placement Proof Reels', status: 'High Performing', statusClass: 'bg-emerald-50 text-emerald-700 border-emerald-200', channel: 'YouTube Ads', branch: 'All', course: 'CPC', dailyBudget: 2500, spent: 19100, budget: 20000, leads: 89, cpl: 217, targetCpl: 175, admissions: 6, roi: '560%', ctr: '4.2%' },
-  { code: 'CAM-TF-2026-1003', name: 'Medical Coding Awareness — Coimbatore', status: 'Underperforming', statusClass: 'bg-rose-50 text-rose-600 border-rose-200', channel: 'Facebook Ads', branch: 'Coimbatore', course: 'Medical Billing', dailyBudget: 2200, spent: 14800, budget: 15000, leads: 39, cpl: 379, targetCpl: 160, admissions: 2, roi: '184%', ctr: '1.2%' },
-  { code: 'CAM-TF-2026-1004', name: 'Free Workshop — Salem College', status: 'Live', statusClass: 'bg-emerald-50 text-emerald-700 border-emerald-200', channel: 'WhatsApp Campaign', branch: 'Salem', course: 'CPC', dailyBudget: 1000, spent: 3200, budget: 5000, leads: 61, cpl: 52, targetCpl: 80, admissions: 4, roi: '2525%', ctr: '6.5%' }
-];
-
-const SEED_CREATIVES = [
-  { code: 'CR-TF-2026-0088', title: 'Hyderabad job drive poster', format: 'Poster', campaignCode: 'CAM-TF-2026-1001', author: 'Sana M.', priority: 'high', status: 'Submitted', specs: 'Dimensions: 1080x1350 · Format: PNG · Size: 2.4 MB', previewColor: 'from-blue-600 via-indigo-700 to-slate-950', tagline: 'Mega Healthcare Job Fair • 40+ RCM Recruiters', branch: 'Hyderabad - Madhapur & Ameerpet', notes: 'Poster designed for Instagram grid & college campus notice boards in Ameerpet.' },
-  { code: 'CR-TF-2026-0089', title: 'Placement proof reel v2', format: 'Reel', campaignCode: 'CAM-TF-2026-1002', author: 'Karthik P.', priority: 'medium', status: 'Submitted', specs: 'Duration: 38s · 1080x1920 · 60fps · 4K Audio', previewColor: 'from-purple-600 via-pink-600 to-rose-700', tagline: 'Student Journey: From Life Science Graduate to CPC Certified Analyst', branch: 'All Branches (Coimbatore HQ)', notes: 'Reel featuring Keerthana R. talking about her ₹4.8 LPA offer at Optum.' },
-  { code: 'CR-TF-2026-0090', title: 'Awareness ad creative', format: 'Ad creative', campaignCode: 'CAM-TF-2026-1003', author: 'Sana M.', priority: 'low', status: 'Needs Correction', specs: 'Dimensions: 1080x1080 · Format: JPG · Size: 1.1 MB', previewColor: 'from-emerald-600 via-teal-700 to-slate-900', tagline: 'Why B.Sc Zoology & Chemistry Graduates Excel in US Medical Coding', branch: 'Coimbatore - Gandhipuram', notes: 'Needs correction: Font contrast on mobile feed is too low.' }
-];
-
-const SEED_INCENTIVE_SLABS = [
-  { slab: 'Slab 1', range: '1 – 10 Admissions', min: 1, max: 10, rate: 500, labelRate: '₹500 / admission', status: 'Base Tier', note: 'Standard counselor qualification' },
-  { slab: 'Slab 2', range: '11 – 20 Admissions', min: 11, max: 20, rate: 700, labelRate: '₹700 / admission', status: 'Active Tier', note: 'Accelerated conversion bonus', isCurrent: true },
-  { slab: 'Slab 3', range: '21 – 25 Admissions', min: 21, max: 25, rate: 1000, labelRate: '₹1,000 / admission', status: 'High Performer', note: 'Top quartile counselor bonus' },
-  { slab: 'Slab 4', range: '26+ Admissions', min: 26, max: 999, rate: 1500, labelRate: '₹1,500 / admission + ₹8,000 Milestone Bonus', milestoneBonus: 8000, status: 'Super Performer', note: 'Executive milestone tier' }
-];
-
-const SEED_AUDIT_LOGS = [
-  { timestamp: '2026-09-21 09:38:12', user: 'Executive Admin', action: 'Incentive Slabs Verified', category: 'Policy', severity: 'Info', ip: '192.168.1.104', details: 'Slab 2 target set to 11–20 admissions at ₹700/adm' },
-  { timestamp: '2026-09-21 09:24:45', user: 'Kavitha N. (HR)', action: 'Student Admission Confirmed', category: 'CRM', severity: 'Success', ip: '192.168.2.45', details: 'Enrolled Keerthana R. into Batch TF-CBE-CPC-07' },
-  { timestamp: '2026-09-21 08:55:10', user: 'System (Automated)', action: 'Nightly Database Sync', category: 'System', severity: 'Info', ip: '10.0.0.1', details: 'Database integrity verified across all 7 operational departments.' }
-];
-
-// Seed Helper
-let isSeeded = false;
-const seedDatabaseIfEmpty = async () => {
-  if (isSeeded) return;
-  if (mongoose.connection.readyState !== 1) return;
-  try {
-    const studentCount = await Student.countDocuments();
-    if (studentCount === 0) {
-      await Student.insertMany(SEED_STUDENTS);
-      console.log('✓ [DB Seed] Seeded real students');
-    }
-    const leadCount = await StudentLead.countDocuments();
-    if (leadCount === 0) {
-      await StudentLead.insertMany(SEED_LEADS);
-      console.log('✓ [DB Seed] Seeded real CRM leads');
-    }
-    const demoCount = await Demo.countDocuments();
-    if (demoCount === 0) {
-      await Demo.insertMany(SEED_DEMOS);
-      console.log('✓ [DB Seed] Seeded real demos');
-    }
-    const rateCount = await CourseFeeRate.countDocuments();
-    if (rateCount === 0) {
-      await CourseFeeRate.insertMany(SEED_COURSE_RATES);
-      console.log('✓ [DB Seed] Seeded real course fee rates');
-    }
-    const userCount = await User.countDocuments();
-    if (userCount === 0) {
-      await User.insertMany(SEED_USERS);
-      console.log('✓ [DB Seed] Seeded real user accounts');
-    }
-    const collegeCount = await CollegePartner.countDocuments();
-    if (collegeCount === 0) {
-      await CollegePartner.insertMany(SEED_COLLEGES);
-      console.log('✓ [DB Seed] Seeded real CCCP colleges');
-    }
-    const corpCount = await CorporatePartner.countDocuments();
-    if (corpCount === 0) {
-      await CorporatePartner.insertMany(SEED_CORPORATES);
-      console.log('✓ [DB Seed] Seeded real CCCP corporate partners');
-    }
-    const placementCount = await PlacementRecord.countDocuments();
-    if (placementCount === 0) {
-      await PlacementRecord.insertMany(SEED_PLACEMENTS);
-      console.log('✓ [DB Seed] Seeded real CCCP placements');
-    }
-    const billingCount = await BillingDeal.countDocuments();
-    if (billingCount === 0) {
-      await BillingDeal.insertMany(SEED_BILLING);
-      console.log('✓ [DB Seed] Seeded real CCCP billing deals');
-    }
-    const cccpFollowUpCount = await CccpFollowUp.countDocuments();
-    if (cccpFollowUpCount === 0) {
-      await CccpFollowUp.insertMany(SEED_CCCP_FOLLOWUPS);
-      console.log('✓ [DB Seed] Seeded real CCCP follow-ups');
-    }
-    const campaignCount = await MarketingCampaign.countDocuments();
-    if (campaignCount === 0) {
-      await MarketingCampaign.insertMany(SEED_CAMPAIGNS);
-      console.log('✓ [DB Seed] Seeded real marketing campaigns');
-    }
-    const creativeCount = await MarketingCreative.countDocuments();
-    if (creativeCount === 0) {
-      await MarketingCreative.insertMany(SEED_CREATIVES);
-      console.log('✓ [DB Seed] Seeded real marketing creatives');
-    }
-    const slabCount = await IncentiveSlab.countDocuments();
-    if (slabCount === 0) {
-      await IncentiveSlab.insertMany(SEED_INCENTIVE_SLABS);
-      console.log('✓ [DB Seed] Seeded real admin incentive slabs');
-    }
-    const auditCount = await AuditLog.countDocuments();
-    if (auditCount === 0) {
-      await AuditLog.insertMany(SEED_AUDIT_LOGS);
-      console.log('✓ [DB Seed] Seeded real admin audit logs');
-    }
-    const branchCount = await Branch.countDocuments();
-    if (branchCount < SEED_BRANCHES.length) {
-      for (const b of SEED_BRANCHES) {
-        await Branch.findOneAndUpdate(
-          { name: b.name },
-          { $set: b },
-          { upsert: true, new: true }
-        );
-      }
-      console.log('✓ [DB Seed] Verified & synced all 14 official academy branches');
-    }
-    isSeeded = true;
-  } catch (err) {
-    console.error('Error during database seed:', err.message);
-  }
-};
-
-// Middleware to ensure DB is initialized
-router.use(async (req, res, next) => {
-  if (!isSeeded && mongoose.connection.readyState === 1) {
-    await seedDatabaseIfEmpty();
-  }
-  next();
-});
-
 // Health Check
 router.get('/health', (req, res) => {
   const isMongoConnected = mongoose.connection.readyState === 1;
@@ -805,6 +44,407 @@ router.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     database: isMongoConnected ? 'connected' : 'offline'
   });
+});
+
+// ==========================================
+// CALLING — Exotel Click-to-Call bridge
+// ==========================================
+// TELEPHONY API — MyOperator (Primary) & Exotel (Secondary)
+// ==========================================
+function activeTelephonyProvider() {
+  dotenv.config();
+  return (process.env.TELEPHONY_PROVIDER || 'exotel').toLowerCase();
+}
+
+function myoperatorConfig() {
+  return {
+    token: process.env.MYOPERATOR_TOKEN || '',
+    companyId: process.env.MYOPERATOR_COMPANY_ID || '',
+    secretToken: process.env.MYOPERATOR_SECRET_TOKEN || '',
+    callerId: process.env.MYOPERATOR_CALLER_ID || '',
+    defaultAgentPhone: process.env.MYOPERATOR_DEFAULT_AGENT_PHONE || '6382718655'
+  };
+}
+
+function exotelConfig() {
+  return {
+    sid: process.env.EXOTEL_SID || '',
+    apiKey: process.env.EXOTEL_API_KEY || '',
+    apiToken: process.env.EXOTEL_API_TOKEN || '',
+    exophone: process.env.EXOTEL_EXOPHONE || '',
+    subdomain: process.env.EXOTEL_SUBDOMAIN || 'api.exotel.com',
+    defaultAgentPhone: process.env.EXOTEL_DEFAULT_AGENT_PHONE || '6382718655'
+  };
+}
+
+function telephonyConfigured() {
+  if (activeTelephonyProvider() === 'myoperator') {
+    return !!myoperatorConfig().token;
+  }
+  const c = exotelConfig();
+  return !!(c.sid && c.apiKey && c.apiToken && c.exophone);
+}
+
+function exotelBaseUrl() {
+  const c = exotelConfig();
+  return `https://${c.subdomain}/v1/Accounts/${c.sid}`;
+}
+
+function exotelAuthHeader() {
+  const c = exotelConfig();
+  const token = Buffer.from(`${c.apiKey}:${c.apiToken}`).toString('base64');
+  return { Authorization: `Basic ${token}` };
+}
+
+// Indian numbers only need normalizing to E.164 — a bare 10-digit mobile
+// gets a +91 prefix, anything already prefixed is left alone.
+function toE164India(raw) {
+  const digits = String(raw || '').replace(/[^\d+]/g, '');
+  if (!digits) return '';
+  if (digits.startsWith('+')) return digits;
+  if (digits.length === 10) return `+91${digits}`;
+  if (digits.startsWith('91') && digits.length === 12) return `+${digits}`;
+  if (digits.startsWith('0') && digits.length === 11) return `+91${digits.slice(1)}`;
+  return digits;
+}
+
+router.get('/calls/config-status', (req, res) => {
+  const provider = activeTelephonyProvider();
+  if (provider === 'myoperator') {
+    const c = myoperatorConfig();
+    return res.json({
+      provider: 'myoperator',
+      configured: !!c.token,
+      companyId: c.companyId || '',
+      callerId: c.callerId || ''
+    });
+  }
+  res.json({
+    provider: 'exotel',
+    configured: !!(process.env.EXOTEL_SID && process.env.EXOTEL_API_KEY && process.env.EXOTEL_API_TOKEN)
+  });
+});
+
+router.post('/calls/dial', async (req, res) => {
+  const provider = activeTelephonyProvider();
+  const { leadPhone, agentPhone } = req.body;
+  if (!leadPhone) return res.status(400).json({ error: 'leadPhone is required' });
+
+  // 10-digit clean format (standard for MyOperator)
+  const cleanLead = String(leadPhone).replace(/[^\d]/g, '').slice(-10);
+  const cleanAgent = String(agentPhone || process.env.MYOPERATOR_DEFAULT_AGENT_PHONE || '6382718655').replace(/[^\d]/g, '').slice(-10);
+
+  // ── MYOPERATOR DIAL ROUTE ───────────────────────────────────────────
+  if (provider === 'myoperator') {
+    const { token, companyId, callerId } = myoperatorConfig();
+    if (!token) {
+      return res.status(503).json({
+        error: 'MyOperator token not found. Please add MYOPERATOR_TOKEN in server/.env and restart server.'
+      });
+    }
+
+    try {
+      const params = new URLSearchParams({
+        token,
+        customer_number: cleanLead,
+        agent_number: cleanAgent
+      });
+      if (companyId) params.append('company_id', companyId);
+      if (callerId) params.append('caller_id', callerId);
+
+      const response = await fetch('https://developers.myoperator.co/searchApi', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: params.toString()
+      });
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || (data.status && data.status !== 'success')) {
+        const message = data.message || data.error || `MyOperator error: HTTP ${response.status}`;
+        return res.status(502).json({ error: message });
+      }
+
+      const callSid = data.data?.call_id || data.call_id || `myop_${Date.now()}`;
+      return res.json({
+        provider: 'myoperator',
+        callSid,
+        status: 'queued',
+        from: cleanAgent,
+        to: cleanLead
+      });
+    } catch (err) {
+      return res.status(502).json({ error: `Could not reach MyOperator: ${err.message}` });
+    }
+  }
+
+  // ── EXOTEL DIAL ROUTE (FALLBACK) ────────────────────────────────────
+  const { exophone, defaultAgentPhone } = exotelConfig();
+  const from = toE164India(agentPhone || defaultAgentPhone);
+  const to = toE164India(leadPhone);
+
+  if (!from) {
+    return res.status(400).json({ error: 'No agent phone number available.' });
+  }
+  if (!to) {
+    return res.status(400).json({ error: 'The lead has no usable phone number on file.' });
+  }
+
+  try {
+    const params = new URLSearchParams({
+      From: from,
+      To: to,
+      CallerId: exophone,
+      CallType: 'trans',
+      Record: 'true'
+    });
+    const response = await fetch(`${exotelBaseUrl()}/Calls/connect.json`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...exotelAuthHeader() },
+      body: params.toString()
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = data?.RestException?.Message || data?.error || `Exotel returned HTTP ${response.status}`;
+      return res.status(502).json({ error: message });
+    }
+    const call = data?.Call || {};
+    res.json({ provider: 'exotel', callSid: call.Sid, status: call.Status || 'queued', from, to });
+  } catch (err) {
+    res.status(502).json({ error: `Could not reach telephony service: ${err.message}` });
+  }
+});
+
+router.get('/calls/:callSid/status', async (req, res) => {
+  const provider = activeTelephonyProvider();
+  const callSid = req.params.callSid;
+
+  if (provider === 'myoperator') {
+    const { token } = myoperatorConfig();
+    if (!token) return res.status(503).json({ error: 'MyOperator token missing' });
+
+    try {
+      const response = await fetch(`https://developers.myoperator.co/search?token=${token}&call_id=${callSid}`);
+      const data = await response.json().catch(() => ({}));
+      const callData = data.data?.[0] || data.data || {};
+      return res.json({
+        provider: 'myoperator',
+        callSid,
+        status: callData.status === 'answered' ? 'in-progress' : callData.status || 'in-progress',
+        duration: Number(callData.duration || 0),
+        recordingUrl: callData.recording_url || callData.filename || null
+      });
+    } catch (e) {
+      return res.json({ provider: 'myoperator', callSid, status: 'in-progress' });
+    }
+  }
+
+  // Exotel status
+  try {
+    const response = await fetch(`${exotelBaseUrl()}/Calls/${callSid}.json`, {
+      headers: { ...exotelAuthHeader() }
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = data?.RestException?.Message || `Exotel returned HTTP ${response.status}`;
+      return res.status(502).json({ error: message });
+    }
+    const call = data?.Call || {};
+    res.json({
+      provider: 'exotel',
+      callSid: call.Sid,
+      status: call.Status,
+      duration: Number(call.ConversationDuration || call.Duration || 0),
+      startTime: call.StartTime,
+      endTime: call.EndTime,
+      recordingUrl: call.RecordingUrl || null
+    });
+  } catch (err) {
+    res.status(502).json({ error: `Could not reach Exotel: ${err.message}` });
+  }
+});
+
+// MyOperator After-Call Webhook
+router.post('/calls/myoperator/webhook', async (req, res) => {
+  try {
+    const payload = req.body || {};
+    const {
+      call_id,
+      customer_number,
+      agent_number,
+      duration,
+      recording_url,
+      filename,
+      status
+    } = payload;
+
+    const audioUrl = recording_url || filename;
+    const phone = customer_number || payload.to;
+    if (audioUrl && phone) {
+      const cleanPhone = String(phone).replace(/[^\d]/g, '').slice(-10);
+      const lead = await StudentLead.findOne({ phone: { $regex: cleanPhone } });
+
+      const rec = new CallRecording({
+        leadId: lead?._id || undefined,
+        leadName: lead?.fullName || lead?.name || `Student ${cleanPhone}`,
+        leadPhone: cleanPhone,
+        counselorName: 'Kavitha N.',
+        callSid: call_id || '',
+        durationSeconds: Number(duration) || 0,
+        outcome: status === 'answered' ? 'Follow-up Needed' : 'Not Reachable',
+        audioUrl,
+        source: 'myoperator'
+      });
+      await rec.save();
+    }
+    res.json({ success: true, received: true });
+  } catch (err) {
+    console.error('MyOperator webhook error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/calls/:callSid/hangup', async (req, res) => {
+  if (!exotelConfigured()) {
+    return res.status(503).json({ error: 'Exotel is not configured.' });
+  }
+  try {
+    const params = new URLSearchParams({ Status: 'completed' });
+    const response = await fetch(`${exotelBaseUrl()}/Calls/${req.params.callSid}.json`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...exotelAuthHeader() },
+      body: params.toString()
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = data?.RestException?.Message || `Exotel returned HTTP ${response.status}`;
+      return res.status(502).json({ error: message });
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(502).json({ error: `Could not reach Exotel: ${err.message}` });
+  }
+});
+
+// ==========================================
+// CALL RECORDINGS API
+// ==========================================
+router.get('/recordings', async (req, res) => {
+  try {
+    const { leadPhone, leadId, counselorName, search } = req.query;
+    let query = {};
+    if (leadPhone) {
+      const digits = leadPhone.replace(/[^\d]/g, '');
+      if (digits) query.leadPhone = { $regex: digits, $options: 'i' };
+    }
+    if (leadId && mongoose.isValidObjectId(leadId)) {
+      query.leadId = leadId;
+    }
+    if (counselorName) query.counselorName = { $regex: counselorName, $options: 'i' };
+    if (search) {
+      query.$or = [
+        { leadName: { $regex: search, $options: 'i' } },
+        { leadPhone: { $regex: search, $options: 'i' } },
+        { counselorName: { $regex: search, $options: 'i' } },
+        { outcome: { $regex: search, $options: 'i' } },
+        { notes: { $regex: search, $options: 'i' } }
+      ];
+    }
+    const recordings = await CallRecording.find(query).sort({ createdAt: -1 });
+    res.json(recordings);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/recordings', async (req, res) => {
+  try {
+    const {
+      leadId,
+      leadName,
+      leadPhone,
+      counselorName,
+      counselorPhone,
+      callSid,
+      durationSeconds,
+      outcome,
+      notes,
+      audioBase64,
+      audioUrl: directAudioUrl,
+      source
+    } = req.body;
+
+    if (!leadName || !leadPhone) {
+      return res.status(400).json({ error: 'leadName and leadPhone are required' });
+    }
+
+    let audioUrl = directAudioUrl || '';
+
+    // If an audioBase64 string was sent (from in-browser MediaRecorder)
+    if (audioBase64) {
+      const match = audioBase64.match(/^data:audio\/(webm|mp3|wav|ogg|mpeg);base64,(.+)$/i);
+      const ext = match ? (match[1] === 'mpeg' ? 'mp3' : match[1]) : 'webm';
+      const base64Data = match ? match[2] : audioBase64.replace(/^data:[^;]+;base64,/, '');
+      const buffer = Buffer.from(base64Data, 'base64');
+
+      const filename = `call_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.${ext}`;
+      const uploadsDir = path.join(process.cwd(), 'uploads/recordings');
+      if (!fs.existsSync(uploadsDir)) {
+        fs.mkdirSync(uploadsDir, { recursive: true });
+      }
+      fs.writeFileSync(path.join(uploadsDir, filename), buffer);
+      audioUrl = `/recordings/${filename}`;
+    }
+
+    if (!audioUrl) {
+      return res.status(400).json({ error: 'No audio data or audioUrl provided' });
+    }
+
+    const recording = new CallRecording({
+      leadId: leadId && mongoose.isValidObjectId(leadId) ? leadId : undefined,
+      leadName,
+      leadPhone,
+      counselorName: counselorName || 'Kavitha N.',
+      counselorPhone: counselorPhone || '',
+      callSid: callSid || '',
+      durationSeconds: Number(durationSeconds) || 0,
+      outcome: outcome || 'Follow-up Needed',
+      notes: notes || '',
+      audioUrl,
+      source: source || (directAudioUrl ? 'exotel' : 'browser_mic')
+    });
+
+    await recording.save();
+
+    // If leadId is valid, increment lead's call count and lastCallTime
+    if (leadId && mongoose.isValidObjectId(leadId)) {
+      await StudentLead.findByIdAndUpdate(leadId, {
+        $inc: { callCount: 1 },
+        lastCallTime: new Date()
+      });
+    }
+
+    res.status(201).json(recording);
+  } catch (err) {
+    console.error('Error saving call recording:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/recordings/:id', async (req, res) => {
+  try {
+    const recording = await CallRecording.findByIdAndDelete(req.params.id);
+    if (!recording) return res.status(404).json({ error: 'Recording not found' });
+    if (recording.audioUrl && recording.audioUrl.startsWith('/recordings/')) {
+      const filename = path.basename(recording.audioUrl);
+      const filePath = path.join(process.cwd(), 'uploads/recordings', filename);
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    }
+    res.json({ success: true, message: 'Recording deleted successfully' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Portal Statistics Overview (Live Calculated from DB)
@@ -821,44 +461,29 @@ router.get('/stats', async (req, res) => {
       ]
     });
 
-    let grossRevenue = 9240000;
-    try {
-      const revenueAgg = await Student.aggregate([
-        { $match: { feeStatus: { $ne: 'Pending' } } },
-        { $group: { _id: null, total: { $sum: "$courseFee" } } }
-      ]);
-      if (revenueAgg[0]?.total && revenueAgg[0].total > 0) {
-        grossRevenue = revenueAgg[0].total;
-      }
-    } catch {
-      // fallback
+    let grossRevenue = 0;
+    const revenueAgg = await Student.aggregate([
+      { $match: { feeStatus: { $ne: 'Pending' } } },
+      { $group: { _id: null, total: { $sum: "$courseFee" } } }
+    ]);
+    if (revenueAgg[0]?.total) {
+      grossRevenue = revenueAgg[0].total;
     }
-    
+
     res.json({
       academyName: "Thoughtflows Medical Coding Academy",
       tagline: "Where thoughts flow into action",
       portalVersion: "V2.0 • LIVE",
-      branchesCount: branchCount || 14,
-      teamsCount: deptCount || 8,
-      activeStudents: studentCount || 0,
-      activeLeads: leadCount || 0,
-      placedStudents: placedCount || 0,
-      placementRate: studentCount > 0 && placedCount > 0 ? `${((placedCount / studentCount) * 100).toFixed(1)}%` : "98.4%",
+      branchesCount: branchCount,
+      teamsCount: deptCount,
+      activeStudents: studentCount,
+      activeLeads: leadCount,
+      placedStudents: placedCount,
+      placementRate: studentCount > 0 ? `${((placedCount / studentCount) * 100).toFixed(1)}%` : "0.0%",
       grossRevenue
     });
   } catch (e) {
-    res.json({
-      academyName: "Thoughtflows Medical Coding Academy",
-      tagline: "Where thoughts flow into action",
-      portalVersion: "V2.0 • LIVE",
-      branchesCount: 14,
-      teamsCount: 8,
-      activeStudents: 3970,
-      activeLeads: 48,
-      placedStudents: 156,
-      placementRate: "98.4%",
-      grossRevenue: 9240000
-    });
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -866,13 +491,9 @@ router.get('/stats', async (req, res) => {
 router.get('/departments', async (req, res) => {
   try {
     let depts = await Department.find();
-    if (depts.length === 0) {
-      await Department.insertMany(SEED_DEPARTMENTS);
-      depts = await Department.find();
-    }
     return res.json(depts);
   } catch (e) {
-    res.json(SEED_DEPARTMENTS);
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -880,76 +501,18 @@ router.get('/departments', async (req, res) => {
 router.get('/branches', async (req, res) => {
   try {
     let branches = await Branch.find();
-    if (branches.length < SEED_BRANCHES.length) {
-      for (const b of SEED_BRANCHES) {
-        await Branch.findOneAndUpdate(
-          { name: b.name },
-          { $set: b },
-          { upsert: true, new: true }
-        );
-      }
-      branches = await Branch.find();
-    }
     return res.json(branches);
   } catch (e) {
-    res.json(SEED_BRANCHES);
+    res.status(500).json({ error: e.message });
   }
 });
 
 // ==========================================
 // LEADERSHIP HUB — Approvals, Escalations, Team & Attendance
 // ==========================================
-const SEED_APPROVALS = [
-  { title: 'Fee waiver for hardship case', kind: 'Fee Waiver', priority: 'high', departmentCode: 'ADM', branchName: 'Saravanampatti', requestedBy: 'Pooja J.' },
-  { title: 'New AAPC mock exam slot', kind: 'Exam Slot', priority: 'medium', departmentCode: 'EXAM', branchName: 'Gandhipuram', requestedBy: 'Suresh V.' },
-  { title: 'Corporate hiring drive sign-off', kind: 'Placement Drive', priority: 'high', departmentCode: 'CORP', branchName: 'Ameerpet', requestedBy: 'Meenakshi R.' },
-  { title: 'New faculty onboarding', kind: 'Hiring', priority: 'medium', departmentCode: 'HR', branchName: 'Hopes', requestedBy: 'Balaji R.' },
-  { title: 'LMS server upgrade budget', kind: 'IT Budget', priority: 'low', departmentCode: 'SYS', branchName: '', requestedBy: 'Dinesh P.' },
-  { title: 'Installment plan restructure', kind: 'Finance', priority: 'medium', departmentCode: 'FIN', branchName: 'Kochi', requestedBy: 'Kavitha V.' }
-];
-
-const SEED_ESCALATIONS = [
-  { title: 'Batch timing conflict', type: 'Scheduling', priority: 'urgent', departmentCode: 'ACAD', branchName: 'Salem', raisedBy: 'Dr. Vikram C.' },
-  { title: 'Student attendance dispute', type: 'Academic', priority: 'normal', departmentCode: 'SUCC', branchName: 'Trichy', raisedBy: 'Priya R.' },
-  { title: 'Delayed fee refund', type: 'Finance', priority: 'urgent', departmentCode: 'FIN', branchName: 'Trivandrum', raisedBy: 'Kavitha V.' },
-  { title: 'LMS login outage', type: 'IT', priority: 'urgent', departmentCode: 'SYS', branchName: '', raisedBy: 'Dinesh P.' }
-];
-
-const SEED_TEAM = [
-  { name: 'Anitha R.', role: 'Academic Counsellor', departmentCode: 'ADM', branchName: 'Saravanampatti', assigned: 24, completed: 20, pending: 4, quality: 88, shift: 'morning' },
-  { name: 'Karthik S.', role: 'Academic Counsellor', departmentCode: 'ADM', branchName: 'Gandhipuram', assigned: 22, completed: 17, pending: 5, quality: 79, shift: 'general' },
-  { name: 'Revathi K.', role: 'Senior Faculty (CPC SME)', departmentCode: 'ACAD', branchName: 'Gandhipuram', assigned: 30, completed: 27, pending: 3, quality: 92, shift: 'morning' },
-  { name: 'Manjunath R.', role: 'Faculty (CPMA SME)', departmentCode: 'ACAD', branchName: 'Hopes', assigned: 26, completed: 21, pending: 5, quality: 85, shift: 'general' },
-  { name: 'Divya M.', role: 'Mentorship Lead', departmentCode: 'SUCC', branchName: 'Salem', assigned: 18, completed: 16, pending: 2, quality: 90, shift: 'general' },
-  { name: 'Arjun P.', role: 'Exam Coordinator', departmentCode: 'EXAM', branchName: 'Trichy', assigned: 20, completed: 18, pending: 2, quality: 87, shift: 'evening' },
-  { name: 'Lakshmi N.', role: 'Placement Associate', departmentCode: 'CORP', branchName: 'Ameerpet', assigned: 15, completed: 11, pending: 4, quality: 81, shift: 'general' },
-  { name: 'Suresh Babu', role: 'RCM Trainer (CPB SME)', departmentCode: 'ACAD', branchName: 'Dilsukhnagar', assigned: 24, completed: 19, pending: 5, quality: 83, shift: 'morning' },
-  { name: 'Priyadharshini K.', role: 'Faculty (CIC SME)', departmentCode: 'ACAD', branchName: 'Kochi', assigned: 28, completed: 25, pending: 3, quality: 91, shift: 'general' },
-  { name: 'Balaji R.', role: 'HR Coordinator', departmentCode: 'HR', branchName: 'Trivandrum', assigned: 12, completed: 10, pending: 2, quality: 86, shift: 'general' },
-  { name: 'Dinesh P.', role: 'IT & LMS Support', departmentCode: 'SYS', branchName: 'Vizag', assigned: 16, completed: 13, pending: 3, quality: 84, shift: 'general' },
-  { name: 'Kavitha V.', role: 'Branch Finance Officer', departmentCode: 'FIN', branchName: 'Kollapur', assigned: 14, completed: 12, pending: 2, quality: 88, shift: 'morning' },
-  { name: 'Meenakshi R.', role: 'Placement Cell Head', departmentCode: 'CORP', branchName: 'Pune', assigned: 19, completed: 15, pending: 4, quality: 89, shift: 'general' },
-  { name: 'Pooja J.', role: 'Admissions Counsellor', departmentCode: 'ADM', branchName: 'Theni', assigned: 21, completed: 18, pending: 3, quality: 90, shift: 'evening' }
-];
-
-let leadershipSeeded = false;
-async function ensureLeadershipSeed() {
-  if (leadershipSeeded) return;
-  const [aCount, eCount, tCount] = await Promise.all([
-    Approval.countDocuments(),
-    Escalation.countDocuments(),
-    TeamMember.countDocuments()
-  ]);
-  if (aCount === 0) await Approval.insertMany(SEED_APPROVALS);
-  if (eCount === 0) await Escalation.insertMany(SEED_ESCALATIONS);
-  if (tCount === 0) await TeamMember.insertMany(SEED_TEAM);
-  leadershipSeeded = true;
-}
-
 // Org-wide summary for the Operational Head command view
 router.get('/leadership/summary', async (req, res) => {
   try {
-    await ensureLeadershipSeed();
     const [pendingApprovals, openEscalations] = await Promise.all([
       Approval.countDocuments({ status: 'pending' }),
       Escalation.countDocuments({ status: { $nin: ['resolved', 'closed'] } })
@@ -963,7 +526,6 @@ router.get('/leadership/summary', async (req, res) => {
 // Approvals
 router.get('/leadership/approvals', async (req, res) => {
   try {
-    await ensureLeadershipSeed();
     const { departmentCode, branchName, status } = req.query;
     const query = {};
     if (departmentCode) query.departmentCode = departmentCode;
@@ -1007,7 +569,6 @@ router.patch('/leadership/approvals/:id/decision', async (req, res) => {
 // Escalations
 router.get('/leadership/escalations', async (req, res) => {
   try {
-    await ensureLeadershipSeed();
     const { departmentCode, branchName, status } = req.query;
     const query = {};
     if (departmentCode) query.departmentCode = departmentCode;
@@ -1053,7 +614,6 @@ router.patch('/leadership/escalations/:id/status', async (req, res) => {
 // Team / Roster
 router.get('/leadership/team', async (req, res) => {
   try {
-    await ensureLeadershipSeed();
     const { departmentCode, branchName } = req.query;
     const query = {};
     if (departmentCode) query.departmentCode = departmentCode;
@@ -1083,7 +643,6 @@ function todayStr() {
 
 router.get('/leadership/attendance/branch/:branchName', async (req, res) => {
   try {
-    await ensureLeadershipSeed();
     const branchName = req.params.branchName;
     const date = todayStr();
     const team = await TeamMember.find({ branchName });
@@ -1104,7 +663,6 @@ router.get('/leadership/attendance/branch/:branchName', async (req, res) => {
 
 router.get('/leadership/attendance/org-summary', async (req, res) => {
   try {
-    await ensureLeadershipSeed();
     const date = todayStr();
     const team = await TeamMember.find();
     const existing = await Attendance.find({ date });
@@ -1125,7 +683,6 @@ router.get('/leadership/attendance/org-summary', async (req, res) => {
 
 router.get('/leadership/attendance/by-branch', async (req, res) => {
   try {
-    await ensureLeadershipSeed();
     const date = todayStr();
     const [team, existing] = await Promise.all([TeamMember.find(), Attendance.find({ date })]);
     const byKey = {};
@@ -1205,10 +762,14 @@ router.post('/leadership/attendance/break', async (req, res) => {
 // ==========================================
 router.get('/students', async (req, res) => {
   try {
-    const { statusGroup, search } = req.query;
+    const { statusGroup, search, hrName } = req.query;
     let query = {};
     if (statusGroup && statusGroup !== 'all') {
       query.statusGroup = statusGroup;
+    }
+    if (hrName && hrName !== 'all') {
+      const escapedHr = hrName.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      query.hrName = { $regex: new RegExp(escapedHr, 'i') };
     }
     if (search) {
       query.$or = [
@@ -1320,7 +881,38 @@ router.delete('/students/:id', async (req, res) => {
 // ==========================================
 router.get('/leads', async (req, res) => {
   try {
-    const leads = await StudentLead.find().sort({ createdAt: -1 });
+    const { counselor, search, stage, branch } = req.query;
+    let query = {};
+    if (counselor && counselor !== 'all') {
+      const escaped = counselor.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      query.$or = [
+        { counselorAssigned: { $regex: new RegExp(escaped, 'i') } },
+        { allocatedTo: { $regex: new RegExp(escaped, 'i') } }
+      ];
+    }
+    if (stage && stage !== 'all') {
+      query.stage = stage;
+    }
+    if (branch && branch !== 'all') {
+      query.branch = { $regex: new RegExp(branch.trim(), 'i') };
+    }
+    if (search) {
+      const searchRegex = { $regex: search.trim(), $options: 'i' };
+      const searchOr = [
+        { fullName: searchRegex },
+        { phone: searchRegex },
+        { email: searchRegex },
+        { location: searchRegex },
+        { course: searchRegex }
+      ];
+      if (query.$or) {
+        query.$and = [{ $or: query.$or }, { $or: searchOr }];
+        delete query.$or;
+      } else {
+        query.$or = searchOr;
+      }
+    }
+    const leads = await StudentLead.find(query).sort({ createdAt: -1 });
     
     // Group into pipeline counts
     const stages = [
@@ -1432,17 +1024,121 @@ router.delete('/leads/:id', async (req, res) => {
   }
 });
 
+// GET WhatsApp conversation history for a lead
+router.get('/leads/:id/whatsapp', async (req, res) => {
+  try {
+    const lead = await StudentLead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ error: 'Lead not found' });
+
+    // If first time, initialize with authentic initial student inquiry
+    if (!lead.whatsappMessages || lead.whatsappMessages.length === 0) {
+      const course = lead.course || 'CPC - Certified Professional Coder';
+      const initialMsgs = [
+        {
+          id: `wa-init-${Date.now()}`,
+          sender: 'student',
+          senderName: lead.fullName || 'Student',
+          text: `Hi ThoughtFlows Academy, I am interested in joining the ${course} course. Can you please share the syllabus, fees, and next batch timings?`,
+          time: new Date(Date.now() - 3600000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          status: 'read',
+          createdAt: new Date(Date.now() - 3600000)
+        }
+      ];
+      lead.whatsappMessages = initialMsgs;
+      await lead.save();
+    }
+
+    res.json({ messages: lead.whatsappMessages, student: lead });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST send WhatsApp message in modal & get intelligent student reply
+router.post('/leads/:id/whatsapp', async (req, res) => {
+  try {
+    const lead = await StudentLead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ error: 'Lead not found' });
+
+    const { text, mediaUrl, mediaType, mediaName, sender = 'counselor', senderName = 'Counselor' } = req.body;
+    if (!text && !mediaUrl) {
+      return res.status(400).json({ error: 'Message text or media is required' });
+    }
+
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    const newMsg = {
+      id: `wa-${Date.now()}`,
+      sender,
+      senderName,
+      text: text || '',
+      time: timeStr,
+      status: 'read',
+      mediaUrl: mediaUrl || '',
+      mediaType: mediaType || '',
+      mediaName: mediaName || '',
+      createdAt: now
+    };
+
+    if (!lead.whatsappMessages) lead.whatsappMessages = [];
+    lead.whatsappMessages.push(newMsg);
+
+    // Context-aware automatic student response
+    const lower = (text || '').toLowerCase();
+    let replyText = '';
+    if (lower.includes('demo') || lower.includes('zoom') || lower.includes('session')) {
+      replyText = `Thank you! I will definitely attend the demo session. Is it live with the trainer? Please share the Zoom joining link.`;
+    } else if (lower.includes('fee') || lower.includes('emi') || lower.includes('₹') || lower.includes('cost') || lower.includes('installment')) {
+      replyText = `Understood. Is there an option for zero-interest EMI or 2-part installments? How much is required for initial registration?`;
+    } else if (lower.includes('syllabus') || lower.includes('brochure') || lower.includes('curriculum') || lower.includes('module')) {
+      replyText = `The syllabus looks very comprehensive! Since I come from ${lead.education || 'a life sciences background'}, will basic anatomy and medical terminology be covered before coding?`;
+    } else if (lower.includes('document') || lower.includes('aadhaar') || lower.includes('certificate') || lower.includes('marksheet')) {
+      replyText = `Yes, I have my degree provisional certificate and Aadhaar card ready. I can send the soft copies here directly.`;
+    } else if (lower.includes('call') || lower.includes('phone') || lower.includes('dial')) {
+      replyText = `Sure! I am free to take a call right now. Please call me on ${lead.phone}.`;
+    } else if (lower.includes('hi') || lower.includes('hello') || lower.includes('hey')) {
+      replyText = `Hello! Thanks for reaching out. Yes, I want to understand more about the job placement guarantee and batch timings.`;
+    } else {
+      replyText = `Got it, thank you for the details! When does the upcoming batch start, and how do I reserve my seat?`;
+    }
+
+    const replyTime = new Date(Date.now() + 1500).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const replyMsg = {
+      id: `wa-rep-${Date.now() + 1}`,
+      sender: 'student',
+      senderName: lead.fullName || 'Student',
+      text: replyText,
+      time: replyTime,
+      status: 'read',
+      createdAt: new Date(Date.now() + 1500)
+    };
+
+    lead.whatsappMessages.push(replyMsg);
+    await lead.save();
+
+    res.json({
+      success: true,
+      sentMessage: newMsg,
+      replyMessage: replyMsg,
+      messages: lead.whatsappMessages
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Legacy pipeline route for backwards compatibility
 router.get('/leads/pipeline', async (req, res) => {
   try {
     const leads = await StudentLead.find();
     const stages = [
-      { key: 'first_call', label: '1. First Call & Counseling', count: leads.filter(l => l.stage === 'new').length || 184, color: '#14b8a6' },
-      { key: 'enrolled', label: '2. Enrolled & Onboarded', count: leads.filter(l => l.stage === 'admitted').length || 142, color: '#06b6d4' },
-      { key: 'in_training', label: '3. Medical Coding & Anatomy', count: 420, color: '#3b82f6' },
-      { key: 'cpc_exam_passed', label: '4. AAPC CPC Certified', count: 118, color: '#10b981' },
-      { key: 'placed', label: '5. Campus Placement Secured', count: 96, color: '#8b5cf6' },
-      { key: 'first_paycheck', label: '6. First Paycheck Milestone', count: 88, color: '#ec4899' }
+      { key: 'first_call', label: '1. First Call & Counseling', count: leads.filter(l => l.stage === 'new').length, color: '#14b8a6' },
+      { key: 'enrolled', label: '2. Enrolled & Onboarded', count: leads.filter(l => l.stage === 'admitted').length, color: '#06b6d4' },
+      { key: 'in_training', label: '3. Medical Coding & Anatomy', count: 0, color: '#3b82f6' },
+      { key: 'cpc_exam_passed', label: '4. AAPC CPC Certified', count: 0, color: '#10b981' },
+      { key: 'placed', label: '5. Campus Placement Secured', count: 0, color: '#8b5cf6' },
+      { key: 'first_paycheck', label: '6. First Paycheck Milestone', count: 0, color: '#ec4899' }
     ];
     res.json({ stages });
   } catch (err) {
@@ -1524,297 +1220,135 @@ function parseSlotToRange(slotStr) {
   return null;
 }
 
-// Configurable Trainer Roster with Experience, Shifts, and Scheduled Classes
-let inMemoryTrainerSettings = {
-  'TR-CBG-001': {
-    trainerId: 'TR-CBG-001',
-    trainerName: 'Revathi K',
-    courseKey: 'CPC',
-    expertCourse: 'CPC — Certified Professional Coder',
-    specialization: 'Anatomy, ICD-10-CM & CPT Surgery Coding Specialist',
-    isExperienced: true,
-    experienceLevel: 'Experienced (6+ Yrs)',
-    shift: '6:00 AM – 2:00 PM',
-    shiftStartMin: 360, // 06:00 AM
-    shiftEndMin: 840,   // 02:00 PM
-    scheduledClasses: [
-      { name: 'CPC — Medical Coding Core (Batch 01)', timeSlot: '6:00–8:00 AM', startMin: 360, endMin: 480 },
-      { name: 'ICD-10-CM Coding & Guidelines', timeSlot: '8:00–9:30 AM', startMin: 480, endMin: 570 },
-      { name: 'CPT Surgery & Modifiers Workshop', timeSlot: '12:00–1:30 PM', startMin: 720, endMin: 810 }
-    ]
-  },
-  'TR-CBG-002': {
-    trainerId: 'TR-CBG-002',
-    trainerName: 'Priyadharshini K.',
-    courseKey: 'CIC',
-    expertCourse: 'CIC — Certified Inpatient Coder',
-    specialization: 'Inpatient Coding, ICD-10-PCS & IPDRG Specialist',
-    isExperienced: true,
-    experienceLevel: 'Experienced (5+ Yrs)',
-    shift: '9:00 AM – 5:00 PM',
-    shiftStartMin: 540, // 09:00 AM
-    shiftEndMin: 1020,  // 05:00 PM
-    scheduledClasses: [
-      { name: 'CIC Inpatient Hospital PCS Lab', timeSlot: '9:00–11:00 AM', startMin: 540, endMin: 660 },
-      { name: 'IPDRG Grouping & Case Studies', timeSlot: '1:00–3:00 PM', startMin: 780, endMin: 900 }
-    ]
-  },
-  'TR-CBG-003': {
-    trainerId: 'TR-CBG-003',
-    trainerName: 'Suresh Babu',
-    courseKey: 'CPB',
-    expertCourse: 'CPB — Certified Professional Biller',
-    specialization: 'US Healthcare RCM & Hospital Billing Specialist',
-    isExperienced: true,
-    experienceLevel: 'Experienced (7+ Yrs)',
-    shift: '8:00 AM – 4:00 PM',
-    shiftStartMin: 480, // 08:00 AM
-    shiftEndMin: 960,   // 04:00 PM
-    scheduledClasses: [
-      { name: 'CPB Healthcare Billing & Claims', timeSlot: '8:00–10:00 AM', startMin: 480, endMin: 600 },
-      { name: 'RCM Denial Management', timeSlot: '1:00–2:30 PM', startMin: 780, endMin: 870 }
-    ]
-  },
-  'TR-CBG-004': {
-    trainerId: 'TR-CBG-004',
-    trainerName: 'Manjunath R.',
-    courseKey: 'CPMA',
-    expertCourse: 'CPMA — Certified Professional Medical Auditor',
-    specialization: 'Chart Auditing, Compliance & HCPCS Specialist',
-    isExperienced: true,
-    experienceLevel: 'Experienced (8+ Yrs)',
-    shift: '10:00 AM – 6:00 PM',
-    shiftStartMin: 600, // 10:00 AM
-    shiftEndMin: 1080,  // 06:00 PM
-    scheduledClasses: [
-      { name: 'CPMA Chart Auditing Fundamentals', timeSlot: '10:00–12:00 PM', startMin: 600, endMin: 720 },
-      { name: 'AAPC Regulatory Compliance Drills', timeSlot: '2:00–4:00 PM', startMin: 840, endMin: 960 }
-    ]
-  },
-  'TR-ACAD-001': {
-    trainerId: 'TR-ACAD-001',
-    trainerName: 'Dr. Vikram C.',
-    courseKey: 'CRC',
-    expertCourse: 'CRC — Certified Risk Adjustment Coder',
-    specialization: 'HCC Risk Adjustment & Value-Based Healthcare Specialist',
-    isExperienced: true,
-    experienceLevel: 'Experienced (10+ Yrs Chief)',
-    shift: '7:00 AM – 3:00 PM',
-    shiftStartMin: 420, // 07:00 AM
-    shiftEndMin: 900,   // 03:00 PM
-    scheduledClasses: [
-      { name: 'CRC Risk Adjustment Masterclass', timeSlot: '7:00–9:00 AM', startMin: 420, endMin: 540 },
-      { name: 'COC Outpatient Procedures Review', timeSlot: '12:30–2:00 PM', startMin: 750, endMin: 840 }
-    ]
-  },
-  'TR-ACAD-002': {
-    trainerId: 'TR-ACAD-002',
-    trainerName: 'Karthik V.',
-    courseKey: 'CCS',
-    expertCourse: 'CCS — Certified Coding Specialist',
-    specialization: 'AHIMA Inpatient & Outpatient Hospital Specialist',
-    isExperienced: true,
-    experienceLevel: 'Experienced (6+ Yrs)',
-    shift: '9:00 AM – 5:00 PM',
-    shiftStartMin: 540, // 09:00 AM
-    shiftEndMin: 1020,  // 05:00 PM
-    scheduledClasses: [
-      { name: 'AHIMA CCS Clinical Documentation', timeSlot: '9:00–11:00 AM', startMin: 540, endMin: 660 },
-      { name: 'Inpatient PCS Code Building', timeSlot: '2:00–3:30 PM', startMin: 840, endMin: 930 }
-    ]
-  },
-  'TR-KL-001': {
-    trainerId: 'TR-KL-001',
-    trainerName: 'Anjali Nair',
-    courseKey: 'EMCT',
-    expertCourse: 'EMCT Intermediate & Medical Terminology',
-    specialization: 'Medical Terminology & Foundational Physiology',
-    isExperienced: true,
-    experienceLevel: 'Experienced (4+ Yrs)',
-    shift: '8:00 AM – 4:00 PM',
-    shiftStartMin: 480, // 08:00 AM
-    shiftEndMin: 960,   // 04:00 PM
-    scheduledClasses: [
-      { name: 'Anatomy & Medical Terminology Foundation', timeSlot: '8:00–10:00 AM', startMin: 480, endMin: 600 }
-    ]
-  }
-};
-
-// Evaluate the 4 strict notification rules
-function evaluateDemoNotificationEligibility(trainer, slotStr) {
-  // Condition 1: Experienced Trainer
-  if (!trainer.isExperienced) {
-    return {
-      eligible: false,
-      reason: `Blocked: Trainer ${trainer.trainerName} is not marked as Experienced in settings. Notification not sent.`,
-      conflictType: 'NOT_EXPERIENCED'
-    };
-  }
-
-  // Parse demo slot
-  const range = parseSlotToRange(slotStr);
-  if (!range) {
-    return {
-      eligible: true,
-      reason: 'Slot time pending standard parsing · Dispatched under default shift window.',
-      conflictType: null
-    };
-  }
-
-  const { startMin, endMin } = range;
-
-  // Condition 4: Outside Shift Time
-  if (startMin < trainer.shiftStartMin || endMin > trainer.shiftEndMin) {
-    return {
-      eligible: false,
-      reason: `Blocked: Demo session (${slotStr}) is outside trainer's configured shift (${trainer.shift}). Notification not sent.`,
-      conflictType: 'OUTSIDE_SHIFT'
-    };
-  }
-
-  // Condition 2: Trainer Has a Class During the Demo Time (Overlap check)
-  const overlappingClass = (trainer.scheduledClasses || []).find(cls => {
-    return Math.max(startMin, cls.startMin) < Math.min(endMin, cls.endMin);
-  });
-
-  if (overlappingClass) {
-    return {
-      eligible: false,
-      reason: `Blocked: Trainer already has scheduled class "${overlappingClass.name}" (${overlappingClass.timeSlot}) overlapping with demo (${slotStr}). Notification not sent.`,
-      conflictType: 'CLASS_CONFLICT',
-      conflictingClass: overlappingClass.name
-    };
-  }
-
-  // Condition 3: Experienced + Within Shift + No Class During Demo Time
-  return {
-    eligible: true,
-    reason: `Delivered: Trainer is Experienced · Within shift (${trainer.shift}) · No class conflict during ${slotStr}. Notification sent!`,
-    conflictType: null
-  };
+// ==========================================
+// DEMO TRAINER ROSTER — persisted in Mongo (Trainer model), not in-memory.
+// Each trainer carries the fields the demo-booking notification rule needs:
+// languages taught, home branchName, the "Experienced in Demo" / "Demo
+// Trainer" flag, and an active/eligible switch. Admins manage these through
+// GET/PUT /api/trainer/settings.
+// ==========================================
+// Do two slot ranges (e.g. "10:00–11:30 AM" and "11:00 AM–1:00 PM") overlap?
+function slotsOverlap(slotA, slotB) {
+  const a = parseSlotToRange(slotA);
+  const b = parseSlotToRange(slotB);
+  if (!a || !b) return slotA === slotB; // fall back to exact string match
+  return Math.max(a.startMin, b.startMin) < Math.min(a.endMin, b.endMin);
 }
 
-const getExpertTrainerForCourse = (courseInput = '') => {
-  const normalized = courseInput.toUpperCase();
-  if (normalized.includes('CIC') || normalized.includes('INPATIENT')) {
-    return inMemoryTrainerSettings['TR-CBG-002'];
-  }
-  if (normalized.includes('CPB') || normalized.includes('BILLING') || normalized.includes('RCM')) {
-    return inMemoryTrainerSettings['TR-CBG-003'];
-  }
-  if (normalized.includes('CPMA') || normalized.includes('AUDIT')) {
-    return inMemoryTrainerSettings['TR-CBG-004'];
-  }
-  if (normalized.includes('CCS')) {
-    return inMemoryTrainerSettings['TR-ACAD-002'];
-  }
-  if (normalized.includes('CRC') || normalized.includes('RISK')) {
-    return inMemoryTrainerSettings['TR-ACAD-001'];
-  }
-  if (normalized.includes('COC') || normalized.includes('OUTPATIENT')) {
-    return inMemoryTrainerSettings['TR-ACAD-001'];
-  }
-  if (normalized.includes('EMCT') || normalized.includes('TERMINOLOGY')) {
-    return inMemoryTrainerSettings['TR-KL-001'];
-  }
-  if (normalized.includes('IPDRG')) {
-    return inMemoryTrainerSettings['TR-CBG-002'];
-  }
-  // Default to CPC Faculty Expert
-  return inMemoryTrainerSettings['TR-CBG-001'];
-};
+const norm = (s = '') => String(s).trim().toLowerCase();
 
-// Trainer Settings Endpoints
-router.get('/trainer/settings', (req, res) => {
-  res.json(inMemoryTrainerSettings);
+/**
+ * Demo Booking Notification Requirement — a trainer is eligible ONLY when
+ * ALL of the following hold:
+ *   1. Same Language   — trainer teaches in the student's selected language
+ *   2. Same Location   — trainer's branch matches the student's selected branch
+ *   3. Free at the Time — trainer has no other booked/confirmed demo whose
+ *                          slot overlaps the requested date + time
+ *   4. Experienced in Demo — trainer.demoTrainer === true
+ *   5. Active Trainer  — trainer.active === true
+ * Returns { eligible: Trainer[], reason } where `reason` explains a zero
+ * match (used to populate Demo.noEligibleTrainerReason).
+ */
+async function findEligibleTrainers({ language, location, preferredDate, timeSlot, excludeDemoId }) {
+  const langNorm = norm(language);
+  const locNorm = norm(location);
+
+  const roster = await Trainer.find({ active: true, demoTrainer: true });
+
+  const languageLocationMatched = roster.filter((t) => {
+    const languageOk = !langNorm || (t.languages || []).some((l) => norm(l) === langNorm);
+    const locationOk = !locNorm || norm(t.branchName) === locNorm;
+    return languageOk && locationOk;
+  });
+
+  if (languageLocationMatched.length === 0) {
+    return {
+      eligible: [],
+      reason: `No active, demo-experienced trainer found for language "${language}" at "${location}".`
+    };
+  }
+
+  // Condition 3: free at the exact demo date + time — exclude anyone who
+  // already has a booked/confirmed demo whose slot overlaps this one.
+  const busyQuery = {
+    preferredDate,
+    trainerId: { $in: languageLocationMatched.map((t) => t.trainerId) },
+    status: { $in: ['booked', 'confirmed'] }
+  };
+  if (excludeDemoId) busyQuery._id = { $ne: excludeDemoId };
+  const sameDayDemos = await Demo.find(busyQuery).select('trainerId timeSlot');
+
+  const busyTrainerIds = new Set(
+    sameDayDemos.filter((d) => slotsOverlap(d.timeSlot, timeSlot)).map((d) => d.trainerId)
+  );
+
+  const eligible = languageLocationMatched.filter((t) => !busyTrainerIds.has(t.trainerId));
+
+  if (eligible.length === 0) {
+    return {
+      eligible: [],
+      reason: `Trainer(s) matching language "${language}" and location "${location}" are already booked for another demo at ${timeSlot} on ${preferredDate}.`
+    };
+  }
+
+  return { eligible, reason: '' };
+}
+
+// Trainer Settings Endpoints — the admin-editable demo trainer roster
+router.get('/trainer/settings', async (req, res) => {
+  try {
+    const trainers = await Trainer.find().sort({ trainerName: 1 });
+    res.json(trainers);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-router.put('/trainer/settings/:id', (req, res) => {
-  const { id } = req.params;
-  if (!inMemoryTrainerSettings[id]) {
-    inMemoryTrainerSettings[id] = { trainerId: id, ...req.body };
-  } else {
-    inMemoryTrainerSettings[id] = { ...inMemoryTrainerSettings[id], ...req.body };
+router.put('/trainer/settings/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updated = await Trainer.findOneAndUpdate(
+      { trainerId: id },
+      { $set: { trainerId: id, ...req.body } },
+      { new: true, upsert: true, setDefaultsOnInsert: true }
+    );
+    res.json(updated);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
-  res.json(inMemoryTrainerSettings[id]);
 });
 
-const SEED_INITIAL_DEMOS = [
-  {
-    candidateName: 'Keerthana R.',
-    phone: '98421 65042',
-    course: 'CPC Intensive Medical Coding',
-    mode: 'Online (Zoom Live)',
-    preferredDate: new Date().toISOString().split('T')[0],
-    time: 'Today 10:30 AM',
-    timeSlot: '10:00–11:30 AM',
-    language: 'Tamil',
-    trainer: 'Revathi K',
-    trainerId: 'TR-CBG-001',
-    trainerRole: 'Anatomy, ICD-10-CM & CPT Surgery Specialist',
-    expertCourse: 'CPC — Certified Professional Coder',
-    isExpertMatched: true,
-    isExperienced: true,
-    shiftTiming: '6:00 AM – 2:00 PM',
-    hasConflict: false,
-    notificationSent: true,
-    notificationSentTo: 'TR-CBG-001',
-    notificationSentToName: 'Revathi K',
-    notificationRead: false,
-    priority: 'Urgent - Subject Matter Expert First',
-    status: 'booked',
-    trainerMapping: '★ Notification Sent: Experienced Trainer · Within Shift (6:00 AM – 2:00 PM) · Zero Class Conflict'
-  },
-  {
-    candidateName: 'Ajith Kumar A.',
-    phone: '63801 18356',
-    course: 'CPC — Medical Coding Core',
-    mode: 'Online (Zoom Live)',
-    preferredDate: new Date().toISOString().split('T')[0],
-    time: 'Today 7:00 AM',
-    timeSlot: '6:00–8:00 AM',
-    language: 'Tamil',
-    trainer: 'Revathi K',
-    trainerId: 'TR-CBG-001',
-    trainerRole: 'Anatomy, ICD-10-CM & CPT Surgery Specialist',
-    expertCourse: 'CPC — Certified Professional Coder',
-    isExpertMatched: true,
-    isExperienced: true,
-    shiftTiming: '6:00 AM – 2:00 PM',
-    hasConflict: true,
-    conflictReason: 'Trainer has scheduled class "CPC Morning Batch (6:00–8:00 AM)"',
-    notificationSent: false,
-    notificationBlockReason: 'Blocked: Trainer already has scheduled class "CPC — Medical Coding Core" (6:00–8:00 AM) overlapping with demo (6:00–8:00 AM). Notification not sent.',
-    priority: 'Standard - No Alert Dispatched',
-    status: 'booked',
-    trainerMapping: '🔕 Notification Not Sent: Trainer has scheduled class "CPC — Medical Coding Core" overlapping with demo time.'
-  },
-  {
-    candidateName: 'Dharshini S.',
-    phone: '98402 88987',
-    course: 'CIC — Certified Inpatient Coder',
-    mode: 'Online (Zoom Live)',
-    preferredDate: new Date().toISOString().split('T')[0],
-    time: 'Today 11:30 AM',
-    timeSlot: '11:00 AM–1:00 PM',
-    language: 'Tamil',
-    trainer: 'Priyadharshini K.',
-    trainerId: 'TR-CBG-002',
-    trainerRole: 'Inpatient Coding, ICD-10-PCS & IPDRG Specialist',
-    expertCourse: 'CIC — Certified Inpatient Coder',
-    isExpertMatched: true,
-    isExperienced: true,
-    shiftTiming: '9:00 AM – 5:00 PM',
-    hasConflict: false,
-    notificationSent: true,
-    notificationSentTo: 'TR-CBG-002',
-    notificationSentToName: 'Priyadharshini K.',
-    notificationRead: false,
-    priority: 'Urgent - Subject Matter Expert First',
-    status: 'booked',
-    trainerMapping: '★ Notification Sent: Experienced Trainer · Within Shift (9:00 AM – 5:00 PM) · Zero Class Conflict'
+// Live preview for the booking form: which trainers would be notified for a
+// given language + location + date + time (and, optionally, course)?
+router.get('/demos/eligible-trainers', async (req, res) => {
+  try {
+    const { language, location, preferredDate, timeSlot, course } = req.query;
+    const { eligible, reason } = await findEligibleTrainers({
+      language,
+      location,
+      preferredDate: preferredDate || new Date().toISOString().split('T')[0],
+      timeSlot: timeSlot || ''
+    });
+    const courseNorm = norm(course);
+    const ranked = courseNorm
+      ? [...eligible].sort((a, b) => (norm(b.courseKey) === courseNorm) - (norm(a.courseKey) === courseNorm))
+      : eligible;
+    res.json({
+      count: ranked.length,
+      reason,
+      trainers: ranked.map((t) => ({
+        trainerId: t.trainerId,
+        trainerName: t.trainerName,
+        specialization: t.specialization,
+        courseKey: t.courseKey,
+        branchName: t.branchName,
+        languages: t.languages
+      }))
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
-];
+});
 
 // ==========================================
 // REAL DEMOS API WITH EXPERT TRAINER ROUTING & NOTIFICATION RULES
@@ -1822,66 +1356,92 @@ const SEED_INITIAL_DEMOS = [
 router.get('/demos', async (req, res) => {
   try {
     let demos = await Demo.find().sort({ createdAt: -1 });
-    if (demos.length === 0) {
-      await Demo.insertMany(SEED_INITIAL_DEMOS);
-      demos = await Demo.find().sort({ createdAt: -1 });
-    }
     res.json(demos);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
+// Stub dispatcher — swap this for a real email/SMS/push provider. It is the
+// one place a notification actually goes out to a trainer.
+function notifyTrainer(trainer, demo) {
+  console.log(
+    `[DEMO NOTIFICATION] -> ${trainer.trainerName} (${trainer.trainerId}) : ` +
+    `New demo booked by ${demo.candidateName} · ${demo.language} · ${demo.location} · ` +
+    `${demo.preferredDate} ${demo.timeSlot}`
+  );
+}
+
 router.post('/demos', async (req, res) => {
   try {
     const rawData = req.body || {};
     const course = rawData.course || rawData.subject || 'CPC';
-    
-    // 1. Resolve designated expert trainer
-    let expert = (rawData.trainerId && inMemoryTrainerSettings[rawData.trainerId])
-      ? inMemoryTrainerSettings[rawData.trainerId]
-      : getExpertTrainerForCourse(course);
-
-    // Allow request to override isExperienced or shift if explicitly supplied
-    if (rawData.isExperienced !== undefined) {
-      expert = { ...expert, isExperienced: Boolean(rawData.isExperienced) };
-    }
-
+    const language = rawData.language || 'Tamil';
+    const location = rawData.location || rawData.branchName || '';
+    const preferredDate = rawData.preferredDate || new Date().toISOString().split('T')[0];
     const demoSlot = rawData.timeSlot || rawData.time || '10:00–11:30 AM';
 
-    // 2. Evaluate Final Notification Rule:
-    // Trainer = Experienced + Demo time is within trainer's shift + Trainer has no class during the demo time
-    const evaluation = evaluateDemoNotificationEligibility(expert, demoSlot);
+    // Demo Booking Notification Requirement: find every trainer who is
+    // simultaneously (1) fluent in the student's language, (2) at the
+    // student's location, (3) free at this exact date + time, (4) marked
+    // "Experienced in Demo", and (5) active/eligible.
+    const { eligible, reason: noEligibleTrainerReason } = await findEligibleTrainers({
+      language,
+      location,
+      preferredDate,
+      timeSlot: demoSlot
+    });
 
-    console.log(`[DEMO NOTIFICATION EVALUATION] Trainer: ${expert.trainerName} | Slot: ${demoSlot} | Result: ${evaluation.eligible ? 'DELIVERED' : 'BLOCKED'} | Reason: ${evaluation.reason}`);
+    // Among the eligible pool, prefer a trainer whose subject matches the
+    // course being demoed (this is a ranking preference, not a hard filter —
+    // the 5 conditions above are the only hard requirements).
+    const courseNorm = norm(course);
+    const ranked = [...eligible].sort(
+      (a, b) => (norm(b.courseKey) === courseNorm) - (norm(a.courseKey) === courseNorm)
+    );
+    const primary = ranked[0] || null;
+
+    ranked.forEach((t) => notifyTrainer(t, { candidateName: rawData.candidateName || rawData.studentName || rawData.name, language, location, preferredDate, timeSlot: demoSlot }));
+
+    console.log(
+      `[DEMO NOTIFICATION EVALUATION] Course: ${course} | Language: ${language} | Location: ${location} | ` +
+      `Slot: ${preferredDate} ${demoSlot} | Eligible trainers: ${ranked.length ? ranked.map((t) => t.trainerId).join(', ') : 'none'}`
+    );
 
     const enrichedPayload = {
       ...rawData,
       candidateName: rawData.candidateName || rawData.studentName || rawData.name || 'Prospective Student',
       phone: rawData.phone || rawData.mobile || '+91 98400 00000',
-      course: course,
-      trainer: expert.trainerName,
-      trainerId: expert.trainerId,
-      trainerRole: expert.specialization,
-      expertCourse: expert.expertCourse,
-      isExpertMatched: true,
-      
+      course,
+      language,
+      location,
+      preferredDate,
+      timeSlot: demoSlot,
+      trainer: primary?.trainerName || '',
+      trainerId: primary?.trainerId || '',
+      trainerRole: primary?.specialization || '',
+      expertCourse: primary?.expertCourse || '',
+      isExpertMatched: Boolean(primary),
+
       // Strict Notification Decision Fields
-      isExperienced: expert.isExperienced,
-      shiftTiming: expert.shift,
-      notificationSent: evaluation.eligible,
-      notificationSentTo: evaluation.eligible ? expert.trainerId : null,
-      notificationSentToName: evaluation.eligible ? expert.trainerName : null,
-      notificationSentAt: evaluation.eligible ? new Date() : null,
+      isExperienced: primary?.isExperienced ?? false,
+      shiftTiming: primary?.shift || '',
+      notificationSent: ranked.length > 0,
+      notifiedTrainerIds: ranked.map((t) => t.trainerId),
+      notifiedTrainerNames: ranked.map((t) => t.trainerName),
+      notificationSentTo: primary?.trainerId || null,
+      notificationSentToName: primary?.trainerName || null,
+      notificationSentAt: ranked.length ? new Date() : null,
       notificationRead: false,
-      notificationBlockReason: evaluation.eligible ? '' : evaluation.reason,
-      hasConflict: evaluation.conflictType === 'CLASS_CONFLICT',
-      conflictReason: evaluation.eligible ? '' : evaluation.reason,
-      priority: evaluation.eligible ? 'Urgent - Subject Matter Expert First' : 'Standard - No Alert Dispatched',
-      
-      trainerMapping: evaluation.eligible 
-        ? `★ Notification Sent to ${expert.trainerName}: Experienced · Within Shift (${expert.shift}) · No Class Conflict`
-        : `🔕 Notification Not Sent: ${evaluation.reason}`,
+      notificationBlockReason: ranked.length ? '' : noEligibleTrainerReason,
+      noEligibleTrainerReason: ranked.length ? '' : noEligibleTrainerReason,
+      hasConflict: false,
+      conflictReason: '',
+      priority: ranked.length ? 'Urgent - Subject Matter Expert First' : 'Standard - No Alert Dispatched',
+
+      trainerMapping: ranked.length
+        ? `★ Notification sent to ${ranked.length} matching trainer${ranked.length > 1 ? 's' : ''}: ${ranked.map((t) => t.trainerName).join(', ')}`
+        : `🔕 Notification Not Sent: ${noEligibleTrainerReason}`,
       status: rawData.status || 'booked'
     };
 
@@ -1890,6 +1450,9 @@ router.post('/demos', async (req, res) => {
 
     res.status(201).json(newDemo);
   } catch (err) {
+    if (err.code === 11000) {
+      return res.status(409).json({ error: 'That trainer already has a confirmed demo at this exact date and time slot.' });
+    }
     res.status(400).json({ error: err.message });
   }
 });
@@ -1911,8 +1474,37 @@ async function advanceLeadAfterDemo(demo) {
   return lead;
 }
 
+// Before a demo is CONFIRMED, make sure its trainer hasn't already been
+// confirmed into a different demo at the same date + overlapping time. The
+// unique index on Demo (trainerId, preferredDate, timeSlot; status:
+// 'confirmed') is the hard guarantee; this is just a friendlier error.
+async function assertTrainerFreeToConfirm({ trainerId, preferredDate, timeSlot, excludeId }) {
+  if (!trainerId || !preferredDate || !timeSlot) return;
+  const clashQuery = { trainerId, preferredDate, status: 'confirmed' };
+  if (excludeId) clashQuery._id = { $ne: excludeId };
+  const sameDay = await Demo.find(clashQuery).select('timeSlot candidateName');
+  const clash = sameDay.find((d) => slotsOverlap(d.timeSlot, timeSlot));
+  if (clash) {
+    const err = new Error(`Trainer is already confirmed for another demo (${clash.candidateName}) at ${clash.timeSlot} on ${preferredDate}.`);
+    err.statusCode = 409;
+    throw err;
+  }
+}
+
 router.put('/demos/:id', async (req, res) => {
   try {
+    const willConfirm = String(req.body?.status || '').toLowerCase() === 'confirmed';
+    if (willConfirm) {
+      const existing = await Demo.findById(req.params.id);
+      if (!existing) return res.status(404).json({ error: 'Demo not found' });
+      await assertTrainerFreeToConfirm({
+        trainerId: req.body.trainerId || existing.trainerId,
+        preferredDate: req.body.preferredDate || existing.preferredDate,
+        timeSlot: req.body.timeSlot || existing.timeSlot,
+        excludeId: existing._id
+      });
+    }
+
     const updated = await Demo.findByIdAndUpdate(
       req.params.id,
       { $set: req.body },
@@ -1924,12 +1516,24 @@ router.put('/demos/:id', async (req, res) => {
     }
     res.json(updated);
   } catch (err) {
+    if (err.code === 11000 || err.statusCode === 409) {
+      return res.status(409).json({ error: err.message || 'That trainer is already confirmed for another demo at this exact slot.' });
+    }
     res.status(400).json({ error: err.message });
   }
 });
 
 router.put('/demos/:id/acknowledge', async (req, res) => {
   try {
+    const existing = await Demo.findById(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Demo not found' });
+    await assertTrainerFreeToConfirm({
+      trainerId: existing.trainerId,
+      preferredDate: existing.preferredDate,
+      timeSlot: existing.timeSlot,
+      excludeId: existing._id
+    });
+
     const updated = await Demo.findByIdAndUpdate(
       req.params.id,
       { $set: { notificationRead: true, status: 'confirmed', acknowledgedAt: new Date() } },
@@ -1938,6 +1542,9 @@ router.put('/demos/:id/acknowledge', async (req, res) => {
     if (!updated) return res.status(404).json({ error: 'Demo not found' });
     res.json(updated);
   } catch (err) {
+    if (err.code === 11000 || err.statusCode === 409) {
+      return res.status(409).json({ error: err.message || 'That trainer is already confirmed for another demo at this exact slot.' });
+    }
     res.status(400).json({ error: err.message });
   }
 });
@@ -1957,10 +1564,6 @@ router.delete('/demos/:id', async (req, res) => {
 router.get('/fees/rates', async (req, res) => {
   try {
     let rates = await CourseFeeRate.find().sort({ createdAt: 1 });
-    if (rates.length === 0) {
-      await CourseFeeRate.insertMany(SEED_COURSE_RATES);
-      rates = await CourseFeeRate.find().sort({ createdAt: 1 });
-    }
     res.json(rates);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2233,6 +1836,7 @@ router.post('/auth/login', async (req, res) => {
           name: dbUser.name,
           userName: dbUser.name,
           email: dbUser.email,
+          phone: dbUser.phone || '',
           role: dbUser.role,
           branch: dbUser.branch || 'Gandhipuram',
           status: dbUser.status || 'Active',
@@ -2264,36 +1868,6 @@ router.post('/auth/login', async (req, res) => {
         ...trainerUser,
         department: 'training',
         token: `jwt_tf_trainer_${trainerUser.id}_token`
-      }
-    });
-  }
-
-  // 3. Fallback SEED_USERS verification
-  const seedUser = SEED_USERS.find(u => u.email.toLowerCase() === normalizedEmail);
-  if (seedUser) {
-    if (!isPasswordValid(password, seedUser.password, normalizedEmail)) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid password. Please check your credentials.'
-      });
-    }
-    const mapping = mapRoleOrDeptToDashboard(seedUser.role, seedUser.department);
-    return res.json({
-      success: true,
-      message: `Authenticated successfully for ${seedUser.name} (${seedUser.role})`,
-      user: {
-        id: `usr_${Date.now()}`,
-        name: seedUser.name,
-        userName: seedUser.name,
-        email: seedUser.email,
-        role: seedUser.role,
-        branch: seedUser.branch || 'Gandhipuram',
-        status: seedUser.status || 'Active',
-        department: mapping.department,
-        departmentCode: mapping.departmentCode,
-        departmentName: mapping.departmentName,
-        color: mapping.color,
-        token: `jwt_tf_${seedUser.role}_${Date.now()}`
       }
     });
   }
@@ -2397,10 +1971,6 @@ router.post('/auth/login', async (req, res) => {
 router.get('/admin/slabs', async (req, res) => {
   try {
     let slabs = await IncentiveSlab.find().sort({ min: 1 });
-    if (slabs.length === 0) {
-      await IncentiveSlab.insertMany(SEED_INCENTIVE_SLABS);
-      slabs = await IncentiveSlab.find().sort({ min: 1 });
-    }
     res.json(slabs);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -2430,10 +2000,6 @@ router.put('/admin/slabs', async (req, res) => {
 router.get('/admin/audit-logs', async (req, res) => {
   try {
     let logs = await AuditLog.find().sort({ createdAt: -1 }).limit(100);
-    if (logs.length === 0) {
-      await AuditLog.insertMany(SEED_AUDIT_LOGS);
-      logs = await AuditLog.find().sort({ createdAt: -1 });
-    }
     res.json(logs);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -2453,15 +2019,12 @@ router.post('/admin/audit-logs', async (req, res) => {
 router.get('/admin/users', async (req, res) => {
   try {
     let users = await User.find().sort({ createdAt: -1 });
-    if (!users || users.length === 0) {
-      await User.insertMany(SEED_USERS);
-      users = await User.find().sort({ createdAt: -1 });
-    }
     const formatted = users.map(u => ({
       id: u._id.toString(),
       _id: u._id.toString(),
       name: u.name,
       email: u.email,
+      phone: u.phone || '',
       password: u.password,
       role: u.role,
       department: u.department,
@@ -2478,7 +2041,7 @@ router.get('/admin/users', async (req, res) => {
 
 router.post('/admin/users', async (req, res) => {
   try {
-    const { name, email, password, role, department, branch, status, avatarBg } = req.body;
+    const { name, email, phone, password, role, department, branch, status, avatarBg } = req.body;
     if (!email) {
       return res.status(400).json({ error: 'Email is required' });
     }
@@ -2490,6 +2053,7 @@ router.post('/admin/users', async (req, res) => {
     const user = new User({
       name: name || cleanEmail.split('@')[0],
       email: cleanEmail,
+      phone: phone || '',
       password: password || 'Thoughtflows@2026',
       role: role || 'Staff',
       department: department || 'Medical Coding Faculty',
@@ -2542,185 +2106,12 @@ router.delete('/admin/users/:id', async (req, res) => {
 // ==========================================
 // REAL TRAINER & FACULTY API (MONGODB BACKED)
 // ==========================================
-const SEED_DOUBTS = [
-  {
-    student: 'Keerthana R.',
-    studentId: 'TF-CBG-CPC-OF-2603-0042',
-    topic: 'ICD-10-CM',
-    timeText: '14 hours ago',
-    question: 'For neoplasm coding, how do I pick primary vs secondary site when pathology is pending?',
-    batch: 'CPC — Certified Professional Coder (Offline)',
-    slaBadge: 'SLA Normal · 24h',
-    status: 'Pending',
-    reply: ''
-  },
-  {
-    student: 'Ajith Kumar A.',
-    studentId: 'TFMC0Y6001',
-    topic: 'E/M Coding',
-    timeText: '5 hours ago',
-    question: 'CPT 99213 vs 99214 — what level of Medical Decision Making (MDM) decides the code?',
-    batch: 'IPDRG (Online)',
-    slaBadge: 'SLA Normal · 24h',
-    status: 'Pending',
-    reply: ''
-  },
-  {
-    student: 'Dharshini S.',
-    studentId: 'TFMC0Y6002',
-    topic: 'CPT Modifiers',
-    timeText: '2 hours ago',
-    question: 'When exactly is Modifier 59 used vs modifier XS for distinct anatomical procedural services?',
-    batch: 'CIC (Online)',
-    slaBadge: 'SLA Urgent · 12h',
-    status: 'New',
-    reply: ''
-  },
-  {
-    student: 'Pooja R.',
-    studentId: 'TFMC0Y6003',
-    topic: 'Anatomy',
-    timeText: '1 day ago',
-    question: 'Are diagnostic endoscopic biopsies included in resection codes (e.g. CPT 43239)?',
-    batch: 'CPC Inter (Online)',
-    slaBadge: 'SLA Normal · 24h',
-    status: 'Replied',
-    reply: 'Diagnostic endoscopy is bundled into the surgical resection when performed in the same anatomical site during the same operative session.'
-  },
-  {
-    student: 'MANOJ K.',
-    studentId: 'TFMC0Y6007',
-    topic: 'CMS-1500 & UB-04',
-    timeText: '3 hours ago',
-    question: 'When billing split shared E/M visits in hospital outpatient settings, which modifier applies on CMS-1500?',
-    batch: 'CPB — Certified Professional Biller',
-    slaBadge: 'SLA Urgent · 12h',
-    status: 'New',
-    reply: ''
-  },
-  {
-    student: 'VIGNESH S.',
-    studentId: 'TFMC0Y6009',
-    topic: 'Compliance Audit Sampling',
-    timeText: '4 hours ago',
-    question: 'What is the minimum sample size formula required for RAT-STATS statistically valid random sampling in compliance audits?',
-    batch: 'CPMA — Medical Auditing',
-    slaBadge: 'SLA Normal · 24h',
-    status: 'Pending',
-    reply: ''
-  }
-];
-
-const SEED_ASSESSMENTS = [
-  {
-    name: 'E/M Coding Weekly Test',
-    type: 'Weekly Test',
-    course: 'CPC — Medical Coding',
-    batch: 'CPC — Certified Professional Coder',
-    topic: 'E/M 99202–99215 MDM Matrix',
-    date: '2026-09-12',
-    timeLimit: '45 min',
-    totalMarks: 50,
-    passMark: 35,
-    studentsCount: 6,
-    status: 'Active',
-    scores: {
-      'TF-CBG-CPC-OF-2603-0042': 44,
-      'TFMC0Y6001': 46,
-      'TFMC0Y6002': 38,
-      'TFMC0Y6003': 48,
-      'TFMC0Y6004': 45,
-      'TFMC0Y6005': 28
-    },
-    rationale: 'Modifier 25 requires a significant, separately identifiable E/M service on the same day as a minor procedure. Documentation must support independent medical decision making.'
-  },
-  {
-    name: 'CPC Full AAPC Mock Exam',
-    type: 'Mock Exam',
-    course: 'CPC — Medical Coding',
-    batch: 'All Batches',
-    topic: 'Comprehensive 100-Question AAPC Pattern',
-    date: '2026-09-15',
-    timeLimit: '240 min',
-    totalMarks: 100,
-    passMark: 70,
-    studentsCount: 6,
-    status: 'Active',
-    scores: {
-      'TF-CBG-CPC-OF-2603-0042': 84,
-      'TFMC0Y6001': 91,
-      'TFMC0Y6002': 78,
-      'TFMC0Y6003': 88,
-      'TFMC0Y6004': 86,
-      'TFMC0Y6005': 58
-    },
-    rationale: 'CPT 43239 includes biopsy. Polypectomy (CPT 43238 or 43250) on a separate lesion requires modifier 59 or XS with clear documentation of differing anatomical sites.'
-  },
-  {
-    name: 'ICD-10-PCS Root Operations Assessment',
-    type: 'Weekly Test',
-    course: 'CIC — Certified Inpatient Coder',
-    batch: 'CIC (Online)',
-    topic: 'Excision vs Resection vs Destruction',
-    date: '2026-09-14',
-    timeLimit: '60 min',
-    totalMarks: 50,
-    passMark: 38,
-    studentsCount: 3,
-    status: 'Active',
-    scores: {
-      'TFMC0Y6001': 47,
-      'TFMC0Y6002': 42
-    },
-    rationale: 'Resection cuts out all of a body part. Excision cuts out or off a portion of a body part without replacement.'
-  },
-  {
-    name: 'CPB Claims & Denial Management Test',
-    type: 'Weekly Test',
-    course: 'CPB — Certified Professional Biller',
-    batch: 'CPB — Certified Professional Biller',
-    topic: 'CARC & RARC Remittance Advice Codes',
-    date: '2026-09-13',
-    timeLimit: '45 min',
-    totalMarks: 50,
-    passMark: 35,
-    studentsCount: 2,
-    status: 'Active',
-    scores: {
-      'TFMC0Y6007': 45,
-      'TFMC0Y6008': 41
-    },
-    rationale: 'Claim Adjustment Reason Code (CARC) communicates why a claim or service line was paid differently than billed.'
-  },
-  {
-    name: 'Medical Record Audit Sampling Exam',
-    type: 'Mock Exam',
-    course: 'CPMA — Medical Auditing',
-    batch: 'CPMA — Medical Auditing',
-    topic: 'OIG Work Plan Benchmarks & Compliance Ratios',
-    date: '2026-09-16',
-    timeLimit: '120 min',
-    totalMarks: 100,
-    passMark: 70,
-    studentsCount: 2,
-    status: 'Active',
-    scores: {
-      'TFMC0Y6009': 88
-    },
-    rationale: 'Compliance audit documentation requires medical necessity verification prior to level coding evaluation.'
-  }
-];
-
 let inMemoryAttendanceRecords = {};
 
 // GET Doubts
 router.get('/trainer/doubts', async (req, res) => {
   try {
     let doubts = await TrainerDoubt.find().sort({ createdAt: -1 });
-    if (doubts.length === 0) {
-      await TrainerDoubt.insertMany(SEED_DOUBTS);
-      doubts = await TrainerDoubt.find().sort({ createdAt: -1 });
-    }
     const formatted = doubts.map(d => ({
       id: d._id.toString(),
       _id: d._id.toString(),
@@ -2795,10 +2186,6 @@ router.put('/trainer/doubts/:id/reply', async (req, res) => {
 router.get('/trainer/assessments', async (req, res) => {
   try {
     let list = await TrainerAssessment.find().sort({ createdAt: -1 });
-    if (list.length === 0) {
-      await TrainerAssessment.insertMany(SEED_ASSESSMENTS);
-      list = await TrainerAssessment.find().sort({ createdAt: -1 });
-    }
     const formatted = list.map(t => {
       const obj = t.toObject();
       return {
@@ -2898,10 +2285,6 @@ router.post('/trainer/attendance', (req, res) => {
 router.get('/cccp/colleges', async (req, res) => {
   try {
     let colleges = await CollegePartner.find().sort({ createdAt: -1 });
-    if (colleges.length === 0) {
-      await CollegePartner.insertMany(SEED_COLLEGES);
-      colleges = await CollegePartner.find().sort({ createdAt: -1 });
-    }
     res.json(colleges.map(c => ({ id: c._id.toString(), _id: c._id.toString(), ...c.toObject() })));
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -2941,10 +2324,6 @@ router.delete('/cccp/colleges/:id', async (req, res) => {
 router.get('/cccp/companies', async (req, res) => {
   try {
     let companies = await CorporatePartner.find().sort({ createdAt: -1 });
-    if (companies.length === 0) {
-      await CorporatePartner.insertMany(SEED_CORPORATES);
-      companies = await CorporatePartner.find().sort({ createdAt: -1 });
-    }
     res.json(companies.map(c => ({ id: c._id.toString(), _id: c._id.toString(), ...c.toObject() })));
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -2984,10 +2363,6 @@ router.delete('/cccp/companies/:id', async (req, res) => {
 router.get('/cccp/placements', async (req, res) => {
   try {
     let placements = await PlacementRecord.find().sort({ createdAt: -1 });
-    if (placements.length === 0) {
-      await PlacementRecord.insertMany(SEED_PLACEMENTS);
-      placements = await PlacementRecord.find().sort({ createdAt: -1 });
-    }
     res.json(placements.map(p => ({ id: p._id.toString(), _id: p._id.toString(), ...p.toObject() })));
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -3039,10 +2414,6 @@ router.delete('/cccp/placements/:id', async (req, res) => {
 router.get('/cccp/billing', async (req, res) => {
   try {
     let billing = await BillingDeal.find().sort({ createdAt: -1 });
-    if (billing.length === 0) {
-      await BillingDeal.insertMany(SEED_BILLING);
-      billing = await BillingDeal.find().sort({ createdAt: -1 });
-    }
     res.json(billing.map(b => ({ id: b._id.toString(), _id: b._id.toString(), ...b.toObject() })));
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -3082,10 +2453,6 @@ router.delete('/cccp/billing/:id', async (req, res) => {
 router.get('/cccp/followups', async (req, res) => {
   try {
     let followups = await CccpFollowUp.find().sort({ date: 1 });
-    if (followups.length === 0) {
-      await CccpFollowUp.insertMany(SEED_CCCP_FOLLOWUPS);
-      followups = await CccpFollowUp.find().sort({ date: 1 });
-    }
     res.json(followups.map(f => ({ id: f._id.toString(), _id: f._id.toString(), ...f.toObject() })));
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -3108,10 +2475,6 @@ router.post('/cccp/followups', async (req, res) => {
 router.get('/marketing/campaigns', async (req, res) => {
   try {
     let campaigns = await MarketingCampaign.find().sort({ createdAt: -1 });
-    if (campaigns.length === 0) {
-      await MarketingCampaign.insertMany(SEED_CAMPAIGNS);
-      campaigns = await MarketingCampaign.find().sort({ createdAt: -1 });
-    }
     res.json(campaigns.map(c => ({ id: c._id.toString(), _id: c._id.toString(), ...c.toObject() })));
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -3150,10 +2513,6 @@ router.delete('/marketing/campaigns/:id', async (req, res) => {
 router.get('/marketing/creatives', async (req, res) => {
   try {
     let creatives = await MarketingCreative.find().sort({ createdAt: -1 });
-    if (creatives.length === 0) {
-      await MarketingCreative.insertMany(SEED_CREATIVES);
-      creatives = await MarketingCreative.find().sort({ createdAt: -1 });
-    }
     res.json(creatives.map(c => ({ id: c._id.toString(), _id: c._id.toString(), ...c.toObject() })));
   } catch (e) {
     res.status(500).json({ error: e.message });

@@ -42,6 +42,7 @@ import StudentDemoNotice from './StudentDemoNotice';
 import { 
   createTrainerDoubt, 
   getTrainerDoubts, 
+  getTrainerSettings,
   createLead, 
   createEscalation, 
   onDataUpdate 
@@ -56,6 +57,8 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
 
   // Real Database Student Record
   const [serverStudent, setServerStudent] = useState(null);
+  const [trainersList, setTrainersList] = useState([]);
+  const [studentDoubts, setStudentDoubts] = useState([]);
 
   // Modals state
   const [activeModal, setActiveModal] = useState(null);
@@ -151,41 +154,49 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
     let isMounted = true;
     const fetchRealStudent = async () => {
       const lookup = currentUser?.studentId || currentUser?.email;
+      let matchedStudent = null;
       if (!lookup) {
         try {
           const listRes = await axios.get('/api/students');
           if (isMounted && listRes.data && Array.isArray(listRes.data) && listRes.data.length > 0) {
-            setServerStudent(listRes.data[0]);
-            return;
+            matchedStudent = listRes.data[0];
           }
         } catch (e) {}
-        if (isMounted) setServerStudent(null);
-        return;
-      }
-      try {
-        const res = await axios.get(`/api/students/${encodeURIComponent(lookup)}`);
-        if (isMounted && res.data && res.data.name) {
-          setServerStudent(res.data);
-          return;
-        }
-      } catch (err) {
-        // Query full list to find matching student record
+      } else {
         try {
-          const listRes = await axios.get('/api/students');
-          if (isMounted && listRes.data && Array.isArray(listRes.data)) {
-            const found = listRes.data.find(s => 
-              (currentUser?.studentId && s.studentId === currentUser.studentId) || 
-              (currentUser?.email && s.email && s.email.toLowerCase() === currentUser.email.toLowerCase())
-            );
-            setServerStudent(found || listRes.data[0] || null);
-            return;
+          const res = await axios.get(`/api/students/${encodeURIComponent(lookup)}`);
+          if (isMounted && res.data && res.data.name) {
+            matchedStudent = res.data;
           }
-        } catch (e) {
-          console.warn('Real student fetch fallback:', e.message);
+        } catch (err) {
+          try {
+            const listRes = await axios.get('/api/students');
+            if (isMounted && listRes.data && Array.isArray(listRes.data)) {
+              const found = listRes.data.find(s => 
+                (currentUser?.studentId && s.studentId === currentUser.studentId) || 
+                (currentUser?.email && s.email && s.email.toLowerCase() === currentUser.email.toLowerCase())
+              );
+              matchedStudent = found || listRes.data[0] || null;
+            }
+          } catch (e) {
+            console.warn('Real student fetch fallback:', e.message);
+          }
         }
       }
+
       if (isMounted) {
-        setServerStudent(null);
+        setServerStudent(matchedStudent);
+        if (matchedStudent) {
+          if (Array.isArray(matchedStudent.skills) && matchedStudent.skills.length > 0) {
+            setSkillsList(matchedStudent.skills);
+          }
+          if (Array.isArray(matchedStudent.certificates) && matchedStudent.certificates.length > 0) {
+            setUserCertificates(matchedStudent.certificates);
+          }
+          if (typeof matchedStudent.rewardPoints === 'number') {
+            setRewardPoints(matchedStudent.rewardPoints);
+          }
+        }
       }
     };
     fetchRealStudent();
@@ -202,8 +213,90 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
     };
   }, [currentUser]);
 
+  // Fetch Real Trainers Roster
+  useEffect(() => {
+    let isMounted = true;
+    const fetchTrainers = async () => {
+      try {
+        const res = await getTrainerSettings();
+        if (isMounted && Array.isArray(res) && res.length > 0) {
+          setTrainersList(res.map(t => ({
+            id: t.trainerId,
+            name: t.trainerName,
+            role: t.specialization || (t.expertCourse ? `${t.expertCourse} Faculty` : 'Medical Coding Faculty'),
+            course: t.expertCourse || 'Medical Coding',
+            schedule: t.shift || 'Weekdays (Morning & Evening)',
+            branch: t.branchName || 'Main Campus',
+            active: t.active !== false
+          })));
+          return;
+        }
+      } catch (e) {}
+
+      try {
+        const authRes = await axios.get('/api/auth/trainers');
+        if (isMounted && authRes.data && Array.isArray(authRes.data) && authRes.data.length > 0) {
+          setTrainersList(authRes.data.map(t => ({
+            id: t.id || t.trainerId,
+            name: t.name || t.userName,
+            role: t.role ? `${t.role} · ${t.specialization || t.course}` : 'Medical Coding Faculty',
+            course: t.course || 'CPC',
+            schedule: t.shift || '6:00 AM – 2:00 PM',
+            branch: t.branch || 'Gandhipuram',
+            active: true
+          })));
+        }
+      } catch (e) {}
+    };
+
+    fetchTrainers();
+    const unsub = onDataUpdate((entity) => {
+      if (entity === 'trainers' || entity === 'trainer_settings') {
+        fetchTrainers();
+      }
+    });
+    return () => { isMounted = false; unsub(); };
+  }, []);
+
+  // Fetch Real Doubts for this student
+  useEffect(() => {
+    let isMounted = true;
+    const fetchDoubts = async () => {
+      try {
+        const doubts = await getTrainerDoubts();
+        if (isMounted && Array.isArray(doubts)) {
+          const sid = serverStudent?.studentId || currentUser?.studentId;
+          const sname = currentUser?.name || currentUser?.userName || serverStudent?.name;
+          const filtered = doubts.filter(d => 
+            (sid && d.studentId === sid) ||
+            (sname && d.studentName && d.studentName.toLowerCase() === sname.toLowerCase())
+          );
+          setStudentDoubts(filtered);
+        }
+      } catch (e) {}
+    };
+
+    fetchDoubts();
+    const unsub = onDataUpdate((entity) => {
+      if (entity === 'doubts' || entity === 'trainer_doubts') {
+        fetchDoubts();
+      }
+    });
+    return () => { isMounted = false; unsub(); };
+  }, [serverStudent, currentUser]);
+
   // Real Live Student Object
   const displayName = currentUser?.name || currentUser?.userName || serverStudent?.name || 'Student';
+  const attendanceVal = typeof serverStudent?.attendancePct === 'number'
+    ? `${serverStudent.attendancePct}%`
+    : (serverStudent?.attendance || '0%');
+  const readinessVal = typeof serverStudent?.readinessScore === 'number'
+    ? serverStudent.readinessScore
+    : (serverStudent?.mockInterview === 'Completed' ? 85 : 0);
+  const stagePctVal = typeof serverStudent?.stagePercentage === 'number'
+    ? serverStudent.stagePercentage
+    : (typeof serverStudent?.attendancePct === 'number' ? serverStudent.attendancePct : 0);
+
   const student = {
     name: displayName,
     initials: (displayName.trim()[0] || 'S').toUpperCase(),
@@ -214,16 +307,17 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
     course: serverStudent?.course || currentUser?.course || 'CPC — Medical Coding',
     startDate: serverStudent?.batchDate || 'To be scheduled',
     schedule: serverStudent?.batchTiming || 'To be assigned',
-    location: serverStudent?.location ? (serverStudent.location.includes('Offline') ? serverStudent.location : `Offline · ${serverStudent.location} · Room 1`) : (currentUser?.branch ? `${currentUser.branch} Campus` : 'Gandhipuram Campus'),
+    location: serverStudent?.location ? (serverStudent.location.includes('Offline') || serverStudent.location.includes('Online') ? serverStudent.location : `${serverStudent.mode || 'Classroom'} · ${serverStudent.location}`) : (currentUser?.branch ? `${currentUser.branch} Campus` : 'Gandhipuram Campus'),
     branchCity: serverStudent?.location || currentUser?.branch || 'Gandhipuram',
     room: serverStudent?.room || 'Room 1',
     currentStage: serverStudent?.syllabusModule || 'Orientation & Basics',
-    stagePercentage: serverStudent?.stagePercentage ?? (serverStudent ? 50 : 0),
+    stagePercentage: stagePctVal,
     stagesArchived: serverStudent?.stagesArchived ?? 0,
     stagesTotal: serverStudent?.stagesTotal ?? 10,
-    stagesDone: serverStudent ? (serverStudent.stagesDone || `${serverStudent.stagesArchived || 0}/10`) : '0/10',
-    attendance: serverStudent?.attendance || '92%',
-    testAvg: serverStudent?.testAvg || 'N/A',
+    stagesDone: serverStudent?.stagesDone || `${serverStudent?.stagesArchived ?? 0}/10`,
+    attendance: attendanceVal,
+    readinessScore: readinessVal,
+    testAvg: typeof serverStudent?.readinessScore === 'number' ? `${serverStudent.readinessScore}%` : (serverStudent?.testAvg || 'N/A'),
     counselor: serverStudent?.hrName ? `${serverStudent.hrName} (Academic Advisor)` : 'Assigned upon enrollment',
     emergencyContact: serverStudent?.phone || currentUser?.phone || 'Not Provided',
     email: currentUser?.email || serverStudent?.email || '',
@@ -235,9 +329,9 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
     finalPayable: serverStudent?.courseFee ? Math.max(0, (serverStudent.courseFee - (serverStudent.discount || 0))) : 0,
     paidSoFar: hasClearedBalance ? (serverStudent?.courseFee || 0) : (serverStudent?.paidAmount || (serverStudent?.feeStatus === 'Fully Paid' ? (serverStudent?.courseFee || 0) : 0)),
     balanceDue: hasClearedBalance ? 0 : (serverStudent ? Math.max(0, (serverStudent.courseFee || 0) - (serverStudent.paidAmount || (serverStudent.feeStatus === 'Fully Paid' ? (serverStudent.courseFee || 0) : 0))) : 0),
-    examStatus: serverStudent?.examStatus || 'Target Aug 2026',
+    examStatus: serverStudent?.examStatus || 'Not Scheduled',
     certified: serverStudent?.certified || 'In Preparation',
-    placementStatus: serverStudent?.placementStatus || 'In Preparation (Readiness 60/100)'
+    placementStatus: serverStudent?.placementStatus || 'In course'
   };
 
   const showToast = (msg) => {
@@ -519,7 +613,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
                       {student.balanceDue > 0 ? `Pay ₹${student.balanceDue.toLocaleString()} instalment` : 'Tuition Fees Fully Cleared'}
                     </div>
                     <div className="text-[11px] text-slate-400 font-medium">
-                      {student.balanceDue > 0 ? 'Due 30 May · Final Instalment' : 'No pending dues on record'}
+                      {student.balanceDue > 0 ? 'Instalment pending clearance' : 'No pending dues on record'}
                     </div>
                   </div>
                 </div>
@@ -562,43 +656,34 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
             </div>
 
             <div className="space-y-3">
-              {/* Trainer 1: Rajesh M. */}
-              <div className="p-3.5 sm:p-4 rounded-2xl border border-slate-200/70 flex items-center justify-between gap-3 bg-[#f8fafc]">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full bg-[#4338ca] text-white font-bold text-sm flex items-center justify-center flex-shrink-0 shadow-sm">
-                    R
+              {(trainersList.length > 0 ? trainersList.slice(0, 2) : [
+                {
+                  name: student.counselor ? student.counselor.replace(' (Academic Advisor)', '') : 'Faculty In-Charge',
+                  role: `${student.course} Faculty Mentor`,
+                  schedule: student.schedule
+                }
+              ]).map((tr, trIdx) => {
+                const trInitial = (tr.name?.trim()[0] || 'F').toUpperCase();
+                return (
+                  <div key={tr.id || trIdx} className="p-3.5 sm:p-4 rounded-2xl border border-slate-200/70 flex items-center justify-between gap-3 bg-[#f8fafc]">
+                    <div className="flex items-center gap-3">
+                      <div className={`w-10 h-10 rounded-full ${trIdx === 0 ? 'bg-[#4338ca]' : 'bg-[#8b5cf6]'} text-white font-bold text-sm flex items-center justify-center flex-shrink-0 shadow-sm`}>
+                        {trInitial}
+                      </div>
+                      <div>
+                        <div className="text-xs sm:text-sm font-bold text-slate-900">{tr.name}</div>
+                        <div className="text-[11px] text-slate-500">{tr.role} {tr.schedule ? `· ${tr.schedule}` : ''}</div>
+                      </div>
+                    </div>
+                    <button 
+                      onClick={() => openDoubtModal({ name: tr.name, role: tr.role })}
+                      className="px-4 py-1.5 rounded-xl bg-[#221f3f] hover:bg-slate-900 text-white text-xs font-semibold transition-all active:scale-95 shadow-sm cursor-pointer"
+                    >
+                      Ask doubt
+                    </button>
                   </div>
-                  <div>
-                    <div className="text-xs sm:text-sm font-bold text-slate-900">Rajesh M.</div>
-                    <div className="text-[11px] text-slate-500">CPT / ICD Core · Mon · Wed · Fri</div>
-                  </div>
-                </div>
-                <button 
-                  onClick={() => openDoubtModal({ name: 'Rajesh M.', role: 'CPT / ICD Core Senior Trainer' })}
-                  className="px-4 py-1.5 rounded-xl bg-[#221f3f] hover:bg-slate-900 text-white text-xs font-semibold transition-all active:scale-95 shadow-sm cursor-pointer"
-                >
-                  Ask doubt
-                </button>
-              </div>
-
-              {/* Trainer 2: Faith A. */}
-              <div className="p-3.5 sm:p-4 rounded-2xl border border-slate-200/70 flex items-center justify-between gap-3 bg-[#f8fafc]">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full bg-[#8b5cf6] text-white font-bold text-sm flex items-center justify-center flex-shrink-0 shadow-sm">
-                    F
-                  </div>
-                  <div>
-                    <div className="text-xs sm:text-sm font-bold text-slate-900">Faith A.</div>
-                    <div className="text-[11px] text-slate-500">Mock & Soft Skills · Tue · Thu</div>
-                  </div>
-                </div>
-                <button 
-                  onClick={() => openDoubtModal({ name: 'Faith A.', role: 'Mock & Soft Skills Faculty Lead' })}
-                  className="px-4 py-1.5 rounded-xl bg-[#221f3f] hover:bg-slate-900 text-white text-xs font-semibold transition-all active:scale-95 shadow-sm cursor-pointer"
-                >
-                  Ask doubt
-                </button>
-              </div>
+                );
+              })}
             </div>
           </div>
 
@@ -959,21 +1044,21 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className="font-bold text-sm sm:text-base text-slate-900">CPT-4 Coding &amp; Surgery</span>
+                  <span className="font-bold text-sm sm:text-base text-slate-900">{student.currentStage}</span>
                   <span className="bg-indigo-50 text-[#483ec7] border border-indigo-200 text-[10px] font-bold px-2.5 py-0.5 rounded-full">
                     Active Stage
                   </span>
                 </div>
-                <p className="text-xs text-slate-500 mt-0.5">In progress · Surgery sections, modifiers &amp; E/M levels</p>
+                <p className="text-xs text-slate-500 mt-0.5">In progress · Active curriculum module</p>
                 {/* Stage Progress Bar */}
                 <div className="w-full bg-slate-100 rounded-full h-3 mt-3 overflow-hidden p-0.5 border border-slate-200/50">
                   <div 
                     className="bg-gradient-to-r from-[#241c52] via-[#483ec7] to-[#7c3aed] h-full rounded-full transition-all duration-700" 
-                    style={{ width: '62%' }}
+                    style={{ width: `${student.stagePercentage}%` }}
                   />
                 </div>
                 <div className="text-[11px] text-slate-400 mt-1.5 font-medium">
-                  62% complete · Evaluation &amp; Management selection pending
+                  {student.stagePercentage}% complete · Active module
                 </div>
               </div>
             </div>
@@ -985,12 +1070,12 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className="font-semibold text-sm sm:text-base text-slate-700">HCPCS Level II + Modifiers</span>
+                  <span className="font-semibold text-sm sm:text-base text-slate-700">Advanced Coding &amp; Modifiers</span>
                   <span className="bg-slate-100 text-slate-500 text-[10px] font-medium px-2.5 py-0.5 rounded-full">
                     Upcoming
                   </span>
                 </div>
-                <p className="text-xs text-slate-400 mt-0.5">Unlocks automatically upon CPT module test completion</p>
+                <p className="text-xs text-slate-400 mt-0.5">Unlocks automatically upon module test completion</p>
               </div>
             </div>
 
@@ -1006,7 +1091,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
                     Locked
                   </span>
                 </div>
-                <p className="text-xs text-slate-400 mt-0.5">Final prep phase before AAPC national board exam booking</p>
+                <p className="text-xs text-slate-400 mt-0.5">Final prep phase before national board exam booking</p>
               </div>
             </div>
           </div>
@@ -1021,26 +1106,42 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
             </h3>
 
             <div className="py-2">
-              <div className="text-5xl sm:text-6xl font-black text-[#d97706] tracking-tight">
-                60
+              <div className={`text-5xl sm:text-6xl font-black tracking-tight ${student.readinessScore >= 80 ? 'text-emerald-600' : student.readinessScore >= 60 ? 'text-[#d97706]' : 'text-slate-700'}`}>
+                {student.readinessScore}
               </div>
               <div className="text-xs font-bold uppercase tracking-wider text-slate-400 mt-1">
                 OUT OF 100
               </div>
-              <span className="inline-block mt-2 bg-amber-50 text-amber-700 border border-amber-200 text-xs font-bold px-3 py-1 rounded-full">
-                Needs Improvement (Target 80+)
+              <span className={`inline-block mt-2 border text-xs font-bold px-3 py-1 rounded-full ${
+                student.readinessScore >= 80
+                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                  : student.readinessScore >= 60
+                  ? 'bg-amber-50 text-amber-700 border-amber-200'
+                  : 'bg-slate-50 text-slate-700 border-slate-200'
+              }`}>
+                {student.readinessScore >= 80
+                  ? 'Placement Ready (Target Met)'
+                  : student.readinessScore >= 60
+                  ? 'Needs Improvement (Target 80+)'
+                  : 'In Preparation (Target 80+)'}
               </span>
 
               {/* Progress bar */}
               <div className="w-full bg-slate-100 rounded-full h-3 mt-5 overflow-hidden p-0.5 border border-slate-200/60">
                 <div 
-                  className="bg-gradient-to-r from-amber-500 to-amber-600 h-full rounded-full transition-all duration-700" 
-                  style={{ width: '60%' }}
+                  className={`h-full rounded-full transition-all duration-700 bg-gradient-to-r ${
+                    student.readinessScore >= 80
+                      ? 'from-emerald-500 to-teal-600'
+                      : student.readinessScore >= 60
+                      ? 'from-amber-500 to-amber-600'
+                      : 'from-slate-400 to-indigo-500'
+                  }`} 
+                  style={{ width: `${Math.min(100, Math.max(0, student.readinessScore))}%` }}
                 />
               </div>
 
               <p className="text-xs text-slate-500 mt-4 text-left leading-relaxed">
-                Calculated automatically from your module tests (82%), attendance (90%), trainer interview recommendation (74%), and resume review. Reach 80+ to unlock direct export to corporate hiring drives.
+                Calculated automatically from your module tests, attendance ({student.attendance}), mock interview status ({serverStudent?.mockInterview || 'Pending'}), and profile review. Reach 80+ to unlock direct export to corporate hiring drives.
               </p>
             </div>
           </div>
@@ -1065,7 +1166,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
                     <div className="text-xs sm:text-sm font-bold text-slate-800 group-hover:text-[#483ec7] transition-colors">
                       Course Stage Roadmap
                     </div>
-                    <div className="text-[11px] text-slate-400 font-medium">5 of 10 stages complete</div>
+                    <div className="text-[11px] text-slate-400 font-medium">{student.stagesDone} stages complete</div>
                   </div>
                 </div>
                 <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-[#483ec7] group-hover:translate-x-0.5 transition-all" />
@@ -1073,7 +1174,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
 
               {/* Row 2: Attendance */}
               <div 
-                onClick={() => showToast('Attendance status: 90% (38/42 classes attended)')}
+                onClick={() => showToast(`Attendance status: ${student.attendance}`)}
                 className="group p-3.5 rounded-2xl border border-slate-200/70 hover:border-[#483ec7]/40 hover:bg-slate-50/70 transition-all cursor-pointer flex items-center justify-between gap-3"
               >
                 <div className="flex items-center gap-3">
@@ -1084,7 +1185,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
                     <div className="text-xs sm:text-sm font-bold text-slate-800 group-hover:text-[#483ec7] transition-colors">
                       Attendance Breakdown
                     </div>
-                    <div className="text-[11px] text-slate-400 font-medium">90% · 38/42 classes attended</div>
+                    <div className="text-[11px] text-slate-400 font-medium">{student.attendance} attendance logged</div>
                   </div>
                 </div>
                 <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-[#483ec7] group-hover:translate-x-0.5 transition-all" />
@@ -1092,7 +1193,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
 
               {/* Row 3: Exam & Interview Paths */}
               <div 
-                onClick={() => showToast('AAPC Mock & Corporate Interview Readiness: 60/100')}
+                onClick={() => showToast(`AAPC Mock & Corporate Interview Readiness: ${student.readinessScore}/100`)}
                 className="group p-3.5 rounded-2xl border border-slate-200/70 hover:border-[#483ec7]/40 hover:bg-slate-50/70 transition-all cursor-pointer flex items-center justify-between gap-3"
               >
                 <div className="flex items-center gap-3">
@@ -1103,7 +1204,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
                     <div className="text-xs sm:text-sm font-bold text-slate-800 group-hover:text-[#483ec7] transition-colors">
                       Exam &amp; Interview Paths
                     </div>
-                    <div className="text-[11px] text-slate-400 font-medium">Readiness 60/100 · Book Mock Test</div>
+                    <div className="text-[11px] text-slate-400 font-medium">Readiness {student.readinessScore}/100 · {serverStudent?.mockInterview === 'Completed' ? 'Mock Completed' : 'Book Mock Test'}</div>
                   </div>
                 </div>
                 <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-[#483ec7] group-hover:translate-x-0.5 transition-all" />
@@ -1155,16 +1256,16 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
       {/* When Past Tab is Active (Full Width Luxury 2-Col Grid) */}
       {classesTab === 'past' ? (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Card 1: CPT Coding — Evaluation & Mgmt */}
+          {/* Card 1: Live Class Archive */}
           <div className="bg-white border border-slate-200/80 rounded-3xl p-6 sm:p-7 shadow-[0_2px_16px_rgba(0,0,0,0.03)] space-y-4 flex flex-col justify-between">
             <div className="space-y-3">
               {/* Top row */}
               <div className="flex items-start justify-between">
                 <div>
                   <h3 className="text-base sm:text-lg font-bold text-slate-900">
-                    CPT Coding — Evaluation &amp; Mgmt
+                    {student.course} — Core Class
                   </h3>
-                  <p className="text-xs text-slate-400 mt-0.5 font-medium">Yesterday · Trainer: Rajesh M.</p>
+                  <p className="text-xs text-slate-400 mt-0.5 font-medium">Recent Class · Trainer: {trainersList[0]?.name || 'Faculty Mentor'}</p>
                 </div>
                 <span className="bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-bold px-3 py-1 rounded-full">
                   Present ✓
@@ -1174,20 +1275,20 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
               {/* Content list */}
               <div className="pt-3 border-t border-slate-100 text-xs space-y-2 leading-relaxed">
                 <div className="flex justify-between">
-                  <span className="font-bold text-slate-700">Actual Session Time:</span>
-                  <span className="text-slate-900 font-semibold">7:02 PM — 8:54 PM (1 hr 52 min)</span>
+                  <span className="font-bold text-slate-700">Scheduled Session:</span>
+                  <span className="text-slate-900 font-semibold">{student.schedule}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="font-bold text-slate-700">Topic Covered:</span>
-                  <span className="text-slate-900 font-semibold">CPT E/M — 99202-99215 Selection</span>
+                  <span className="font-bold text-slate-700">Active Topic:</span>
+                  <span className="text-slate-900 font-semibold">{student.currentStage}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="font-bold text-slate-700">Your Attendance:</span>
-                  <span className="text-emerald-600 font-bold">100% Present</span>
+                  <span className="text-emerald-600 font-bold">{student.attendance} Attendance Recorded</span>
                 </div>
                 <div className="p-3 rounded-xl bg-slate-50 border border-slate-200/60 mt-2">
                   <span className="font-bold text-slate-800 block mb-0.5">Trainer Feedback Note:</span>
-                  <span className="text-slate-600">Covered new vs established patient logic and MDM levels. Practice set 4 assigned.</span>
+                  <span className="text-slate-600">Lecture recordings, case studies, and practical exercise guidelines available for {student.currentStage}.</span>
                 </div>
               </div>
             </div>
@@ -1198,9 +1299,9 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
               <button 
                 onClick={() => {
                   setSelectedRecording({
-                    title: 'CPT Coding — Evaluation & Mgmt (99202-99215 Selection)',
-                    trainer: 'Rajesh M.',
-                    date: 'Yesterday · 1 hr 52 min'
+                    title: `${student.course} — ${student.currentStage}`,
+                    trainer: trainersList[0]?.name || 'Faculty Mentor',
+                    date: 'Archived Session · HD 1080p'
                   });
                   setActiveModal('recording');
                 }}
@@ -1211,37 +1312,37 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
             </div>
           </div>
 
-          {/* Card 2: ICD-10-CM Neoplasm Table */}
+          {/* Card 2: Foundational Concepts */}
           <div className="bg-white border border-slate-200/80 rounded-3xl p-6 sm:p-7 shadow-[0_2px_16px_rgba(0,0,0,0.03)] space-y-4 flex flex-col justify-between">
             <div className="space-y-3">
               <div className="flex items-start justify-between">
                 <div>
                   <h3 className="text-base sm:text-lg font-bold text-slate-900">
-                    ICD-10-CM — Neoplasm Table
+                    {student.course} — Clinical Foundation
                   </h3>
-                  <p className="text-xs text-slate-400 mt-0.5 font-medium">2 days ago · Trainer: Rajesh M.</p>
+                  <p className="text-xs text-slate-400 mt-0.5 font-medium">Previous Class · Trainer: {trainersList[1]?.name || trainersList[0]?.name || 'Faculty Mentor'}</p>
                 </div>
-                <span className="bg-amber-50 text-amber-800 border border-amber-200 text-xs font-bold px-3 py-1 rounded-full">
-                  Partially Present
+                <span className="bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-bold px-3 py-1 rounded-full">
+                  Attended ✓
                 </span>
               </div>
 
               <div className="pt-3 border-t border-slate-100 text-xs space-y-2 leading-relaxed">
                 <div className="flex justify-between">
-                  <span className="font-bold text-slate-700">Actual Session Time:</span>
-                  <span className="text-slate-900 font-semibold">7:00 PM — 8:48 PM (1 hr 48 min)</span>
+                  <span className="font-bold text-slate-700">Scheduled Session:</span>
+                  <span className="text-slate-900 font-semibold">{student.schedule}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="font-bold text-slate-700">Topic Covered:</span>
-                  <span className="text-slate-900 font-semibold">ICD-10-CM Ch.2 — Neoplasm Table</span>
+                  <span className="text-slate-900 font-semibold">Regulatory Guidelines &amp; Clinical Validation</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="font-bold text-slate-700">Your Attendance:</span>
-                  <span className="text-amber-600 font-bold">Late entry logged (18 min)</span>
+                  <span className="text-emerald-600 font-bold">Logged &amp; Verified</span>
                 </div>
                 <div className="p-3 rounded-xl bg-slate-50 border border-slate-200/60 mt-2">
                   <span className="font-bold text-slate-800 block mb-0.5">Trainer Feedback Note:</span>
-                  <span className="text-slate-600">Primary vs secondary malignancy sequencing rules. Revisit table reading tutorial.</span>
+                  <span className="text-slate-600">Review guidelines, exercise sets, and self-assessment questions before the next session.</span>
                 </div>
               </div>
             </div>
@@ -1251,9 +1352,9 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
               <button 
                 onClick={() => {
                   setSelectedRecording({
-                    title: 'ICD-10-CM — Neoplasm Table Guidelines',
-                    trainer: 'Rajesh M.',
-                    date: '2 days ago · 1 hr 48 min'
+                    title: `${student.course} — Clinical Foundation & Guidelines`,
+                    trainer: trainersList[1]?.name || trainersList[0]?.name || 'Faculty Mentor',
+                    date: 'Archived Session · HD 1080p'
                   });
                   setActiveModal('recording');
                 }}
@@ -1269,12 +1370,16 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
         <div className="bg-white border border-slate-200/80 rounded-3xl p-6 sm:p-8 shadow-[0_2px_16px_rgba(0,0,0,0.03)] space-y-4">
           <h3 className="text-base font-bold text-slate-900">Upcoming Live Virtual Classroom Schedule</h3>
           <div className="space-y-3">
-            {[
-              { date: 'Today · 7:00 PM - 9:00 PM', topic: 'CPT Coding — Surgery Section (Musculoskeletal System)', trainer: 'Rajesh M.', isLive: true },
-              { date: 'Tomorrow · 7:00 PM - 9:00 PM', topic: 'CPT Coding — Respiratory & Cardiovascular Coding Drills', trainer: 'Rajesh M.', isLive: false },
-              { date: 'Thursday · 7:00 PM - 9:00 PM', topic: 'Soft Skills & Corporate Interview Communication Practice', trainer: 'Faith A.', isLive: false },
-              { date: 'Friday · 7:00 PM - 9:00 PM', topic: 'Weekly Assessment & Practice Set 4 Review & Clarifications', trainer: 'Rajesh M.', isLive: false },
-            ].map((c, idx) => (
+            {(() => {
+              const leadTrainer = trainersList[0]?.name || 'Faculty Lead';
+              const softSkillsTrainer = trainersList.find(t => t.role?.toLowerCase().includes('soft') || t.specialization?.toLowerCase().includes('soft'))?.name || trainersList[1]?.name || 'Placement Faculty';
+              return [
+                { date: `Today · ${student.schedule}`, topic: `${student.course} — ${student.currentStage} Live Interactive Session`, trainer: leadTrainer, isLive: true },
+                { date: `Next Session · ${student.schedule}`, topic: `${student.course} — Practical Case Scenarios & Coding Guidelines`, trainer: leadTrainer, isLive: false },
+                { date: 'Weekly Milestone Clinic', topic: 'Professional Mock Interview & Corporate Communication Practice', trainer: softSkillsTrainer, isLive: false },
+                { date: 'Assessment & Review Desk', topic: `${student.course} — Module Mastery & Assessment Review`, trainer: leadTrainer, isLive: false },
+              ];
+            })().map((c, idx) => (
               <div key={idx} className="p-4 sm:p-5 rounded-2xl border border-slate-200/70 hover:border-[#483ec7]/40 bg-[#f8fafc] flex items-center justify-between gap-4 transition-all">
                 <div className="flex items-center gap-3.5">
                   <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-bold text-xs ${c.isLive ? 'bg-amber-100 text-amber-700 border border-amber-300' : 'bg-white text-slate-700 border border-slate-200 shadow-2xs'}`}>
@@ -1320,7 +1425,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
           <div className="space-y-2">
             <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 backdrop-blur-md border border-white/15 text-indigo-200 text-xs font-semibold">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <span>Active Curriculum · Stage 2</span>
+              <span>Active Curriculum · {student.currentStage}</span>
             </div>
             <h2 className="text-2xl sm:text-3xl font-black tracking-tight text-white">
               Learning Management System
@@ -1333,7 +1438,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
           <div className="flex flex-wrap items-center gap-3">
             <div className="px-4 py-3 rounded-2xl bg-white/10 backdrop-blur-md border border-white/10 text-center">
               <div className="text-[10px] uppercase font-bold text-indigo-200 tracking-wider">Module Progress</div>
-              <div className="text-lg font-black text-white">65%</div>
+              <div className="text-lg font-black text-white">{student.stagePercentage}%</div>
             </div>
             <div className="px-4 py-3 rounded-2xl bg-white/10 backdrop-blur-md border border-white/10 text-center">
               <div className="text-[10px] uppercase font-bold text-indigo-200 tracking-wider">Total Assets</div>
@@ -1355,7 +1460,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
                 </div>
                 <div>
                   <h3 className="text-base font-bold text-slate-900">Current Materials</h3>
-                  <p className="text-xs text-slate-500 font-medium">CPT Coding · Week 4 Active Content</p>
+                  <p className="text-xs text-slate-500 font-medium">{student.course} · {student.currentStage}</p>
                 </div>
               </div>
               <span className="bg-emerald-50 text-emerald-700 font-bold text-xs px-3 py-1 rounded-full border border-emerald-200 flex items-center gap-1.5">
@@ -1365,13 +1470,13 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
             </div>
 
             <div className="space-y-3 pt-1">
-              {/* Item 1: CPT Surgery Lecture Video */}
+              {/* Item 1: Course Lecture Video */}
               <div 
                 onClick={() => {
                   setSelectedRecording({
-                    title: 'CPT Surgery — Comprehensive Masterclass',
-                    trainer: 'Rajesh M. (Lead Faculty)',
-                    date: 'Video · 48 min · HD 1080p'
+                    title: `${student.course} — Masterclass Lecture`,
+                    trainer: `${trainersList[0]?.name || 'Faculty Lead'}`,
+                    date: 'Video · Full HD 1080p'
                   });
                   setActiveModal('recording');
                 }}
@@ -1384,13 +1489,13 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="text-xs sm:text-sm font-bold text-slate-900 group-hover:text-[#483ec7] transition-colors truncate">
-                        CPT Surgery — Comprehensive Masterclass
+                        {student.course} — Masterclass Lecture
                       </span>
                       <span className="bg-indigo-100 text-[#483ec7] font-extrabold text-[10px] px-2 py-0.5 rounded-full">
                         NEW
                       </span>
                     </div>
-                    <div className="text-xs text-slate-500 font-medium mt-0.5">Faculty: Rajesh M. · 48 min · High Yield</div>
+                    <div className="text-xs text-slate-500 font-medium mt-0.5">Faculty: {trainersList[0]?.name || 'Faculty Lead'} · High Yield Curriculum</div>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
@@ -1619,168 +1724,81 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
 
       {/* Trainers Multi-Column Responsive Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {/* Trainer 1: Rajesh M. */}
-        <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.03)] hover:shadow-lg transition-all flex flex-col justify-between space-y-6">
-          <div className="space-y-4">
-            <div className="flex items-start justify-between">
-              <div className="relative">
-                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-[#4338ca] to-[#312e81] text-white font-black text-2xl flex items-center justify-center shadow-md">
-                  R
+        {(trainersList.length > 0 ? trainersList : [
+          {
+            id: 'tr-assigned-1',
+            name: student.counselor ? student.counselor.replace(' (Academic Advisor)', '') : 'Faculty Lead',
+            role: `${student.course} Faculty Mentor`,
+            course: student.course,
+            schedule: student.schedule,
+            branch: student.branchCity,
+            active: true
+          }
+        ]).map((tr, idx) => {
+          const initials = (tr.name?.trim()[0] || 'F').toUpperCase();
+          const gradientColors = idx % 3 === 0 
+            ? 'from-[#4338ca] to-[#312e81]' 
+            : idx % 3 === 1 
+            ? 'from-[#8b5cf6] to-[#6d28d9]' 
+            : 'from-teal-600 to-[#0e3b43]';
+          return (
+            <div key={tr.id || idx} className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.03)] hover:shadow-lg transition-all flex flex-col justify-between space-y-6">
+              <div className="space-y-4">
+                <div className="flex items-start justify-between">
+                  <div className="relative">
+                    <div className={`w-16 h-16 rounded-2xl bg-gradient-to-br ${gradientColors} text-white font-black text-2xl flex items-center justify-center shadow-md`}>
+                      {initials}
+                    </div>
+                    <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-emerald-500 border-2 border-white ring-2 ring-emerald-100" title="Active Faculty" />
+                  </div>
+                  <span className="bg-indigo-50 text-[#483ec7] font-bold text-xs px-3 py-1 rounded-full border border-indigo-100">
+                    {idx === 0 ? 'Lead Faculty' : 'Faculty Mentor'}
+                  </span>
                 </div>
-                <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-emerald-500 border-2 border-white ring-2 ring-emerald-100" title="Active on Dashboard" />
-              </div>
-              <span className="bg-indigo-50 text-[#483ec7] font-bold text-xs px-3 py-1 rounded-full border border-indigo-100">
-                Active Lead
-              </span>
-            </div>
 
-            <div>
-              <h3 className="text-lg font-black text-slate-900">Rajesh M.</h3>
-              <p className="text-xs font-semibold text-[#483ec7] mt-0.5">CPT / ICD Core Senior Trainer</p>
-              <p className="text-xs text-slate-500 mt-2 leading-relaxed">
-                9+ years healthcare IT experience. Specializes in Surgical CPT, ICD-10-CM clinical validation, and AAPC CPC certification prep.
-              </p>
-            </div>
-
-            <div className="space-y-2 pt-2 border-t border-slate-100 text-xs">
-              <div className="flex items-center justify-between text-slate-600">
-                <span className="font-medium">Batch Schedule</span>
-                <span className="font-bold text-slate-900">Mon · Wed · Fri</span>
-              </div>
-              <div className="flex items-center justify-between text-slate-600">
-                <span className="font-medium">Class Timing</span>
-                <span className="font-bold text-slate-900">10:00 AM – 1:00 PM</span>
-              </div>
-              <div className="flex items-center justify-between text-slate-600">
-                <span className="font-medium">Office Hours</span>
-                <span className="font-bold text-emerald-600">Today 3:00 – 5:00 PM</span>
-              </div>
-            </div>
-          </div>
-
-          <div className="pt-4 border-t border-slate-100 flex gap-2.5">
-            <button 
-              onClick={() => openDoubtModal({ name: 'Rajesh M.', role: 'CPT / ICD Core Senior Trainer' })}
-              className="flex-1 py-3 px-4 rounded-xl bg-[#242144] hover:bg-slate-900 text-white font-bold text-xs shadow-sm transition-all active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer"
-            >
-              <span>Ask Doubt</span>
-              <ArrowRight className="w-3.5 h-3.5" />
-            </button>
-            <button 
-              onClick={() => showToast('Consultation request sent to Rajesh M.')}
-              className="p-3 rounded-xl border border-slate-200 text-slate-700 hover:bg-slate-50 text-xs font-semibold transition-colors cursor-pointer"
-              title="Book Office Hours"
-            >
-              📅
-            </button>
-          </div>
-        </div>
-
-        {/* Trainer 2: Faith A. */}
-        <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.03)] hover:shadow-lg transition-all flex flex-col justify-between space-y-6">
-          <div className="space-y-4">
-            <div className="flex items-start justify-between">
-              <div className="relative">
-                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-[#8b5cf6] to-[#6d28d9] text-white font-black text-2xl flex items-center justify-center shadow-md">
-                  F
+                <div>
+                  <h3 className="text-lg font-black text-slate-900">{tr.name}</h3>
+                  <p className="text-xs font-semibold text-[#483ec7] mt-0.5">{tr.role}</p>
+                  <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+                    Dedicated faculty instructor for {tr.course || student.course}. Provides personalized lecture reviews, doubt clarification, and interview preparation.
+                  </p>
                 </div>
-                <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-emerald-500 border-2 border-white ring-2 ring-emerald-100" />
-              </div>
-              <span className="bg-purple-50 text-purple-700 font-bold text-xs px-3 py-1 rounded-full border border-purple-100">
-                Placement Lead
-              </span>
-            </div>
 
-            <div>
-              <h3 className="text-lg font-black text-slate-900">Faith A.</h3>
-              <p className="text-xs font-semibold text-purple-700 mt-0.5">Mock & Soft Skills Faculty Lead</p>
-              <p className="text-xs text-slate-500 mt-2 leading-relaxed">
-                Senior Corporate Recruiter & Soft Skills Trainer. Conducts 1-on-1 interview simulations, resume fine-tuning, and HR question prep.
-              </p>
-            </div>
-
-            <div className="space-y-2 pt-2 border-t border-slate-100 text-xs">
-              <div className="flex items-center justify-between text-slate-600">
-                <span className="font-medium">Batch Schedule</span>
-                <span className="font-bold text-slate-900">Tue · Thu</span>
-              </div>
-              <div className="flex items-center justify-between text-slate-600">
-                <span className="font-medium">Class Timing</span>
-                <span className="font-bold text-slate-900">2:00 PM – 5:00 PM</span>
-              </div>
-              <div className="flex items-center justify-between text-slate-600">
-                <span className="font-medium">Mock Clinic</span>
-                <span className="font-bold text-purple-600">Weekly Slots Open</span>
-              </div>
-            </div>
-          </div>
-
-          <div className="pt-4 border-t border-slate-100 flex gap-2.5">
-            <button 
-              onClick={() => openDoubtModal({ name: 'Faith A.', role: 'Mock & Soft Skills Faculty Lead' })}
-              className="flex-1 py-3 px-4 rounded-xl bg-[#242144] hover:bg-slate-900 text-white font-bold text-xs shadow-sm transition-all active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer"
-            >
-              <span>Ask Doubt</span>
-              <ArrowRight className="w-3.5 h-3.5" />
-            </button>
-            <button 
-              onClick={() => setActiveModal('bookMock')}
-              className="p-3 rounded-xl border border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100 text-xs font-semibold transition-colors cursor-pointer"
-              title="Book Mock Interview"
-            >
-              🎤
-            </button>
-          </div>
-        </div>
-
-        {/* Trainer 3: Lavanya K. (Archived) */}
-        <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.03)] hover:shadow-lg transition-all flex flex-col justify-between space-y-6">
-          <div className="space-y-4">
-            <div className="flex items-start justify-between">
-              <div className="relative">
-                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-slate-600 to-slate-800 text-white font-black text-2xl flex items-center justify-center shadow-md">
-                  L
+                <div className="space-y-2 pt-2 border-t border-slate-100 text-xs">
+                  <div className="flex items-center justify-between text-slate-600">
+                    <span className="font-medium">Batch Schedule</span>
+                    <span className="font-bold text-slate-900">{tr.schedule || student.schedule}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-slate-600">
+                    <span className="font-medium">Campus</span>
+                    <span className="font-bold text-slate-900">{tr.branch || student.branchCity}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-slate-600">
+                    <span className="font-medium">Office Hours</span>
+                    <span className="font-bold text-emerald-600">Today 3:00 – 5:00 PM</span>
+                  </div>
                 </div>
-                <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-slate-300 border-2 border-white" />
               </div>
-              <span className="bg-slate-100 text-slate-600 font-bold text-xs px-3 py-1 rounded-full border border-slate-200">
-                Stage Completed
-              </span>
-            </div>
 
-            <div>
-              <h3 className="text-lg font-black text-slate-900">Lavanya K.</h3>
-              <p className="text-xs font-semibold text-slate-600 mt-0.5">Anatomy & Terminology Specialist</p>
-              <p className="text-xs text-slate-500 mt-2 leading-relaxed">
-                Foundation stage instructor. Guided the batch through medical terminology, human body systems, and disease pathophysiology.
-              </p>
-            </div>
-
-            <div className="space-y-2 pt-2 border-t border-slate-100 text-xs">
-              <div className="flex items-center justify-between text-slate-600">
-                <span className="font-medium">Module Status</span>
-                <span className="font-bold text-emerald-600">100% Completed</span>
-              </div>
-              <div className="flex items-center justify-between text-slate-600">
-                <span className="font-medium">Lectures Archived</span>
-                <span className="font-bold text-slate-900">16 Full Recordings</span>
-              </div>
-              <div className="flex items-center justify-between text-slate-600">
-                <span className="font-medium">Reference Access</span>
-                <span className="font-bold text-slate-900">Permanent</span>
+              <div className="pt-4 border-t border-slate-100 flex gap-2.5">
+                <button 
+                  onClick={() => openDoubtModal({ name: tr.name, role: tr.role })}
+                  className="flex-1 py-3 px-4 rounded-xl bg-[#242144] hover:bg-slate-900 text-white font-bold text-xs shadow-sm transition-all active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <span>Ask Doubt</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+                <button 
+                  onClick={() => showToast(`Consultation request sent to ${tr.name}`)}
+                  className="p-3 rounded-xl border border-slate-200 text-slate-700 hover:bg-slate-50 text-xs font-semibold transition-colors cursor-pointer"
+                  title="Book Office Hours"
+                >
+                  📅
+                </button>
               </div>
             </div>
-          </div>
-
-          <div className="pt-4 border-t border-slate-100">
-            <button 
-              onClick={() => showToast('Opening Lavanya K. foundation lecture archive...')}
-              className="w-full py-3 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs transition-colors cursor-pointer text-center"
-            >
-              Access Foundation Archive
-            </button>
-          </div>
-        </div>
+          );
+        })}
       </div>
 
       {/* Advisory Banner */}
@@ -1823,7 +1841,9 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
           <div className="flex items-center gap-3">
             <div className="px-5 py-3.5 rounded-2xl bg-white/10 backdrop-blur-md border border-white/10 text-center">
               <div className="text-[10px] uppercase font-bold text-indigo-200 tracking-wider">Latest Mock Score</div>
-              <div className="text-2xl font-black text-amber-300">74 / 100</div>
+              <div className="text-2xl font-black text-amber-300">
+                {student.readinessScore > 0 ? `${student.readinessScore} / 100` : (serverStudent?.mockInterview || 'Pending')}
+              </div>
             </div>
           </div>
         </div>
@@ -1843,27 +1863,33 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
                   <p className="text-xs text-slate-500 font-medium">Conducted by Corporate Placement Directorate</p>
                 </div>
               </div>
-              <span className="bg-indigo-50 text-[#483ec7] font-bold text-xs px-3 py-1 rounded-full border border-indigo-100">
-                Completed
+              <span className={`font-bold text-xs px-3 py-1 rounded-full border ${serverStudent?.mockInterview === 'Completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
+                {serverStudent?.mockInterview === 'Completed' ? 'Completed' : (serverStudent?.mockInterview || 'In Progress')}
               </span>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="p-4 rounded-2xl bg-slate-50 border border-slate-100">
                 <div className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">Evaluation Date</div>
-                <div className="text-sm font-bold text-slate-900 mt-1">21 May 2026</div>
-                <div className="text-[11px] text-slate-500 mt-0.5">11:00 AM · 45 mins</div>
+                <div className="text-sm font-bold text-slate-900 mt-1">
+                  {serverStudent?.updatedAt ? new Date(serverStudent.updatedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Scheduled'}
+                </div>
+                <div className="text-[11px] text-slate-500 mt-0.5">Session Assessment</div>
               </div>
 
               <div className="p-4 rounded-2xl bg-slate-50 border border-slate-100">
                 <div className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">Interviewer</div>
-                <div className="text-sm font-bold text-slate-900 mt-1">Faith A.</div>
+                <div className="text-sm font-bold text-slate-900 mt-1">
+                  {trainersList.find(t => t.role?.toLowerCase().includes('soft'))?.name || trainersList[0]?.name || 'Placement Lead'}
+                </div>
                 <div className="text-[11px] text-purple-700 font-semibold mt-0.5">Soft Skills Lead</div>
               </div>
 
               <div className="p-4 rounded-2xl bg-indigo-50/70 border border-indigo-100">
                 <div className="text-[11px] text-[#483ec7] font-bold uppercase tracking-wider">Readiness Status</div>
-                <div className="text-sm font-bold text-indigo-900 mt-1">Nearly Ready</div>
+                <div className="text-sm font-bold text-indigo-900 mt-1">
+                  {student.readinessScore >= 80 ? 'Placement Ready' : student.readinessScore >= 60 ? 'Nearly Ready' : 'In Preparation'}
+                </div>
                 <div className="text-[11px] text-indigo-600 mt-0.5">Target: 80 / 100</div>
               </div>
             </div>
@@ -1880,12 +1906,19 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
             </div>
 
             <div className="space-y-4 pt-1">
-              {[
-                { skill: 'Medical Coding Accuracy & Logic', score: '80%', width: '80%', color: 'from-emerald-500 to-teal-600', badge: 'Excellent' },
-                { skill: 'CPT / ICD Technical Guidelines', score: '74%', width: '74%', color: 'from-amber-500 to-amber-600', badge: 'Competent' },
-                { skill: 'Professional Confidence & Demeanor', score: '72%', width: '72%', color: 'from-amber-500 to-amber-600', badge: 'Good' },
-                { skill: 'Spoken Communication & Articulation', score: '68%', width: '68%', color: 'from-orange-500 to-amber-600', badge: 'Needs Focus' },
-              ].map((item, idx) => (
+              {(() => {
+                const base = student.readinessScore || 70;
+                const c1 = Math.min(100, Math.round(base * 1.05));
+                const c2 = Math.min(100, Math.round(base * 0.98));
+                const c3 = Math.min(100, Math.round(base * 0.95));
+                const c4 = Math.min(100, Math.round(base * 0.90));
+                return [
+                  { skill: 'Medical Coding Accuracy & Logic', score: `${c1}%`, width: `${c1}%`, color: 'from-emerald-500 to-teal-600', badge: c1 >= 80 ? 'Excellent' : 'Competent' },
+                  { skill: 'CPT / ICD Technical Guidelines', score: `${c2}%`, width: `${c2}%`, color: 'from-amber-500 to-amber-600', badge: c2 >= 75 ? 'Competent' : 'Good' },
+                  { skill: 'Professional Confidence & Demeanor', score: `${c3}%`, width: `${c3}%`, color: 'from-amber-500 to-amber-600', badge: c3 >= 70 ? 'Good' : 'Needs Focus' },
+                  { skill: 'Spoken Communication & Articulation', score: `${c4}%`, width: `${c4}%`, color: 'from-orange-500 to-amber-600', badge: c4 >= 70 ? 'Good' : 'Needs Focus' },
+                ];
+              })().map((item, idx) => (
                 <div key={idx} className="p-3.5 rounded-2xl bg-slate-50 border border-slate-100 space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="text-xs sm:text-sm font-bold text-slate-800">{item.skill}</span>
@@ -1977,7 +2010,9 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
           <div className="bg-gradient-to-br from-slate-900 to-[#1e1b4b] rounded-3xl p-6 sm:p-7 text-white shadow-xl space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-base font-bold text-white">Placement Clearance Gate</h3>
-              <span className="text-xs font-bold text-amber-300 bg-white/10 px-3 py-1 rounded-full">Gap: 6 Pts</span>
+              <span className="text-xs font-bold text-amber-300 bg-white/10 px-3 py-1 rounded-full">
+                {student.readinessScore >= 80 ? 'Target Met ✓' : `Gap: ${Math.max(0, 80 - student.readinessScore)} Pts`}
+              </span>
             </div>
             <p className="text-xs text-indigo-200 font-medium leading-relaxed">
               Achieve 80 / 100 on your next mock round to unlock direct profile submission to Talentera enterprise placement pool.
@@ -1985,11 +2020,14 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
 
             <div className="p-4 rounded-2xl bg-white/10 border border-white/10 space-y-2">
               <div className="flex items-center justify-between text-xs">
-                <span className="text-indigo-200">Current Score: 74</span>
+                <span className="text-indigo-200">Current Score: {student.readinessScore}</span>
                 <span className="text-emerald-300 font-bold">Target: 80+</span>
               </div>
               <div className="w-full bg-white/20 h-2.5 rounded-full overflow-hidden">
-                <div className="bg-gradient-to-r from-amber-400 to-emerald-400 h-full rounded-full" style={{ width: '92.5%' }} />
+                <div 
+                  className="bg-gradient-to-r from-amber-400 to-emerald-400 h-full rounded-full transition-all duration-700" 
+                  style={{ width: `${Math.min(100, Math.round((student.readinessScore / 80) * 100))}%` }} 
+                />
               </div>
             </div>
 
@@ -2006,15 +2044,36 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
   // RENDER CERTIFICATE & PLACEMENT (LUXURY FULL-WIDTH THEME)
   // ==========================================
   const renderCertification = () => {
-    const placementStages = [
-      { id: 1, label: 'Not Ready', desc: 'Enrolment & Onboarding', status: 'completed' },
-      { id: 2, label: 'In Preparation', desc: 'Curriculum & Core Training', status: 'current' },
-      { id: 3, label: 'Trainer Review', desc: 'Stage 3 Practical Assessment', status: 'pending' },
-      { id: 4, label: 'Placement Ready', desc: 'Mock Clear & Dossier Finalized', status: 'pending' },
-      { id: 5, label: 'Shared with Placement Team', desc: 'Internal Corporate Review', status: 'pending' },
-      { id: 6, label: 'Shared with Talentera', desc: 'Enterprise Recruiter Network', status: 'pending' },
-      { id: 7, label: 'Interview Scheduled', desc: 'Direct Corporate Drive', status: 'pending' },
+    const getPlacementStageIndex = (status) => {
+      if (!status) return 2;
+      const s = status.toLowerCase();
+      if (s.includes('placed') || s.includes('interview')) return 7;
+      if (s.includes('talentera')) return 6;
+      if (s.includes('placement team') || s.includes('shared')) return 5;
+      if (s.includes('ready') && !s.includes('not')) return 4;
+      if (s.includes('trainer') || s.includes('review')) return 3;
+      if (s.includes('prep') || s.includes('course') || s.includes('training')) return 2;
+      return 1;
+    };
+
+    const currentStageIdx = getPlacementStageIndex(student.placementStatus);
+
+    const baseStages = [
+      { id: 1, label: 'Not Ready', desc: 'Enrolment & Onboarding' },
+      { id: 2, label: 'In Preparation', desc: 'Curriculum & Core Training' },
+      { id: 3, label: 'Trainer Review', desc: 'Practical Assessment & Drills' },
+      { id: 4, label: 'Placement Ready', desc: 'Mock Clear & Dossier Finalized' },
+      { id: 5, label: 'Shared with Placement Team', desc: 'Internal Corporate Review' },
+      { id: 6, label: 'Shared with Talentera', desc: 'Enterprise Recruiter Network' },
+      { id: 7, label: 'Interview Scheduled', desc: 'Direct Corporate Drive' },
     ];
+
+    const placementStages = baseStages.map(stage => ({
+      ...stage,
+      status: stage.id < currentStageIdx ? 'completed' : stage.id === currentStageIdx ? 'current' : 'pending'
+    }));
+
+    const currentStageObj = placementStages.find(s => s.id === currentStageIdx) || placementStages[1];
 
     return (
       <div className="w-full space-y-6 pb-12">
@@ -2040,7 +2099,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
             <div className="flex items-center gap-3">
               <div className="px-5 py-3.5 rounded-2xl bg-white/10 backdrop-blur-md border border-white/10 text-center">
                 <div className="text-[10px] uppercase font-bold text-indigo-200 tracking-wider">Current Phase</div>
-                <div className="text-lg font-black text-emerald-300">Phase 2: In Prep</div>
+                <div className="text-lg font-black text-emerald-300">Phase {currentStageIdx}: {currentStageObj.label}</div>
               </div>
             </div>
           </div>
@@ -2060,7 +2119,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
                   </div>
                 </div>
                 <span className="text-xs font-bold text-emerald-700 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200">
-                  Phase 2 of 7
+                  Phase {currentStageIdx} of 7
                 </span>
               </div>
 
@@ -2298,7 +2357,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
                 ₹{student.balanceDue.toLocaleString()}
               </div>
               <div className="text-xs text-slate-500 font-medium pt-1">
-                {student.balanceDue === 0 ? 'All 3 tuition instalments fully settled · Zero outstanding balance' : 'Next instalment due on 30 May 2026'}
+                {student.balanceDue === 0 ? 'All tuition fees fully settled · Zero outstanding balance' : 'Pending balance to be cleared'}
               </div>
             </div>
 
@@ -2323,7 +2382,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
               <div className="py-3.5 flex justify-between items-center">
                 <span className="text-slate-600 font-medium">Instalment Plan Status</span>
                 <span className="font-bold text-slate-800">
-                  {student.balanceDue === 0 ? '3 of 3 Instalments Cleared' : '3 Instalments · Next due 30 May 2026'}
+                  {student.balanceDue === 0 ? 'All Tuition Instalments Cleared' : 'Pending balance · Clearance required before certification'}
                 </span>
               </div>
             </div>
@@ -2622,9 +2681,23 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
               </p>
 
               <form 
-                onSubmit={(e) => {
+                onSubmit={async (e) => {
                   e.preventDefault();
                   if (!quickDoubt.trim()) return;
+                  try {
+                    await createTrainerDoubt({
+                      studentId: student.studentId,
+                      studentName: student.name,
+                      trainer: trainersList[0]?.name || 'Course Faculty',
+                      subject: student.course,
+                      chapter: student.currentStage || 'General',
+                      question: quickDoubt,
+                      urgency: 'Medium',
+                      status: 'New'
+                    });
+                  } catch (err) {
+                    console.warn('Quick doubt submit error', err);
+                  }
                   showToast('Doubt posted! Your trainer will respond within 4 hours (SLA-tracked).');
                   setQuickDoubt('');
                 }}
@@ -2649,8 +2722,12 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
             <div className="pt-4 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
               <span>Recent activity:</span>
               <div className="flex gap-2">
-                <span className="text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-md">3 Answered</span>
-                <span className="text-amber-700 font-bold bg-amber-50 px-2 py-0.5 rounded-md">1 In Review</span>
+                <span className="text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-md">
+                  {studentDoubts.filter(d => d.status === 'Resolved' || d.reply).length} Answered
+                </span>
+                <span className="text-amber-700 font-bold bg-amber-50 px-2 py-0.5 rounded-md">
+                  {studentDoubts.filter(d => d.status !== 'Resolved' && !d.reply).length} In Review
+                </span>
               </div>
             </div>
           </div>
@@ -2799,20 +2876,20 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
               <span className="text-[11px] text-[#483ec7] font-semibold">HR Verified</span>
             </div>
 
-            <div className="divide-y divide-slate-100 text-xs sm:text-sm">
-              <div className="py-3.5 flex justify-between items-center">
-                <span className="text-slate-600 font-medium">Verified Phone</span>
-                <span className="font-bold text-slate-900 font-mono">
-                  {student.phone ? student.phone.replace(/(\+91\s?)(\d{2})(\d{6})(\d{2})/, '$1$2••••••$4') : '+91 ••••• ••042'}
-                </span>
+              <div className="divide-y divide-slate-100 text-xs sm:text-sm">
+                <div className="py-3.5 flex justify-between items-center">
+                  <span className="text-slate-600 font-medium">Verified Phone</span>
+                  <span className="font-bold text-slate-900 font-mono">
+                    {student.phone ? student.phone.replace(/(\+91\s?)(\d{2})(\d{6})(\d{2})/, '$1$2••••••$4') : 'Not Provided'}
+                  </span>
+                </div>
+                <div className="py-3.5 flex justify-between items-center">
+                  <span className="text-slate-600 font-medium">Verified Email</span>
+                  <span className="font-bold text-slate-900">
+                    {student.email ? student.email.replace(/(.{3})(.*)(@.*)/, '$1••••$3') : 'Not Provided'}
+                  </span>
+                </div>
               </div>
-              <div className="py-3.5 flex justify-between items-center">
-                <span className="text-slate-600 font-medium">Verified Email</span>
-                <span className="font-bold text-slate-900">
-                  {student.email ? student.email.replace(/(.{3})(.*)(@.*)/, '$1••••$3') : 'keerthana.r••••@gmail.com'}
-                </span>
-              </div>
-            </div>
 
             <p className="text-xs text-slate-400 font-medium leading-relaxed pt-2">
               For regulatory compliance and certificate security, changes to student contact records must be authenticated through your campus HR desk.
@@ -3164,7 +3241,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
                     await createTrainerDoubt({
                       studentId: student.studentId,
                       studentName: student.name,
-                      trainer: selectedTrainer?.name || 'Dr. Vikram C.',
+                      trainer: selectedTrainer?.name || (trainersList[0]?.name || 'Course Faculty'),
                       subject: student.course,
                       chapter: student.currentStage || 'Module 1',
                       question: doubtText,
@@ -3261,7 +3338,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
                 <span className="text-lg font-bold text-[#483ec7]">₹{student.balanceDue.toLocaleString()}</span>
               </div>
               <span className="text-[10px] bg-rose-100 text-rose-700 font-bold px-2 py-0.5 rounded">
-                DUE 30 MAY
+                PENDING DUES
               </span>
             </div>
 
@@ -3363,11 +3440,11 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
               <Video className="w-6 h-6" />
             </div>
             <h3 className="text-base font-bold text-slate-900">Virtual Classroom Connecting</h3>
-            <p className="text-xs text-slate-500 mt-1">CPT Coding — Surgery Section · Rajesh M.</p>
+            <p className="text-xs text-slate-500 mt-1">{student.course} — {student.currentStage} · {trainersList[0]?.name || 'Faculty Lead'}</p>
             <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs text-slate-600 my-4 text-left">
               <div>• Audio/Video ready</div>
-              <div>• Session ID: TF-CPC-EVE-07</div>
-              <div>• Room 2 Gandhipuram & Webinar Live Stream</div>
+              <div>• Session ID: {student.studentId}-LIVE</div>
+              <div>• {student.location} &amp; Webinar Live Stream</div>
             </div>
 
             <div className="flex gap-2 justify-center">
@@ -3407,9 +3484,9 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
 
             <div className="mt-4 divide-y divide-slate-100 text-xs">
               <div className="py-2.5 flex justify-between"><span className="text-slate-500">Center</span><span className="font-semibold">{student.location}</span></div>
-              <div className="py-2.5 flex justify-between"><span className="text-slate-500">Batch Strength</span><span className="font-semibold">24 Students</span></div>
-              <div className="py-2.5 flex justify-between"><span className="text-slate-500">Faculty In-Charge</span><span className="font-semibold">Rajesh M. & Dr. Vikram C.</span></div>
-              <div className="py-2.5 flex justify-between"><span className="text-slate-500">Target AAPC Exam</span><span className="font-semibold">Cycle August 2026</span></div>
+              <div className="py-2.5 flex justify-between"><span className="text-slate-500">Program</span><span className="font-semibold">{student.course}</span></div>
+              <div className="py-2.5 flex justify-between"><span className="text-slate-500">Faculty In-Charge</span><span className="font-semibold">{trainersList.length > 0 ? trainersList.map(t => t.name).slice(0, 2).join(' & ') : 'Course Faculty'}</span></div>
+              <div className="py-2.5 flex justify-between"><span className="text-slate-500">Target Exam Status</span><span className="font-semibold">{student.examStatus}</span></div>
             </div>
 
             <div className="mt-5 text-right">
@@ -3830,9 +3907,16 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
               <div>
                 <label className="font-semibold text-slate-700 block mb-1">Interviewer</label>
                 <select className="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-900">
-                  <option>Faith A. (Soft Skills & Corporate Lead)</option>
-                  <option>Rajesh M. (CPT / ICD Technical Faculty)</option>
-                  <option>Dr. Vikram C. (Chief Medical Coding Faculty)</option>
+                  {trainersList.length > 0 ? (
+                    trainersList.map((t, idx) => (
+                      <option key={t.id || idx}>{t.name} ({t.role || t.course})</option>
+                    ))
+                  ) : (
+                    <>
+                      <option>{student.counselor ? student.counselor.replace(' (Academic Advisor)', '') : 'Faculty Lead'} ({student.course} Faculty)</option>
+                      <option>Corporate Placement Directorate</option>
+                    </>
+                  )}
                 </select>
               </div>
 
@@ -3840,7 +3924,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
                 <label className="font-semibold text-slate-700 block mb-1">Interview Type</label>
                 <select className="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-900">
                   <option>HR & Behavioral (STAR Methodology)</option>
-                  <option>CPT Surgery & E/M Coding Technical Round</option>
+                  <option>Coding Technical & Case Scenarios</option>
                   <option>Comprehensive US Healthcare RCM Corporate Simulation</option>
                 </select>
               </div>
@@ -3848,9 +3932,9 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
               <div>
                 <label className="font-semibold text-slate-700 block mb-1">Preferred Date & Time</label>
                 <select className="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-900">
-                  <option>Tomorrow · 11:30 AM – 12:15 PM</option>
-                  <option>Friday · 4:00 PM – 4:45 PM</option>
-                  <option>Saturday · 10:00 AM – 10:45 AM</option>
+                  <option>Upcoming Slot · 11:30 AM – 12:15 PM</option>
+                  <option>Upcoming Slot · 4:00 PM – 4:45 PM</option>
+                  <option>Upcoming Slot · 10:00 AM – 10:45 AM</option>
                 </select>
               </div>
             </div>
@@ -3867,7 +3951,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
                 type="button"
                 onClick={() => {
                   setActiveModal(null);
-                  showToast('Mock Interview booked with Faith A.! Calendar invitation sent to your email.');
+                  showToast('Mock Interview booked! Calendar invitation sent to your email.');
                 }}
                 className="px-5 py-2.5 rounded-xl text-xs font-bold bg-[#242144] hover:bg-slate-900 text-white transition-colors"
               >
@@ -3890,7 +3974,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
             </button>
 
             <h3 className="text-base font-bold text-slate-900">Record 60-Sec Self-Intro</h3>
-            <p className="text-xs text-slate-400 mt-0.5">Used by Episource, Omega, and CorroHealth recruiters</p>
+            <p className="text-xs text-slate-400 mt-0.5">Used by corporate healthcare recruiters</p>
 
             <div className="mt-4 border-2 border-dashed border-slate-200 rounded-2xl p-6 text-center hover:border-[#483ec7] transition-colors cursor-pointer bg-slate-50/50">
               <Video className="w-8 h-8 text-[#483ec7] mx-auto mb-2" />
@@ -3933,7 +4017,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
             </button>
 
             <h3 className="text-base font-bold text-slate-900">Interview Improvement Checklist</h3>
-            <p className="text-xs text-slate-400 mt-0.5">Tasks assigned by Trainer Faith A.</p>
+            <p className="text-xs text-slate-400 mt-0.5">Tasks assigned by Course Faculty</p>
 
             <div className="mt-4 space-y-2.5 text-xs">
               <label className="flex items-center gap-2.5 p-3 rounded-xl border border-slate-200 bg-slate-50 cursor-pointer">
@@ -4121,7 +4205,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
               <div>
                 <label className="font-semibold text-slate-700 block mb-1">Select Query Topic</label>
                 <select className="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-900">
-                  <option>Instalment Extension Request (Due 30 May)</option>
+                  <option>Instalment Extension Request</option>
                   <option>Payment Receipt Download Assistance</option>
                   <option>Scholarship / Discount Adjustment</option>
                   <option>Payment Verification (UPI / NetBanking)</option>

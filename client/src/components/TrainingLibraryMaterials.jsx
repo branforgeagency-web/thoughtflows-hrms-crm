@@ -29,7 +29,7 @@ import {
 } from 'lucide-react';
 
 export default function TrainingLibraryMaterials({ 
-  currentUser = { name: 'Revathi K', id: 'TR-CBG-001', branch: 'Coimbatore Gandhipuram' } 
+  currentUser = {} 
 }) {
   // Filter active tab
   const [activeTab, setActiveTab] = useState('All');

@@ -86,6 +86,28 @@ const ROLE_TO_DEPARTMENT = {
   'Marketing Team': 'Growth & Marketing'
 };
 
+// Extra inputs a Trainer login needs beyond the generic staff account —
+// these seed the Trainer roster (used for demo-booking eligibility,
+// course matching & shift checks) at the same time the login is created.
+const TRAINER_COURSES = [
+  { key: 'CPC', label: 'CPC — Certified Professional Coder' },
+  { key: 'CIC', label: 'CIC — Certified Inpatient Coder' },
+  { key: 'CPB', label: 'CPB — Certified Professional Biller & RCM' },
+  { key: 'CPMA', label: 'CPMA — Certified Medical Auditor' },
+  { key: 'CCS', label: 'CCS — Certified Coding Specialist' },
+  { key: 'CRC', label: 'CRC — Certified Risk Adjustment' },
+  { key: 'COC', label: 'COC — Certified Outpatient Coder' },
+  { key: 'EMCT', label: 'EMCT Intermediate & Terminology' }
+];
+
+const TRAINER_LANGUAGES = ['Tamil', 'English', 'Telugu', 'Malayalam', 'Hindi', 'Kannada'];
+
+const timeToMinutes = (hhmm) => {
+  if (!hhmm) return 0;
+  const [h, m] = hhmm.split(':').map(Number);
+  return (h || 0) * 60 + (m || 0);
+};
+
 // Progressive Incentive Policy (Matches Exact User Reference Screenshot)
 const DEFAULT_INCENTIVE_POLICY = {
   defaultTarget: 25,
@@ -604,10 +626,19 @@ export default function AdminManagementDashboard({
   const [newUserForm, setNewUserForm] = useState({
     name: '',
     email: '',
+    phone: '',
     role: 'HR',
     department: 'Admissions & Counseling',
     branch: 'Saravanampatti',
-    password: ''
+    password: '',
+    // Trainer-only fields — shown when role === 'Trainer' and used to
+    // seed the Trainer roster (Demo Booking eligibility engine)
+    trainerId: '',
+    expertCourse: 'CPC',
+    trainerLanguages: ['Tamil', 'English'],
+    shiftStart: '06:00',
+    shiftEnd: '14:00',
+    demoTrainer: false
   });
 
   // Selected Department Filter for Employee Directory
@@ -774,6 +805,7 @@ export default function AdminManagementDashboard({
       id: `usr_${Date.now()}`,
       name: newUserForm.name,
       email: newUserForm.email.toLowerCase(),
+      phone: newUserForm.phone || '',
       password: newUserForm.password || 'Thoughtflows@2026',
       role: newUserForm.role,
       department: newUserForm.department,
@@ -792,6 +824,31 @@ export default function AdminManagementDashboard({
       }
     } catch (err) {
       console.warn('Backend user save notice', err.message);
+    }
+
+    // Trainer accounts also need a Trainer roster record (Demo Booking
+    // eligibility engine matches on course/language/branch/shift — none of
+    // which live on the generic User login).
+    if (newUserForm.role === 'Trainer' && newUserForm.trainerId) {
+      const courseLabel = TRAINER_COURSES.find((c) => c.key === newUserForm.expertCourse)?.label || newUserForm.expertCourse;
+      try {
+        await axios.put(`/api/trainer/settings/${encodeURIComponent(newUserForm.trainerId)}`, {
+          trainerName: newUserForm.name,
+          courseKey: newUserForm.expertCourse,
+          expertCourse: courseLabel,
+          specialization: courseLabel,
+          languages: newUserForm.trainerLanguages,
+          branchName: newUserForm.branch,
+          demoTrainer: newUserForm.demoTrainer,
+          active: true,
+          isExperienced: true,
+          shift: `${newUserForm.shiftStart} – ${newUserForm.shiftEnd}`,
+          shiftStartMin: timeToMinutes(newUserForm.shiftStart),
+          shiftEndMin: timeToMinutes(newUserForm.shiftEnd)
+        });
+      } catch (err) {
+        console.warn('Trainer roster save notice', err.message);
+      }
     }
 
     const nextUsers = [newUser, ...users];
@@ -819,10 +876,17 @@ export default function AdminManagementDashboard({
     setNewUserForm({
       name: '',
       email: '',
+      phone: '',
       role: 'HR',
       department: 'Admissions & Counseling',
       branch: 'Saravanampatti',
-      password: ''
+      password: '',
+      trainerId: '',
+      expertCourse: 'CPC',
+      trainerLanguages: ['Tamil', 'English'],
+      shiftStart: '06:00',
+      shiftEnd: '14:00',
+      demoTrainer: false
     });
     showToast(`✓ Account created for ${newUser.name}`);
   };
@@ -2561,7 +2625,10 @@ export default function AdminManagementDashboard({
                             setNewUserForm(prev => ({
                               ...prev,
                               role,
-                              department: ROLE_TO_DEPARTMENT[role] || 'Admissions & Counseling'
+                              department: ROLE_TO_DEPARTMENT[role] || 'Admissions & Counseling',
+                              trainerId: role === 'Trainer' && !prev.trainerId
+                                ? `TR-${Math.floor(100 + Math.random() * 900)}`
+                                : prev.trainerId
                             }));
                             setIsRoleDropdownOpen(false);
                           }}
@@ -2622,6 +2689,136 @@ export default function AdminManagementDashboard({
                   <ChevronDown className="w-4 h-4 text-slate-500 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none stroke-[2.5]" />
                 </div>
               </div>
+
+              {(newUserForm.role === 'HR' || newUserForm.role === 'Dept Head · HR') && (
+                <div className="space-y-4 rounded-2xl border border-rose-100 bg-rose-50/50 p-4">
+                  <p className="text-[11px] font-extrabold text-rose-700 uppercase tracking-wider flex items-center gap-1.5">
+                    <Phone className="w-3.5 h-3.5" /> HR Details
+                  </p>
+
+                  <div>
+                    <label className="text-[#2563eb] font-extrabold text-[11px] tracking-wider uppercase mb-1.5 block">
+                      MOBILE NUMBER
+                    </label>
+                    <input
+                      type="tel"
+                      required
+                      placeholder="e.g., +91 98765 43210"
+                      value={newUserForm.phone}
+                      onChange={(e) => setNewUserForm({ ...newUserForm, phone: e.target.value })}
+                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 hover:border-slate-300 focus:border-blue-500 bg-white text-slate-800 placeholder:text-slate-400 focus:outline-none text-sm shadow-2xs font-medium transition-all"
+                    />
+                    <p className="text-[10.5px] text-slate-500 font-medium mt-1.5 leading-relaxed">
+                      Used as the Exotel agent number for the Click-to-Call feature — HR won't be able to call leads without it.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {newUserForm.role === 'Trainer' && (
+                <div className="space-y-4 rounded-2xl border border-blue-100 bg-blue-50/50 p-4">
+                  <p className="text-[11px] font-extrabold text-blue-700 uppercase tracking-wider flex items-center gap-1.5">
+                    <Award className="w-3.5 h-3.5" /> Trainer Details
+                  </p>
+
+                  <div>
+                    <label className="text-[#2563eb] font-extrabold text-[11px] tracking-wider uppercase mb-1.5 block">
+                      TRAINER ID
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g., TR-CBG-001"
+                      value={newUserForm.trainerId}
+                      onChange={(e) => setNewUserForm({ ...newUserForm, trainerId: e.target.value })}
+                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 hover:border-slate-300 focus:border-blue-500 bg-white text-slate-800 placeholder:text-slate-400 focus:outline-none text-sm shadow-2xs font-medium transition-all"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[#2563eb] font-extrabold text-[11px] tracking-wider uppercase mb-1.5 block">
+                      EXPERT COURSE / SPECIALIZATION
+                    </label>
+                    <div className="relative">
+                      <select
+                        value={newUserForm.expertCourse}
+                        onChange={(e) => setNewUserForm({ ...newUserForm, expertCourse: e.target.value })}
+                        className="w-full px-4 py-2.5 pr-10 rounded-xl border border-slate-200 hover:border-slate-300 focus:border-blue-500 bg-white text-slate-800 focus:outline-none text-sm shadow-2xs font-medium appearance-none cursor-pointer transition-all"
+                      >
+                        {TRAINER_COURSES.map((c) => (
+                          <option key={c.key} value={c.key}>{c.label}</option>
+                        ))}
+                      </select>
+                      <ChevronDown className="w-4 h-4 text-slate-500 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none stroke-[2.5]" />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-[#2563eb] font-extrabold text-[11px] tracking-wider uppercase mb-1.5 block">
+                      LANGUAGES TAUGHT
+                    </label>
+                    <div className="flex flex-wrap gap-2">
+                      {TRAINER_LANGUAGES.map((lang) => {
+                        const selected = newUserForm.trainerLanguages.includes(lang);
+                        return (
+                          <button
+                            type="button"
+                            key={lang}
+                            onClick={() => {
+                              const next = selected
+                                ? newUserForm.trainerLanguages.filter((l) => l !== lang)
+                                : [...newUserForm.trainerLanguages, lang];
+                              setNewUserForm({ ...newUserForm, trainerLanguages: next });
+                            }}
+                            className={`px-3 py-1.5 rounded-full text-[11px] font-bold border transition-all cursor-pointer ${
+                              selected
+                                ? 'bg-blue-600 border-blue-600 text-white'
+                                : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
+                            }`}
+                          >
+                            {lang}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[#2563eb] font-extrabold text-[11px] tracking-wider uppercase mb-1.5 block">
+                        SHIFT START
+                      </label>
+                      <input
+                        type="time"
+                        value={newUserForm.shiftStart}
+                        onChange={(e) => setNewUserForm({ ...newUserForm, shiftStart: e.target.value })}
+                        className="w-full px-4 py-2.5 rounded-xl border border-slate-200 hover:border-slate-300 focus:border-blue-500 bg-white text-slate-800 focus:outline-none text-sm shadow-2xs font-medium transition-all"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[#2563eb] font-extrabold text-[11px] tracking-wider uppercase mb-1.5 block">
+                        SHIFT END
+                      </label>
+                      <input
+                        type="time"
+                        value={newUserForm.shiftEnd}
+                        onChange={(e) => setNewUserForm({ ...newUserForm, shiftEnd: e.target.value })}
+                        className="w-full px-4 py-2.5 rounded-xl border border-slate-200 hover:border-slate-300 focus:border-blue-500 bg-white text-slate-800 focus:outline-none text-sm shadow-2xs font-medium transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={newUserForm.demoTrainer}
+                      onChange={(e) => setNewUserForm({ ...newUserForm, demoTrainer: e.target.checked })}
+                      className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                    />
+                    <span className="text-xs font-bold text-slate-700">Eligible to receive demo booking notifications</span>
+                  </label>
+                </div>
+              )}
 
               <div className="pt-3 flex items-center gap-3">
                 <button

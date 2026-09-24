@@ -15,7 +15,7 @@ import {
 import { updateStudent, getStudents } from '../services/api';
 
 export default function TrainingPlacementPrep({
-  currentUser = { name: 'Dr. Vikram C.', id: 'TR-ACAD-001', branch: 'Coimbatore Gandhipuram' },
+  currentUser = {},
   students: propStudents = null
 }) {
   const [students, setStudents] = useState([]);
@@ -23,20 +23,35 @@ export default function TrainingPlacementPrep({
   useEffect(() => {
     const initStudents = (rawList) => {
       return rawList.map(s => {
-        const isWeak = s.statusGroup === 'on_hold' || (s.attendancePct && s.attendancePct < 80);
-        const readiness = s.readinessScore || (isWeak ? 58 : 86);
+        const isWeak = s.statusGroup === 'on_hold' || (s.attendancePct != null && s.attendancePct < 80);
+        const mockScore = typeof s.mockScore === 'number' ? s.mockScore : (typeof s.mockInterviewScore === 'number' ? s.mockInterviewScore : 0);
+        const technicalScore = typeof s.technicalScore === 'number' ? s.technicalScore : 0;
+        const assessmentScore = typeof s.assessmentScore === 'number' ? s.assessmentScore : (s.avgAssessmentScore || 0);
+
+        const scoredComponents = [mockScore, technicalScore, assessmentScore].filter(v => v > 0);
+        const computedReadiness = scoredComponents.length > 0 
+          ? Math.round(scoredComponents.reduce((a, b) => a + b, 0) / scoredComponents.length)
+          : (typeof s.readinessScore === 'number' ? s.readinessScore : 0);
+        const readiness = s.readinessScore ?? computedReadiness;
+
+        const currentStatus = s.placementStatus === 'Referred to CCCP' 
+          ? 'Ready' 
+          : (s.placementStatus?.includes('Placed') 
+              ? 'Ready' 
+              : (readiness >= 75 ? 'Ready' : (readiness > 0 || isWeak ? 'Needs Revision' : 'Pending Evaluation')));
+
         return {
           id: s.studentId || s._id,
           realId: s._id,
           name: s.name,
           isWeak,
           readiness,
-          mockScore: s.mockInterview?.includes('74') ? 74 : (isWeak ? 55 : 88),
-          technicalScore: isWeak ? 52 : 82,
-          assessmentScore: isWeak ? 60 : 89,
-          currentStatus: s.placementStatus === 'Referred to CCCP' ? 'Ready' : (s.placementStatus?.includes('Placed') ? 'Ready' : (isWeak ? 'Needs Revision' : 'Ready')),
-          color: readiness >= 80 ? '#10b981' : readiness >= 70 ? '#f59e0b' : '#ef4444',
-          batch: `${s.course} (${s.mode || 'Online'})`,
+          mockScore,
+          technicalScore,
+          assessmentScore,
+          currentStatus,
+          color: readiness >= 80 ? '#10b981' : readiness >= 60 ? '#f59e0b' : '#ef4444',
+          batch: `${s.course || 'Medical Coding'} (${s.mode || 'Online'})`,
           notes: s.qualification ? `${s.qualification} · ${s.location || 'Coimbatore'}` : 'Under active placement mentorship'
         };
       });
@@ -84,7 +99,7 @@ export default function TrainingPlacementPrep({
         status,
         readiness: student?.readiness,
         mockScore: student?.mockScore,
-        updatedBy: currentUser.name,
+        updatedBy: currentUser?.name || currentUser?.userName || 'Faculty',
         timestamp: new Date().toISOString()
       };
       localStorage.setItem('TF_STORE', JSON.stringify(existing));

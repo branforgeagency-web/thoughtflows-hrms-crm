@@ -23,7 +23,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Palette,
-  RefreshCw
+  RefreshCw,
+  PhoneCall
 } from 'lucide-react';
 import HrPipelineView from './HrPipelineView';
 import HrFollowUpBoard from './HrFollowUpBoard';
@@ -34,10 +35,13 @@ import HrMySchedule from './HrMySchedule';
 import HrLmsSection from './HrLmsSection';
 import HrStudentFeesCrm from './HrStudentFeesCrm';
 import HrHandoverDesk from './HrHandoverDesk';
+import HrReportsView from './HrReportsView';
+import HrCallRecordingsTable from './HrCallRecordingsTable';
 import LeadCallModal from './LeadCallModal';
 import BookNewDemoModal from './BookNewDemoModal';
 import AddLeadModal from './AddLeadModal';
-import { getStudents, getLeads, createLead, getDemos, createDemo, onDataUpdate } from '../services/api';
+import { getStudents, getLeads, createLead, updateLead, getDemos, createDemo, onDataUpdate } from '../services/api';
+import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 
 export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, onSwitchDepartment, theme = 'classic' }) {
   // Persist active tab across browser refresh
@@ -95,6 +99,14 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   const [demos, setDemos] = useState([]);
   const [loading, setLoading] = useState(true);
 
+  // Elevated user check (Admin / Super Admin / Leadership can toggle All vs My Leads)
+  const isElevatedUser = currentUser?.role === 'Super Admin' ||
+    currentUser?.role === 'Admin' ||
+    currentUser?.department === 'admin' ||
+    currentUser?.department === 'leadership';
+
+  const [scopeMode, setScopeMode] = useState('mine'); // 'mine' | 'all'
+
   const showToast = (msg) => {
     setToastMsg(msg);
     setTimeout(() => setToastMsg(null), 3000);
@@ -103,9 +115,11 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   const loadAllData = async () => {
     try {
       setLoading(true);
+      const counselorFilter = currentUser?.name?.trim();
+      const shouldFilterOnServer = counselorFilter && (!isElevatedUser || scopeMode === 'mine');
       const [stRes, ldRes, dmRes] = await Promise.all([
-        getStudents(),
-        getLeads(),
+        getStudents(shouldFilterOnServer ? { hrName: counselorFilter } : undefined),
+        getLeads(shouldFilterOnServer ? { counselor: counselorFilter } : undefined),
         getDemos()
       ]);
       setStudents(Array.isArray(stRes) ? stRes : []);
@@ -126,7 +140,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       }
     });
     return unsub;
-  }, []);
+  }, [scopeMode, currentUser?.name]);
 
   const handleAddLeadSubmit = async (leadData) => {
     try {
@@ -166,34 +180,72 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   const userFirstName = userName.split(' ')[0] || 'Kavitha';
   const branchName = currentUser?.branch || 'Saravanampatti Branch (CBE)';
 
-  // End of day numbers (real calculations)
+  // Counselor Scoping: Strictly filter leads, students, and demos for the logged-in counselor
+  const scopedLeads = useMemo(() => {
+    if (scopeMode === 'all' && isElevatedUser) return leads;
+    const target = (currentUser?.name || '').trim().toLowerCase();
+    if (!target) return leads;
+    return leads.filter(l => {
+      const assigned = (l.counselorAssigned || l.allocatedTo || '').trim().toLowerCase();
+      return assigned === target || assigned.includes(target) || target.includes(assigned);
+    });
+  }, [leads, scopeMode, isElevatedUser, currentUser?.name]);
+
+  const scopedStudents = useMemo(() => {
+    if (scopeMode === 'all' && isElevatedUser) return students;
+    const target = (currentUser?.name || '').trim().toLowerCase();
+    if (!target) return students;
+    return students.filter(s => {
+      const hr = (s.hrName || '').trim().toLowerCase();
+      return hr === target || hr.includes(target) || target.includes(hr);
+    });
+  }, [students, scopeMode, isElevatedUser, currentUser?.name]);
+
+  const scopedDemos = useMemo(() => {
+    if (scopeMode === 'all' && isElevatedUser) return demos;
+    const target = (currentUser?.name || '').trim().toLowerCase();
+    const leadPhones = new Set(
+      scopedLeads.map(l => (l.phone || '').replace(/\D/g, '').slice(-10)).filter(Boolean)
+    );
+    return demos.filter(d => {
+      const ph = (d.phone || '').replace(/\D/g, '').slice(-10);
+      const isLeadCandidate = leadPhones.has(ph);
+      const isTrainerOrCounselor = target && (
+        (d.counselor || '').toLowerCase().includes(target) ||
+        (d.bookedBy || '').toLowerCase().includes(target)
+      );
+      return isLeadCandidate || isTrainerOrCounselor;
+    });
+  }, [demos, scopedLeads, scopeMode, isElevatedUser, currentUser?.name]);
+
+  // End of day numbers (real calculations from scoped data)
   const closureMetrics = useMemo(() => {
-    const admittedCount = students.length;
-    const demosCount = demos.length;
-    const pendingCount = leads.filter(l => l.stage !== 'admitted' && l.stage !== 'closed').length;
+    const admittedCount = scopedStudents.length;
+    const demosCount = scopedDemos.length;
+    const pendingCount = scopedLeads.filter(l => l.stage !== 'admitted' && l.stage !== 'closed').length;
     return {
-      callsMade: 12 + leads.reduce((acc, l) => acc + (l.callCount || 0), 0),
-      connected: 8 + leads.filter(l => l.stage !== 'new').length,
+      callsMade: scopedLeads.reduce((acc, l) => acc + (l.callCount || 0), 0),
+      connected: scopedLeads.filter(l => l.stage !== 'new').length,
       demosBooked: demosCount,
       admissions: admittedCount,
       feesCollected: `₹${(admittedCount * 21000).toLocaleString('en-IN')}`,
       pendingFus: pendingCount
     };
-  }, [students, demos, leads]);
+  }, [scopedStudents, scopedDemos, scopedLeads]);
 
   // Dynamic Navigation Tabs with real database counts
   const NAV_TABS = useMemo(() => {
-    const pipelineCount = leads.length.toString();
-    const followUpCount = leads.filter(l => l.stage !== 'admitted' && l.stage !== 'closed').length.toString();
-    const admittedCount = students.length.toString();
-    const handoverCount = students.filter(s => s.handoverStatus !== 'Sent').length.toString();
+    const pipelineCount = scopedLeads.length.toString();
+    const followUpCount = scopedLeads.filter(l => l.stage !== 'admitted' && l.stage !== 'closed').length.toString();
+    const admittedCount = scopedStudents.length.toString();
+    const handoverCount = scopedStudents.filter(s => s.handoverStatus !== 'Sent').length.toString();
 
     return [
       { name: 'Home', badge: null, icon: Home, iconBg: 'bg-[#0e6977]', color: 'teal' },
-      { name: 'My Pipeline', badge: pipelineCount, icon: Filter, iconBg: 'bg-[#7c3aed]', badgeBg: 'bg-rose-500', color: 'purple' },
-      { name: 'Follow-up Board', badge: followUpCount, icon: Clock, iconBg: 'bg-amber-500', badgeBg: 'bg-rose-500', color: 'orange' },
-      { name: 'Demo Desk', badge: demos.length > 0 ? demos.length.toString() : null, icon: Monitor, iconBg: 'bg-cyan-600', color: 'cyan' },
+      { name: 'Pipeline & Follow-ups', badge: pipelineCount, icon: Filter, iconBg: 'bg-[#7c3aed]', badgeBg: 'bg-rose-500', color: 'purple' },
+      { name: 'Demo Desk', badge: scopedDemos.length > 0 ? scopedDemos.length.toString() : null, icon: Monitor, iconBg: 'bg-cyan-600', color: 'cyan' },
       { name: 'Admitted Students', badge: admittedCount, icon: GraduationCap, iconBg: 'bg-emerald-600', badgeBg: 'bg-emerald-500', color: 'emerald' },
+      { name: 'Call Recordings', badge: null, icon: PhoneCall, iconBg: 'bg-[#0e6977]', color: 'teal' },
       { name: 'My Targets', badge: null, icon: Target, iconBg: 'bg-rose-500', color: 'pink' },
       { name: 'Reports', badge: null, icon: BarChart2, iconBg: 'bg-amber-600', color: 'amber' },
       { name: 'My Schedule', badge: null, icon: Calendar, iconBg: 'bg-blue-500', color: 'blue' },
@@ -201,12 +253,12 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       { name: 'Fees', badge: null, icon: IndianRupee, iconBg: 'bg-teal-600', color: 'teal' },
       { name: 'Handover', badge: handoverCount, icon: Repeat, iconBg: 'bg-orange-600', badgeBg: 'bg-orange-500', color: 'orange' },
     ];
-  }, [leads, students, demos]);
+  }, [scopedLeads, scopedStudents, scopedDemos]);
 
   // Dynamic Priority Queue from real leads
   const priorityQueue = useMemo(() => {
-    if (leads.length === 0) return [];
-    return leads.slice(0, 6).map((lead, idx) => {
+    if (scopedLeads.length === 0) return [];
+    return scopedLeads.slice(0, 6).map((lead, idx) => {
       const isNow = idx === 0 || lead.followUpTime === 'NOW';
       let actionText = 'CALL NOW';
       let actionStyle = 'bg-white border-2 border-slate-900 text-slate-900 hover:bg-slate-900 hover:text-white font-extrabold';
@@ -228,12 +280,12 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         actionStyle
       };
     });
-  }, [leads]);
+  }, [scopedLeads]);
 
   // Dynamic Real Activity Feed
   const recentActivities = useMemo(() => {
     const list = [];
-    students.slice(0, 3).forEach((s, idx) => {
+    scopedStudents.slice(0, 3).forEach((s, idx) => {
       list.push({
         time: `1${5 - idx}:${42 - idx * 10}`,
         primary: `${s.name} enrolled (${s.feeAmount || '₹25,000'})`,
@@ -242,7 +294,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         tagStyle: 'bg-emerald-50 text-emerald-700 border-emerald-200'
       });
     });
-    demos.slice(0, 2).forEach((d, idx) => {
+    scopedDemos.slice(0, 2).forEach((d, idx) => {
       list.push({
         time: `1${4 - idx}:${18 - idx * 8}`,
         primary: `${d.candidateName} demo ${d.status}`,
@@ -251,7 +303,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         tagStyle: 'bg-blue-50 text-blue-700 border-blue-200'
       });
     });
-    leads.slice(0, 2).forEach((l, idx) => {
+    scopedLeads.slice(0, 2).forEach((l, idx) => {
       list.push({
         time: `1${2 - idx}:${52 - idx * 7}`,
         primary: `New Lead: ${l.fullName || l.name}`,
@@ -261,7 +313,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       });
     });
     return list;
-  }, [students, demos, leads]);
+  }, [scopedStudents, scopedDemos, scopedLeads]);
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-[#f0faf8] font-sans text-slate-800 animate-fadeIn">
@@ -593,55 +645,93 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         {activeTab === 'My Schedule' ? (
           <HrMySchedule isOnBreak={isOnBreak} setIsOnBreak={setIsOnBreak} />
         ) : activeTab === 'My Targets' ? (
-          <HrMyTargets />
+          <HrMyTargets students={scopedStudents} currentUser={currentUser} />
         ) : activeTab === 'Admitted Students' ? (
           <HrAdmittedStudentsCrm 
-            students={students} 
+            students={scopedStudents} 
             onRefreshStudents={loadAllData} 
             currentUser={currentUser} 
           />
+        ) : activeTab === 'Call Recordings' ? (
+          <HrCallRecordingsTable currentUser={currentUser} />
         ) : activeTab === 'Demo Desk' ? (
           <HrDemoDesk 
-            demos={demos} 
+            demos={scopedDemos} 
             onRefreshDemos={loadAllData} 
             onBookDemoClick={() => setShowBookDemoModal(true)} 
           />
-        ) : activeTab === 'Follow-up Board' ? (
-          <HrFollowUpBoard 
-            leads={leads} 
-            onRefreshLeads={loadAllData} 
-          />
-        ) : activeTab === 'My Pipeline' ? (
+        ) : (activeTab === 'Pipeline & Follow-ups' || activeTab === 'My Pipeline' || activeTab === 'Follow-up Board') ? (
           <HrPipelineView 
-            leads={leads} 
+            leads={scopedLeads} 
             onRefreshLeads={loadAllData} 
             onAddLeadClick={() => setShowAddLeadModal(true)} 
+            initialViewMode={activeTab === 'Follow-up Board' ? 'followup' : 'kanban'}
+            currentUser={currentUser}
           />
         ) : activeTab === 'LMS' ? (
           <HrLmsSection currentUser={currentUser} />
         ) : activeTab === 'Fees' ? (
           <HrStudentFeesCrm 
-            students={students} 
+            students={scopedStudents} 
             onRefreshStudents={loadAllData} 
             currentUser={currentUser} 
           />
         ) : activeTab === 'Handover' ? (
           <HrHandoverDesk 
-            students={students} 
+            students={scopedStudents} 
             onRefreshStudents={loadAllData} 
             currentUser={currentUser} 
+          />
+        ) : activeTab === 'Reports' ? (
+          <HrReportsView
+            leads={scopedLeads}
+            students={scopedStudents}
+            demos={scopedDemos}
+            currentUser={currentUser}
           />
         ) : activeTab === 'Home' ? (
           <>
         
         {/* Greeting & Quick Context */}
         <div className="text-left">
-          <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
-            Good afternoon, <span className="text-[#0e6977]">{userFirstName}</span>
-          </h1>
-          <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
-            Mon • 21 May 2026 • {branchName} • You have <strong className="text-slate-800 font-semibold">{closureMetrics.pendingFus} pending follow-ups</strong> in your pipeline
-          </p>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
+                Good afternoon, <span className="text-[#0e6977]">{userFirstName}</span>
+              </h1>
+              <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
+                Mon • 21 May 2026 • {branchName} • You have <strong className="text-slate-800 font-semibold">{closureMetrics.pendingFus} pending follow-ups</strong> in your pipeline
+              </p>
+            </div>
+            {/* Scoping status pill */}
+            <div className="flex items-center gap-2">
+              {isElevatedUser ? (
+                <div className="flex items-center bg-white p-1 rounded-xl border border-slate-200 shadow-xs text-xs font-bold">
+                  <button
+                    onClick={() => setScopeMode('mine')}
+                    className={`px-3 py-1 rounded-lg transition-all ${
+                      scopeMode === 'mine' ? 'bg-[#0e6977] text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    👤 My Leads ({scopedLeads.length})
+                  </button>
+                  <button
+                    onClick={() => setScopeMode('all')}
+                    className={`px-3 py-1 rounded-lg transition-all ${
+                      scopeMode === 'all' ? 'bg-[#0e6977] text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    🌐 All Leads ({leads.length})
+                  </button>
+                </div>
+              ) : (
+                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-teal-50 border border-teal-200 text-teal-800 text-xs font-bold shadow-xs">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                  <span>My Workspace: {scopedLeads.length} Leads • {scopedStudents.length} Students</span>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
 
         {/* Golden Target Progress Banner */}
@@ -655,25 +745,25 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
                 MONTHLY TARGET • CURRENT CYCLE
               </span>
               <h3 className="text-base sm:text-lg font-bold text-slate-900 mt-1">
-                Target 25 admissions • {students.length} closed
+                Target 25 admissions • {scopedStudents.length} closed
               </h3>
               <p className="text-xs text-amber-900/80">
-                {students.length >= 25 
-                  ? `Goal achieved! ${students.length - 25} surplus admissions qualify for performance incentive.` 
-                  : `${25 - students.length} more to hit your target — then each extra admission earns incentive.`}
+                {scopedStudents.length >= 25 
+                  ? `Goal achieved! ${scopedStudents.length - 25} surplus admissions qualify for performance incentive.` 
+                  : `${25 - scopedStudents.length} more to hit your target — then each extra admission earns incentive.`}
               </p>
             </div>
           </div>
 
           <div className="w-full sm:w-64 flex flex-col items-end">
             <div className="flex items-center justify-between w-full text-xs font-extrabold text-slate-800 mb-1">
-              <span>{students.length} / 25</span>
-              <span className="text-amber-700">{Math.min(100, Math.round((students.length / 25) * 100))}%</span>
+              <span>{scopedStudents.length} / 25</span>
+              <span className="text-amber-700">{Math.min(100, Math.round((scopedStudents.length / 25) * 100))}%</span>
             </div>
             <div className="w-full h-2.5 bg-amber-200/60 rounded-full overflow-hidden">
               <div 
                 className="h-full bg-gradient-to-r from-amber-400 to-[#73C1CC] rounded-full transition-all duration-500" 
-                style={{ width: `${Math.min(100, Math.round((students.length / 25) * 100))}%` }}
+                style={{ width: `${Math.min(100, Math.round((scopedStudents.length / 25) * 100))}%` }}
               />
             </div>
             <span className="text-[10px] font-bold text-amber-800 mt-1 uppercase tracking-wider">
@@ -729,8 +819,8 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
                 <Calendar className="w-3.5 h-3.5" />
               </div>
             </div>
-            <div className="text-3xl font-extrabold text-slate-900">{demos.length}</div>
-            <div className="text-xs text-slate-500 mt-1 font-medium">{demos.filter(d => d.status === 'booked').length} upcoming · {demos.filter(d => d.status === 'attended').length} attended</div>
+            <div className="text-3xl font-extrabold text-slate-900">{scopedDemos.length}</div>
+            <div className="text-xs text-slate-500 mt-1 font-medium">{scopedDemos.filter(d => d.status === 'booked').length} upcoming · {scopedDemos.filter(d => d.status === 'attended').length} attended</div>
           </div>
 
           {/* Card 4 */}
@@ -743,7 +833,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
                 <CheckCircle2 className="w-3.5 h-3.5" />
               </div>
             </div>
-            <div className="text-3xl font-extrabold text-[#0e6977]">{students.length}</div>
+            <div className="text-3xl font-extrabold text-[#0e6977]">{scopedStudents.length}</div>
             <div className="text-xs text-[#0e6977] mt-1 font-bold flex items-center gap-1">
               <TrendingUp className="w-3 h-3" /> Live Enrolled Students
             </div>
@@ -756,14 +846,6 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
           {/* Left: Today's Priority Queue (7 cols) */}
           <div className="lg:col-span-7 bg-white rounded-2xl border border-slate-200/80 p-5 shadow-xs flex flex-col justify-between relative">
             
-            {/* Floating Course Catalog Pill Badge */}
-            <div className="absolute -left-3 top-2/3 -translate-y-1/2 hidden md:block">
-              <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-100 hover:bg-amber-200 border border-amber-300 text-amber-900 text-xs font-extrabold shadow-md transition-transform hover:scale-105">
-                <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
-                <span>Course Catalog</span>
-              </button>
-            </div>
-
             <div>
               {/* Card Header */}
               <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-3">
@@ -772,7 +854,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
                   <h3 className="text-sm font-bold text-slate-900">Today's Priority Queue</h3>
                 </div>
                 <span className="text-xs text-slate-500 font-medium">
-                  12 tasks • 8 done • 4 pending
+                  {closureMetrics.pendingFus} pending in pipeline
                 </span>
               </div>
 
@@ -819,10 +901,14 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
                             setShowBookDemoModal(true);
                           } else {
                             setSelectedCallLead({
+                              id: item.leadData?._id || item.leadData?.id,
                               name: rawName,
                               details: item.details,
-                              phone: item.leadData?.phone || '+919876500000',
-                              source: item.leadData?.sourceName || 'Direct'
+                              phone: item.leadData?.phone || '',
+                              source: item.leadData?.sourceName || 'Direct',
+                              stage: item.leadData?.stage,
+                              callCount: item.leadData?.callCount || 0,
+                              counselorAssigned: item.leadData?.counselorAssigned
                             });
                           }
                         }}
@@ -988,10 +1074,10 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             </div>
             <div className="flex items-center justify-center gap-3 pt-2">
               <button
-                onClick={() => setActiveTab('My Pipeline')}
+                onClick={() => setActiveTab('Pipeline & Follow-ups')}
                 className="px-4 py-2 rounded-xl bg-[#7c3aed] text-white text-xs font-bold shadow-xs hover:bg-[#6d28d9] transition-all"
               >
-                Open My Pipeline (47 Leads)
+                Open Pipeline & Follow-ups ({scopedLeads.length} Leads)
               </button>
               <button
                 onClick={() => setActiveTab('Home')}
@@ -1009,8 +1095,44 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         isOpen={Boolean(selectedCallLead)}
         onClose={() => setSelectedCallLead(null)}
         leadData={selectedCallLead}
-        onSave={(data) => {
-          console.log('Call log saved:', data);
+        currentUser={currentUser}
+        onSave={async (data) => {
+          const leadId = selectedCallLead?._id || selectedCallLead?.id;
+          if (!leadId) {
+            showToast('Could not save — this lead has no database record yet.');
+            return;
+          }
+          const update = {
+            callCount: (selectedCallLead.callCount || 0) + 1,
+            lastCallTime: new Date().toISOString(),
+            notes: data.notes || undefined,
+            followUpNote: data.notes || undefined,
+            followUpDate: data.followUpDate || undefined,
+            followUpTime: data.followUpTime || undefined,
+            ...(data.leadForm ? {
+              fullName: data.leadForm.name,
+              name: data.leadForm.name,
+              phone: data.leadForm.phone,
+              whatsappNumber: data.leadForm.whatsappNumber,
+              age: data.leadForm.age,
+              gender: data.leadForm.gender,
+              education: data.leadForm.education,
+              currentRole: data.leadForm.currentRole,
+              experienceYrs: data.leadForm.experienceYrs,
+              location: data.leadForm.location,
+              course: data.leadForm.course,
+              budget: data.leadForm.budget,
+              batchTiming: data.leadForm.batchTiming,
+              decisionStatus: data.leadForm.decisionStatus,
+            } : {})
+          };
+          if (data.stage) update.stage = data.stage;
+          // Strip undefined keys so we never overwrite real saved values with nothing
+          Object.keys(update).forEach((k) => update[k] === undefined && delete update[k]);
+
+          const updated = await updateLead(leadId, update);
+          setLeads((prev) => prev.map((l) => ((l._id || l.id) === leadId ? updated : l)));
+          showToast(`✓ Call outcome saved for ${data.leadForm?.name || selectedCallLead.name} (${data.outcome}, ${Math.round(data.durationSeconds)}s)`);
         }}
       />
 
@@ -1039,10 +1161,8 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
               >Copy</button>
               <button
                 onClick={() => {
-                  let p = String(studentLogin.phone || '').replace(/\D/g, '');
-                  if (p.length === 10) p = '91' + p;
                   const text = `Hi ${studentLogin.name}, welcome to Thoughtflows! Your student dashboard login\nEmail: ${studentLogin.email}\nPassword: ${studentLogin.password}`;
-                  window.open(`https://wa.me/${p}?text=${encodeURIComponent(text)}`, '_blank', 'noopener');
+                  redirectToWhatsAppWeb(studentLogin.phone, text);
                 }}
                 className="flex-1 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold"
               >Send via WhatsApp</button>

@@ -18,7 +18,6 @@ export default function HrMySchedule({ isOnBreak, setIsOnBreak }) {
   const [activeHolidayTab, setActiveHolidayTab] = useState('india'); // india, international
   const [showLeaveModal, setShowLeaveModal] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
-  const [showCatalogModal, setShowCatalogModal] = useState(false);
 
   // Local break state fallback if parent props not provided
   const [localBreak, setLocalBreak] = useState(false);
@@ -318,17 +317,6 @@ export default function HrMySchedule({ isOnBreak, setIsOnBreak }) {
         </div>
       </div>
 
-      {/* Floating Course Catalog Button */}
-      <div className="pt-2">
-        <button
-          onClick={() => setShowCatalogModal(true)}
-          className="flex items-center gap-2 bg-[#fef3c7] hover:bg-[#fde68a] text-[#92400e] border border-amber-300 font-bold text-xs py-2.5 px-4 rounded-full shadow-sm transition-all hover:scale-[1.02] active:scale-95"
-        >
-          <span>💡</span>
-          <span>Course Catalog</span>
-        </button>
-      </div>
-
       {/* Apply for Leave Modal */}
       {showLeaveModal && (
         <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150">
@@ -484,52 +472,6 @@ export default function HrMySchedule({ isOnBreak, setIsOnBreak }) {
         </div>
       )}
 
-      {/* Course Catalog Modal */}
-      {showCatalogModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl p-6 max-w-lg w-full shadow-2xl border border-amber-200 space-y-4 animate-in fade-in zoom-in-95">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div className="flex items-center gap-2">
-                <span className="text-xl">💡</span>
-                <h3 className="font-extrabold text-slate-900 text-base">Thoughtflows Medical Coding Catalog</h3>
-              </div>
-              <button
-                onClick={() => setShowCatalogModal(false)}
-                className="w-7 h-7 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 flex items-center justify-center text-xs font-bold"
-              >
-                ✕
-              </button>
-            </div>
-
-            <div className="space-y-3 text-xs">
-              <div className="p-3 rounded-2xl bg-teal-50 border border-teal-200">
-                <div className="font-bold text-teal-950 text-sm">CPC Intensive (AAPC Certified)</div>
-                <div className="text-teal-700 mt-0.5">Duration: 3 Months • Anatomy, ICD-10-CM, CPT, HCPCS Level II</div>
-                <div className="text-teal-900 font-black mt-1">Fee: ₹25,000</div>
-              </div>
-
-              <div className="p-3 rounded-2xl bg-purple-50 border border-purple-200">
-                <div className="font-bold text-purple-950 text-sm">Comprehensive Medical Coding + Live Hospital Internship</div>
-                <div className="text-purple-700 mt-0.5">Duration: 4.5 Months • US Healthcare RCM + Live EHR charting</div>
-                <div className="text-purple-900 font-black mt-1">Fee: ₹32,000 (100% Placement Guarantee)</div>
-              </div>
-
-              <div className="p-3 rounded-2xl bg-amber-50 border border-amber-200">
-                <div className="font-bold text-amber-950 text-sm">Fast-Track Weekend Batch for Life Science Graduates</div>
-                <div className="text-amber-700 mt-0.5">Duration: 8 Weeks • Saturday & Sunday • Mock Tests & AAPC Exam Prep</div>
-                <div className="text-amber-900 font-black mt-1">Fee: ₹21,000</div>
-              </div>
-            </div>
-
-            <button
-              onClick={() => setShowCatalogModal(false)}
-              className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-xs transition-all"
-            >
-              Close Catalog
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

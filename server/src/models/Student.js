@@ -14,6 +14,18 @@ const studentSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  whatsappNumber: {
+    type: String,
+    default: ''
+  },
+  additionalNumber: {
+    type: String,
+    default: ''
+  },
+  alternatePhone: {
+    type: String,
+    default: ''
+  },
   email: {
     type: String,
     default: 'student@thoughtflows.in'
@@ -102,6 +114,30 @@ const studentSchema = new mongoose.Schema({
   courseFee: {
     type: Number,
     default: 21000
+  },
+  paidAmount: {
+    type: Number,
+    default: 21000
+  },
+  pendingBalance: {
+    type: Number,
+    default: 0
+  },
+  paymentPlan: {
+    type: String,
+    default: 'Full Payment'
+  },
+  nextDueDate: {
+    type: String,
+    default: ''
+  },
+  examFee: {
+    type: Number,
+    default: 0
+  },
+  paymentMethod: {
+    type: String,
+    default: 'UPI / GPay / PhonePe'
   },
   statusGroup: {
     type: String,

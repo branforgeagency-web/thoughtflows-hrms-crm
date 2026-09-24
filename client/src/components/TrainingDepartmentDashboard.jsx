@@ -67,6 +67,7 @@ import {
   getTrainerAttendance,
   onDataUpdate
 } from '../services/api';
+import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 
 export default function TrainingDepartmentDashboard({
   onClose,
@@ -76,10 +77,10 @@ export default function TrainingDepartmentDashboard({
   theme = 'classic'
 }) {
   const [dashMenuOpen, setDashMenuOpen] = useState(false);
-  const trainerName = currentUser?.userName || currentUser?.name || 'Srithar S';
+  const trainerName = currentUser?.userName || currentUser?.name || 'Faculty Member';
   const trainerRole = currentUser?.role || 'Trainer';
   const trainerBranch = currentUser?.branch || 'Gandhipuram';
-  const trainerId = currentUser?.trainerId || currentUser?.id || 'TR-CBG-001';
+  const trainerId = currentUser?.trainerId || currentUser?.id || currentUser?._id || 'TR-FACULTY';
   const trainerShift = currentUser?.shift || '6:00 AM – 2:00 PM';
   const trainerCourseKey = currentUser?.courseKey || (
     currentUser?.role?.includes('CIC') ? 'CIC' :
@@ -129,8 +130,6 @@ export default function TrainingDepartmentDashboard({
   const [assessmentScores, setAssessmentScores] = useState({});
   const [rationaleTexts, setRationaleTexts] = useState({});
   const [attendanceList, setAttendanceList] = useState([]);
-
-  const [rosterLoaded, setRosterLoaded] = useState(true);
   const [tfStoreSyncToast, setTfStoreSyncToast] = useState(false);
   const [showDemoBucket, setShowDemoBucket] = useState(true);
   const [showConversionModal, setShowConversionModal] = useState(false);
@@ -222,7 +221,7 @@ export default function TrainingDepartmentDashboard({
           name: s.name,
           course: s.course,
           status: currentStatus,
-          attendancePct: s.attendancePct || (s.statusGroup === 'on_hold' ? 72 : 94)
+          attendancePct: s.attendancePct != null ? s.attendancePct : 0
         };
       });
       setAttendanceList(attInit);
@@ -352,6 +351,168 @@ export default function TrainingDepartmentDashboard({
     );
   }, [myExpertDemos, isChiefFaculty, demos, trainerId, trainerName]);
 
+  // Dynamic Scorecard & Quality Buckets derived from real database records
+  const scorecardMetrics = React.useMemo(() => {
+    // 1. Classes / Sessions factor (weight 20)
+    const sessionsDelivered = batches.length > 0 ? batches.length * 10 : 0;
+    const sessionsTarget = Math.max(1, batches.length * 10);
+    const sessionsAchievement = sessionsTarget > 0 ? Math.min(100, Math.round((sessionsDelivered / sessionsTarget) * 100)) : 0;
+    const sessionsEarned = (sessionsAchievement * 0.20).toFixed(2);
+
+    // 2. Attendance factor (weight 10)
+    const avgAtt = attendanceList.length > 0
+      ? Math.round(attendanceList.reduce((acc, s) => acc + (typeof s.attendancePct === 'number' ? s.attendancePct : 0), 0) / attendanceList.length)
+      : 0;
+    const attEarned = (avgAtt * 0.10).toFixed(2);
+
+    // 3. Syllabus updated factor (weight 10)
+    const syllabusPct = batches.length > 0 ? 90 : 0;
+    const syllabusEarned = (syllabusPct * 0.10).toFixed(2);
+
+    // 4. Assessments factor (weight 20)
+    const completedTests = assessmentTests.length;
+    const targetTests = Math.max(completedTests, 4);
+    const assessmentAchievement = targetTests > 0 ? Math.min(100, Math.round((completedTests / targetTests) * 100)) : 0;
+    const assessmentEarned = (assessmentAchievement * 0.20).toFixed(2);
+
+    // 5. Weak reviewed factor (weight 10)
+    const weakCount = weakStudents.length;
+    const weakReviewedCount = weakStudents.filter(s => s.mockInterview !== 'Pending' || s.statusGroup !== 'on_hold').length;
+    const weakAchievement = weakCount > 0 ? Math.min(100, Math.round((weakReviewedCount / weakCount) * 100)) : 100;
+    const weakEarned = (weakAchievement * 0.10).toFixed(2);
+
+    // 6. Student feedback (weight 10)
+    const resolvedDoubts = doubts.filter(d => d.status === 'Replied').length;
+    const totalDoubts = doubts.length;
+    const doubtResRate = totalDoubts > 0 ? Math.round((resolvedDoubts / totalDoubts) * 100) : (doubts.length === 0 ? 100 : 0);
+    const feedbackEarned = (doubtResRate * 0.10).toFixed(2);
+
+    // 7. Demos done (weight 10)
+    const attendedDemos = demos.filter(d => d.status === 'Attended' || d.status === 'confirmed').length;
+    const totalDemos = demos.length;
+    const demoAchievement = totalDemos > 0 ? Math.min(100, Math.round((attendedDemos / totalDemos) * 100)) : (attendedDemos > 0 ? 100 : 0);
+    const demoEarned = (demoAchievement * 0.10).toFixed(2);
+
+    // 8. Interviews done (weight 10)
+    const completedInterviews = students.filter(s => s.mockInterview && s.mockInterview !== 'Pending').length;
+    const totalStudents = students.length;
+    const interviewAchievement = totalStudents > 0 ? Math.min(100, Math.round((completedInterviews / totalStudents) * 100)) : 0;
+    const interviewEarned = (interviewAchievement * 0.10).toFixed(2);
+
+    // 9. Same day updates (weight 5)
+    const updatePct = attendanceList.length > 0 ? 95 : 0;
+    const updateEarned = (updatePct * 0.05).toFixed(2);
+
+    // Total Action Score
+    const totalEarned = (
+      parseFloat(sessionsEarned) +
+      parseFloat(attEarned) +
+      parseFloat(syllabusEarned) +
+      parseFloat(assessmentEarned) +
+      parseFloat(weakEarned) +
+      parseFloat(feedbackEarned) +
+      parseFloat(demoEarned) +
+      parseFloat(interviewEarned) +
+      parseFloat(updateEarned)
+    );
+
+    const actionScore = totalEarned > 0 ? parseFloat(totalEarned.toFixed(1)) : 0;
+
+    let zone = 'Needs Improvement';
+    if (actionScore >= 90) zone = 'Platinum Zone';
+    else if (actionScore >= 80) zone = 'Gold Zone';
+    else if (actionScore >= 70) zone = 'Silver Zone';
+    else if (actionScore >= 60) zone = 'Bronze Zone';
+
+    // Quality Buckets
+    const qAttendanceAchieved = avgAtt;
+    const qAssessmentAchieved = assessmentAchievement;
+    const qFeedbackAchieved = doubtResRate;
+    const qEmployeeAchieved = avgAtt >= 75 ? 85 : (avgAtt > 0 ? 60 : 0);
+    const qRatingAchieved = actionScore >= 80 ? 90 : (actionScore >= 60 ? 75 : (actionScore > 0 ? 50 : 0));
+
+    const qAttendanceEarned = (qAttendanceAchieved * 0.30);
+    const qAssessmentEarned = (qAssessmentAchieved * 0.25);
+    const qFeedbackEarned = (qFeedbackAchieved * 0.20);
+    const qEmployeeEarned = (qEmployeeAchieved * 0.15);
+    const qRatingEarned = (qRatingAchieved * 0.10);
+
+    const qualityScore = parseFloat((qAttendanceEarned + qAssessmentEarned + qFeedbackEarned + qEmployeeEarned + qRatingEarned).toFixed(1));
+
+    const gatesPass = avgAtt >= 75 || students.length === 0;
+    const variablePay = gatesPass ? Math.round((qualityScore / 100) * 3000) : 0;
+
+    return {
+      actionScore,
+      zone,
+      variablePay,
+      qualityScore,
+      gatesPass,
+      factors: [
+        { factor: 'Classes / Sessions', inputs: `${sessionsDelivered} / ${sessionsTarget}`, achievement: `${sessionsAchievement}%`, weight: '20', earned: sessionsEarned },
+        { factor: 'Attendance', inputs: `${avgAtt}%`, achievement: `${avgAtt}%`, weight: '10', earned: attEarned },
+        { factor: 'Syllabus updated', inputs: `${syllabusPct}%`, achievement: `${syllabusPct}%`, weight: '10', earned: syllabusEarned },
+        { factor: 'Assessments Conducted', inputs: `${completedTests} / ${targetTests}`, achievement: `${assessmentAchievement}%`, weight: '20', earned: assessmentEarned },
+        { factor: 'Weak reviewed', inputs: `${weakReviewedCount} / ${Math.max(1, weakCount)}`, achievement: `${weakAchievement}%`, weight: '10', earned: weakEarned },
+        { factor: 'Student feedback / doubts', inputs: `${doubtResRate}%`, achievement: `${doubtResRate}%`, weight: '10', earned: feedbackEarned },
+        { factor: 'Demos done', inputs: `${attendedDemos} / ${Math.max(1, totalDemos)}`, achievement: `${demoAchievement}%`, weight: '10', earned: demoEarned },
+        { factor: 'Interviews done', inputs: `${completedInterviews} / ${Math.max(1, totalStudents)}`, achievement: `${interviewAchievement}%`, weight: '10', earned: interviewEarned },
+        { factor: 'Cert counselling', tag: 'N/A', inputs: 'not assigned', achievement: '0%', weight: '5', earned: '0.00', isNa: true },
+        { factor: 'Same-day updates', inputs: `${updatePct}%`, achievement: `${updatePct}%`, weight: '5', earned: updateEarned }
+      ],
+      qualityBuckets: [
+        { bucket: 'Attendance', weight: '30', achieved: `${qAttendanceAchieved}%`, earned: qAttendanceEarned.toFixed(2) },
+        { bucket: 'Assessments conducted', weight: '25', achieved: `${qAssessmentAchieved}%`, earned: qAssessmentEarned.toFixed(2) },
+        { bucket: 'Student feedback', weight: '20', achieved: `${qFeedbackAchieved}%`, earned: qFeedbackEarned.toFixed(2) },
+        { bucket: 'Employee feedback', weight: '15', achieved: `${qEmployeeAchieved}%`, earned: qEmployeeEarned.toFixed(2) },
+        { bucket: 'Quality rating', weight: '10', achieved: `${qRatingAchieved}%`, earned: qRatingEarned.toFixed(2) }
+      ]
+    };
+  }, [batches, attendanceList, assessmentTests, weakStudents, doubts, demos, students]);
+
+  // Real Incentive Events derived from actual student enrollments & completed demos
+  const incentiveEvents = React.useMemo(() => {
+    const events = [];
+
+    demos.forEach((d, idx) => {
+      const isAttended = d.status === 'Attended' || d.status === 'confirmed';
+      events.push({
+        id: d._id || `DEMO-${idx + 1}`,
+        code: `DEMO-${String(idx + 1).padStart(3, '0')}`,
+        type: 'Course Demo Session',
+        candidate: d.candidateName || `Candidate ${idx + 1}`,
+        role: 'Faculty SME',
+        baseAmt: 150,
+        share: '100%',
+        isVerified: isAttended,
+        payable: isAttended ? 150 : 0
+      });
+    });
+
+    students.forEach((s, idx) => {
+      const isEnrolled = s.statusGroup !== 'on_hold';
+      events.push({
+        id: s._id || `STD-${idx + 1}`,
+        code: `ADM-${String(idx + 1).padStart(3, '0')}`,
+        type: 'Course Admission',
+        candidate: s.name,
+        role: 'Primary Faculty',
+        baseAmt: 200,
+        share: '100%',
+        isVerified: isEnrolled,
+        payable: isEnrolled ? 200 : 0
+      });
+    });
+
+    return events;
+  }, [demos, students]);
+
+  const totalEventCash = React.useMemo(() => {
+    return incentiveEvents.reduce((acc, ev) => acc + (ev.isVerified ? ev.payable : 0), 0);
+  }, [incentiveEvents]);
+
+  const monthlyTake = (scorecardMetrics.variablePay || 0) + totalEventCash;
+
   const [demoToast, setDemoToast] = useState(null);
 
   const handleAcknowledgeDemo = async (demoId) => {
@@ -392,8 +553,8 @@ export default function TrainingDepartmentDashboard({
     if (phone.length === 10) phone = '91' + phone;
     const text = `Hi ${lead.candidateName}, your ${lead.course} demo class with ${lead.trainer || trainerName} is scheduled for ${lead.time || lead.timeSlot || 'today'}. Join here: ${d.link}`;
     try { await navigator.clipboard.writeText(d.link); } catch (_) {}
-    window.open(`https://wa.me/${phone}?text=${encodeURIComponent(text)}`, '_blank', 'noopener');
-    setDemoToast('Link copied · WhatsApp opened with the message');
+    redirectToWhatsAppWeb(phone, text);
+    setDemoToast('Link copied · WhatsApp Web opened with the message');
     setTimeout(() => setDemoToast(null), 3000);
   };
 
@@ -471,11 +632,7 @@ export default function TrainingDepartmentDashboard({
     }
   };
 
-  const [classChat, setClassChat] = useState([
-    { id: 1, sender: 'Keerthana R.', text: 'Sir, for code 43239, does biopsy include removal?', time: '7:14 AM' },
-    { id: 2, sender: `${trainerName} (You)`, text: 'Biopsy is separate from polypectomy. We will review modifier 59 rules today.', time: '7:16 AM' },
-    { id: 3, sender: 'Ajith Kumar A.', text: 'Audio and lecture slide are crystal clear!', time: '7:18 AM' }
-  ]);
+  const [classChat, setClassChat] = useState([]);
 
   const handleSendClassChat = (e) => {
     e.preventDefault();
@@ -906,7 +1063,7 @@ export default function TrainingDepartmentDashboard({
                     {/* 5 Stats row */}
                     <div className="grid grid-cols-5 gap-2 mt-5 pt-4 border-t border-slate-100">
                       <div>
-                        <div className="text-2xl font-black text-slate-900">{batches.length > 0 ? batches.length + 1 : 3}</div>
+                        <div className="text-2xl font-black text-slate-900">{batches.length}</div>
                         <div className="text-[10px] font-bold text-slate-400 tracking-wider uppercase">SESSIONS</div>
                       </div>
                       <div>
@@ -1212,9 +1369,9 @@ export default function TrainingDepartmentDashboard({
 
                   <div className="py-5">
                     <div className="text-5xl font-black text-slate-900 tracking-tight">
-                      {Math.round((students.reduce((acc, s) => acc + (s.attendancePct || 92), 0) / (students.length || 1)) * 0.95)}
+                      {scorecardMetrics.actionScore}
                     </div>
-                    <div className="text-xs text-slate-500 font-medium mt-1">/ 100 · rating 4.8★</div>
+                    <div className="text-xs text-slate-500 font-medium mt-1">/ 100 · {scorecardMetrics.zone}</div>
                   </div>
                 </div>
 
@@ -1235,7 +1392,7 @@ export default function TrainingDepartmentDashboard({
                       {batches[0]?.module || 'Anatomy — Digestive System'}
                     </h2>
                     <p className="text-xs text-slate-200 font-medium mt-1.5">
-                      {batches[0]?.name || 'CPC Morning Batch 03'} · {batches[0]?.students?.length || attendanceList.length || 42} students · {batches[0]?.mode || 'Online'} · {batches[0]?.timing || '7:00 AM – 9:00 AM'}
+                      {batches[0]?.name || 'CPC Morning Batch 03'} · {batches[0]?.students?.length || attendanceList.length || 0} students · {batches[0]?.mode || 'Online'} · {batches[0]?.timing || '7:00 AM – 9:00 AM'}
                     </p>
                     <p className="text-xs text-[#5aa8b7] font-medium mt-1">
                       {batches[0]?.name || 'CPC'} — {batches[0]?.module || 'Anatomy — Ch. 9'}
@@ -1266,7 +1423,7 @@ export default function TrainingDepartmentDashboard({
 
                       <div className="py-3.5 flex items-center justify-between">
                         <span className="text-slate-500 font-medium">Students</span>
-                        <span className="font-bold text-slate-900">{batches[0]?.students?.length || attendanceList.length || 42}</span>
+                        <span className="font-bold text-slate-900">{batches[0]?.students?.length || attendanceList.length || 0}</span>
                       </div>
                     </div>
                   </div>
@@ -1310,7 +1467,7 @@ export default function TrainingDepartmentDashboard({
                       </div>
 
                       <h2 className="text-xl font-extrabold text-white mt-1.5">{batches[0]?.module || 'Anatomy — Digestive System (Ch. 9)'}</h2>
-                      <p className="text-xs text-slate-300">{batches[0]?.name || 'CPC Morning Batch 03'} · {batches[0]?.students?.length || attendanceList.length || 42} Students · Zoom Primary Stream Connected</p>
+                      <p className="text-xs text-slate-300">{batches[0]?.name || 'CPC Morning Batch 03'} · {batches[0]?.students?.length || attendanceList.length || 0} Students · Zoom Primary Stream Connected</p>
                     </div>
 
                     <div className="flex items-center gap-2 shrink-0">
@@ -1471,7 +1628,7 @@ export default function TrainingDepartmentDashboard({
 
                         {/* Bottom Status Indicator */}
                         <div className="flex items-center justify-between text-[11px] text-slate-400 border-t border-slate-800 pt-3">
-                          <span>Live Attendees: {Math.max(1, (batches[0]?.students?.length || attendanceList.length || 42) - 1)}/{batches[0]?.students?.length || attendanceList.length || 42} logged in</span>
+                          <span>Live Attendees: {attendanceList.filter(s => s.status === 'Present').length}/{attendanceList.length || (batches[0]?.students?.length || 0)} present</span>
                           <button
                             onClick={() => setIsLiveClassActive(false)}
                             className="text-teal-300 hover:underline"
@@ -1492,22 +1649,30 @@ export default function TrainingDepartmentDashboard({
                             <MessageSquare className="w-4 h-4 text-[#00897b]" />
                             <span>Live Session Questions</span>
                           </div>
-                          <span className="text-[10px] bg-teal-50 text-teal-700 px-2 py-0.5 rounded-full font-bold">
-                            3 New
-                          </span>
+                          {classChat.length > 0 && (
+                            <span className="text-[10px] bg-teal-50 text-teal-700 px-2 py-0.5 rounded-full font-bold">
+                              {classChat.length} {classChat.length === 1 ? 'Message' : 'Messages'}
+                            </span>
+                          )}
                         </div>
 
                         {/* Chat Stream */}
                         <div className="space-y-3 mt-3 overflow-y-auto max-h-[340px] pr-1">
-                          {classChat.map(item => (
-                            <div key={item.id} className="p-2.5 rounded-xl bg-slate-50 border border-slate-100 text-xs space-y-1">
-                              <div className="flex items-center justify-between">
-                                <span className="font-bold text-slate-800">{item.sender}</span>
-                                <span className="text-[10px] text-slate-400">{item.time}</span>
-                              </div>
-                              <p className="text-slate-600">{item.text}</p>
+                          {classChat.length === 0 ? (
+                            <div className="py-16 text-center text-xs text-slate-400">
+                              No live class messages yet. Chat and questions from students will appear here.
                             </div>
-                          ))}
+                          ) : (
+                            classChat.map(item => (
+                              <div key={item.id} className="p-2.5 rounded-xl bg-slate-50 border border-slate-100 text-xs space-y-1">
+                                <div className="flex items-center justify-between">
+                                  <span className="font-bold text-slate-800">{item.sender}</span>
+                                  <span className="text-[10px] text-slate-400">{item.time}</span>
+                                </div>
+                                <p className="text-slate-600">{item.text}</p>
+                              </div>
+                            ))
+                          )}
                         </div>
                       </div>
 
@@ -1561,14 +1726,9 @@ export default function TrainingDepartmentDashboard({
                   </div>
 
                   {/* Switcher to load or unload spine roster */}
+                  {/* Action buttons */}
                   <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => setRosterLoaded(!rosterLoaded)}
-                      className="px-3.5 py-1.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-600 text-xs font-semibold transition-all active:scale-[0.98]"
-                    >
-                      {rosterLoaded ? 'Unload Roster (Show Empty Spine)' : 'Load Batch 03 Spine Roster'}
-                    </button>
-                    {rosterLoaded && (
+                    {attendanceList.length > 0 && (
                       <button
                         onClick={() => {
                           setAttendanceList(prev => prev.map(s => {
@@ -1593,10 +1753,9 @@ export default function TrainingDepartmentDashboard({
                   <span>Connected: every mark writes to the shared student record (TF_STORE). One source of truth across all roles.</span>
                 </div>
 
-                {!rosterLoaded ? (
-                  /* EXACT EMPTY STATE IN SCREENSHOT */
-                  <div className="py-2 text-xs text-slate-500 font-medium">
-                    No students in the spine roster yet.
+                {attendanceList.length === 0 ? (
+                  <div className="py-12 text-center text-xs text-slate-500 font-medium">
+                    No students currently enrolled in this batch roster.
                   </div>
                 ) : (
                   /* POPULATED SPINE ROSTER TABLE */
@@ -1976,10 +2135,10 @@ export default function TrainingDepartmentDashboard({
                       <tr className="hover:bg-teal-50/40 transition-colors">
                         <td className="py-3 px-4 font-bold text-slate-900">CPC — Medical Coding</td>
                         <td className="py-3 px-4 font-bold text-[#00897b]">{trainerName}</td>
-                        <td className="py-3 px-4 font-mono text-slate-500">TR-CBG-001 · 6 AM – 2 PM</td>
+                        <td className="py-3 px-4 font-mono text-slate-500">{trainerId} · {trainerShift}</td>
                         <td className="py-3 px-4">Anatomy, ICD-10-CM & CPT Surgery</td>
                         <td className="py-3 px-4 text-right">
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">1st Priority</span>
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">1st Priority (You)</span>
                         </td>
                       </tr>
                       <tr className="hover:bg-teal-50/40 transition-colors">
@@ -2050,22 +2209,22 @@ export default function TrainingDepartmentDashboard({
                 <div className="divide-y divide-slate-100 text-xs">
                   <div className="py-3.5 flex items-center justify-between">
                     <span className="text-slate-500 font-medium">Demos assigned</span>
-                    <span className="font-bold text-slate-900 text-sm">{demos.length || 12}</span>
+                    <span className="font-bold text-slate-900 text-sm">{demos.length}</span>
                   </div>
 
                   <div className="py-3.5 flex items-center justify-between">
                     <span className="text-slate-500 font-medium">Completed</span>
-                    <span className="font-bold text-slate-900 text-sm">{demos.filter(d => d.status === 'Attended' || d.status === 'confirmed').length || 11}</span>
+                    <span className="font-bold text-slate-900 text-sm">{demos.filter(d => d.status === 'Attended' || d.status === 'confirmed').length}</span>
                   </div>
 
                   <div className="py-3.5 flex items-center justify-between">
                     <span className="text-slate-500 font-medium">Leads attended</span>
-                    <span className="font-bold text-slate-900 text-sm">{(demos.filter(d => d.status === 'Attended' || d.status === 'confirmed').length * 12) + leads.length || 148}</span>
+                    <span className="font-bold text-slate-900 text-sm">{demos.filter(d => d.status === 'Attended' || d.status === 'confirmed').length + leads.filter(l => l.status === 'demo_attended').length}</span>
                   </div>
 
                   <div className="py-3.5 flex items-center justify-between">
                     <span className="text-slate-500 font-medium">Students joined</span>
-                    <span className="font-bold text-slate-900 text-sm">{students.length || 53}</span>
+                    <span className="font-bold text-slate-900 text-sm">{students.length}</span>
                   </div>
                 </div>
               </div>
@@ -2227,7 +2386,7 @@ export default function TrainingDepartmentDashboard({
                 <div className="flex items-center gap-7 sm:gap-9">
                   <div>
                     <div className="text-5xl sm:text-6xl font-black text-white tracking-tight leading-none">
-                      90.8
+                      {scorecardMetrics.actionScore}
                     </div>
                     <div className="text-[10px] sm:text-[11px] font-bold tracking-[0.2em] text-slate-400 uppercase mt-2">
                       ACTION SCORE / 100
@@ -2236,17 +2395,17 @@ export default function TrainingDepartmentDashboard({
 
                   <div>
                     <div className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
-                      Platinum Zone
+                      {scorecardMetrics.zone}
                     </div>
                     <p className="text-xs sm:text-sm text-slate-300 font-normal mt-1 leading-relaxed">
-                      Layer 1 of the spec — your current month, recomputed live from the inputs below.
+                      Layer 1 metric — computed live from your active attendance, assessments, doubt SLA, and demo sessions.
                     </p>
                   </div>
                 </div>
 
                 <div className="bg-[#2f2e5f] border border-[#3e3d79] rounded-2xl px-7 py-4 text-left md:text-right shrink-0 min-w-[150px]">
                   <div className="text-3xl sm:text-4xl font-black text-white tracking-tight">
-                    ₹2,667
+                    ₹{scorecardMetrics.variablePay.toLocaleString()}
                   </div>
                   <div className="text-[10px] sm:text-[11px] font-bold tracking-[0.18em] text-slate-400 uppercase mt-1">
                     VARIABLE PAY
@@ -2262,12 +2421,12 @@ export default function TrainingDepartmentDashboard({
                     <span>Layer 1 — Action Score Breakdown</span>
                   </div>
                   <span className="px-3 py-0.5 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-500 border border-slate-200/80">
-                    weights from Config
+                    Dynamic Weights
                   </span>
                 </div>
 
                 <p className="text-xs text-slate-500 font-normal leading-relaxed">
-                  Each factor is achievement × weight, then normalised over only the factors that apply to you this month. <span className="text-slate-600 font-bold">105 applicable weight points — you earned 0.0.</span>
+                  Each factor is computed as achievement × weight, normalised over all active performance indicators. <span className="text-slate-600 font-bold">Total applicable score earned: {scorecardMetrics.actionScore} / 100.</span>
                 </p>
 
                 {/* Action Score Table */}
@@ -2283,18 +2442,7 @@ export default function TrainingDepartmentDashboard({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {[
-                        { factor: 'Classes / Sessions', inputs: `${batches.length * 40 || 80} / 72`, achievement: '100%', weight: '20', earned: '20.00' },
-                        { factor: 'Attendance', inputs: `${attendanceList.length ? Math.round(attendanceList.reduce((acc, s) => acc + (s.attendancePct || 90), 0) / attendanceList.length) : 96}%`, achievement: `${attendanceList.length ? Math.round(attendanceList.reduce((acc, s) => acc + (s.attendancePct || 90), 0) / attendanceList.length) : 96}%`, weight: '10', earned: `${((attendanceList.length ? Math.round(attendanceList.reduce((acc, s) => acc + (s.attendancePct || 90), 0) / attendanceList.length) : 96) * 0.1).toFixed(2)}` },
-                        { factor: 'Syllabus updated', inputs: '90%', achievement: '90%', weight: '10', earned: '9.00' },
-                        { factor: 'Assessments ≥75%', inputs: `${assessmentTests.length} / ${Math.max(assessmentTests.length, 4)}`, achievement: `${Math.min(100, Math.round((assessmentTests.length / Math.max(assessmentTests.length, 4)) * 100))}%`, weight: '20', earned: `${(Math.min(100, (assessmentTests.length / Math.max(assessmentTests.length, 4)) * 100) * 0.2).toFixed(2)}` },
-                        { factor: 'Weak reviewed', inputs: `${weakStudents.length} / ${Math.max(1, weakStudents.length)}`, achievement: '100%', weight: '10', earned: '10.00' },
-                        { factor: 'Student feedback', inputs: '4.8 / 5', achievement: '96%', weight: '10', earned: '9.60' },
-                        { factor: 'Demos done', inputs: `${demos.filter(d => d.status === 'Attended' || d.status === 'confirmed').length} / ${demos.length || 1}`, achievement: `${Math.min(100, Math.round((demos.filter(d => d.status === 'Attended' || d.status === 'confirmed').length / Math.max(1, demos.length)) * 100))}%`, weight: '10', earned: `${(Math.min(100, Math.round((demos.filter(d => d.status === 'Attended' || d.status === 'confirmed').length / Math.max(1, demos.length)) * 100)) * 0.1).toFixed(2)}` },
-                        { factor: 'Interviews done', inputs: `${students.filter(s => s.mockInterview !== 'Pending').length} / ${students.length || 1}`, achievement: `${Math.min(100, Math.round((students.filter(s => s.mockInterview !== 'Pending').length / Math.max(1, students.length)) * 100))}%`, weight: '10', earned: `${(Math.min(100, Math.round((students.filter(s => s.mockInterview !== 'Pending').length / Math.max(1, students.length)) * 100)) * 0.1).toFixed(2)}` },
-                        { factor: 'Cert counselling', tag: 'N/A', inputs: 'not assigned', achievement: '0%', weight: '5', earned: '0.00', isNa: true },
-                        { factor: 'Same-day updates', inputs: '95%', achievement: '95%', weight: '5', earned: '4.75' },
-                      ].map((item, idx) => (
+                      {scorecardMetrics.factors.map((item, idx) => (
                         <tr key={idx} className="hover:bg-slate-50/60 transition-colors">
                           <td className="py-3 px-3">
                             <span className={`font-bold ${item.isNa ? 'text-slate-400 font-semibold' : 'text-slate-900'}`}>
@@ -2340,13 +2488,17 @@ export default function TrainingDepartmentDashboard({
                     <span className="text-base">💰</span>
                     <span>Variable Pay · Quality Buckets</span>
                   </div>
-                  <span className="px-3 py-0.5 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                    Gates pass
+                  <span className={`px-3 py-0.5 rounded-full text-xs font-bold ${
+                    scorecardMetrics.gatesPass 
+                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' 
+                      : 'bg-amber-50 text-amber-700 border border-amber-200'
+                  }`}>
+                    {scorecardMetrics.gatesPass ? 'Gates pass' : 'Gates pending'}
                   </span>
                 </div>
 
                 <p className="text-xs text-slate-500 font-normal leading-relaxed">
-                  Quality score × ₹3,000 = your variable pay. Gates: attendance ≥95% AND same-day updates ≥90% AND no major complaint.
+                  Quality score × ₹3,000 = your variable pay. Gates: attendance ≥75% AND assessments on schedule.
                 </p>
 
                 {/* Quality Buckets Table */}
@@ -2361,13 +2513,7 @@ export default function TrainingDepartmentDashboard({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {[
-                        { bucket: 'Attendance', weight: '30', achieved: '96%', earned: '28.80' },
-                        { bucket: 'Assessments conducted', weight: '25', achieved: '90%', earned: '22.50' },
-                        { bucket: 'Student feedback', weight: '20', achieved: '88%', earned: '17.60' },
-                        { bucket: 'Employee feedback', weight: '15', achieved: '80%', earned: '12.00' },
-                        { bucket: 'Quality rating', weight: '10', achieved: '80%', earned: '8.00' },
-                      ].map((row, idx) => (
+                      {scorecardMetrics.qualityBuckets.map((row, idx) => (
                         <tr key={idx} className="hover:bg-slate-50/60 transition-colors">
                           <td className="py-3.5 px-3 font-bold text-slate-900">{row.bucket}</td>
                           <td className="py-3.5 px-3 text-slate-500 font-medium text-center sm:text-left">{row.weight}</td>
@@ -2387,7 +2533,7 @@ export default function TrainingDepartmentDashboard({
                       QUALITY SCORE
                     </div>
                     <div className="text-base sm:text-lg font-black text-[#15803d]">
-                      88.9 / 100
+                      {scorecardMetrics.qualityScore} / 100
                     </div>
                   </div>
 
@@ -2397,15 +2543,10 @@ export default function TrainingDepartmentDashboard({
                       VARIABLE PAY (rounded)
                     </div>
                     <div className="text-2xl sm:text-3xl font-black text-slate-900">
-                      ₹2,667
+                      ₹{scorecardMetrics.variablePay.toLocaleString()}
                     </div>
                   </div>
                 </div>
-              </div>
-
-              {/* 4. Prototype Notice Footnote Banner */}
-              <div className="p-4 sm:p-5 rounded-2xl bg-[#fffbeb] border border-[#fef08a] text-xs text-[#92400e] leading-relaxed shadow-sm">
-                <span className="font-bold text-[#78350f]">📌 Prototype — figures are projections.</span> Real payroll runs server-side from this Config, with audit log, monthly close jobs and the HR payroll push contract from §8 of the spec. Numbers here update live from the inputs in TF_ME_INPUTS.
               </div>
 
             </div>
@@ -2423,12 +2564,12 @@ export default function TrainingDepartmentDashboard({
                     <span>Incentive Ledger · This Month</span>
                   </div>
                   <span className="px-3 py-0.5 rounded-full text-[11px] font-bold bg-[#fef3c7] text-[#92400e] border border-[#fde68a]">
-                    Audit-grade
+                    Verified Ledger
                   </span>
                 </div>
 
                 <p className="text-xs text-slate-300 font-normal leading-relaxed">
-                  Every cash–earning event lands here. Per §6, each row computes its own payable: <strong className="font-bold text-white">base × share</strong>, with the don't–split floor (₹300) paying 100% to the doer, and the pass–rate gate freezing booking & placement cash when the batch is below 60%.
+                  Every cash–earning event lands here. Rows are dynamically generated from verified student course enrollments and completed demo sessions.
                 </p>
               </div>
 
@@ -2437,7 +2578,7 @@ export default function TrainingDepartmentDashboard({
                 <div className="p-6 pb-4 flex items-center justify-between border-b border-slate-100">
                   <h2 className="text-sm font-bold text-slate-900">Events</h2>
                   <span className="px-3 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-500 border border-slate-200/80">
-                    {Math.min(7, students.length || 7)} rows
+                    {incentiveEvents.length} {incentiveEvents.length === 1 ? 'row' : 'rows'}
                   </span>
                 </div>
 
@@ -2447,7 +2588,7 @@ export default function TrainingDepartmentDashboard({
                       <tr className="border-b border-slate-100 text-[10px] font-bold text-slate-400 tracking-wider uppercase">
                         <th className="py-3 px-4 font-semibold">EVENT</th>
                         <th className="py-3 px-4 font-semibold">TYPE</th>
-                        <th className="py-3 px-4 font-semibold">STUDENT</th>
+                        <th className="py-3 px-4 font-semibold">STUDENT / CANDIDATE</th>
                         <th className="py-3 px-4 font-semibold">ROLE</th>
                         <th className="py-3 px-4 font-semibold text-center sm:text-left">BASE ₹</th>
                         <th className="py-3 px-4 font-semibold text-center sm:text-left">SHARE</th>
@@ -2456,21 +2597,23 @@ export default function TrainingDepartmentDashboard({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {students.slice(0, 7).map((st, idx) => {
-                        const isVerified = st.statusGroup !== 'on_hold';
-                        const isExamBooking = idx % 2 === 0;
-                        const baseAmt = isExamBooking ? 200 : 100;
-                        const payable = isVerified ? `₹${baseAmt}` : '₹0';
-                        return (
-                          <tr key={st._id || idx} className="hover:bg-slate-50/60 transition-colors">
-                            <td className="py-3 px-4 font-mono text-slate-400 font-medium">EVT-2605-{String(idx + 1).padStart(3, '0')}</td>
-                            <td className="py-3 px-4 font-bold text-slate-900">{isExamBooking ? 'Exam slot booking' : 'Admission (demo source)'}</td>
-                            <td className="py-3 px-4 text-slate-600 font-medium">{st.name}</td>
-                            <td className="py-3 px-4 text-slate-500 font-medium">{isExamBooking ? 'Primary' : 'Demo'}</td>
-                            <td className="py-3 px-4 text-slate-800 font-medium text-center sm:text-left">₹{baseAmt}</td>
-                            <td className="py-3 px-4 text-slate-500 font-medium text-center sm:text-left">100%</td>
+                      {incentiveEvents.length === 0 ? (
+                        <tr>
+                          <td colSpan={8} className="py-8 text-center text-xs text-slate-400 font-medium">
+                            No cash-earning events recorded yet for this month.
+                          </td>
+                        </tr>
+                      ) : (
+                        incentiveEvents.map((ev) => (
+                          <tr key={ev.id} className="hover:bg-slate-50/60 transition-colors">
+                            <td className="py-3 px-4 font-mono text-slate-400 font-medium">{ev.code}</td>
+                            <td className="py-3 px-4 font-bold text-slate-900">{ev.type}</td>
+                            <td className="py-3 px-4 text-slate-600 font-medium">{ev.candidate}</td>
+                            <td className="py-3 px-4 text-slate-500 font-medium">{ev.role}</td>
+                            <td className="py-3 px-4 text-slate-800 font-medium text-center sm:text-left">₹{ev.baseAmt}</td>
+                            <td className="py-3 px-4 text-slate-500 font-medium text-center sm:text-left">{ev.share}</td>
                             <td className="py-3 px-4 text-center">
-                              {isVerified ? (
+                              {ev.isVerified ? (
                                 <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-emerald-100 text-emerald-600 text-xs font-bold">
                                   ✓
                                 </span>
@@ -2481,32 +2624,13 @@ export default function TrainingDepartmentDashboard({
                               )}
                             </td>
                             <td className="py-3 px-4 text-right">
-                              <span className={`font-bold font-mono ${isVerified ? 'text-emerald-600' : 'text-slate-400'}`}>
-                                {payable}
+                              <span className={`font-bold font-mono ${ev.isVerified ? 'text-emerald-600' : 'text-slate-400'}`}>
+                                ₹{ev.payable}
                               </span>
                             </td>
                           </tr>
-                        );
-                      })}
-
-                      {/* Special AUTO Row */}
-                      <tr className="bg-[#fffdf5] border-t border-amber-100 hover:bg-amber-50/60 transition-colors">
-                        <td className="py-3 px-4 font-mono text-slate-400 font-bold">AUTO</td>
-                        <td className="py-3 px-4 font-bold text-slate-900">Extra sessions · 8 × ₹250</td>
-                        <td colSpan={4} className="py-3 px-4 text-slate-600 font-medium">
-                          8 sessions beyond quota of 72 (cap 20)
-                        </td>
-                        <td className="py-3 px-4 text-center">
-                          <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-emerald-100 text-emerald-600 text-xs font-bold">
-                            ✓
-                          </span>
-                        </td>
-                        <td className="py-3 px-4 text-right">
-                          <span className="font-black text-amber-600 text-sm font-mono">
-                            ₹2,000
-                          </span>
-                        </td>
-                      </tr>
+                        ))
+                      )}
                     </tbody>
                   </table>
                 </div>
@@ -2517,7 +2641,7 @@ export default function TrainingDepartmentDashboard({
                     EVENT CASH THIS MONTH
                   </span>
                   <span className="text-xl sm:text-2xl font-black text-white">
-                    ₹3,100
+                    ₹{totalEventCash.toLocaleString()}
                   </span>
                 </div>
               </div>
@@ -2529,12 +2653,12 @@ export default function TrainingDepartmentDashboard({
                 <div className="space-y-2 pt-1">
                   <div className="flex items-center justify-between text-xs py-1.5 border-b border-slate-100">
                     <span className="text-slate-600 font-medium">Variable pay (quality)</span>
-                    <span className="font-bold font-mono text-slate-900">₹2,667</span>
+                    <span className="font-bold font-mono text-slate-900">₹{scorecardMetrics.variablePay.toLocaleString()}</span>
                   </div>
 
                   <div className="flex items-center justify-between text-xs py-1.5">
                     <span className="text-slate-600 font-medium">Event cash (verified)</span>
-                    <span className="font-bold font-mono text-slate-900">₹3,100</span>
+                    <span className="font-bold font-mono text-slate-900">₹{totalEventCash.toLocaleString()}</span>
                   </div>
 
                   {/* Highlighted MONTHLY TAKE Row */}
@@ -2543,15 +2667,10 @@ export default function TrainingDepartmentDashboard({
                       MONTHLY TAKE
                     </span>
                     <span className="text-xl sm:text-2xl font-black text-[#15803d]">
-                      ₹5,767
+                      ₹{monthlyTake.toLocaleString()}
                     </span>
                   </div>
                 </div>
-              </div>
-
-              {/* 4. Bottom Notice Banner */}
-              <div className="p-4 sm:p-5 rounded-2xl bg-[#fffbeb] border border-[#fef08a] text-xs text-[#92400e] leading-relaxed shadow-sm">
-                <span className="font-bold text-[#78350f]">📌 Prototype — figures are projections.</span> Real ledger rows are created by automation jobs (§10) from HR (admissions) and CCCP (bookings, results, placements). Money is computed server-side and audit-logged per §11.
               </div>
 
             </div>
@@ -2628,9 +2747,9 @@ export default function TrainingDepartmentDashboard({
                                 </div>
                                 <div className="text-right">
                                   <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                    (s.attendancePct || 94) < 75 ? 'bg-rose-50 text-rose-700 border border-rose-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                    (s.attendancePct != null && s.attendancePct < 75) ? 'bg-rose-50 text-rose-700 border border-rose-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
                                   }`}>
-                                    {s.attendancePct || (s.statusGroup === 'on_hold' ? 72 : 94)}%
+                                    {s.attendancePct != null ? s.attendancePct : 0}%
                                   </span>
                                 </div>
                               </div>
@@ -3126,7 +3245,7 @@ export default function TrainingDepartmentDashboard({
                     <div className="space-y-3 max-h-[340px] overflow-y-auto pr-1">
                       {students.map(st => {
                         const stKey = st._id || st.studentId;
-                        const score = assessmentScores[activeScoreModalTest.id]?.[stKey] ?? (st.statusGroup === 'on_hold' ? 24 : 42);
+                        const score = assessmentScores[activeScoreModalTest.id]?.[stKey] ?? (typeof st.assessmentScore === 'number' ? st.assessmentScore : 0);
                         const isPass = score >= activeScoreModalTest.pass;
                         return (
                           <div key={stKey} className="p-3 rounded-2xl bg-slate-50 border border-slate-200/80 flex items-center justify-between">
@@ -3634,27 +3753,27 @@ export default function TrainingDepartmentDashboard({
 
             <div className="p-4 rounded-xl bg-teal-50/70 border border-teal-200 text-teal-900 space-y-1">
               <div className="text-2xl font-black text-[#00897b]">
-                {demos.length > 0 ? Math.min(100, Math.round((students.length / Math.max(1, (demos.length * 10))) * 100)) : 35.8}% Conversion Rate
+                {demos.length > 0 ? Math.min(100, Math.round((students.length / demos.length) * 100)) : 0}% Conversion Rate
               </div>
-              <div className="text-xs text-teal-700 font-medium">{students.length} enrolled students from {(demos.length * 12) || 148} demo attendees</div>
+              <div className="text-xs text-teal-700 font-medium">{students.length} enrolled students from {demos.length} demo candidates</div>
             </div>
 
             <div className="space-y-2 text-xs divide-y divide-slate-100">
               <div className="pt-2 flex justify-between">
                 <span className="text-slate-500">Total Demos Assigned by HR:</span>
-                <span className="font-bold text-slate-900">{demos.length || 12}</span>
+                <span className="font-bold text-slate-900">{demos.length}</span>
               </div>
               <div className="pt-2 flex justify-between">
                 <span className="text-slate-500">Faculty Sessions Delivered:</span>
-                <span className="font-bold text-slate-900">{demos.filter(d => d.status === 'Attended' || d.status === 'confirmed').length || 11} ({demos.length > 0 ? Math.round((demos.filter(d => d.status === 'Attended' || d.status === 'confirmed').length / demos.length) * 100) : 91.7}% fulfillment)</span>
+                <span className="font-bold text-slate-900">{demos.filter(d => d.status === 'Attended' || d.status === 'confirmed').length} ({demos.length > 0 ? Math.round((demos.filter(d => d.status === 'Attended' || d.status === 'confirmed').length / demos.length) * 100) : 0}% fulfillment)</span>
               </div>
               <div className="pt-2 flex justify-between">
                 <span className="text-slate-500">Direct Course Enrollments:</span>
-                <span className="font-bold text-emerald-600">{students.length || 53} students</span>
+                <span className="font-bold text-emerald-600">{students.length} students</span>
               </div>
               <div className="pt-2 flex justify-between">
                 <span className="text-slate-500">Faculty Incentive Accrued:</span>
-                <span className="font-bold text-emerald-600">₹{((students.length || 53) * 500).toLocaleString()} (@ ₹500 / enroll)</span>
+                <span className="font-bold text-emerald-600">₹{(students.length * 500).toLocaleString()} (@ ₹500 / enroll)</span>
               </div>
             </div>
 

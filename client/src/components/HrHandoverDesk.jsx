@@ -23,14 +23,15 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
   const [students, setStudents] = useState(propStudents || []);
 
   useEffect(() => {
-    if (propStudents && propStudents.length > 0) {
+    if (propStudents !== undefined) {
       setStudents(propStudents);
     } else {
-      getStudents().then(res => {
+      const params = currentUser?.name ? { hrName: currentUser.name } : undefined;
+      getStudents(params).then(res => {
         if (Array.isArray(res)) setStudents(res);
       }).catch(err => console.error('Error fetching students for handover:', err));
     }
-  }, [propStudents]);
+  }, [propStudents, currentUser?.name]);
 
   const showToast = (msg) => {
     setToastMsg(msg);

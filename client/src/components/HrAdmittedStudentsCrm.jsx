@@ -20,6 +20,7 @@ import {
 import GenerateStudentIdModal from './GenerateStudentIdModal';
 import WalkinRegistrationModal from './WalkinRegistrationModal';
 import StudentProfileModal from './StudentProfileModal';
+import CompleteRegistrationModal from './CompleteRegistrationModal';
 
 import { getStudents, createStudent } from '../services/api';
 
@@ -29,19 +30,22 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
   const [toastMessage, setToastMessage] = useState(null);
   const [showWalkinModal, setShowWalkinModal] = useState(false);
   const [showIdGenModal, setShowIdGenModal] = useState(false);
+  const [showCompleteRegModal, setShowCompleteRegModal] = useState(false);
+  const [completeRegInitialData, setCompleteRegInitialData] = useState(null);
   const [selectedStudent, setSelectedStudent] = useState(null);
 
   const [students, setStudents] = useState(propStudents || []);
 
   useEffect(() => {
-    if (propStudents && propStudents.length > 0) {
+    if (propStudents !== undefined) {
       setStudents(propStudents);
     } else {
-      getStudents().then(res => {
+      const params = currentUser?.name ? { hrName: currentUser.name } : undefined;
+      getStudents(params).then(res => {
         if (Array.isArray(res)) setStudents(res);
       }).catch(err => console.error('Error fetching students:', err));
     }
-  }, [propStudents]);
+  }, [propStudents, currentUser?.name]);
 
   const showToast = (msg) => {
     setToastMessage(msg);
@@ -172,14 +176,52 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
 
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
-      return s.name.toLowerCase().includes(q) 
-        || s.id.toLowerCase().includes(q) 
-        || s.phone.includes(q)
-        || s.course.toLowerCase().includes(q)
-        || s.email.toLowerCase().includes(q);
+      return (s.name || '').toLowerCase().includes(q) 
+        || (s.studentId || s.id || '').toLowerCase().includes(q) 
+        || (s.phone || '').includes(q)
+        || (s.course || '').toLowerCase().includes(q)
+        || (s.email || '').toLowerCase().includes(q);
     }
     return true;
   });
+
+  // Real, derived overview stats — every number below comes from the
+  // actual students array, never a hardcoded placeholder.
+  const stats = useMemo(() => {
+    const now = new Date();
+    const admittedThisMonth = students.filter((s) => {
+      const created = s.createdAt ? new Date(s.createdAt) : null;
+      return (
+        created &&
+        !isNaN(created.getTime()) &&
+        created.getMonth() === now.getMonth() &&
+        created.getFullYear() === now.getFullYear()
+      );
+    }).length;
+
+    const onboardingDone = students.filter((s) => {
+      const m = /^(\d+)\s*\/\s*(\d+)/.exec(s.onboardStatus || '');
+      return m && m[1] === m[2];
+    }).length;
+
+    const inCourse = students.filter((s) => s.statusGroup === 'in_course').length;
+    const placed = students.filter((s) => s.statusGroup === 'placed').length;
+    const onHold = students.filter((s) => s.statusGroup === 'on_hold').length;
+    const interviewing = students.filter((s) => (s.placementStatus || '').includes('Interviewing')).length;
+
+    return {
+      total: students.length,
+      admittedThisMonth,
+      onboardingDone,
+      onboardingInProgress: students.length - onboardingDone,
+      inCourse,
+      placed,
+      onHold,
+      interviewing
+    };
+  }, [students]);
+
+  const currentMonthLabel = new Date().toLocaleString('en-US', { month: 'long' }).toUpperCase();
 
   return (
     <div className="space-y-4 pb-12">
@@ -277,10 +319,10 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
         {/* Card 1 */}
         <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/90 shadow-xs border-l-4 border-l-cyan-500 flex flex-col justify-between">
           <div className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400 font-mono">
-            ADMITTED · MAY
+            ADMITTED · {currentMonthLabel}
           </div>
           <div className="text-3xl sm:text-4xl font-black text-slate-900 my-2">
-            20
+            {stats.admittedThisMonth}
           </div>
           <div className="text-xs text-emerald-600 font-mono font-medium">
             auto-pulled from forms
@@ -293,10 +335,10 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
             ONBOARDING DONE
           </div>
           <div className="text-3xl sm:text-4xl font-black text-slate-900 my-2">
-            14
+            {stats.onboardingDone}
           </div>
           <div className="text-xs text-emerald-600 font-mono font-medium">
-            6 in progress
+            {stats.onboardingInProgress} in progress
           </div>
         </div>
 
@@ -306,23 +348,23 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
             IN COURSE
           </div>
           <div className="text-3xl sm:text-4xl font-black text-slate-900 my-2">
-            18
+            {stats.inCourse}
           </div>
           <div className="text-xs text-emerald-600 font-mono font-medium">
-            1 awaiting batch
+            {stats.onHold} on hold
           </div>
         </div>
 
         {/* Card 4 */}
         <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/90 shadow-xs border-l-4 border-l-teal-600 flex flex-col justify-between">
           <div className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400 font-mono">
-            PLACED · MAY
+            PLACED
           </div>
           <div className="text-3xl sm:text-4xl font-black text-slate-900 my-2">
-            1
+            {stats.placed}
           </div>
           <div className="text-xs text-emerald-600 font-mono font-medium">
-            1 interviewing
+            {stats.interviewing} interviewing
           </div>
         </div>
       </div>
@@ -342,7 +384,7 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
             <span className={`text-[10px] px-1.5 py-0.2 rounded-md ${
               activeTabFilter === 'all' ? 'bg-white/25 text-white' : 'bg-slate-100 text-slate-700'
             }`}>
-              20
+              {stats.total}
             </span>
           </button>
 
@@ -358,7 +400,7 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
             <span className={`text-[10px] px-1.5 py-0.2 rounded-md ${
               activeTabFilter === 'in_course' ? 'bg-white/25 text-white' : 'bg-slate-100 text-slate-700'
             }`}>
-              17
+              {stats.inCourse}
             </span>
           </button>
 
@@ -374,7 +416,7 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
             <span className={`text-[10px] px-1.5 py-0.2 rounded-md ${
               activeTabFilter === 'placed' ? 'bg-white/25 text-white' : 'bg-slate-100 text-slate-700'
             }`}>
-              1
+              {stats.placed}
             </span>
           </button>
 
@@ -390,7 +432,7 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
             <span className={`text-[10px] px-1.5 py-0.2 rounded-md ${
               activeTabFilter === 'on_hold' ? 'bg-white/25 text-white' : 'bg-rose-100 text-rose-800'
             }`}>
-              1
+              {stats.onHold}
             </span>
           </button>
         </div>
@@ -434,22 +476,27 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-[11px]">
-              {filteredStudents.map((s) => (
+              {filteredStudents.map((s, idx) => (
                 <tr 
-                  key={s.id} 
+                  key={s._id || s.id || s.studentId || idx} 
                   onClick={() => setSelectedStudent(s)}
                   className="hover:bg-teal-50/60 cursor-pointer transition-colors group"
                   title={`Click to view full profile for ${s.name}`}
                 >
                   {/* Student ID */}
                   <td className="py-3 px-3 font-mono font-bold text-[#00897b] whitespace-nowrap group-hover:underline">
-                    {s.id}
+                    {s.studentId || s.id}
                   </td>
 
                   {/* Name · Contact */}
                   <td className="py-3 px-3 whitespace-nowrap">
                     <div className="font-extrabold text-slate-900 group-hover:text-[#00796b] transition-colors">{s.name}</div>
-                    <div className="text-[10.5px] text-slate-400 font-mono">{s.phone}</div>
+                    <div className="text-[10.5px] text-slate-400 font-mono">
+                      <span>{s.phone}</span>
+                      {s.whatsappNumber && s.whatsappNumber !== s.phone && (
+                        <span className="text-[9.5px] text-emerald-600 block font-semibold">WA: {s.whatsappNumber}</span>
+                      )}
+                    </div>
                   </td>
 
                   {/* Course · Branch · Obj */}
@@ -585,12 +632,13 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
       <WalkinRegistrationModal
         isOpen={showWalkinModal}
         onClose={() => setShowWalkinModal(false)}
+        currentUser={currentUser}
         onRegister={async (newStudent) => {
           try {
             const created = await createStudent({
               ...newStudent,
               studentId: newStudent.id || newStudent.studentId,
-              hrName: currentUser?.name || newStudent.hrName || 'Kavitha N.'
+              hrName: newStudent.hrName || currentUser?.name || 'Kavitha N.'
             });
             setStudents(prev => [created, ...prev]);
             if (onRefreshStudents) onRefreshStudents();
@@ -606,23 +654,38 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
       <GenerateStudentIdModal
         isOpen={showIdGenModal}
         onClose={() => setShowIdGenModal(false)}
-        onConfirm={async (id) => {
+        onConfirm={(id, details) => {
+          setShowIdGenModal(false);
+          setCompleteRegInitialData({
+            generatedId: id,
+            branchName: details?.branchName || 'Saravanampatti',
+            courseName: details?.courseName || 'CPC - Certified Professional Coder',
+            typeName: details?.typeName || 'Online',
+            monthName: details?.monthName || 'May',
+            yearVal: details?.yearVal || '2026',
+            serial: details?.serial || '022'
+          });
+          setShowCompleteRegModal(true);
+        }}
+      />
+
+      {/* Complete Your Registration Modal (opened after Generate and use ID) */}
+      <CompleteRegistrationModal
+        isOpen={showCompleteRegModal}
+        onClose={() => setShowCompleteRegModal(false)}
+        initialData={completeRegInitialData}
+        currentUser={currentUser}
+        onSubmit={async (studentRecord) => {
           try {
-            const created = await createStudent({
-              studentId: id,
-              name: `STUDENT ${id.slice(-4)}`,
-              phone: '98401 23456',
-              course: id.includes('C') ? 'CPC' : id.includes('I') ? 'IPDRG' : 'CIC',
-              mode: id.includes('O') ? 'Online' : 'Classroom',
-              hrName: currentUser?.name || 'Kavitha N.',
-              statusGroup: 'in_course'
-            });
-            setStudents(prev => [created, ...prev]);
+            const created = await createStudent(studentRecord);
+            const savedStudent = created || studentRecord;
+            setStudents(prev => [savedStudent, ...prev]);
             if (onRefreshStudents) onRefreshStudents();
-            showToast(`✓ Generated & saved real student ID: ${id}`);
+            showToast(`✓ Admitted ${savedStudent.name} (${savedStudent.studentId || savedStudent.id}) & saved to CRM!`);
           } catch (err) {
-            console.error('Failed to generate student ID in database:', err);
-            showToast('Error generating student ID');
+            console.error('Failed to create admitted student:', err);
+            showToast('Error saving admitted student to database');
+            setStudents(prev => [studentRecord, ...prev]);
           }
         }}
       />

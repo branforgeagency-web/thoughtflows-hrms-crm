@@ -4,17 +4,19 @@ import { AlertTriangle, CheckCircle2, ShieldCheck, Mail, Phone, Calendar, Award 
 export default function TrainingMyProfile({
   currentUser = {}
 }) {
-  const trainerName = currentUser?.userName || currentUser?.name || 'Revathi K';
-  const trainerId = currentUser?.trainerId || currentUser?.id || 'TR-CBG-001';
-  const trainerRole = currentUser?.role || 'Senior Medical Coding Faculty (CPC SME)';
-  const trainerBranch = currentUser?.branch || 'Coimbatore - Gandhipuram';
-  const trainerEmail = currentUser?.email || 'revathi.k@thoughtflows.in';
+  const trainerName = currentUser?.userName || currentUser?.name || 'Faculty Member';
+  const trainerId = currentUser?.trainerId || currentUser?.id || currentUser?._id || 'TR-FACULTY';
+  const trainerRole = currentUser?.role || 'Medical Coding Faculty';
+  const trainerBranch = currentUser?.branch || 'Gandhipuram';
+  const trainerEmail = currentUser?.email || (currentUser?.username ? `${currentUser.username}@thoughtflows.in` : 'faculty@thoughtflows.in');
   const trainerShift = currentUser?.shift || '6:00 AM – 2:00 PM';
   const trainerCourse = currentUser?.courseKey || (
-    trainerName.toLowerCase().includes('priya') ? 'CIC' :
-    trainerName.toLowerCase().includes('suresh') ? 'CPB' :
-    trainerName.toLowerCase().includes('manjunath') ? 'CPMA' :
-    trainerName.toLowerCase().includes('vikram') ? 'CRC' : 'CPC'
+    currentUser?.role?.includes('CIC') ? 'CIC' :
+    currentUser?.role?.includes('CPB') ? 'CPB' :
+    currentUser?.role?.includes('CPMA') ? 'CPMA' :
+    currentUser?.role?.includes('CRC') ? 'CRC' :
+    currentUser?.role?.includes('CPC') ? 'CPC' :
+    'CPC'
   );
 
   const certifications = trainerCourse === 'CIC' 

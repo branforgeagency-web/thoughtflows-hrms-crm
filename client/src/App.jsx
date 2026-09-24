@@ -7,6 +7,7 @@ import FloatingStaffDots from './components/FloatingStaffDots';
 import DepartmentsModal from './components/DepartmentsModal';
 import DashboardModal from './components/DashboardModal';
 import LoginModal from './components/LoginModal';
+import CourseCatalogWidget from './components/CourseCatalogWidget';
 import axios from 'axios';
 
 export default function App() {
@@ -277,6 +278,10 @@ export default function App() {
         onLoginSuccess={handleLoginSuccess}
         theme={theme}
       />
+
+      {/* Course Catalog — mounted once here so the floating button & popup
+          are available on every page of the site, not just specific tabs */}
+      <CourseCatalogWidget />
     </div>
   );
 }

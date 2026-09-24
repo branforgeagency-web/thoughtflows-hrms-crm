@@ -98,12 +98,25 @@ export default function GenerateStudentIdModal({ isOpen, onClose, onConfirm }) {
       navigator.clipboard.writeText(fullId).catch(() => {});
     }
     if (onConfirm) {
-      onConfirm(fullId);
+      onConfirm(fullId, {
+        generatedId: fullId,
+        branchCode: branch,
+        branchName: BRANCH_MAP[branch] || 'Saravanampatti',
+        courseCode: course,
+        courseName: COURSE_MAP[course] || 'CPC',
+        typeCode: courseType,
+        typeName: TYPE_MAP[courseType] || 'Online',
+        monthCode: month,
+        monthName: MONTH_MAP[month] || 'May',
+        yearCode: year,
+        yearVal: YEAR_MAP[year] || '2026',
+        serial
+      });
     }
     showToast(`✓ Confirmed & copied ID: ${fullId}`);
     setTimeout(() => {
       onClose();
-    }, 500);
+    }, 300);
   };
 
   return (

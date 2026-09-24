@@ -13,7 +13,7 @@ import {
   X,
   FileSpreadsheet
 } from 'lucide-react';
-import { getCourseFeeRates, saveCourseFeeRate, createStudent, getStudents } from '../services/api';
+import { getCourseFeeRates, saveCourseFeeRate, createStudent, getStudents, updateStudent } from '../services/api';
 import AddCourseRateModal from './AddCourseRateModal';
 
 export default function HrStudentFeesCrm({ students: propStudents, onRefreshStudents, currentUser }) {
@@ -32,6 +32,18 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
   const [courseRates, setCourseRates] = useState([]);
   const [students, setStudents] = useState(propStudents || []);
 
+  const refreshStudents = async () => {
+    try {
+      const params = currentUser?.name ? { hrName: currentUser.name } : undefined;
+      const res = await getStudents(params);
+      if (Array.isArray(res)) {
+        setStudents(res);
+      }
+    } catch (err) {
+      console.error('Error fetching students:', err);
+    }
+  };
+
   useEffect(() => {
     getCourseFeeRates()
       .then(res => {
@@ -41,18 +53,31 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
   }, []);
 
   useEffect(() => {
-    if (propStudents && propStudents.length > 0) {
+    if (propStudents !== undefined) {
       setStudents(propStudents);
     } else {
-      getStudents().then(res => {
-        if (Array.isArray(res)) setStudents(res);
-      }).catch(err => console.error('Error fetching students:', err));
+      refreshStudents();
     }
-  }, [propStudents]);
+  }, [propStudents, currentUser?.name]);
+
+  // Unique admitted students with valid IDs for the selector
+  const admittedStudentsList = useMemo(() => {
+    const map = new Map();
+    (students || []).forEach(s => {
+      const sid = (s.studentId || s.id || '').trim();
+      if (sid && !map.has(sid.toUpperCase())) {
+        map.set(sid.toUpperCase(), {
+          ...s,
+          studentId: sid
+        });
+      }
+    });
+    return Array.from(map.values());
+  }, [students]);
 
   // Form State for Add Record
   const [newRecord, setNewRecord] = useState({
-    id: `TFSC0Y0${students.length + 1}`,
+    id: '',
     name: '',
     course: 'CPC',
     counsellor: currentUser?.name || 'Kavitha N.',
@@ -68,15 +93,58 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
     return map;
   }, [courseRates]);
 
+  // Handle student ID selection: auto-fills name, course, and course fee if matched
+  const handleSelectStudentId = (selectedId) => {
+    const trimmedId = (selectedId || '').trim();
+    if (!trimmedId) {
+      setNewRecord(prev => ({
+        ...prev,
+        id: '',
+        name: ''
+      }));
+      return;
+    }
+
+    const matched = students.find(
+      s => (s.studentId && s.studentId.toLowerCase() === trimmedId.toLowerCase()) ||
+           (s.id && s.id.toLowerCase() === trimmedId.toLowerCase())
+    );
+
+    if (matched) {
+      const rawCourse = (matched.course || 'CPC').toUpperCase();
+      let normalizedCourse = 'CPC';
+      if (rawCourse.includes('AMCT')) normalizedCourse = 'AMCT';
+      else if (rawCourse.includes('IPDRG')) normalizedCourse = 'IPDRG';
+      else if (rawCourse.includes('CIC')) normalizedCourse = 'CIC';
+      else if (rawCourse.includes('CRC')) normalizedCourse = 'CRC';
+      else if (rawCourse.includes('CCS')) normalizedCourse = 'CCS';
+      else if (rawCourse.includes('CPC')) normalizedCourse = 'CPC';
+
+      const cr = courseRateMap[normalizedCourse];
+      const fee = Number(matched.courseFee) || (cr ? cr.courseFee : 21000);
+
+      setNewRecord(prev => ({
+        ...prev,
+        id: matched.studentId || matched.id || trimmedId,
+        name: (matched.name || '').toUpperCase(),
+        course: normalizedCourse,
+        counsellor: matched.hrName || currentUser?.name || 'Kavitha N.',
+        courseFee: fee
+      }));
+    } else {
+      setNewRecord(prev => ({ ...prev, id: selectedId }));
+    }
+  };
+
   // Filtered Students
   const filteredStudents = useMemo(() => {
     if (!searchQuery.trim()) return students;
     const q = searchQuery.toLowerCase();
     return students.filter(s =>
-      s.name.toLowerCase().includes(q) ||
-      s.id.toLowerCase().includes(q) ||
-      s.course.toLowerCase().includes(q) ||
-      s.counsellor.toLowerCase().includes(q)
+      (s.name || '').toLowerCase().includes(q) ||
+      (s.studentId || s.id || '').toLowerCase().includes(q) ||
+      (s.course || '').toLowerCase().includes(q) ||
+      (s.counsellor || s.hrName || '').toLowerCase().includes(q)
     );
   }, [students, searchQuery]);
 
@@ -97,26 +165,66 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
   }, [filteredStudents, courseRateMap]);
 
   // Add Record Handler
-  const handleAddRecord = (e) => {
+  const handleAddRecord = async (e) => {
     e.preventDefault();
     if (!newRecord.name.trim()) {
       showToast('Please provide a student name');
       return;
     }
+    const feeNum = Number(newRecord.courseFee) || 21000;
+    const finalStudentId = newRecord.id.trim() || `TFSCOY${Math.floor(6000 + Math.random() * 900)}`;
+
     const created = {
       ...newRecord,
-      courseFee: Number(newRecord.courseFee) || 21000
+      studentId: finalStudentId,
+      id: finalStudentId,
+      courseFee: feeNum
     };
-    setStudents([created, ...students]);
+
+    try {
+      const matched = students.find(
+        s => (s.studentId && s.studentId.toLowerCase() === finalStudentId.toLowerCase()) ||
+             (s.id && s.id.toLowerCase() === finalStudentId.toLowerCase()) ||
+             (s._id && s._id === finalStudentId)
+      );
+
+      if (matched && matched._id) {
+        await updateStudent(matched._id, {
+          course: newRecord.course,
+          courseFee: feeNum,
+          hrName: newRecord.counsellor
+        });
+      } else if (!matched) {
+        await createStudent({
+          studentId: finalStudentId,
+          name: newRecord.name.toUpperCase(),
+          course: newRecord.course,
+          courseFee: feeNum,
+          hrName: newRecord.counsellor,
+          phone: '98401 00000',
+          mode: 'Online',
+          batchDate: 'May 2026',
+          statusGroup: 'in_course'
+        });
+      }
+
+      await refreshStudents();
+      if (onRefreshStudents) onRefreshStudents();
+      showToast(`✓ Fee record saved for ${newRecord.name}`);
+    } catch (err) {
+      console.warn('Fallback local state update:', err);
+      setStudents(prev => [created, ...prev.filter(s => (s.studentId || s.id) !== finalStudentId)]);
+      showToast(`✓ Added fee record for ${created.name}`);
+    }
+
     setShowAddModal(false);
     setNewRecord({
-      id: `TFSC0Y0${students.length + 2}`,
+      id: '',
       name: '',
       course: 'CPC',
       counsellor: currentUser?.name || 'Kavitha N.',
       courseFee: 21000
     });
-    showToast(`✓ Added fee record for ${created.name}`);
   };
 
   // Update Course Rate
@@ -172,7 +280,10 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
           </button>
 
           <button
-            onClick={() => setShowAddModal(true)}
+            onClick={() => {
+              refreshStudents();
+              setShowAddModal(true);
+            }}
             className="bg-[#0e6977] hover:bg-[#0a4f5a] text-white font-bold text-xs px-4 py-2 rounded-xl shadow-xs transition-all active:scale-95 flex items-center gap-1.5 flex-shrink-0 cursor-pointer"
           >
             <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
@@ -384,14 +495,53 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
 
             <form onSubmit={handleAddRecord} className="space-y-3 text-xs">
               <div>
-                <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Student ID</label>
-                <input
-                  type="text"
-                  required
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wide">
+                    Admitted Student ID
+                  </label>
+                  <span className="text-[10px] text-teal-700 font-mono font-bold bg-teal-50 px-2 py-0.5 rounded border border-teal-100">
+                    {admittedStudentsList.length} admitted students
+                  </span>
+                </div>
+
+                {/* Dropdown displaying ALL admitted student IDs with their names and courses */}
+                <select
                   value={newRecord.id}
-                  onChange={(e) => setNewRecord({ ...newRecord, id: e.target.value })}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 font-mono font-bold outline-none focus:border-[#0e6977] focus:bg-white text-xs"
-                />
+                  onChange={(e) => handleSelectStudentId(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-300 hover:border-[#0e6977] rounded-xl px-3 py-2.5 text-slate-900 font-mono font-bold outline-none focus:border-[#0e6977] focus:bg-white text-xs cursor-pointer shadow-xs transition-colors"
+                >
+                  <option value="">— Select an Admitted Student ID —</option>
+                  {admittedStudentsList.map((s) => (
+                    <option key={s.studentId} value={s.studentId}>
+                      {s.studentId} — {s.name} ({s.course || 'CPC'})
+                    </option>
+                  ))}
+                </select>
+
+                {/* Live Match Notification Pill */}
+                {newRecord.id && (
+                  <div className="mt-1.5 flex items-center justify-between px-2.5 py-1.5 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800 text-[11px] animate-in fade-in">
+                    <div className="flex items-center gap-1.5 font-medium">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" />
+                      <span>ID: <strong className="font-mono text-emerald-950 font-bold">{newRecord.id}</strong></span>
+                    </div>
+                    {newRecord.name && (
+                      <span className="font-bold text-emerald-700">Auto-filled: {newRecord.name}</span>
+                    )}
+                  </div>
+                )}
+
+                {/* Manual entry fallback */}
+                <div className="mt-1.5 flex items-center gap-2">
+                  <span className="text-[10px] text-slate-400 font-medium whitespace-nowrap">Or custom ID:</span>
+                  <input
+                    type="text"
+                    placeholder="Type ID manually"
+                    value={newRecord.id}
+                    onChange={(e) => handleSelectStudentId(e.target.value)}
+                    className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1 text-slate-800 font-mono text-[11px] outline-none focus:border-[#0e6977]"
+                  />
+                </div>
               </div>
 
               <div>

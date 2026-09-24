@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { X, Sparkles, Check, ArrowRight } from 'lucide-react';
 import logoImg from '../assets/thoughtflows-logo.png';
 
-export default function WalkinRegistrationModal({ isOpen, onClose, onRegister }) {
+export default function WalkinRegistrationModal({ isOpen, onClose, onRegister, currentUser }) {
   if (!isOpen) return null;
 
   // Form Fields
@@ -11,6 +11,10 @@ export default function WalkinRegistrationModal({ isOpen, onClose, onRegister })
   const [address, setAddress] = useState('');
   const [dob, setDob] = useState('');
   const [phone, setPhone] = useState('');
+  const [whatsappNumber, setWhatsappNumber] = useState('');
+  const [sameAsMobile, setSameAsMobile] = useState(false);
+  const [consultHr, setConsultHr] = useState(currentUser?.name || 'Kavitha N.');
+  const [branch, setBranch] = useState(currentUser?.branch || 'Saravanampatti (CBE)');
   const [email, setEmail] = useState('');
   const [facebookId, setFacebookId] = useState('');
   const [education, setEducation] = useState('');
@@ -69,13 +73,18 @@ export default function WalkinRegistrationModal({ isOpen, onClose, onRegister })
       return;
     }
 
+    const finalWhatsApp = sameAsMobile ? phone.trim() : (whatsappNumber.trim() || phone.trim());
+
     const newStudent = {
       id: `TF${name.slice(0, 2).toUpperCase()}${Date.now().toString().slice(-4)}`,
       name: name.toUpperCase(),
       fatherName,
       address,
       dob,
-      phone,
+      phone: phone.trim(),
+      whatsappNumber: finalWhatsApp,
+      additionalNumber: sameAsMobile ? '' : whatsappNumber.trim(),
+      alternatePhone: sameAsMobile ? '' : whatsappNumber.trim(),
       email,
       facebookId,
       qualification: education,
@@ -87,8 +96,9 @@ export default function WalkinRegistrationModal({ isOpen, onClose, onRegister })
       source,
       batchTiming: preferredTimings || '8-10 PM Weekdays',
       batchType,
-      batchDate: 'May 22',
-      hrName: 'Kavitha N.',
+      batchDate: 'May 2026',
+      hrName: consultHr || currentUser?.name || 'Kavitha N.',
+      branch: branch || currentUser?.branch || 'Saravanampatti',
       qualTag: education.toLowerCase().includes('bsc') || education.toLowerCase().includes('bpharm') ? 'Life Sci' : 'Grad',
       collegeCompany: college || company || 'Coimbatore',
       location: address.split(',')[0] || 'Saravanampatti',
@@ -209,7 +219,7 @@ export default function WalkinRegistrationModal({ isOpen, onClose, onRegister })
             />
           </div>
 
-          {/* Row 3: Date of Birth & Mobile Number */}
+          {/* Row 3: Date of Birth & Primary Mobile */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-bold text-[#00695c] mb-1">
@@ -225,19 +235,82 @@ export default function WalkinRegistrationModal({ isOpen, onClose, onRegister })
             </div>
             <div>
               <label className="block text-xs font-bold text-[#00695c] mb-1">
-                Mobile Number <span className="text-rose-500">*</span>
+                Primary Mobile <span className="text-rose-500">*</span>
               </label>
               <input
                 type="tel"
                 required
+                placeholder="10-digit mobile"
                 value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                className="w-full bg-slate-50/60 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-slate-900 outline-none focus:border-[#00796b] transition-all"
+                onChange={(e) => {
+                  setPhone(e.target.value);
+                  if (sameAsMobile) setWhatsappNumber(e.target.value);
+                }}
+                className="w-full bg-slate-50/60 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-slate-900 outline-none focus:border-[#00796b] transition-all font-mono"
               />
             </div>
           </div>
 
-          {/* Row 4: Email ID & Facebook ID */}
+          {/* Row 4: WhatsApp / Additional Number & Consult HR Name */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <div className="flex items-center justify-between mb-1 h-4">
+                <label className="text-xs font-bold text-[#00695c]">
+                  WhatsApp / Addl No.
+                </label>
+                <label className="flex items-center gap-1.5 text-[11px] text-slate-500 hover:text-slate-800 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={sameAsMobile}
+                    onChange={(e) => {
+                      setSameAsMobile(e.target.checked);
+                      if (e.target.checked) setWhatsappNumber(phone);
+                    }}
+                    className="accent-[#00796b] rounded cursor-pointer"
+                  />
+                  <span>Same as mobile</span>
+                </label>
+              </div>
+              <input
+                type="tel"
+                placeholder="WhatsApp / Alternate"
+                value={sameAsMobile ? phone : whatsappNumber}
+                disabled={sameAsMobile}
+                onChange={(e) => setWhatsappNumber(e.target.value)}
+                className="w-full bg-slate-50/60 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-slate-900 outline-none focus:border-[#00796b] transition-all font-mono disabled:bg-slate-100 disabled:text-slate-500"
+              />
+            </div>
+
+            <div>
+              <div className="flex items-center mb-1 h-4">
+                <label className="block text-xs font-bold text-[#00695c]">
+                  Consult HR Name <span className="text-rose-500">*</span>
+                </label>
+              </div>
+              <div className="relative">
+                <input
+                  type="text"
+                  required
+                  list="consult-hr-list"
+                  placeholder="Select or enter HR counselor"
+                  value={consultHr}
+                  onChange={(e) => setConsultHr(e.target.value)}
+                  className="w-full bg-slate-50/60 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-slate-900 outline-none focus:border-[#00796b] transition-all font-medium"
+                />
+                <datalist id="consult-hr-list">
+                  <option value="Kavitha N." />
+                  <option value="Pooja J." />
+                  <option value="Kalaiselvi M." />
+                  <option value="Priyadharshini" />
+                  <option value="Balaji R." />
+                  <option value="Subha M." />
+                  <option value="Ganesh N." />
+                </datalist>
+              </div>
+            </div>
+          </div>
+
+          {/* Row 5: Email ID & Facebook ID */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-bold text-[#00695c] mb-1">
@@ -253,16 +326,33 @@ export default function WalkinRegistrationModal({ isOpen, onClose, onRegister })
             </div>
             <div>
               <label className="block text-xs font-bold text-[#00695c] mb-1">
-                Facebook ID
+                Facebook ID / Social
               </label>
               <input
                 type="text"
+                placeholder="Optional"
                 value={facebookId}
                 onChange={(e) => setFacebookId(e.target.value)}
                 className="w-full bg-slate-50/60 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-slate-900 outline-none focus:border-[#00796b] transition-all"
               />
             </div>
           </div>
+
+          {/* Row 6: Consultation Branch (optional) */}
+          {branch && (
+            <div>
+              <label className="block text-xs font-bold text-[#00695c] mb-1">
+                Consultation Branch
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. Saravanampatti (CBE)"
+                value={branch}
+                onChange={(e) => setBranch(e.target.value)}
+                className="w-full bg-slate-50/60 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-slate-900 outline-none focus:border-[#00796b] transition-all"
+              />
+            </div>
+          )}
 
           {/* Row 5: Education & Year of Passout */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

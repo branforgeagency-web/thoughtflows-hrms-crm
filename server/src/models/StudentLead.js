@@ -9,6 +9,18 @@ const studentLeadSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  whatsappNumber: {
+    type: String,
+    default: ''
+  },
+  additionalNumber: {
+    type: String,
+    default: ''
+  },
+  alternatePhone: {
+    type: String,
+    default: ''
+  },
   email: {
     type: String,
     default: ''
@@ -101,10 +113,54 @@ const studentLeadSchema = new mongoose.Schema({
   demoBookedDate: {
     type: String
   },
+  budget: {
+    type: String,
+    default: '₹20K-30K'
+  },
+  batchTiming: {
+    type: String,
+    default: 'Weekend (Sat-Sun)'
+  },
+  currentRole: {
+    type: String,
+    default: ''
+  },
+  experienceYrs: {
+    type: String,
+    default: ''
+  },
+  decisionStatus: {
+    type: String,
+    default: ''
+  },
+  timeIn: {
+    type: String,
+    default: ''
+  },
+  fetchedBy: {
+    type: String,
+    default: 'Google Ad ⚡'
+  },
+  allocatedTo: {
+    type: String,
+    default: 'Priyadharshini'
+  },
   notes: {
     type: String,
     default: ''
-  }
+  },
+  whatsappMessages: [{
+    id: String,
+    sender: { type: String, enum: ['counselor', 'student', 'system'], default: 'counselor' },
+    senderName: { type: String, default: '' },
+    text: { type: String, default: '' },
+    time: { type: String, default: '' },
+    status: { type: String, enum: ['sent', 'delivered', 'read'], default: 'read' },
+    mediaUrl: { type: String, default: '' },
+    mediaType: { type: String, default: '' },
+    mediaName: { type: String, default: '' },
+    createdAt: { type: Date, default: Date.now }
+  }]
 }, {
   timestamps: true
 });

@@ -50,8 +50,8 @@ export const deleteStudent = async (id) => {
 };
 
 // Leads & Pipeline API
-export const getLeads = async () => {
-  const res = await api.get('/leads');
+export const getLeads = async (params) => {
+  const res = await api.get('/leads', { params });
   return res.data;
 };
 
@@ -73,9 +73,68 @@ export const deleteLead = async (id) => {
   return res.data;
 };
 
+export const getLeadWhatsAppMessages = async (id) => {
+  const res = await api.get(`/leads/${id}/whatsapp`);
+  return res.data;
+};
+
+export const sendLeadWhatsAppMessage = async (id, data) => {
+  const res = await api.post(`/leads/${id}/whatsapp`, data);
+  return res.data;
+};
+
 // Demos API
 export const getDemos = async () => {
   const res = await api.get('/demos');
+  return res.data;
+};
+
+// Live preview of which trainers will be notified for a given
+// language + location + date + time (Demo Booking Notification Requirement)
+export const getEligibleTrainers = async ({ language, location, preferredDate, timeSlot, course }) => {
+  const res = await api.get('/demos/eligible-trainers', {
+    params: { language, location, preferredDate, timeSlot, course }
+  });
+  return res.data;
+};
+
+// Real Exotel click-to-call bridge — dials the HR's phone first, then the
+// lead, and bridges them. No simulated call state anywhere in this file.
+export const getCallConfigStatus = async () => {
+  const res = await api.get('/calls/config-status');
+  return res.data;
+};
+
+export const dialCall = async ({ leadPhone, agentPhone }) => {
+  const res = await api.post('/calls/dial', { leadPhone, agentPhone });
+  return res.data;
+};
+
+export const getCallStatus = async (callSid) => {
+  const res = await api.get(`/calls/${callSid}/status`);
+  return res.data;
+};
+
+export const hangupCall = async (callSid) => {
+  const res = await api.post(`/calls/${callSid}/hangup`);
+  return res.data;
+};
+
+// Call Recordings API
+export const getRecordings = async (params) => {
+  const res = await api.get('/recordings', { params });
+  return res.data;
+};
+
+export const saveRecording = async (recordingData) => {
+  const res = await api.post('/recordings', recordingData);
+  notifyDataUpdate('recordings');
+  return res.data;
+};
+
+export const deleteRecording = async (id) => {
+  const res = await api.delete(`/recordings/${id}`);
+  notifyDataUpdate('recordings');
   return res.data;
 };
 

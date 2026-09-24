@@ -343,20 +343,22 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
                   <div className="text-[11px] text-slate-700 bg-emerald-50/60 p-2.5 rounded-xl border border-emerald-100 flex items-start gap-1.5">
                     <span className="text-xs">🎯</span>
                     <div className="leading-tight">
-                      <div>Trainer: <strong className="text-slate-900 font-bold">{demo.trainer || 'Revathi K'}</strong> <span className="text-[10px] font-mono text-slate-500">({demo.trainerId || 'TR-CBG-001'})</span></div>
-                      <div className="text-[10px] text-emerald-700 font-semibold mt-0.5">★ Course Subject Matter Expert Assigned</div>
+                      <div>Trainer: <strong className="text-slate-900 font-bold">{demo.trainer || 'Unassigned'}</strong> {demo.trainerId && <span className="text-[10px] font-mono text-slate-500">({demo.trainerId})</span>}</div>
+                      <div className="text-[10px] text-emerald-700 font-semibold mt-0.5">{demo.language || ''}{demo.language && demo.location ? ' · ' : ''}{demo.location || ''}</div>
                     </div>
                   </div>
 
-                  {/* Multi-condition notification status */}
+                  {/* Demo Booking Notification Requirement status */}
                   {demo.notificationSent === true ? (
                     <div className="text-[10.5px] text-emerald-900 bg-emerald-50/90 p-2 rounded-xl border border-emerald-200 space-y-0.5">
                       <div className="font-extrabold flex items-center gap-1 text-emerald-800">
                         <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                        <span>Notification Sent to Trainer</span>
+                        <span>
+                          Notified {demo.notifiedTrainerNames?.length > 1 ? `${demo.notifiedTrainerNames.length} Trainers` : 'Trainer'}
+                        </span>
                       </div>
                       <div className="text-[9.5px] text-emerald-700 font-semibold">
-                        ✓ Experienced · In Shift · No Class Conflict
+                        {demo.notifiedTrainerNames?.length ? demo.notifiedTrainerNames.join(', ') : demo.trainer}
                       </div>
                     </div>
                   ) : (
@@ -366,7 +368,7 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
                         <span>Notification Suppressed</span>
                       </div>
                       <div className="text-[9.5px] text-rose-700 font-medium leading-tight">
-                        {demo.notificationBlockReason || demo.conflictReason || 'Demo slot has class overlap or is outside shift.'}
+                        {demo.notificationBlockReason || demo.noEligibleTrainerReason || 'No trainer matched this language, location & time slot.'}
                       </div>
                     </div>
                   )}
@@ -439,13 +441,17 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
         initialData={{
           studentName: '',
           mobile: '',
-          course: 'CPC Intensive Medical Coding',
-          mode: 'Online Live',
+          course: 'CPC',
+          mode: 'Online (Zoom Live)',
           timeSlot: '4:00–6:00 PM',
           language: 'Tamil'
         }}
         onConfirm={async (demoData) => {
           try {
+            // The server is the single source of truth for trainer matching &
+            // the notification decision (language + location + free time +
+            // "Experienced in Demo" + active) — the modal only sends the
+            // student's booking criteria.
             const created = await createDemo({
               ...demoData,
               candidateName: demoData.studentName || demoData.candidateName,
@@ -455,27 +461,21 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
               time: `${demoData.preferredDate || 'Today'} ${demoData.timeSlot}`,
               timeSlot: demoData.timeSlot,
               language: demoData.language,
-              trainer: demoData.trainer,
-              trainerId: demoData.trainerId,
-              trainerRole: demoData.trainerRole,
-              expertCourse: demoData.expertCourse,
-              isExpertMatched: true,
-              notificationSentTo: demoData.trainerId,
-              notificationSentToName: demoData.trainer,
-              priority: 'Urgent - Subject Matter Expert First',
+              location: demoData.location,
               status: 'booked',
-              note: `Language: ${demoData.language}. Expert Trainer auto-mapped & notified first.`
+              note: `Language: ${demoData.language} · Location: ${demoData.location}`
             });
             setDemos(prev => [created, ...prev]);
             if (onRefreshDemos) onRefreshDemos();
             if (created.notificationSent) {
-              showToast(`✓ Booked Demo for ${created.candidateName}! Notification sent to ${created.trainer || 'trainer'} first.`);
+              const names = created.notifiedTrainerNames?.length ? created.notifiedTrainerNames.join(', ') : created.trainer;
+              showToast(`✓ Booked Demo for ${created.candidateName}! Notification sent to ${names}.`);
             } else {
-              showToast(`✓ Booked Demo for ${created.candidateName}. Notification not sent: ${created.notificationBlockReason || 'Criteria not met'}`);
+              showToast(`✓ Booked Demo for ${created.candidateName}. Notification not sent: ${created.notificationBlockReason || created.noEligibleTrainerReason || 'No matching trainer'}`);
             }
           } catch (err) {
             console.error('Failed to book demo:', err);
-            showToast('Error saving demo to database');
+            showToast(err?.response?.data?.error || 'Error saving demo to database');
           }
         }}
       />

@@ -22,6 +22,8 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
   // Form Fields
   const [fullName, setFullName] = useState('');
   const [mobileNumber, setMobileNumber] = useState('');
+  const [whatsappNumber, setWhatsappNumber] = useState('');
+  const [sameAsMobile, setSameAsMobile] = useState(false);
   const [email, setEmail] = useState('');
   const [age, setAge] = useState('24');
   const [gender, setGender] = useState('Female');
@@ -99,7 +101,7 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
   // Lead Categories
   const PRIMARY_CATEGORIES = [
     { id: 'c1', label: 'BPO Reject', icon: '💼' },
-    { id: 'c2', label: 'NEET Failed', icon: '🩺' },
+    // { id: 'c2', label: 'NEET Failed', icon: '🩺' },
     { id: 'c3', label: 'Working Pro (BPO/Hospital)', icon: '👩‍💼' },
     { id: 'c4', label: 'Final Year Student', icon: '🎓' },
     { id: 'c5', label: 'BPharm / BSc Nursing', icon: '💊' },
@@ -144,11 +146,16 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
       return;
     }
 
+    const finalWhatsApp = sameAsMobile ? mobileNumber.trim() : (whatsappNumber.trim() || mobileNumber.trim());
+
     const newLead = {
       createStudentLogin: true,
       id: `lead-${Date.now()}`,
       name: fullName.trim(),
       phone: mobileNumber.trim(),
+      whatsappNumber: finalWhatsApp,
+      additionalNumber: sameAsMobile ? '' : whatsappNumber.trim(),
+      alternatePhone: sameAsMobile ? '' : whatsappNumber.trim(),
       email: email.trim(),
       age,
       gender,
@@ -376,10 +383,10 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
                 />
               </div>
 
-              {/* Row 2: Mobile & Email */}
+              {/* Row 2: Mobile Number & WhatsApp / Additional Number */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-400 uppercase mb-1.5">
+                  <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-400 uppercase mb-1.5 h-4">
                     MOBILE NUMBER *
                   </label>
                   <input
@@ -387,24 +394,56 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
                     required
                     placeholder="98••••••••"
                     value={mobileNumber}
-                    onChange={(e) => setMobileNumber(e.target.value)}
+                    onChange={(e) => {
+                      setMobileNumber(e.target.value);
+                      if (sameAsMobile) setWhatsappNumber(e.target.value);
+                    }}
                     className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#0e6977] transition-all font-sans"
                   />
                 </div>
                 <div>
-                  <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-400 uppercase mb-1.5">
-                    STUDENT EMAIL *
-                  </label>
+                  <div className="flex items-center justify-between mb-1.5 h-4">
+                    <label className="text-[10.5px] font-bold font-mono tracking-wider text-slate-400 uppercase">
+                      WHATSAPP / ADDL NO.
+                    </label>
+                    <label className="flex items-center gap-1.5 text-[11px] text-slate-500 hover:text-slate-800 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={sameAsMobile}
+                        onChange={(e) => {
+                          setSameAsMobile(e.target.checked);
+                          if (e.target.checked) setWhatsappNumber(mobileNumber);
+                        }}
+                        className="accent-[#0e6977] rounded cursor-pointer"
+                      />
+                      <span>Same as mobile</span>
+                    </label>
+                  </div>
                   <input
-                    type="email"
-                    required
-                    placeholder="student's existing email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#0e6977] transition-all font-sans"
+                    type="tel"
+                    placeholder="WhatsApp / Alternate"
+                    value={sameAsMobile ? mobileNumber : whatsappNumber}
+                    disabled={sameAsMobile}
+                    onChange={(e) => setWhatsappNumber(e.target.value)}
+                    className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#0e6977] transition-all font-sans disabled:bg-slate-100 disabled:text-slate-500"
                   />
-                  <p className="text-[10px] text-slate-400 mt-1">Student dashboard login: this email + an auto-generated TF password.</p>
                 </div>
+              </div>
+
+              {/* Row 3: Student Email */}
+              <div>
+                <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-400 uppercase mb-1.5">
+                  STUDENT EMAIL *
+                </label>
+                <input
+                  type="email"
+                  required
+                  placeholder="student's existing email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#0e6977] transition-all font-sans"
+                />
+                <p className="text-[10px] text-slate-400 mt-1">Student dashboard login: this email + an auto-generated TF password.</p>
               </div>
 
               {/* Row 3: Age & Gender */}
