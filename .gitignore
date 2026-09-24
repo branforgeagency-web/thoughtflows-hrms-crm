@@ -31,3 +31,4 @@ logs/
 *.njsproj
 *.sln
 *.sw?
+_to_delete/
