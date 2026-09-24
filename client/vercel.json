@@ -1,11 +1,15 @@
 {
   "rewrites": [
     {
-      "source": "/api/zoom-signature",
-      "destination": "/api/zoom-signature"
+      "source": "/api/:path*",
+      "destination": "https://thoughtflows-hrms-crm.onrender.com/api/:path*"
     },
     {
-      "source": "/((?!api/).*)",
+      "source": "/recordings/:path*",
+      "destination": "https://thoughtflows-hrms-crm.onrender.com/recordings/:path*"
+    },
+    {
+      "source": "/((?!api/|recordings/).*)",
       "destination": "/index.html"
     }
   ]
