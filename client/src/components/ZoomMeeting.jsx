@@ -82,10 +82,9 @@ export default function ZoomMeeting({ link, demoId, studentEmail, userName = 'Tr
         });
         if (cancelled) return;
         await client.join({
-          sdkKey: info.sdkKey,
           signature: info.signature,
-          meetingNumber: info.meetingNumber,
-          password: info.password,
+          meetingNumber: String(info.meetingNumber).replace(/\s/g, ''),
+          password: info.password || '',
           userName,
           ...(info.zak ? { zak: info.zak } : {}),
         });
