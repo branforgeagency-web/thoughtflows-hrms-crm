@@ -1914,6 +1914,26 @@ router.post('/auth/login', async (req, res) => {
     return false;
   };
 
+  // 0. Built-in trainer accounts take precedence over DB records with the same email
+  const trainerUser = TRAINER_ACCOUNTS[normalizedEmail];
+  if (trainerUser) {
+    if (!isPasswordValid(password, trainerUser.password, normalizedEmail)) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid password. Please check your credentials.'
+      });
+    }
+    return res.json({
+      success: true,
+      message: `Authenticated successfully for ${trainerUser.name} (${trainerUser.role})`,
+      user: {
+        ...trainerUser,
+        department: 'training',
+        token: `jwt_tf_trainer_${trainerUser.id}_token`
+      }
+    });
+  }
+
   // 1. Check MongoDB User model first (contains real seeded and admin-created accounts)
   try {
     const dbUser = await User.findOne({ email: normalizedEmail });
@@ -1948,26 +1968,6 @@ router.post('/auth/login', async (req, res) => {
     }
   } catch (e) {
     console.warn('DB User lookup warning in /auth/login:', e.message);
-  }
-
-  // 2. Training Account Direct Verification (Srithar S)
-  const trainerUser = TRAINER_ACCOUNTS[normalizedEmail];
-  if (trainerUser) {
-    if (!isPasswordValid(password, trainerUser.password, normalizedEmail)) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid password. Please check your credentials.'
-      });
-    }
-    return res.json({
-      success: true,
-      message: `Authenticated successfully for ${trainerUser.name} (${trainerUser.role})`,
-      user: {
-        ...trainerUser,
-        department: 'training',
-        token: `jwt_tf_trainer_${trainerUser.id}_token`
-      }
-    });
   }
 
   // 4. Admin Management Authentication
