@@ -19,6 +19,9 @@ const trainerDoubtSchema = new mongoose.Schema({
     required: true
   },
   batch: String,
+  course: { type: String, default: '' },
+  trainerId: { type: String, default: '' },
+  trainerName: { type: String, default: '' },
   slaBadge: {
     type: String,
     default: 'SLA Normal · 24h'

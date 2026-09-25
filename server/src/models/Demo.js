@@ -17,7 +17,7 @@ const demoSchema = new mongoose.Schema({
   },
   course: {
     type: String,
-    default: 'CPC Intensive Medical Coding'
+    default: ''
   },
   mode: {
     type: String,
@@ -29,11 +29,11 @@ const demoSchema = new mongoose.Schema({
   },
   time: {
     type: String,
-    default: 'Today 17:00'
+    default: ''
   },
   timeSlot: {
     type: String,
-    default: '4:00–6:00 PM'
+    default: ''
   },
   language: {
     type: String,
@@ -59,27 +59,27 @@ const demoSchema = new mongoose.Schema({
   },
   trainerRole: {
     type: String,
-    default: 'AAPC Certified Faculty'
+    default: ''
   },
   expertCourse: {
     type: String,
-    default: 'CPC — Certified Professional Coder'
+    default: ''
   },
   isExpertMatched: {
     type: Boolean,
-    default: true
+    default: false
   },
   notificationSentTo: {
     type: String,
-    default: 'TR-CBG-001'
+    default: ''
   },
   notificationSentToName: {
     type: String,
-    default: 'Revathi K'
+    default: ''
   },
   notificationSentAt: {
     type: Date,
-    default: Date.now
+    default: null
   },
   notificationRead: {
     type: Boolean,
@@ -87,11 +87,11 @@ const demoSchema = new mongoose.Schema({
   },
   isExperienced: {
     type: Boolean,
-    default: true
+    default: false
   },
   shiftTiming: {
     type: String,
-    default: '6:00 AM – 2:00 PM'
+    default: ''
   },
   hasConflict: {
     type: Boolean,
@@ -103,7 +103,7 @@ const demoSchema = new mongoose.Schema({
   },
   notificationSent: {
     type: Boolean,
-    default: true
+    default: false
   },
   notificationBlockReason: {
     type: String,
@@ -126,7 +126,12 @@ const demoSchema = new mongoose.Schema({
   },
   priority: {
     type: String,
-    default: 'Urgent - Subject Matter Expert First'
+    default: ''
+  },
+  // HR counsellor who booked the demo — receives the trainer's outcome notification
+  bookedBy: {
+    type: String,
+    default: ''
   },
   status: {
     type: String,
@@ -134,7 +139,7 @@ const demoSchema = new mongoose.Schema({
   },
   link: {
     type: String,
-    default: 'https://zoom.us/j/9823412345'
+    default: ''
   },
   zoomMeetingId: {
     type: String,

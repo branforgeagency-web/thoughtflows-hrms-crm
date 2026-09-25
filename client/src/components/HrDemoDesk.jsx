@@ -19,7 +19,7 @@ import BookNewDemoModal from './BookNewDemoModal';
 
 import { getDemos, createDemo, updateDemo } from '../services/api';
 
-export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDemoClick }) {
+export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDemoClick, currentUser }) {
   const [activeFilter, setActiveFilter] = useState('all'); // all, booked, confirmed, attended, missed, fee
   const [showBookingModal, setShowBookingModal] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
@@ -59,10 +59,9 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
   const [newDemo, setNewDemo] = useState({
     candidateName: '',
     phone: '',
-    course: 'CPC Intensive Medical Coding',
+    course: '',
     mode: 'Online (Zoom Live)',
-    time: 'Today 17:00',
-    trainer: 'Dr. Vikram C.',
+    time: '',
     note: ''
   });
 
@@ -80,9 +79,9 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
         course: newDemo.course,
         mode: newDemo.mode,
         time: newDemo.time,
-        trainer: newDemo.trainer,
         status: 'booked',
-        note: newDemo.note || 'New demo scheduled via Demo Desk.'
+        bookedBy: currentUser?.name || currentUser?.userName || '',
+        note: newDemo.note
       });
 
       setDemos([created, ...demos]);
@@ -91,10 +90,9 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
       setNewDemo({
         candidateName: '',
         phone: '',
-        course: 'CPC Intensive Medical Coding',
+        course: '',
         mode: 'Online (Zoom Live)',
-        time: 'Today 17:00',
-        trainer: 'Dr. Vikram C.',
+        time: '',
         note: ''
       });
       showToast(`✓ Booked Demo for ${created.candidateName}! Dispatched to course expert trainer.`);
@@ -122,14 +120,17 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
   };
 
   // Metrics
-  const demosToday = demos.filter(d => d.time.toLowerCase().includes('today')).length;
-  const attendedCount = demos.filter(d => d.status === 'attended').length;
-  const movedToFeeCount = demos.filter(d => d.status === 'fee').length;
-  const missedCount = demos.filter(d => d.status === 'missed').length;
+  // Status is normalised to lowercase (older records may be "Attended" / "Missed")
+  const st = (d) => String(d.status || '').toLowerCase();
+  const todayKey = new Date().toISOString().split('T')[0];
+  const demosToday = demos.filter(d => d.preferredDate === todayKey || String(d.time || '').toLowerCase().includes('today')).length;
+  const attendedCount = demos.filter(d => st(d) === 'attended').length;
+  const movedToFeeCount = demos.filter(d => st(d) === 'fee').length;
+  const missedCount = demos.filter(d => st(d) === 'missed').length;
 
   const filteredDemos = demos.filter(d => {
     if (activeFilter === 'all') return true;
-    return d.status === activeFilter;
+    return st(d) === activeFilter;
   });
 
   return (
@@ -307,11 +308,11 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
               attended: { label: 'ATTENDED', class: 'bg-teal-50 text-teal-700 border-teal-200' },
               fee: { label: 'MOVED TO FEE', class: 'bg-purple-50 text-purple-700 border-purple-200' },
               missed: { label: 'NO-SHOW', class: 'bg-rose-50 text-rose-700 border-rose-200' }
-            }[demo.status] || { label: demo.status, class: 'bg-slate-100 text-slate-700 border-slate-200' };
+            }[st(demo)] || { label: demo.status, class: 'bg-slate-100 text-slate-700 border-slate-200' };
 
             return (
               <div
-                key={demo.id}
+                key={demo._id || demo.id}
                 className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-xs flex flex-col justify-between hover:shadow-md transition-all space-y-3"
               >
                 <div className="space-y-2">
@@ -332,7 +333,7 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
                   <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-500 pt-1">
                     <div className="flex items-center gap-1">
                       <Clock className="w-3 h-3 text-slate-400" />
-                      <span>{demo.time}</span>
+                      <span>{[demo.preferredDate, demo.timeSlot].filter(Boolean).join(' ') || demo.time}</span>
                     </div>
                     <div className="flex items-center gap-1">
                       <Video className="w-3 h-3 text-slate-400" />
@@ -345,6 +346,11 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
                     <div className="leading-tight">
                       <div>Trainer: <strong className="text-slate-900 font-bold">{demo.trainer || 'Unassigned'}</strong> {demo.trainerId && <span className="text-[10px] font-mono text-slate-500">({demo.trainerId})</span>}</div>
                       <div className="text-[10px] text-emerald-700 font-semibold mt-0.5">{demo.language || ''}{demo.language && demo.location ? ' · ' : ''}{demo.location || ''}</div>
+                      <div className="text-[10px] font-semibold mt-0.5">
+                        {demo.notificationRead
+                          ? <span className="text-emerald-700">✓ Trainer accepted the slot</span>
+                          : demo.notificationSent ? <span className="text-amber-700">Awaiting trainer acceptance</span> : null}
+                      </div>
                     </div>
                   </div>
 
@@ -382,9 +388,9 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
 
                 {/* Card Actions */}
                 <div className="grid grid-cols-3 gap-1.5 pt-2 border-t border-slate-100 text-[10px] font-bold">
-                  {demo.status === 'booked' && (
+                  {st(demo) === 'booked' && (
                     <button
-                      onClick={() => updateStatus(demo.id, 'confirmed', demo.candidateName)}
+                      onClick={() => updateStatus(demo._id || demo.id, 'confirmed', demo.candidateName)}
                       className="col-span-2 bg-[#0e6977] hover:bg-[#0a4f5a] text-white py-1.5 rounded-lg flex items-center justify-center gap-1 transition-all"
                     >
                       <CheckCircle2 className="w-3 h-3" />
@@ -392,9 +398,9 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
                     </button>
                   )}
 
-                  {demo.status === 'confirmed' && (
+                  {st(demo) === 'confirmed' && (
                     <button
-                      onClick={() => updateStatus(demo.id, 'attended', demo.candidateName)}
+                      onClick={() => updateStatus(demo._id || demo.id, 'attended', demo.candidateName)}
                       className="col-span-2 bg-emerald-600 hover:bg-emerald-700 text-white py-1.5 rounded-lg flex items-center justify-center gap-1 transition-all"
                     >
                       <UserCheck className="w-3 h-3" />
@@ -402,9 +408,9 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
                     </button>
                   )}
 
-                  {demo.status === 'attended' && (
+                  {st(demo) === 'attended' && (
                     <button
-                      onClick={() => updateStatus(demo.id, 'fee', demo.candidateName)}
+                      onClick={() => updateStatus(demo._id || demo.id, 'fee', demo.candidateName)}
                       className="col-span-2 bg-purple-600 hover:bg-purple-700 text-white py-1.5 rounded-lg flex items-center justify-center gap-1 transition-all"
                     >
                       <Sparkles className="w-3 h-3" />
@@ -412,9 +418,9 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
                     </button>
                   )}
 
-                  {(demo.status === 'fee' || demo.status === 'missed') && (
+                  {(st(demo) === 'fee' || st(demo) === 'missed') && (
                     <button
-                      onClick={() => updateStatus(demo.id, 'confirmed', demo.candidateName)}
+                      onClick={() => updateStatus(demo._id || demo.id, 'confirmed', demo.candidateName)}
                       className="col-span-2 bg-slate-800 hover:bg-slate-900 text-white py-1.5 rounded-lg flex items-center justify-center gap-1 transition-all"
                     >
                       <span>Re-Schedule</span>
@@ -422,7 +428,7 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
                   )}
 
                   <button
-                    onClick={() => updateStatus(demo.id, 'missed', demo.candidateName)}
+                    onClick={() => updateStatus(demo._id || demo.id, 'missed', demo.candidateName)}
                     className="bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 py-1.5 rounded-lg flex items-center justify-center gap-1 transition-all"
                   >
                     <span>No-Show</span>
@@ -463,6 +469,7 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
               language: demoData.language,
               location: demoData.location,
               status: 'booked',
+              bookedBy: currentUser?.name || currentUser?.userName || '',
               note: `Language: ${demoData.language} · Location: ${demoData.location}`
             });
             setDemos(prev => [created, ...prev]);

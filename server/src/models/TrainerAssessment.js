@@ -11,12 +11,14 @@ const trainerAssessmentSchema = new mongoose.Schema({
   },
   course: {
     type: String,
-    default: 'CPC — Medical Coding'
+    default: ''
   },
   batch: {
     type: String,
-    default: 'All Batches'
+    default: ''
   },
+  trainerId: { type: String, default: '' },
+  trainerName: { type: String, default: '' },
   topic: String,
   date: String,
   timeLimit: {
@@ -46,7 +48,7 @@ const trainerAssessmentSchema = new mongoose.Schema({
   },
   rationale: {
     type: String,
-    default: 'AAPC guidelines and case rationale.'
+    default: ''
   }
 }, {
   timestamps: true

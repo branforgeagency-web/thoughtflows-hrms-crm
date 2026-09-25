@@ -42,7 +42,7 @@ import HrCallRecordingsTable from './HrCallRecordingsTable';
 import LeadCallModal from './LeadCallModal';
 import BookNewDemoModal from './BookNewDemoModal';
 import AddLeadModal from './AddLeadModal';
-import { getStudents, getLeads, createLead, updateLead, getDemos, createDemo, getRecordings, getTodayClosure, saveDailyClosure, onDataUpdate } from '../services/api';
+import { getStudents, getLeads, createLead, updateLead, getDemos, createDemo, getRecordings, getTodayClosure, saveDailyClosure, onDataUpdate, getNotifications, markNotificationRead, markNotificationsRead } from '../services/api';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 
 export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, onSwitchDepartment, theme = 'classic' }) {
@@ -142,6 +142,26 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   const [showAddLeadModal, setShowAddLeadModal] = useState(false);
   const [studentLogin, setStudentLogin] = useState(null);
   const [toastMsg, setToastMsg] = useState(null);
+
+  // Training → HR notifications (handover progress, attendance alerts,
+  // demo outcomes, syllabus completion, trainer recommendations)
+  const [hrNotifications, setHrNotifications] = useState([]);
+  const [showHrNotifs, setShowHrNotifs] = useState(false);
+  const loadHrNotifications = async () => {
+    try {
+      const list = await getNotifications({ audience: 'hr', recipientName: currentUser?.name || currentUser?.userName || '' });
+      setHrNotifications(Array.isArray(list) ? list : []);
+    } catch (_) {}
+  };
+  useEffect(() => {
+    loadHrNotifications();
+    const unsub = onDataUpdate((entity) => {
+      if (['notifications', 'students', 'demos', 'trainer_attendance'].includes(entity)) loadHrNotifications();
+    });
+    const poll = setInterval(loadHrNotifications, 60000);
+    return () => { unsub(); clearInterval(poll); };
+  }, [currentUser?.name]);
+  const unreadHrNotifs = hrNotifications.filter(n => !n.read);
 
   // Real database states
   const [students, setStudents] = useState([]);
@@ -253,7 +273,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
 
   const handleBookDemoSubmit = async (demoData) => {
     try {
-      const created = await createDemo(demoData);
+      const created = await createDemo({ ...demoData, bookedBy: currentUser?.name || currentUser?.userName || '' });
       setDemos(prev => [created, ...prev]);
       setShowBookDemoModal(false);
       if (created.notificationSent) {
@@ -420,7 +440,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     const pipelineCount = scopedLeads.length.toString();
     const followUpCount = scopedLeads.filter(l => l.stage !== 'admitted' && l.stage !== 'closed').length.toString();
     const admittedCount = scopedStudents.length.toString();
-    const handoverCount = scopedStudents.filter(s => s.handoverStatus !== 'Sent').length.toString();
+    const handoverCount = scopedStudents.filter(s => s.handoverStatus !== 'Sent to Training').length.toString();
 
     return [
       { name: 'Home', badge: null, icon: Home, iconBg: 'bg-[#0e6977]', color: 'teal' },
@@ -598,7 +618,8 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             <span>Add Lead</span>
           </button>
 
-          <button className={`p-2 rounded-xl transition-colors relative flex-shrink-0 ${
+          <div className="relative flex-shrink-0">
+          <button onClick={() => setShowHrNotifs(v => !v)} title="Updates from Training" className={`p-2 rounded-xl transition-colors relative flex-shrink-0 ${
             barTheme === 'clay'
               ? 'clay-btn clay-btn-secondary text-[#073734]'
               : barTheme === 'turquoise'
@@ -610,8 +631,50 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
                     : 'border bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-600'
           }`}>
             <Bell className="w-3.5 h-3.5" />
-            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 absolute top-1.5 right-1.5" />
+            {unreadHrNotifs.length > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-[15px] h-[15px] px-1 rounded-full bg-rose-600 text-white text-[9px] font-black flex items-center justify-center">{unreadHrNotifs.length}</span>
+            )}
           </button>
+          {showHrNotifs && (
+            <div className="absolute left-0 top-full mt-2 w-80 max-h-[420px] overflow-y-auto bg-white rounded-2xl border border-slate-200 shadow-2xl z-50 text-left">
+              <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-900">Updates from Training</span>
+                {unreadHrNotifs.length > 0 && (
+                  <button
+                    onClick={async () => {
+                      try { await markNotificationsRead(unreadHrNotifs.map(n => n._id)); } catch (_) {}
+                      setHrNotifications(prev => prev.map(n => ({ ...n, read: true })));
+                    }}
+                    className="text-[11px] font-bold text-[#00897b] hover:underline"
+                  >
+                    Mark all read
+                  </button>
+                )}
+              </div>
+              {hrNotifications.length === 0 ? (
+                <div className="px-4 py-8 text-center text-xs text-slate-400">No updates yet.</div>
+              ) : hrNotifications.map(n => (
+                <button
+                  key={n._id}
+                  onClick={async () => {
+                    if (!n.read) {
+                      try { await markNotificationRead(n._id); } catch (_) {}
+                      setHrNotifications(prev => prev.map(x => x._id === n._id ? { ...x, read: true } : x));
+                    }
+                    if (n.type === 'demo') handleTabChange('Demo Desk');
+                    else if (n.studentId) handleTabChange('Handover');
+                    setShowHrNotifs(false);
+                  }}
+                  className={`w-full text-left px-4 py-3 border-b border-slate-50 hover:bg-slate-50 ${n.read ? '' : 'bg-amber-50/60'}`}
+                >
+                  <div className="text-xs font-bold text-slate-900">{n.title}</div>
+                  <div className="text-[11px] text-slate-600 mt-0.5">{n.message}</div>
+                  <div className="text-[10px] text-slate-400 mt-1">{new Date(n.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</div>
+                </button>
+              ))}
+            </div>
+          )}
+          </div>
         </div>
 
         {/* Right: Quick Controls & Session Actions */}
@@ -840,6 +903,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             demos={scopedDemos} 
             onRefreshDemos={loadAllData} 
             onBookDemoClick={() => setShowBookDemoModal(true)} 
+            currentUser={currentUser}
           />
         ) : (activeTab === 'Pipeline & Follow-ups' || activeTab === 'My Pipeline' || activeTab === 'Follow-up Board') ? (
           <HrPipelineView 
@@ -994,7 +1058,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
               </div>
             </div>
             <div className="text-3xl font-extrabold text-slate-900">{scopedDemos.length}</div>
-            <div className="text-xs text-slate-500 mt-1 font-medium">{scopedDemos.filter(d => d.status === 'booked').length} upcoming · {scopedDemos.filter(d => d.status === 'attended').length} attended</div>
+            <div className="text-xs text-slate-500 mt-1 font-medium">{scopedDemos.filter(d => String(d.status).toLowerCase() === 'booked').length} upcoming · {scopedDemos.filter(d => String(d.status).toLowerCase() === 'attended').length} attended</div>
           </div>
 
           {/* Card 4 */}

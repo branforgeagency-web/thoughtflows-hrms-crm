@@ -827,6 +827,8 @@ export default function AdminManagementDashboard({
       try {
         await axios.put(`/api/trainer/settings/${encodeURIComponent(newUserForm.trainerId)}`, {
           trainerName: newUserForm.name,
+          // Login email links this roster record to the trainer's portal account
+          email: (newUserForm.email || '').trim().toLowerCase(),
           zoomEmail: (newUserForm.zoomEmail || newUserForm.email || '').trim().toLowerCase(),
           courseKey: newUserForm.expertCourse,
           expertCourse: courseLabel,

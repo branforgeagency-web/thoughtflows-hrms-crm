@@ -73,6 +73,30 @@ const trainerSchema = new mongoose.Schema(
       type: Number,
       default: 1440
     },
+    // Login email of the trainer's portal account — used to attach this
+    // roster record to the signed-in trainer
+    email: {
+      type: String,
+      default: '',
+      trim: true,
+      lowercase: true
+    },
+    role: { type: String, default: '' },
+    // Recurring batch class link used in the Class Session Room
+    classZoomLink: { type: String, default: '' },
+    workingDays: { type: String, default: '' },
+    maxSessionsPerDay: { type: Number, default: 0 },
+    certifications: { type: [String], default: [] },
+    // Skill matrix: level L1–L4 (only L2+ can be allocated a subject)
+    skills: {
+      type: [{ name: String, level: String }],
+      default: []
+    },
+    specialEligibility: { type: [String], default: [] },
+    // Pay configuration (admin-managed). 0 = not configured.
+    variablePayBase: { type: Number, default: 0 },
+    demoIncentive: { type: Number, default: 0 },
+    admissionIncentive: { type: Number, default: 0 },
     scheduledClasses: {
       type: [
         {

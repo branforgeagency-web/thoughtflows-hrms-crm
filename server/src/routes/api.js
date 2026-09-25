@@ -32,11 +32,12 @@ import AuditLog from '../models/AuditLog.js';
 import CallRecording from '../models/CallRecording.js';
 import DailyClosure from '../models/DailyClosure.js';
 import HrTarget from '../models/HrTarget.js';
+import ClassAttendance from '../models/ClassAttendance.js';
+import TrainingMaterial from '../models/TrainingMaterial.js';
+import Notification from '../models/Notification.js';
 
 const router = express.Router();
 
-// Real Academy Seed Data (Seed once to MongoDB if collections are empty)
-// CCCP Seed Data
 // Health Check
 router.get('/health', (req, res) => {
   const isMongoConnected = mongoose.connection.readyState === 1;
@@ -1110,8 +1111,10 @@ router.post('/leadership/attendance/break', async (req, res) => {
 // ==========================================
 router.get('/students', async (req, res) => {
   try {
-    const { statusGroup, search, hrName } = req.query;
+    const { statusGroup, search, hrName, trainerId, handoverStatus } = req.query;
     let query = {};
+    if (trainerId) query.trainerId = trainerId;
+    if (handoverStatus) query.handoverStatus = handoverStatus;
     if (statusGroup && statusGroup !== 'all') {
       query.statusGroup = statusGroup;
     }
@@ -1736,6 +1739,12 @@ router.get('/demos', async (req, res) => {
 // Stub dispatcher — swap this for a real email/SMS/push provider. It is the
 // one place a notification actually goes out to a trainer.
 function notifyTrainer(trainer, demo) {
+  pushNotification({
+    audience: 'trainer', recipientId: trainer.trainerId, recipientName: trainer.trainerName, type: 'demo',
+    title: `New demo booked: ${demo.candidateName}`,
+    message: `${demo.course || ''} · ${demo.language} · ${demo.location} · ${demo.preferredDate} ${demo.timeSlot}`,
+    createdBy: demo.bookedBy || ''
+  });
   console.log(
     `[DEMO NOTIFICATION] -> ${trainer.trainerName} (${trainer.trainerId}) : ` +
     `New demo booked by ${demo.candidateName} · ${demo.language} · ${demo.location} · ` +
@@ -1771,7 +1780,7 @@ router.post('/demos', async (req, res) => {
     );
     const primary = ranked[0] || null;
 
-    ranked.forEach((t) => notifyTrainer(t, { candidateName: rawData.candidateName || rawData.studentName || rawData.name, language, location, preferredDate, timeSlot: demoSlot }));
+    ranked.forEach((t) => notifyTrainer(t, { candidateName: rawData.candidateName || rawData.studentName || rawData.name, course, language, location, preferredDate, timeSlot: demoSlot, bookedBy: rawData.bookedBy }));
 
     console.log(
       `[DEMO NOTIFICATION EVALUATION] Course: ${course} | Language: ${language} | Location: ${location} | ` +
@@ -1781,7 +1790,7 @@ router.post('/demos', async (req, res) => {
     const enrichedPayload = {
       ...rawData,
       candidateName: rawData.candidateName || rawData.studentName || rawData.name || 'Prospective Student',
-      phone: rawData.phone || rawData.mobile || '+91 98400 00000',
+      phone: rawData.phone || rawData.mobile || '',
       course,
       language,
       location,
@@ -1812,8 +1821,9 @@ router.post('/demos', async (req, res) => {
       trainerMapping: ranked.length
         ? `★ Notification sent to ${ranked.length} matching trainer${ranked.length > 1 ? 's' : ''}: ${ranked.map((t) => t.trainerName).join(', ')}`
         : `🔕 Notification Not Sent: ${noEligibleTrainerReason}`,
-      status: rawData.status || 'booked'
+      status: String(rawData.status || 'booked').toLowerCase()
     };
+    if (!enrichedPayload.phone) return res.status(400).json({ error: 'Candidate phone number is required' });
 
     const newDemo = new Demo(enrichedPayload);
     await newDemo.save();
@@ -1861,8 +1871,27 @@ async function assertTrainerFreeToConfirm({ trainerId, preferredDate, timeSlot, 
   }
 }
 
+// Tell the HR who booked the demo what the trainer did with it
+async function notifyHrOfDemo(demo, what) {
+  const labels = {
+    confirmed: 'accepted the demo slot',
+    attended: 'completed the demo — lead moved to Demo Attended',
+    missed: 'marked the candidate as a no-show — please reschedule'
+  };
+  if (!labels[what]) return;
+  await pushNotification({
+    audience: 'hr', recipientName: demo.bookedBy || '', type: 'demo',
+    title: `Demo ${what}: ${demo.candidateName}`,
+    message: `${demo.trainer || 'Trainer'} ${labels[what]} (${demo.course} · ${demo.preferredDate} ${demo.timeSlot}).`,
+    demoId: String(demo._id), createdBy: demo.trainer || ''
+  });
+}
+
 router.put('/demos/:id', async (req, res) => {
   try {
+    if (req.body && req.body.status) req.body.status = String(req.body.status).toLowerCase();
+    const { updatedBy, ...demoUpdate } = req.body || {};
+    req.body = demoUpdate;
     const willConfirm = String(req.body?.status || '').toLowerCase() === 'confirmed';
     if (willConfirm) {
       const existing = await Demo.findById(req.params.id);
@@ -1884,6 +1913,8 @@ router.put('/demos/:id', async (req, res) => {
     if (String(updated.status || '').toLowerCase() === 'attended') {
       try { await advanceLeadAfterDemo(updated); } catch (e) { console.warn('advanceLeadAfterDemo failed:', e.message); }
     }
+    // Only outcomes set from the trainer desk notify HR (HR's own clicks don't notify themselves)
+    if (updatedBy === 'trainer' && req.body.status) await notifyHrOfDemo(updated, req.body.status);
     res.json(updated);
   } catch (err) {
     if (err.code === 11000 || err.statusCode === 409) {
@@ -1898,7 +1929,7 @@ router.put('/demos/:id/acknowledge', async (req, res) => {
     const existing = await Demo.findById(req.params.id);
     if (!existing) return res.status(404).json({ error: 'Demo not found' });
     await assertTrainerFreeToConfirm({
-      trainerId: existing.trainerId,
+      trainerId: req.body?.trainerId || existing.trainerId,
       preferredDate: existing.preferredDate,
       timeSlot: existing.timeSlot,
       excludeId: existing._id
@@ -1906,10 +1937,11 @@ router.put('/demos/:id/acknowledge', async (req, res) => {
 
     const updated = await Demo.findByIdAndUpdate(
       req.params.id,
-      { $set: { notificationRead: true, status: 'confirmed', acknowledgedAt: new Date() } },
+      { $set: { notificationRead: true, status: 'confirmed', acknowledgedAt: new Date(), ...(req.body?.trainerId ? { trainerId: req.body.trainerId, trainer: req.body.trainerName || existing.trainer } : {}) } },
       { new: true }
     );
     if (!updated) return res.status(404).json({ error: 'Demo not found' });
+    await notifyHrOfDemo(updated, 'confirmed');
     res.json(updated);
   } catch (err) {
     if (err.code === 11000 || err.statusCode === 409) {
@@ -2215,6 +2247,32 @@ router.post('/auth/login', async (req, res) => {
     return false;
   };
 
+  // Attach the signed-in trainer's roster record (Trainer collection) so the
+  // trainer dashboard runs on real shift / course / branch data
+  const trainerRosterFields = async (emailStr, nameStr, idStr) => {
+    try {
+      const or = [{ email: emailStr }, { zoomEmail: emailStr }];
+      if (idStr) or.push({ trainerId: idStr });
+      if (nameStr) or.push({ trainerName: new RegExp(`^${String(nameStr).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') });
+      const t = await Trainer.findOne({ $or: or });
+      if (!t) return {};
+      return {
+        id: t.trainerId,
+        trainerId: t.trainerId,
+        courseKey: t.courseKey || undefined,
+        expertCourse: t.expertCourse || undefined,
+        specialization: t.specialization || undefined,
+        branch: t.branchName || undefined,
+        shift: t.shift || undefined,
+        shiftStartMin: t.shiftStartMin,
+        shiftEndMin: t.shiftEndMin
+      };
+    } catch (_) {
+      return {};
+    }
+  };
+  const dropUndefined = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined));
+
   // 0. Built-in trainer accounts take precedence over DB records with the same email
   const trainerUser = TRAINER_ACCOUNTS[normalizedEmail];
   if (trainerUser) {
@@ -2224,14 +2282,14 @@ router.post('/auth/login', async (req, res) => {
         message: 'Invalid password. Please check your credentials.'
       });
     }
+    Object.assign(trainerUser, dropUndefined(await trainerRosterFields(normalizedEmail, trainerUser.name, trainerUser.trainerId)));
     return res.json({
       success: true,
       message: `Authenticated successfully for ${trainerUser.name} (${trainerUser.role})`,
-      user: {
-        ...trainerUser,
-        department: 'training',
-        token: `jwt_tf_trainer_${trainerUser.id}_token`
-      }
+      user: (() => {
+        const { password: _pw, ...safe } = trainerUser;
+        return { ...safe, department: 'training', token: `jwt_tf_trainer_${trainerUser.id}_token` };
+      })()
     });
   }
 
@@ -2247,6 +2305,9 @@ router.post('/auth/login', async (req, res) => {
         });
       }
       const mapping = mapRoleOrDeptToDashboard(dbUser.role, dbUser.department);
+      const rosterFields = mapping.department === 'training'
+        ? dropUndefined(await trainerRosterFields(normalizedEmail, dbUser.name))
+        : {};
       return res.json({
         success: true,
         message: `Authenticated successfully for ${dbUser.name} (${dbUser.role})`,
@@ -2263,6 +2324,7 @@ router.post('/auth/login', async (req, res) => {
           departmentCode: mapping.departmentCode,
           departmentName: mapping.departmentName,
           color: mapping.color,
+          ...rosterFields,
           token: `jwt_tf_${dbUser.role}_${Date.now()}`
         }
       });
@@ -2505,48 +2567,124 @@ router.delete('/admin/users/:id', async (req, res) => {
 // ==========================================
 // REAL TRAINER & FACULTY API (MONGODB BACKED)
 // ==========================================
-let inMemoryAttendanceRecords = {};
+const studentKeyOf = (s) => (s?.studentId ? String(s.studentId) : String(s?._id || ''));
+const escapeRegex = (v = '') => String(v).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const findStudentByAnyId = async (id) => {
+  const isObjectId = mongoose.isValidObjectId(id);
+  return Student.findOne({ $or: [...(isObjectId ? [{ _id: id }] : []), { studentId: id }] });
+};
 
-// GET Doubts
-router.get('/trainer/doubts', async (req, res) => {
+// Single place every cross-department notification is written from
+async function pushNotification(payload) {
   try {
-    let doubts = await TrainerDoubt.find().sort({ createdAt: -1 });
-    const formatted = doubts.map(d => ({
-      id: d._id.toString(),
-      _id: d._id.toString(),
-      student: d.student,
-      studentId: d.studentId,
-      topic: d.topic,
-      timeText: d.timeText,
-      question: d.question,
-      batch: d.batch,
-      slaBadge: d.slaBadge,
-      status: d.status,
-      reply: d.reply,
-      createdAt: d.createdAt
-    }));
-    res.json(formatted);
+    return await Notification.create(payload);
+  } catch (e) {
+    console.warn('pushNotification failed:', e.message);
+    return null;
+  }
+}
+
+// Recompute readiness = average of the trainer-entered scores that exist
+function computeReadiness(st) {
+  const parts = [st.mockScore, st.technicalScore, st.assessmentScore].filter((v) => typeof v === 'number');
+  return parts.length ? Math.round(parts.reduce((a, b) => a + b, 0) / parts.length) : null;
+}
+
+// Doubt SLA: 24h normal. Unreplied past SLA → Overdue.
+const DOUBT_SLA_HOURS = 24;
+function formatDoubt(d) {
+  const created = d.createdAt ? new Date(d.createdAt) : new Date();
+  const ageH = (Date.now() - created.getTime()) / 36e5;
+  let status = d.status || 'New';
+  if (status !== 'Replied' && ageH > DOUBT_SLA_HOURS) status = 'Overdue';
+  const left = Math.max(0, Math.round(DOUBT_SLA_HOURS - ageH));
+  const timeText = ageH < 1 ? `${Math.max(1, Math.round(ageH * 60))} min ago` : ageH < 48 ? `${Math.round(ageH)}h ago` : `${Math.round(ageH / 24)}d ago`;
+  return {
+    id: d._id.toString(),
+    _id: d._id.toString(),
+    student: d.student,
+    studentName: d.student,
+    studentId: d.studentId,
+    topic: d.topic,
+    course: d.course,
+    question: d.question,
+    batch: d.batch,
+    trainerId: d.trainerId,
+    trainerName: d.trainerName,
+    status,
+    reply: d.reply,
+    repliedAt: d.repliedAt,
+    createdAt: d.createdAt,
+    timeText,
+    slaBadge: status === 'Replied' ? 'Resolved' : status === 'Overdue' ? `SLA breached · ${DOUBT_SLA_HOURS}h` : `SLA · ${left}h left`
+  };
+}
+
+// Trainer profile — the Trainer roster record attached to the signed-in user
+router.get('/trainer/me', async (req, res) => {
+  try {
+    const { trainerId, email, name } = req.query;
+    const or = [];
+    if (trainerId) or.push({ trainerId });
+    if (email) {
+      const e = String(email).trim().toLowerCase();
+      or.push({ email: e }, { zoomEmail: e });
+    }
+    if (name) or.push({ trainerName: new RegExp(`^${escapeRegex(String(name).trim())}$`, 'i') });
+    if (!or.length) return res.status(400).json({ error: 'trainerId, email or name is required' });
+    const trainer = await Trainer.findOne({ $or: or });
+    if (!trainer) return res.status(404).json({ error: 'No trainer roster record found for this account' });
+    res.json(trainer);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-// POST New Doubt
+// GET Doubts (optionally only the ones routed to one trainer)
+router.get('/trainer/doubts', async (req, res) => {
+  try {
+    const { trainerId, studentId } = req.query;
+    const query = {};
+    if (trainerId) query.trainerId = trainerId;
+    if (studentId) query.studentId = studentId;
+    const doubts = await TrainerDoubt.find(query).sort({ createdAt: -1 });
+    res.json(doubts.map(formatDoubt));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST New Doubt — accepts the student portal's field names and routes the
+// doubt to the student's allocated trainer (set by HR at handover)
 router.post('/trainer/doubts', async (req, res) => {
   try {
-    const newDoubt = new TrainerDoubt({
-      timeText: 'Just now',
+    const b = req.body || {};
+    const student = b.studentId ? await findStudentByAnyId(b.studentId) : null;
+    let trainerId = b.trainerId || student?.trainerId || '';
+    let trainerName = b.trainerName || student?.trainerName || '';
+    if (!trainerId && b.trainer) {
+      const t = await Trainer.findOne({ trainerName: new RegExp(`^${escapeRegex(b.trainer)}$`, 'i') });
+      if (t) { trainerId = t.trainerId; trainerName = t.trainerName; }
+    }
+    const newDoubt = await TrainerDoubt.create({
+      student: b.student || b.studentName || student?.name || 'Student',
+      studentId: b.studentId || student?.studentId || '',
+      topic: b.topic || b.chapter || b.subject || 'General',
+      course: b.course || b.subject || student?.course || '',
+      question: b.question,
+      batch: b.batch || student?.batchName || student?.course || '',
+      trainerId,
+      trainerName,
       status: 'New',
-      slaBadge: 'SLA Normal · 24h',
-      reply: '',
-      ...req.body
+      reply: ''
     });
-    await newDoubt.save();
-    res.status(201).json({
-      id: newDoubt._id.toString(),
-      _id: newDoubt._id.toString(),
-      ...newDoubt.toObject()
-    });
+    if (trainerId) {
+      await pushNotification({
+        audience: 'trainer', recipientId: trainerId, recipientName: trainerName, type: 'doubt',
+        title: `New doubt from ${newDoubt.student}`, message: newDoubt.question, studentId: newDoubt.studentId
+      });
+    }
+    res.status(201).json(formatDoubt(newDoubt));
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -2556,45 +2694,55 @@ router.post('/trainer/doubts', async (req, res) => {
 router.put('/trainer/doubts/:id/reply', async (req, res) => {
   try {
     const { reply } = req.body;
-    let updated;
-    if (mongoose.isValidObjectId(req.params.id)) {
-      updated = await TrainerDoubt.findByIdAndUpdate(
-        req.params.id,
-        { $set: { reply, status: 'Replied', repliedAt: new Date() } },
-        { new: true }
-      );
-    } else {
-      updated = await TrainerDoubt.findOneAndUpdate(
-        { studentId: req.params.id },
-        { $set: { reply, status: 'Replied', repliedAt: new Date() } },
-        { new: true }
-      );
-    }
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid doubt id' });
+    const updated = await TrainerDoubt.findByIdAndUpdate(
+      req.params.id,
+      { $set: { reply, status: 'Replied', repliedAt: new Date() } },
+      { new: true }
+    );
     if (!updated) return res.status(404).json({ error: 'Doubt not found' });
-    res.json({
-      id: updated._id.toString(),
-      _id: updated._id.toString(),
-      ...updated.toObject()
-    });
+    res.json(formatDoubt(updated));
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
 });
 
+const formatAssessment = (t) => {
+  const obj = t.toObject();
+  return {
+    ...obj,
+    id: t._id.toString(),
+    _id: t._id.toString(),
+    scores: obj.scores instanceof Map ? Object.fromEntries(obj.scores) : (obj.scores || {})
+  };
+};
+
+// Each student's assessmentScore = average % across every test they were scored in
+async function recomputeAssessmentScores(studentKeys) {
+  const keys = [...new Set(studentKeys.filter(Boolean))];
+  if (!keys.length) return;
+  const tests = await TrainerAssessment.find({ $or: keys.map((k) => ({ [`scores.${k}`]: { $exists: true } })) });
+  for (const key of keys) {
+    const pcts = [];
+    tests.forEach((t) => {
+      const v = t.scores?.get ? t.scores.get(key) : t.scores?.[key];
+      if (typeof v === 'number' && t.totalMarks > 0) pcts.push((v / t.totalMarks) * 100);
+    });
+    if (!pcts.length) continue;
+    const st = await findStudentByAnyId(key);
+    if (!st) continue;
+    st.assessmentScore = Math.round(pcts.reduce((a, b) => a + b, 0) / pcts.length);
+    st.readinessScore = computeReadiness(st);
+    await st.save();
+  }
+}
+
 // GET Assessments
 router.get('/trainer/assessments', async (req, res) => {
   try {
-    let list = await TrainerAssessment.find().sort({ createdAt: -1 });
-    const formatted = list.map(t => {
-      const obj = t.toObject();
-      return {
-        id: t._id.toString(),
-        _id: t._id.toString(),
-        ...obj,
-        scores: obj.scores instanceof Map ? Object.fromEntries(obj.scores) : (obj.scores || {})
-      };
-    });
-    res.json(formatted);
+    const query = req.query.trainerId ? { trainerId: req.query.trainerId } : {};
+    const list = await TrainerAssessment.find(query).sort({ createdAt: -1 });
+    res.json(list.map(formatAssessment));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -2603,38 +2751,30 @@ router.get('/trainer/assessments', async (req, res) => {
 // POST Create Assessment
 router.post('/trainer/assessments', async (req, res) => {
   try {
-    const newTest = new TrainerAssessment({
-      status: 'Active',
-      scores: req.body.scores || {},
-      rationale: req.body.rationale || 'AAPC guidelines and case rationale.',
-      ...req.body
-    });
-    await newTest.save();
-    res.status(201).json({
-      id: newTest._id.toString(),
-      _id: newTest._id.toString(),
-      ...newTest.toObject()
-    });
+    const { id, _id, ...body } = req.body || {};
+    const newTest = await TrainerAssessment.create({ status: 'Active', scores: {}, ...body });
+    res.status(201).json(formatAssessment(newTest));
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
 });
 
-// PUT Update Assessment Scores
+// PUT Update Assessment Scores → also refreshes each student's assessment average & readiness
 router.put('/trainer/assessments/:id/scores', async (req, res) => {
   try {
     const item = await TrainerAssessment.findById(req.params.id);
     if (!item) return res.status(404).json({ error: 'Assessment not found' });
     const currentScores = item.scores instanceof Map ? Object.fromEntries(item.scores) : (item.scores || {});
-    const merged = { ...currentScores, ...req.body.scores };
-    item.scores = merged;
-    await item.save();
-    res.json({
-      id: item._id.toString(),
-      _id: item._id.toString(),
-      ...item.toObject(),
-      scores: merged
+    const incoming = {};
+    Object.entries(req.body.scores || {}).forEach(([k, v]) => {
+      const n = Number(v);
+      if (Number.isFinite(n)) incoming[k] = n;
     });
+    item.scores = { ...currentScores, ...incoming };
+    if (item.status === 'Active' && Object.keys(item.scores instanceof Map ? Object.fromEntries(item.scores) : item.scores).length) item.status = 'Scored';
+    await item.save();
+    await recomputeAssessmentScores(Object.keys(incoming));
+    res.json(formatAssessment(item));
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -2649,32 +2789,312 @@ router.put('/trainer/assessments/:id/rationale', async (req, res) => {
       { new: true }
     );
     if (!item) return res.status(404).json({ error: 'Assessment not found' });
-    res.json({
-      id: item._id.toString(),
-      _id: item._id.toString(),
-      ...item.toObject()
-    });
+    res.json(formatAssessment(item));
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
 });
 
-// GET Attendance Records
-router.get('/trainer/attendance', (req, res) => {
-  res.json(inMemoryAttendanceRecords);
+// Recompute Student.attendancePct from every recorded class; notify HR when a
+// student falls below 75% for the first time
+const ATTENDANCE_RISK_PCT = 75;
+async function recomputeAttendance(studentKeys) {
+  for (const key of [...new Set(studentKeys.filter(Boolean))]) {
+    const sessions = await ClassAttendance.find({ [`records.${key}`]: { $exists: true } }).select('records');
+    if (!sessions.length) continue;
+    let attended = 0;
+    sessions.forEach((sess) => {
+      const v = sess.records.get(key);
+      if (v === 'Present' || v === 'Late') attended += 1;
+    });
+    const pct = Math.round((attended / sessions.length) * 100);
+    const st = await findStudentByAnyId(key);
+    if (!st) continue;
+    const prev = st.attendancePct;
+    st.attendancePct = pct;
+    await st.save();
+    if (pct < ATTENDANCE_RISK_PCT && (typeof prev !== 'number' || prev >= ATTENDANCE_RISK_PCT)) {
+      await pushNotification({
+        audience: 'hr', recipientName: st.hrName || '', type: 'attendance',
+        title: `Attendance alert: ${st.name}`,
+        message: `${st.name} (${st.studentId}) dropped to ${pct}% attendance in ${st.trainerName || 'training'}'s class. Please follow up.`,
+        studentId: st.studentId, createdBy: st.trainerName || ''
+      });
+    }
+  }
+}
+
+// GET Attendance — filter by trainer / batch / date
+router.get('/trainer/attendance', async (req, res) => {
+  try {
+    const { trainerId, batch, date, from } = req.query;
+    const query = {};
+    if (trainerId) query.trainerId = trainerId;
+    if (batch) query.batch = batch;
+    if (date) query.date = date;
+    if (from) query.date = { $gte: from };
+    const list = await ClassAttendance.find(query).sort({ date: -1 });
+    res.json(list.map((a) => ({ ...a.toObject(), id: a._id.toString(), records: Object.fromEntries(a.records || []) })));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
-// POST Record Attendance
-router.post('/trainer/attendance', (req, res) => {
-  const { batch, date, records } = req.body;
-  const key = `${batch || 'default'}_${date || new Date().toISOString().split('T')[0]}`;
-  inMemoryAttendanceRecords[key] = {
-    batch,
-    date: date || new Date().toISOString().split('T')[0],
-    records: records || {},
-    updatedAt: new Date().toISOString()
-  };
-  res.json({ success: true, key, data: inMemoryAttendanceRecords[key] });
+// POST Record Attendance — merges marks into that day's class record
+router.post('/trainer/attendance', async (req, res) => {
+  try {
+    const { trainerId = '', trainerName = '', batch, date, topic, records = {} } = req.body || {};
+    if (!batch) return res.status(400).json({ error: 'batch is required' });
+    const day = date || new Date().toISOString().split('T')[0];
+    const set = { trainerName };
+    if (topic) set.topic = topic;
+    Object.entries(records).forEach(([k, v]) => { set[`records.${k}`] = v; });
+    const doc = await ClassAttendance.findOneAndUpdate(
+      { trainerId, batch, date: day },
+      { $set: set },
+      { new: true, upsert: true, setDefaultsOnInsert: true }
+    );
+    await recomputeAttendance(Object.keys(records));
+    res.json({ success: true, data: { ...doc.toObject(), records: Object.fromEntries(doc.records || []) } });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ==========================================
+// HR → TRAINING HANDOVER  and  TRAINING → HR PROGRESS
+// ==========================================
+router.post('/students/:id/handover', async (req, res) => {
+  try {
+    const { trainerId, batchName = '', trainerNote = '', handedOverBy = '' } = req.body || {};
+    if (!trainerId) return res.status(400).json({ error: 'Select a trainer to hand the student over to' });
+    const trainer = await Trainer.findOne({ trainerId });
+    if (!trainer) return res.status(404).json({ error: 'Trainer not found in the roster' });
+    const st = await findStudentByAnyId(req.params.id);
+    if (!st) return res.status(404).json({ error: 'Student not found' });
+    st.trainerId = trainer.trainerId;
+    st.trainerName = trainer.trainerName;
+    st.batchName = batchName || st.batchName || `${st.course}${st.batchTiming ? ` · ${st.batchTiming}` : ''}`;
+    st.trainerNote = trainerNote;
+    st.handoverStatus = 'Sent to Training';
+    st.handedOverBy = handedOverBy;
+    st.handedOverAt = new Date();
+    if (st.checklist) st.checklist.trainerNote = Boolean(trainerNote) || st.checklist.trainerNote;
+    await st.save();
+    await pushNotification({
+      audience: 'trainer', recipientId: trainer.trainerId, recipientName: trainer.trainerName, type: 'handover',
+      title: `New student allocated: ${st.name}`,
+      message: `${handedOverBy || 'HR'} handed over ${st.name} (${st.studentId}) · ${st.course} · batch ${st.batchName}.${trainerNote ? ` Note: ${trainerNote}` : ''}`,
+      studentId: st.studentId, createdBy: handedOverBy
+    });
+    res.json(st);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.put('/students/:id/syllabus-complete', async (req, res) => {
+  try {
+    const { trainerName = '' } = req.body || {};
+    const st = await findStudentByAnyId(req.params.id);
+    if (!st) return res.status(404).json({ error: 'Student not found' });
+    st.syllabusCompleted = true;
+    st.syllabusCompletedAt = new Date();
+    st.placementStatus = 'Referred to CCCP';
+    await st.save();
+    await pushNotification({
+      audience: 'hr', recipientName: st.hrName || '', type: 'syllabus',
+      title: `Syllabus complete: ${st.name}`,
+      message: `${trainerName || st.trainerName || 'Trainer'} marked the full syllabus complete for ${st.name} (${st.studentId}). Sent to CCCP for placement.`,
+      studentId: st.studentId, createdBy: trainerName
+    });
+    res.json(st);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.put('/students/:id/recommendation', async (req, res) => {
+  try {
+    const { status, trainerName = '', mockScore, technicalScore } = req.body || {};
+    if (!['Ready', 'Needs Revision', 'Not Ready'].includes(status)) return res.status(400).json({ error: 'Invalid recommendation' });
+    const st = await findStudentByAnyId(req.params.id);
+    if (!st) return res.status(404).json({ error: 'Student not found' });
+    if (mockScore !== undefined && mockScore !== '') st.mockScore = Number(mockScore);
+    if (technicalScore !== undefined && technicalScore !== '') st.technicalScore = Number(technicalScore);
+    st.readinessScore = computeReadiness(st);
+    st.trainerRecommendation = status;
+    st.trainerRecommendationAt = new Date();
+    if (status === 'Ready') st.placementStatus = 'Referred to CCCP';
+    await st.save();
+    await pushNotification({
+      audience: 'hr', recipientName: st.hrName || '', type: 'recommendation',
+      title: `Trainer recommendation: ${st.name} → ${status}`,
+      message: `${trainerName || st.trainerName || 'Trainer'} set ${st.name} as "${status}"${typeof st.readinessScore === 'number' ? ` · readiness ${st.readinessScore}%` : ''}.`,
+      studentId: st.studentId, createdBy: trainerName
+    });
+    res.json(st);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.post('/students/:id/remedial', async (req, res) => {
+  try {
+    const { action, note = '', trainerName = '' } = req.body || {};
+    if (!action) return res.status(400).json({ error: 'action is required' });
+    const st = await findStudentByAnyId(req.params.id);
+    if (!st) return res.status(404).json({ error: 'Student not found' });
+    st.remedialActions.push({ action, note, by: trainerName, at: new Date() });
+    await st.save();
+    // Every remedial step is visible to the student's HR; escalations are flagged
+    await pushNotification({
+      audience: 'hr', recipientName: st.hrName || '', type: action === 'escalate' ? 'escalation' : 'remedial',
+      title: action === 'escalate' ? `Counselling needed: ${st.name}` : `Remedial plan started: ${st.name}`,
+      message: `${trainerName || 'Trainer'}: ${note || action}`,
+      studentId: st.studentId, createdBy: trainerName
+    });
+    res.json(st);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ==========================================
+// NOTIFICATIONS (HR ⇄ TRAINING)
+// ==========================================
+router.get('/notifications', async (req, res) => {
+  try {
+    const { audience, recipientId, recipientName, limit = 50 } = req.query;
+    if (!audience) return res.status(400).json({ error: 'audience is required' });
+    const who = [{ recipientId: '', recipientName: '' }];
+    if (recipientId) who.push({ recipientId });
+    if (recipientName) who.push({ recipientName: new RegExp(`^${escapeRegex(String(recipientName).trim())}$`, 'i') });
+    const list = await Notification.find({ audience, $or: who }).sort({ createdAt: -1 }).limit(Number(limit) || 50);
+    res.json(list);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.put('/notifications/read-all', async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.filter((i) => mongoose.isValidObjectId(i)) : [];
+    if (ids.length) await Notification.updateMany({ _id: { $in: ids } }, { $set: { read: true } });
+    res.json({ success: true, updated: ids.length });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.put('/notifications/:id/read', async (req, res) => {
+  try {
+    const n = await Notification.findByIdAndUpdate(req.params.id, { $set: { read: true } }, { new: true });
+    if (!n) return res.status(404).json({ error: 'Notification not found' });
+    res.json(n);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ==========================================
+// TRAINING LIBRARY & MATERIALS
+// ==========================================
+const MAX_MATERIAL_BYTES = 12 * 1024 * 1024;
+
+router.get('/training/materials', async (req, res) => {
+  try {
+    const { batch } = req.query;
+    const query = batch ? { 'assignments.batch': batch } : {};
+    const list = await TrainingMaterial.find(query).sort({ createdAt: -1 });
+    res.json(list);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.post('/training/materials', async (req, res) => {
+  try {
+    const { title, description, category, fileName, mimeType, data, uploadedBy, uploaderId, branch } = req.body || {};
+    if (!data || !fileName) return res.status(400).json({ error: 'A file is required' });
+    const base64 = String(data).includes(',') ? String(data).split(',').pop() : String(data);
+    const size = Math.floor((base64.length * 3) / 4);
+    if (size > MAX_MATERIAL_BYTES) return res.status(413).json({ error: 'File is larger than 12 MB' });
+    const doc = await TrainingMaterial.create({
+      title: title || fileName,
+      description: description || '',
+      category: category || 'General',
+      fileName,
+      fileFormat: (fileName.split('.').pop() || '').toUpperCase(),
+      mimeType: mimeType || 'application/octet-stream',
+      fileSize: size,
+      data: base64,
+      uploadedBy: uploadedBy || '',
+      uploaderId: uploaderId || '',
+      branch: branch || ''
+    });
+    const obj = doc.toObject();
+    delete obj.data;
+    res.status(201).json(obj);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.get('/training/materials/:id/file', async (req, res) => {
+  try {
+    const doc = await TrainingMaterial.findById(req.params.id).select('+data');
+    if (!doc || !doc.data) return res.status(404).json({ error: 'File not found' });
+    const buf = Buffer.from(doc.data, 'base64');
+    res.setHeader('Content-Type', doc.mimeType || 'application/octet-stream');
+    const disposition = req.query.download ? 'attachment' : 'inline';
+    res.setHeader('Content-Disposition', `${disposition}; filename="${encodeURIComponent(doc.fileName || 'file')}"`);
+    res.send(buf);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.put('/training/materials/:id/pin', async (req, res) => {
+  try {
+    const { trainerId, pinned } = req.body || {};
+    if (!trainerId) return res.status(400).json({ error: 'trainerId is required' });
+    const doc = await TrainingMaterial.findByIdAndUpdate(
+      req.params.id,
+      pinned ? { $addToSet: { pinnedBy: trainerId } } : { $pull: { pinnedBy: trainerId } },
+      { new: true }
+    );
+    if (!doc) return res.status(404).json({ error: 'Material not found' });
+    res.json(doc);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.post('/training/materials/:id/assign', async (req, res) => {
+  try {
+    const { batches = [], module = '', note = '', by = '' } = req.body || {};
+    if (!batches.length) return res.status(400).json({ error: 'Select at least one batch' });
+    const doc = await TrainingMaterial.findById(req.params.id);
+    if (!doc) return res.status(404).json({ error: 'Material not found' });
+    batches.forEach((batch) => {
+      doc.assignments = doc.assignments.filter((a) => a.batch !== batch);
+      doc.assignments.push({ batch, module, note, by, at: new Date() });
+    });
+    await doc.save();
+    res.json(doc);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.delete('/training/materials/:id', async (req, res) => {
+  try {
+    await TrainingMaterial.findByIdAndDelete(req.params.id);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
 });
 
 // ==========================================

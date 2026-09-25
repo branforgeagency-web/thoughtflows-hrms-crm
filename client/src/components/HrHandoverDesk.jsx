@@ -14,13 +14,22 @@ import {
   Filter
 } from 'lucide-react';
 
-import { getStudents, updateStudent } from '../services/api';
+import { getStudents, updateStudent, getTrainerSettings, handoverStudentToTrainer } from '../services/api';
 
 export default function HrHandoverDesk({ students: propStudents, onRefreshStudents, currentUser }) {
   const [toastMsg, setToastMsg] = useState(null);
   const [activeTabFilter, setActiveTabFilter] = useState('ALL'); // ALL, PENDING, READY, SENT
   const [editingStudent, setEditingStudent] = useState(null);
   const [students, setStudents] = useState(propStudents || []);
+  const [trainers, setTrainers] = useState([]);
+  const [assigning, setAssigning] = useState(null); // student being handed over
+  const [assignForm, setAssignForm] = useState({ trainerId: '', batchName: '', trainerNote: '' });
+
+  useEffect(() => {
+    getTrainerSettings()
+      .then(res => setTrainers(Array.isArray(res) ? res.filter(t => t.active !== false) : []))
+      .catch(() => setTrainers([]));
+  }, []);
 
   useEffect(() => {
     if (propStudents !== undefined) {
@@ -51,21 +60,37 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
     { key: 'documents', label: 'Documents' }
   ];
 
-  // Handover action
-  const handleSendToTraining = async (studentId) => {
+  // Handover action: HR picks the trainer & batch → student lands on that
+  // trainer's dashboard and the trainer gets a notification
+  const studentKey = (s) => s?._id || s?.studentId;
+  const courseCode = (course = '') => String(course).toUpperCase().split(/[^A-Z0-9-]/).find(Boolean) || '';
+  const openHandover = (stu) => {
+    const code = courseCode(stu.course);
+    const match = trainers.find(t => t.courseKey && t.courseKey.toUpperCase() === code && (!stu.branch || !t.branchName || t.branchName === stu.branch))
+      || trainers.find(t => t.courseKey && t.courseKey.toUpperCase() === code);
+    setAssignForm({
+      trainerId: stu.trainerId || match?.trainerId || '',
+      batchName: stu.batchName || [stu.course, stu.batchTiming].filter(Boolean).join(' · '),
+      trainerNote: stu.trainerNote || ''
+    });
+    setAssigning(stu);
+  };
+
+  const handleSendToTraining = async () => {
+    if (!assigning) return;
+    if (!assignForm.trainerId) { showToast('Select a trainer'); return; }
     try {
-      await updateStudent(studentId, { handoverStatus: 'Sent to Training' });
-      setStudents(prev => prev.map(s => {
-        if (s._id === studentId || s.studentId === studentId || s.id === studentId) {
-          return { ...s, handoverStatus: 'Sent to Training', status: 'Sent to Training' };
-        }
-        return s;
-      }));
+      const updated = await handoverStudentToTrainer(studentKey(assigning), {
+        ...assignForm,
+        handedOverBy: currentUser?.name || currentUser?.userName || ''
+      });
+      setStudents(prev => prev.map(s => (studentKey(s) === studentKey(assigning) ? { ...s, ...updated } : s)));
       if (onRefreshStudents) onRefreshStudents();
-      showToast('✓ Successfully handed over student to Training department!');
+      showToast(`✓ ${assigning.name} handed over to ${updated.trainerName} — trainer notified`);
+      setAssigning(null);
+      setEditingStudent(null);
     } catch (err) {
-      console.error('Failed to update handover:', err);
-      showToast('Error updating handover status');
+      showToast(err?.response?.data?.error || 'Error handing over student');
     }
   };
 
@@ -100,7 +125,8 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
   };
 
   // Normalize status accessor
-  const getStudentStatus = (s) => s.handoverStatus || s.status || 'Pending Handover';
+  const getStudentStatus = (s) => s.handoverStatus || 'Pending Handover';
+  const allGreen = (s) => Object.values(s.checklist || {}).length > 0 && Object.values(s.checklist || {}).every(v => v === true);
 
   // Metrics calculation
   const pendingCount = students.filter(s => getStudentStatus(s) === 'Pending Handover').length;
@@ -172,12 +198,12 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
       {/* Student Handover Cards List */}
       <div className="space-y-4">
         {students.map((stu) => {
-          const isAllGreen = Object.values(stu.checklist).every(v => v === true);
-          const isSent = stu.status === 'Sent to Training';
+          const isAllGreen = allGreen(stu);
+          const isSent = getStudentStatus(stu) === 'Sent to Training';
 
           return (
             <div
-              key={stu.id}
+              key={studentKey(stu)}
               className="bg-white rounded-2xl p-5 border border-slate-200/90 shadow-xs space-y-4 hover:border-slate-300 transition-all"
             >
               {/* Header Row */}
@@ -187,7 +213,7 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
                     {stu.name}
                   </h3>
                   <span className="px-2.5 py-0.5 rounded-md bg-[#005a54] text-white font-mono text-[11px] font-bold">
-                    {stu.id}
+                    {stu.studentId}
                   </span>
                   <span className="text-xs font-bold text-slate-600">
                     {stu.course}
@@ -202,7 +228,7 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
                         ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
                         : 'bg-amber-50 text-amber-800 border border-amber-200'
                   }`}>
-                    {stu.status}
+                    {getStudentStatus(stu)}
                   </span>
                 </div>
               </div>
@@ -236,13 +262,29 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
               {/* Action Button Row */}
               <div className="pt-1">
                 {isSent ? (
-                  <div className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-700 bg-emerald-50 px-4 py-2 rounded-xl border border-emerald-200">
-                    <CheckCircle2 className="w-4 h-4" />
-                    <span>Handed over to Training department ✓</span>
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-700 bg-emerald-50 px-4 py-2 rounded-xl border border-emerald-200">
+                        <CheckCircle2 className="w-4 h-4" />
+                        <span>{stu.trainerName ? `With ${stu.trainerName}${stu.batchName ? ` · ${stu.batchName}` : ''}` : 'Sent to Training — no trainer allocated'}</span>
+                      </div>
+                      <button onClick={() => openHandover(stu)} className="text-xs font-bold text-[#00897b] hover:underline">
+                        {stu.trainerName ? 'Reassign trainer' : 'Allocate trainer'}
+                      </button>
+                    </div>
+                    {/* Live training progress written by the trainer */}
+                    <div className="flex flex-wrap gap-1.5 text-[11px] font-semibold">
+                      <span className="px-2 py-1 rounded-lg bg-slate-50 border border-slate-200 text-slate-600">Attendance: {typeof stu.attendancePct === 'number' ? `${stu.attendancePct}%` : '—'}</span>
+                      <span className="px-2 py-1 rounded-lg bg-slate-50 border border-slate-200 text-slate-600">Tests: {typeof stu.assessmentScore === 'number' ? `${stu.assessmentScore}%` : '—'}</span>
+                      <span className="px-2 py-1 rounded-lg bg-slate-50 border border-slate-200 text-slate-600">Readiness: {typeof stu.readinessScore === 'number' ? `${stu.readinessScore}%` : '—'}</span>
+                      {stu.trainerRecommendation && <span className="px-2 py-1 rounded-lg bg-indigo-50 border border-indigo-200 text-indigo-700">Trainer: {stu.trainerRecommendation}</span>}
+                      {stu.syllabusCompleted && <span className="px-2 py-1 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-700">Syllabus complete → CCCP</span>}
+                      {(stu.remedialActions || []).length > 0 && <span className="px-2 py-1 rounded-lg bg-amber-50 border border-amber-200 text-amber-800">{stu.remedialActions.length} remedial action(s)</span>}
+                    </div>
                   </div>
                 ) : isAllGreen ? (
                   <button
-                    onClick={() => handleSendToTraining(stu._id || stu.studentId || stu.id)}
+                    onClick={() => openHandover(stu)}
                     className="bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs px-4 py-2 rounded-xl shadow-xs transition-all active:scale-[0.98] flex items-center gap-1.5"
                   >
                     <span>Send to Training Department →</span>
@@ -320,17 +362,72 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
               >
                 Close
               </button>
-              {Object.values(editingStudent.checklist).every(v => v === true) && editingStudent.status !== 'Sent to Training' && (
+              {allGreen(editingStudent) && getStudentStatus(editingStudent) !== 'Sent to Training' && (
                 <button
-                  onClick={() => {
-                    handleSendToTraining(editingStudent.id);
-                    setEditingStudent(null);
-                  }}
+                  onClick={() => openHandover(editingStudent)}
                   className="px-5 py-2 rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs transition-all shadow-sm"
                 >
                   Send to Training Department →
                 </button>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Trainer allocation modal */}
+      {assigning && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div>
+                <h3 className="font-extrabold text-slate-900 text-base">Hand over {assigning.name}</h3>
+                <p className="text-xs text-slate-400 font-mono mt-0.5">{assigning.studentId} · {assigning.course}</p>
+              </div>
+              <button onClick={() => setAssigning(null)} className="w-7 h-7 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 flex items-center justify-center text-xs font-bold">✕</button>
+            </div>
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">Trainer <span className="text-rose-500">*</span></label>
+                <select
+                  value={assignForm.trainerId}
+                  onChange={(e) => setAssignForm(prev => ({ ...prev, trainerId: e.target.value }))}
+                  className="w-full p-2.5 rounded-xl border border-slate-200 bg-white font-medium"
+                >
+                  <option value="">Select trainer…</option>
+                  {trainers.map(t => (
+                    <option key={t.trainerId} value={t.trainerId}>
+                      {t.trainerName}{t.courseKey ? ` · ${t.courseKey}` : ''}{t.branchName ? ` · ${t.branchName}` : ''}{t.shift ? ` · ${t.shift}` : ''}
+                    </option>
+                  ))}
+                </select>
+                {trainers.length === 0 && <p className="text-[11px] text-rose-600 mt-1">No active trainers in Trainer Settings.</p>}
+              </div>
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">Batch name</label>
+                <input
+                  value={assignForm.batchName}
+                  onChange={(e) => setAssignForm(prev => ({ ...prev, batchName: e.target.value }))}
+                  placeholder="e.g. CPC Morning Oct-26"
+                  className="w-full p-2.5 rounded-xl border border-slate-200"
+                />
+              </div>
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">Note for the trainer</label>
+                <textarea
+                  rows={3}
+                  value={assignForm.trainerNote}
+                  onChange={(e) => setAssignForm(prev => ({ ...prev, trainerNote: e.target.value }))}
+                  placeholder="Learning pace, language preference, career goal…"
+                  className="w-full p-2.5 rounded-xl border border-slate-200"
+                />
+              </div>
+            </div>
+            <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-100">
+              <button onClick={() => setAssigning(null)} className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs">Cancel</button>
+              <button onClick={handleSendToTraining} className="px-5 py-2 rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs shadow-sm">
+                Send to Trainer →
+              </button>
             </div>
           </div>
         </div>

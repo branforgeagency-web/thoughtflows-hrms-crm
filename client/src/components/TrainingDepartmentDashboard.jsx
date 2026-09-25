@@ -38,6 +38,7 @@ import {
   DollarSign, 
   PhoneCall, 
   GraduationCap,
+  Bell,
   ExternalLink,
   ChevronDown,
   LogOut
@@ -66,9 +67,18 @@ import {
   updateAssessmentRationale,
   recordTrainerAttendance,
   getTrainerAttendance,
+  getTrainerProfile,
+  getTrainerSettings,
+  getTrainingMaterials,
+  trainingMaterialFileUrl,
+  markSyllabusComplete,
+  logRemedialAction,
+  getNotifications,
+  markNotificationRead,
   onDataUpdate,
   notifyDataUpdate
 } from '../services/api';
+import { TRAINER_COURSES } from '../constants/courses';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 
 export default function TrainingDepartmentDashboard({
@@ -79,23 +89,38 @@ export default function TrainingDepartmentDashboard({
   theme = 'classic'
 }) {
   const [dashMenuOpen, setDashMenuOpen] = useState(false);
-  const trainerName = currentUser?.userName || currentUser?.name || 'Faculty Member';
-  const trainerRole = currentUser?.role || 'Trainer';
-  const trainerBranch = currentUser?.branch || 'Gandhipuram';
-  const trainerId = currentUser?.trainerId || currentUser?.id || currentUser?._id || 'TR-FACULTY';
-  const trainerShift = currentUser?.shift || '6:00 AM – 2:00 PM';
-  const trainerCourseKey = currentUser?.courseKey || (
-    currentUser?.role?.includes('CIC') ? 'CIC' :
-    currentUser?.role?.includes('CPB') ? 'CPB' :
-    currentUser?.role?.includes('CPMA') ? 'CPMA' :
-    currentUser?.role?.includes('CPC') ? 'CPC' :
-    currentUser?.role?.includes('CRC') ? 'CRC' :
-    'ALL'
-  );
-  const isChiefFaculty = trainerCourseKey === 'ALL' || (trainerRole?.toLowerCase().includes('lead') && !trainerRole?.toLowerCase().includes('drg')) || trainerRole?.toLowerCase().includes('chief') || trainerName?.toLowerCase().includes('vikram');
+
+  // ---- Trainer identity: the Trainer roster record (admin-managed) is the source of truth ----
+  const [trainerProfile, setTrainerProfile] = useState(null);
+  const [profileError, setProfileError] = useState('');
+  const [trainerRoster, setTrainerRoster] = useState([]);
+  const trainerName = trainerProfile?.trainerName || currentUser?.userName || currentUser?.name || '';
+  const trainerRole = trainerProfile?.role || trainerProfile?.specialization || currentUser?.role || '';
+  const trainerBranch = trainerProfile?.branchName || currentUser?.branch || '';
+  const trainerId = trainerProfile?.trainerId || currentUser?.trainerId || currentUser?.id || '';
+  const trainerShift = trainerProfile?.shift || currentUser?.shift || '';
+  const trainerCourseKey = String(trainerProfile?.courseKey || currentUser?.courseKey || '').toUpperCase();
+  const trainerEmail = trainerProfile?.email || currentUser?.email || '';
+  const isChiefFaculty = trainerCourseKey === 'ALL' || /chief|training head|head of training/i.test(trainerRole || '');
+
+  const courseMatches = React.useCallback((text) => {
+    if (!trainerCourseKey || trainerCourseKey === 'ALL') return false;
+    const c = String(text || '').toUpperCase();
+    if (trainerCourseKey === 'CIC') return c.includes('CIC') || c.includes('INPATIENT');
+    if (trainerCourseKey === 'CPB') return c.includes('CPB') || c.includes('BILLING');
+    if (trainerCourseKey === 'CPMA') return c.includes('CPMA') || c.includes('AUDIT');
+    if (trainerCourseKey === 'CRC') return c.includes('CRC') || c.includes('RISK');
+    return c.includes(trainerCourseKey);
+  }, [trainerCourseKey]);
+
+  const todayKey = new Date().toISOString().split('T')[0];
+  const monthKey = todayKey.slice(0, 7);
+  const monthStartKey = `${monthKey}-01`;
+  const monthLabel = new Date().toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+  const studentKeyOf = (s) => String(s?.studentId || s?._id || '');
+  const lc = (v) => String(v || '').toLowerCase();
 
   const [activeNav, setActiveNav] = useState('home');
-  const [selectedSession, setSelectedSession] = useState(null);
   // Restored after a page refresh so the trainer is put straight back into the demo (a refresh always drops the Zoom connection)
   const [demoRoom, setDemoRoom] = useState(() => {
     try { return JSON.parse(sessionStorage.getItem('tf_demo_room') || 'null'); } catch (_) { return null; }
@@ -114,12 +139,8 @@ export default function TrainingDepartmentDashboard({
     return () => window.removeEventListener('beforeunload', warn);
   }, [demoRoom]);
   const [isLiveClassActive, setIsLiveClassActive] = useState(false);
-  const [sessionTimeSeconds, setSessionTimeSeconds] = useState(6438); // 1 hr 47 min 18 sec
-  const [timerRunning, setTimerRunning] = useState(true);
-  const [micActive, setMicActive] = useState(true);
-  const [camActive, setCamActive] = useState(true);
-  const [isScreenSharing, setIsScreenSharing] = useState(false);
-  const [activeBoardSlide, setActiveBoardSlide] = useState(1);
+  const [sessionStartedAt, setSessionStartedAt] = useState(null);
+  const [sessionElapsed, setSessionElapsed] = useState(0);
   const [classChatMsg, setClassChatMsg] = useState('');
 
   // Live Database States
@@ -131,14 +152,18 @@ export default function TrainingDepartmentDashboard({
   const [assessmentTests, setAssessmentTests] = useState([]);
   const [assessmentScores, setAssessmentScores] = useState({});
   const [rationaleTexts, setRationaleTexts] = useState({});
-  const [attendanceList, setAttendanceList] = useState([]);
-  const [tfStoreSyncToast, setTfStoreSyncToast] = useState(false);
+  const [attendanceSessions, setAttendanceSessions] = useState([]);
+  const [materials, setMaterials] = useState([]);
+  const [trainerNotifications, setTrainerNotifications] = useState([]);
+  const [showNotifPanel, setShowNotifPanel] = useState(false);
+  const [attendanceBatchId, setAttendanceBatchId] = useState('');
+  const [attendanceSavedToast, setAttendanceSavedToast] = useState(null);
   const [showDemoBucket, setShowDemoBucket] = useState(true);
   const [showConversionModal, setShowConversionModal] = useState(false);
   const [selectedBatchDrilldown, setSelectedBatchDrilldown] = useState(null);
-  const [cccpSentStudents, setCccpSentStudents] = useState({});
   const [cccpToast, setCccpToast] = useState(null);
   const [activeWeakStudentModal, setActiveWeakStudentModal] = useState(null);
+  const [remedialNote, setRemedialNote] = useState('');
   const [weakStudentToast, setWeakStudentToast] = useState(null);
   const [activeAssessmentTab, setActiveAssessmentTab] = useState('active');
   const [showCreateTestModal, setShowCreateTestModal] = useState(false);
@@ -150,40 +175,58 @@ export default function TrainingDepartmentDashboard({
   const [activeDoubtModal, setActiveDoubtModal] = useState(null);
   const [doubtReplyText, setDoubtReplyText] = useState('');
 
-  const [newTestForm, setNewTestForm] = useState({
+  const emptyTestForm = () => ({
     name: '',
     type: 'Weekly Test',
-    course: 'CPC — Medical Coding',
-    batch: 'All Batches',
+    course: '',
+    batch: '',
     topic: '',
     date: new Date().toISOString().split('T')[0],
     timeLimit: '45 min',
     totalMarks: 50,
     passMark: 35
   });
+  const [newTestForm, setNewTestForm] = useState(emptyTestForm);
+
+  // Resolve the trainer's roster record once per login
+  useEffect(() => {
+    let alive = true;
+    const email = currentUser?.email;
+    const tid = currentUser?.trainerId || '';
+    const name = currentUser?.userName || currentUser?.name;
+    if (!email && !tid && !name) { setProfileError('No signed-in trainer'); return undefined; }
+    getTrainerProfile({ trainerId: tid || undefined, email, name })
+      .then(p => { if (alive) { setTrainerProfile(p); setProfileError(''); } })
+      .catch(err => { if (alive) setProfileError(err?.response?.data?.error || 'Trainer roster record not found'); });
+    return () => { alive = false; };
+  }, [currentUser?.email, currentUser?.trainerId, currentUser?.name, currentUser?.userName]);
 
   // Fetch all real data from backend API
   const loadRealData = async () => {
     try {
       setLoading(true);
-      const [stRes, dmRes, ldRes, dbtRes, asmRes, attRes] = await Promise.all([
+      const [stRes, dmRes, ldRes, dbtRes, asmRes, attRes, rosterRes, matRes] = await Promise.all([
         getStudents().catch(() => []),
         getDemos().catch(() => []),
         getLeads().catch(() => ({ leads: [] })),
         getTrainerDoubts().catch(() => []),
         getTrainerAssessments().catch(() => []),
-        getTrainerAttendance().catch(() => ({}))
+        trainerId ? getTrainerAttendance({ trainerId, from: monthStartKey }).catch(() => []) : Promise.resolve([]),
+        getTrainerSettings().catch(() => []),
+        getTrainingMaterials().catch(() => [])
       ]);
 
-      const studentList = Array.isArray(stRes) ? stRes : [];
-      setStudents(studentList);
+      setStudents(Array.isArray(stRes) ? stRes : []);
       setDemos(Array.isArray(dmRes) ? dmRes : []);
-      setLeads(Array.isArray(ldRes?.leads) ? ldRes.leads : []);
+      setLeads(Array.isArray(ldRes?.leads) ? ldRes.leads : (Array.isArray(ldRes) ? ldRes : []));
       setDoubts(Array.isArray(dbtRes) ? dbtRes : []);
+      setTrainerRoster(Array.isArray(rosterRes) ? rosterRes : []);
+      setMaterials(Array.isArray(matRes) ? matRes : []);
+      setAttendanceSessions(Array.isArray(attRes) ? attRes : []);
 
-      const asmList = Array.isArray(asmRes) ? asmRes : [];
+      // Only this trainer's tests (plus legacy tests saved before trainer ownership existed)
+      const asmList = (Array.isArray(asmRes) ? asmRes : []).filter(t => !t.trainerId || t.trainerId === trainerId);
       setAssessmentTests(asmList);
-
       const initialScores = {};
       const initialRationales = {};
       asmList.forEach(t => {
@@ -192,311 +235,294 @@ export default function TrainingDepartmentDashboard({
       });
       setAssessmentScores(initialScores);
       setRationaleTexts(initialRationales);
-
-      // Load local attendance cache from TF_STORE if present
-      let savedAttendance = {};
-      try {
-        const tfStore = JSON.parse(localStorage.getItem('TF_STORE') || '{}');
-        if (tfStore.attendance) savedAttendance = tfStore.attendance;
-      } catch (e) {}
-
-      // Attendance list initialized for this trainer's student domain
-      const myStudentList = (isChiefFaculty || trainerCourseKey === 'ALL')
-        ? studentList
-        : studentList.filter(s => {
-            const c = (s.course || '').toUpperCase();
-            if (trainerCourseKey === 'CPC') return c.includes('CPC');
-            if (trainerCourseKey === 'CIC') return c.includes('CIC') || c.includes('INPATIENT');
-            if (trainerCourseKey === 'CPB') return c.includes('CPB') || c.includes('BILLING');
-            if (trainerCourseKey === 'CPMA') return c.includes('CPMA') || c.includes('AUDIT');
-            if (trainerCourseKey === 'CRC') return c.includes('CRC') || c.includes('RISK');
-            return c.includes(trainerCourseKey.toUpperCase());
-          });
-      const activeStudentList = myStudentList.length > 0 ? myStudentList : studentList;
-
-      const attInit = activeStudentList.map((s, idx) => {
-        const roll = s.studentId || `TF-${idx + 101}`;
-        const currentStatus = savedAttendance[roll]?.status || (s.statusGroup === 'on_hold' ? 'Absent' : 'Present');
-        return {
-          id: s._id || idx + 1,
-          roll,
-          name: s.name,
-          course: s.course,
-          status: currentStatus,
-          attendancePct: s.attendancePct != null ? s.attendancePct : 0
-        };
-      });
-      setAttendanceList(attInit);
-      setLoading(false);
     } catch (err) {
       console.error('Error fetching real trainer data:', err);
+    } finally {
       setLoading(false);
     }
   };
 
+  const loadNotifications = async () => {
+    if (!trainerId) return;
+    try {
+      const list = await getNotifications({ audience: 'trainer', recipientId: trainerId, recipientName: trainerName });
+      setTrainerNotifications(Array.isArray(list) ? list : []);
+    } catch (_) {}
+  };
+
   useEffect(() => {
     loadRealData();
+    loadNotifications();
     const unsub = onDataUpdate((entity) => {
-      if (entity === 'students' || entity === 'doubts' || entity === 'assessments' || entity === 'leads') {
+      if (['students', 'doubts', 'assessments', 'leads', 'demos', 'trainer_attendance', 'materials', 'trainer_settings'].includes(entity)) {
         loadRealData();
       }
+      if (entity === 'notifications' || entity === 'students' || entity === 'demos') loadNotifications();
     });
-    return unsub;
-  }, []);
+    // Poll so HR handovers / new demos made on other machines reach the trainer
+    const poll = setInterval(() => { loadNotifications(); }, 60000);
+    return () => { unsub(); clearInterval(poll); };
+  }, [trainerId]);
 
-  // Filter students by current trainer's course domain / allocation
+  // Students allocated to this trainer by HR at handover. Legacy students that
+  // were "Sent to Training" before trainer allocation existed fall back to course match.
   const myStudents = React.useMemo(() => {
-    if (!students || students.length === 0) return [];
-    if (isChiefFaculty || trainerCourseKey === 'ALL') return students;
-    const filtered = students.filter(st => {
-      const c = (st.course || '').toUpperCase();
-      if (trainerCourseKey === 'CPC') return c.includes('CPC');
-      if (trainerCourseKey === 'CIC') return c.includes('CIC') || c.includes('INPATIENT');
-      if (trainerCourseKey === 'CPB') return c.includes('CPB') || c.includes('BILLING');
-      if (trainerCourseKey === 'CPMA') return c.includes('CPMA') || c.includes('AUDIT');
-      if (trainerCourseKey === 'CRC') return c.includes('CRC') || c.includes('RISK');
-      return c.includes(trainerCourseKey.toUpperCase());
+    if (!students || students.length === 0 || !trainerId) return [];
+    return students.filter(st => {
+      if (st.trainerId) return st.trainerId === trainerId;
+      if (st.handoverStatus !== 'Sent to Training') return false;
+      return isChiefFaculty || courseMatches(st.course);
     });
-    return filtered.length > 0 ? filtered : students;
-  }, [students, isChiefFaculty, trainerCourseKey]);
+  }, [students, trainerId, isChiefFaculty, courseMatches]);
 
-  // Derived Batches from trainer's allocated students
+  // Batches = HR-assigned batch names of the trainer's students
   const batches = React.useMemo(() => {
-    if (!myStudents || myStudents.length === 0) return [];
     const map = {};
     myStudents.forEach(st => {
-      const key = st.course || `${trainerCourseKey} — Medical Coding`;
+      const key = st.batchName || st.course || 'Unassigned batch';
       if (!map[key]) {
         map[key] = {
           id: key.toLowerCase().replace(/[^a-z0-9]/g, '-'),
           name: key,
-          timing: st.batchTiming || `${trainerShift.split('–')[0]?.trim() || '8:00 AM'} Daily`,
-          mode: st.mode || 'Online',
-          module: st.syllabusModule || 'Module 1',
+          course: st.course || '',
+          timing: st.batchTiming || '',
+          mode: st.mode || '',
+          modules: {},
+          zoomLink: trainerProfile?.classZoomLink || '',
           students: []
         };
       }
       map[key].students.push(st);
+      if (st.syllabusModule) map[key].modules[st.syllabusModule] = (map[key].modules[st.syllabusModule] || 0) + 1;
     });
-    return Object.values(map);
-  }, [myStudents, trainerShift, trainerCourseKey]);
+    return Object.values(map).map(b => ({
+      ...b,
+      module: Object.entries(b.modules).sort((a, c) => c[1] - a[1])[0]?.[0] || ''
+    }));
+  }, [myStudents, trainerProfile?.classZoomLink]);
 
-  // Derived Weak Students from trainer's allocated students
+  useEffect(() => {
+    if (!attendanceBatchId && batches[0]) setAttendanceBatchId(batches[0].id);
+  }, [batches, attendanceBatchId]);
+  const attendanceBatch = batches.find(b => b.id === attendanceBatchId) || batches[0] || null;
+
+  // Today's saved marks for the selected batch (from the server)
+  const todaysSession = React.useMemo(() => (
+    attendanceBatch ? attendanceSessions.find(a => a.batch === attendanceBatch.name && a.date === todayKey) : null
+  ), [attendanceSessions, attendanceBatch, todayKey]);
+
+  const attendanceList = React.useMemo(() => (
+    (attendanceBatch?.students || []).map(s => {
+      const roll = studentKeyOf(s);
+      return {
+        id: s._id || roll,
+        roll,
+        name: s.name,
+        course: s.course,
+        status: todaysSession?.records?.[roll] || 'Unmarked',
+        attendancePct: typeof s.attendancePct === 'number' ? s.attendancePct : null
+      };
+    })
+  ), [attendanceBatch, todaysSession]);
+
+  const myStudentKeys = React.useMemo(() => new Set(myStudents.map(studentKeyOf)), [myStudents]);
+
+  // Derived Weak Students — only from real signals (attendance, test average, hold)
   const weakStudents = React.useMemo(() => {
     return myStudents
-      .filter(s => s.statusGroup === 'on_hold' || (s.attendancePct && s.attendancePct < 80) || s.mockInterview === 'Pending')
-      .map((s, idx) => ({
-        id: s._id || idx + 1,
-        name: s.name,
-        studentId: s.studentId,
-        course: s.course,
-        issue: s.statusGroup === 'on_hold' 
-          ? `Enrollment on hold · Fee balance: ${s.feeAmount}` 
-          : (s.attendancePct && s.attendancePct < 80)
-          ? `Attendance ${s.attendancePct}% · Missed consecutive lectures`
-          : `Mock interview pending · Syllabus ${s.syllabusModule || 'Module 1'}`,
-        batch: `${s.course} (${s.mode || 'Online'})`,
-        dotColor: s.statusGroup === 'on_hold' ? 'bg-rose-500' : 'bg-amber-500',
-        dotGradient: s.statusGroup === 'on_hold' ? 'from-rose-400 to-rose-600' : 'from-amber-300 to-amber-500',
-        bgTone: s.statusGroup === 'on_hold' ? 'bg-[#fee2e2]/70' : 'bg-[#fef3c7]/70',
-        actionPlan: 'Scheduled 1-on-1 concept drill & mentoring session',
-        remedialStatus: 'Scheduled'
-      }));
+      .map((s) => {
+        const reasons = [];
+        if (s.statusGroup === 'on_hold') reasons.push(`Enrollment on hold${s.pendingBalance ? ` · balance ₹${Number(s.pendingBalance).toLocaleString('en-IN')}` : ''}`);
+        if (typeof s.attendancePct === 'number' && s.attendancePct < 80) reasons.push(`Attendance ${s.attendancePct}%`);
+        if (typeof s.assessmentScore === 'number' && s.assessmentScore < 60) reasons.push(`Test average ${s.assessmentScore}%`);
+        if (!reasons.length) return null;
+        const actions = Array.isArray(s.remedialActions) ? s.remedialActions : [];
+        const lastAction = actions[actions.length - 1];
+        const severe = s.statusGroup === 'on_hold' || reasons.length > 1;
+        return {
+          id: s._id || studentKeyOf(s),
+          realId: s._id || s.studentId,
+          name: s.name,
+          studentId: s.studentId,
+          course: s.course,
+          issue: reasons.join(' · '),
+          batch: `${s.batchName || s.course}${s.mode ? ` (${s.mode})` : ''}`,
+          dotColor: severe ? 'bg-rose-500' : 'bg-amber-500',
+          dotGradient: severe ? 'from-rose-400 to-rose-600' : 'from-amber-300 to-amber-500',
+          bgTone: severe ? 'bg-[#fee2e2]/70' : 'bg-[#fef3c7]/70',
+          lastAction,
+          reviewed: Boolean(lastAction)
+        };
+      })
+      .filter(Boolean);
   }, [myStudents]);
 
-  // Filter doubts for this trainer's course domain
-  const myDoubts = React.useMemo(() => {
-    if (!doubts || doubts.length === 0) return [];
-    if (isChiefFaculty || trainerCourseKey === 'ALL') return doubts;
-    const filtered = doubts.filter(d => {
-      const b = (d.batch || '').toUpperCase();
-      const t = (d.topic || '').toUpperCase();
-      if (trainerCourseKey === 'CPC') return b.includes('CPC') || t.includes('CPC') || t.includes('ICD') || t.includes('CPT');
-      if (trainerCourseKey === 'CIC') return b.includes('CIC') || b.includes('IPDRG') || t.includes('DRG') || t.includes('PCS');
-      if (trainerCourseKey === 'CPB') return b.includes('CPB') || b.includes('BILL') || t.includes('CMS') || t.includes('UB');
-      if (trainerCourseKey === 'CPMA') return b.includes('CPMA') || b.includes('AUDIT') || t.includes('AUDIT');
-      return b.includes(trainerCourseKey) || t.includes(trainerCourseKey);
-    });
-    return filtered.length > 0 ? filtered : doubts;
-  }, [doubts, isChiefFaculty, trainerCourseKey]);
+  // Doubts routed to this trainer (legacy unrouted doubts: my students or my course)
+  const myDoubts = React.useMemo(() => (
+    doubts.filter(d => {
+      if (d.trainerId) return d.trainerId === trainerId;
+      if (d.studentId && myStudentKeys.has(String(d.studentId))) return true;
+      return isChiefFaculty || courseMatches(`${d.course || ''} ${d.batch || ''}`);
+    })
+  ), [doubts, trainerId, myStudentKeys, isChiefFaculty, courseMatches]);
 
   // Demos routed to this trainer: ONLY those the server notified them about
   // (language + location + free time match) or that are assigned to them.
   const myExpertDemos = React.useMemo(() => {
-    const norm = (v) => String(v || '').trim().toLowerCase();
-    return demos.filter(d => {
-      // Branch must match: a Saravanampatti demo never shows on the Gandhipuram desk
-      if (d.location && trainerBranch && norm(d.location) !== norm(trainerBranch)) return false;
-      return (Array.isArray(d.notifiedTrainerIds) && d.notifiedTrainerIds.includes(trainerId)) ||
-        d.notificationSentTo === trainerId ||
-        (d.trainerId && d.trainerId === trainerId);
-    });
-  }, [demos, trainerId, trainerBranch]);
+    if (!trainerId) return [];
+    return demos.filter(d => (
+      (Array.isArray(d.notifiedTrainerIds) && d.notifiedTrainerIds.includes(trainerId)) ||
+      d.notificationSentTo === trainerId ||
+      (d.trainerId && d.trainerId === trainerId)
+    ));
+  }, [demos, trainerId]);
 
-  // New demo alerts — strictly the demos this trainer was notified about
-  const newDemoAlerts = React.useMemo(() => {
-    return myExpertDemos.filter(d =>
-      (d.status === 'booked' || d.status === 'confirmed') &&
-      !d.notificationRead &&
-      d.notificationSent === true
-    );
-  }, [myExpertDemos]);
+  // New demo alerts — notified to me, not yet accepted by anyone
+  const newDemoAlerts = React.useMemo(() => (
+    myExpertDemos.filter(d => lc(d.status) === 'booked' && !d.notificationRead && d.notificationSent === true)
+  ), [myExpertDemos]);
 
-  // Dynamic Scorecard & Quality Buckets derived from real database records
+  const inThisMonth = (d) => String(d?.preferredDate || d?.createdAt || '').slice(0, 7) === monthKey;
+  const myMonthDemos = React.useMemo(() => myExpertDemos.filter(inThisMonth), [myExpertDemos, monthKey]);
+  const isAttended = (d) => lc(d.status) === 'attended';
+
+  // Admissions that came from demos I delivered (matched on phone / email)
+  const convertedStudents = React.useMemo(() => {
+    const digits = (p) => String(p || '').replace(/\D/g, '').slice(-10);
+    const attended = myExpertDemos.filter(isAttended);
+    const phones = new Set(attended.map(d => digits(d.phone)).filter(p => p.length === 10));
+    const emails = new Set(attended.map(d => lc(d.email)).filter(Boolean));
+    return students.filter(s => phones.has(digits(s.phone)) || (s.email && emails.has(lc(s.email))));
+  }, [myExpertDemos, students]);
+
+  // Scorecard — every factor is computed from recorded data; factors with no
+  // data yet are shown as N/A and excluded (score is normalised over the rest)
   const scorecardMetrics = React.useMemo(() => {
-    // 1. Classes / Sessions factor (weight 20)
-    const sessionsDelivered = batches.length > 0 ? batches.length * 10 : 0;
-    const sessionsTarget = Math.max(1, batches.length * 10);
-    const sessionsAchievement = sessionsTarget > 0 ? Math.min(100, Math.round((sessionsDelivered / sessionsTarget) * 100)) : 0;
-    const sessionsEarned = (sessionsAchievement * 0.20).toFixed(2);
+    const today = new Date();
+    let workingDays = 0;
+    for (let d = 1; d <= today.getDate(); d++) {
+      const day = new Date(today.getFullYear(), today.getMonth(), d).getDay();
+      if (day !== 0) workingDays += 1;
+    }
+    const weeksElapsed = Math.max(1, Math.ceil(today.getDate() / 7));
+    const pct = (a, b) => (b > 0 ? Math.min(100, Math.round((a / b) * 100)) : 0);
+    const factor = (name, weight, achieved, inputs, applicable = true) => ({
+      factor: name,
+      weight: String(weight),
+      inputs: applicable ? inputs : 'no data yet',
+      achievement: applicable ? `${achieved}%` : '—',
+      earned: applicable ? ((achieved * weight) / 100).toFixed(2) : '0.00',
+      applicable,
+      isNa: !applicable,
+      tag: applicable ? undefined : 'N/A'
+    });
 
-    // 2. Attendance factor (weight 10)
-    const avgAtt = attendanceList.length > 0
-      ? Math.round(attendanceList.reduce((acc, s) => acc + (typeof s.attendancePct === 'number' ? s.attendancePct : 0), 0) / attendanceList.length)
-      : 0;
-    const attEarned = (avgAtt * 0.10).toFixed(2);
+    const monthSessions = attendanceSessions.filter(a => String(a.date || '') >= monthStartKey);
+    const sessionsTarget = batches.length * workingDays;
+    const sessionsDone = monthSessions.length;
 
-    // 3. Syllabus updated factor (weight 10)
-    const syllabusPct = batches.length > 0 ? 90 : 0;
-    const syllabusEarned = (syllabusPct * 0.10).toFixed(2);
+    const attValues = myStudents.map(s => s.attendancePct).filter(v => typeof v === 'number');
+    const avgAtt = attValues.length ? Math.round(attValues.reduce((a, b) => a + b, 0) / attValues.length) : 0;
 
-    // 4. Assessments factor (weight 20)
-    const completedTests = assessmentTests.length;
-    const targetTests = Math.max(completedTests, 4);
-    const assessmentAchievement = targetTests > 0 ? Math.min(100, Math.round((completedTests / targetTests) * 100)) : 0;
-    const assessmentEarned = (assessmentAchievement * 0.20).toFixed(2);
+    const monthTests = assessmentTests.filter(t => String(t.date || t.createdAt || '').slice(0, 7) === monthKey);
+    const testsTarget = batches.length * weeksElapsed;
 
-    // 5. Weak reviewed factor (weight 10)
-    const weakCount = weakStudents.length;
-    const weakReviewedCount = weakStudents.filter(s => s.mockInterview !== 'Pending' || s.statusGroup !== 'on_hold').length;
-    const weakAchievement = weakCount > 0 ? Math.min(100, Math.round((weakReviewedCount / weakCount) * 100)) : 100;
-    const weakEarned = (weakAchievement * 0.10).toFixed(2);
+    const weakReviewed = weakStudents.filter(w => w.reviewed).length;
 
-    // 6. Student feedback (weight 10)
-    const resolvedDoubts = doubts.filter(d => d.status === 'Replied').length;
-    const totalDoubts = doubts.length;
-    const doubtResRate = totalDoubts > 0 ? Math.round((resolvedDoubts / totalDoubts) * 100) : (doubts.length === 0 ? 100 : 0);
-    const feedbackEarned = (doubtResRate * 0.10).toFixed(2);
+    const repliedInSla = myDoubts.filter(d => d.status === 'Replied' && d.repliedAt && d.createdAt && (new Date(d.repliedAt) - new Date(d.createdAt)) <= 24 * 36e5).length;
 
-    // 7. Demos done (weight 10)
-    const attendedDemos = demos.filter(d => d.status === 'Attended' || d.status === 'confirmed').length;
-    const totalDemos = demos.length;
-    const demoAchievement = totalDemos > 0 ? Math.min(100, Math.round((attendedDemos / totalDemos) * 100)) : (attendedDemos > 0 ? 100 : 0);
-    const demoEarned = (demoAchievement * 0.10).toFixed(2);
+    const demosClosed = myMonthDemos.filter(d => ['attended', 'missed'].includes(lc(d.status)));
+    const demosDone = demosClosed.filter(isAttended).length;
 
-    // 8. Interviews done (weight 10)
-    const completedInterviews = students.filter(s => s.mockInterview && s.mockInterview !== 'Pending').length;
-    const totalStudents = students.length;
-    const interviewAchievement = totalStudents > 0 ? Math.min(100, Math.round((completedInterviews / totalStudents) * 100)) : 0;
-    const interviewEarned = (interviewAchievement * 0.10).toFixed(2);
+    const interviewed = myStudents.filter(s => typeof s.mockScore === 'number').length;
 
-    // 9. Same day updates (weight 5)
-    const updatePct = attendanceList.length > 0 ? 95 : 0;
-    const updateEarned = (updatePct * 0.05).toFixed(2);
+    const sameDay = monthSessions.filter(a => a.createdAt && String(a.createdAt).slice(0, 10) === a.date).length;
 
-    // Total Action Score
-    const totalEarned = (
-      parseFloat(sessionsEarned) +
-      parseFloat(attEarned) +
-      parseFloat(syllabusEarned) +
-      parseFloat(assessmentEarned) +
-      parseFloat(weakEarned) +
-      parseFloat(feedbackEarned) +
-      parseFloat(demoEarned) +
-      parseFloat(interviewEarned) +
-      parseFloat(updateEarned)
-    );
+    const factors = [
+      factor('Classes / Sessions', 20, pct(sessionsDone, sessionsTarget), `${sessionsDone} / ${sessionsTarget}`, sessionsTarget > 0),
+      factor('Attendance', 10, avgAtt, `${avgAtt}% avg`, attValues.length > 0),
+      factor('Syllabus completed', 10, pct(myStudents.filter(s => s.syllabusCompleted).length, myStudents.length), `${myStudents.filter(s => s.syllabusCompleted).length} / ${myStudents.length}`, myStudents.some(s => s.syllabusCompleted)),
+      factor('Assessments Conducted', 20, pct(monthTests.length, testsTarget), `${monthTests.length} / ${testsTarget}`, batches.length > 0),
+      factor('Weak reviewed', 10, weakStudents.length ? pct(weakReviewed, weakStudents.length) : 100, `${weakReviewed} / ${weakStudents.length}`, myStudents.length > 0),
+      factor('Doubts resolved in SLA', 10, pct(repliedInSla, myDoubts.length), `${repliedInSla} / ${myDoubts.length}`, myDoubts.length > 0),
+      factor('Demos done', 10, pct(demosDone, demosClosed.length), `${demosDone} / ${demosClosed.length}`, demosClosed.length > 0),
+      factor('Mock interviews done', 10, pct(interviewed, myStudents.length), `${interviewed} / ${myStudents.length}`, interviewed > 0),
+      factor('Cert counselling', 5, 0, '', false),
+      factor('Same-day updates', 5, pct(sameDay, monthSessions.length), `${sameDay} / ${monthSessions.length}`, monthSessions.length > 0)
+    ];
+    const applicableWeight = factors.filter(f => f.applicable).reduce((a, f) => a + Number(f.weight), 0);
+    const earnedTotal = factors.reduce((a, f) => a + parseFloat(f.earned), 0);
+    const actionScore = applicableWeight > 0 ? parseFloat(((earnedTotal / applicableWeight) * 100).toFixed(1)) : 0;
 
-    const actionScore = totalEarned > 0 ? parseFloat(totalEarned.toFixed(1)) : 0;
-
-    let zone = 'Needs Improvement';
+    let zone = applicableWeight > 0 ? 'Needs Improvement' : 'No data yet';
     if (actionScore >= 90) zone = 'Platinum Zone';
     else if (actionScore >= 80) zone = 'Gold Zone';
     else if (actionScore >= 70) zone = 'Silver Zone';
     else if (actionScore >= 60) zone = 'Bronze Zone';
 
-    // Quality Buckets
-    const qAttendanceAchieved = avgAtt;
-    const qAssessmentAchieved = assessmentAchievement;
-    const qFeedbackAchieved = doubtResRate;
-    const qEmployeeAchieved = avgAtt >= 75 ? 85 : (avgAtt > 0 ? 60 : 0);
-    const qRatingAchieved = actionScore >= 80 ? 90 : (actionScore >= 60 ? 75 : (actionScore > 0 ? 50 : 0));
+    const bucket = (name, weight, achieved, applicable) => ({
+      bucket: name,
+      weight: String(weight),
+      achieved: applicable ? `${achieved}%` : 'N/A',
+      earned: applicable ? ((achieved * weight) / 100).toFixed(2) : '—',
+      applicable,
+      raw: applicable ? (achieved * weight) / 100 : 0
+    });
+    const assessmentAch = testsTarget > 0 ? pct(monthTests.length, testsTarget) : 0;
+    const qualityBuckets = [
+      bucket('Attendance', 30, avgAtt, attValues.length > 0),
+      bucket('Assessments conducted', 25, assessmentAch, batches.length > 0),
+      bucket('Student feedback (doubt SLA)', 20, pct(repliedInSla, myDoubts.length), myDoubts.length > 0),
+      bucket('Employee feedback', 15, 0, false),
+      bucket('Quality rating', 10, 0, false)
+    ];
+    const qWeight = qualityBuckets.filter(b => b.applicable).reduce((a, b) => a + Number(b.weight), 0);
+    const qualityScore = qWeight > 0 ? parseFloat(((qualityBuckets.reduce((a, b) => a + b.raw, 0) / qWeight) * 100).toFixed(1)) : 0;
 
-    const qAttendanceEarned = (qAttendanceAchieved * 0.30);
-    const qAssessmentEarned = (qAssessmentAchieved * 0.25);
-    const qFeedbackEarned = (qFeedbackAchieved * 0.20);
-    const qEmployeeEarned = (qEmployeeAchieved * 0.15);
-    const qRatingEarned = (qRatingAchieved * 0.10);
+    const gatesPass = attValues.length === 0 || avgAtt >= 75;
+    const payBase = Number(trainerProfile?.variablePayBase) || 0;
+    const variablePay = gatesPass && payBase > 0 ? Math.round((qualityScore / 100) * payBase) : 0;
 
-    const qualityScore = parseFloat((qAttendanceEarned + qAssessmentEarned + qFeedbackEarned + qEmployeeEarned + qRatingEarned).toFixed(1));
+    return { actionScore, zone, variablePay, payBase, qualityScore, gatesPass, factors, qualityBuckets };
+  }, [batches, attendanceSessions, assessmentTests, weakStudents, myDoubts, myMonthDemos, myStudents, trainerProfile, monthKey, monthStartKey]);
 
-    const gatesPass = avgAtt >= 75 || students.length === 0;
-    const variablePay = gatesPass ? Math.round((qualityScore / 100) * 3000) : 0;
-
-    return {
-      actionScore,
-      zone,
-      variablePay,
-      qualityScore,
-      gatesPass,
-      factors: [
-        { factor: 'Classes / Sessions', inputs: `${sessionsDelivered} / ${sessionsTarget}`, achievement: `${sessionsAchievement}%`, weight: '20', earned: sessionsEarned },
-        { factor: 'Attendance', inputs: `${avgAtt}%`, achievement: `${avgAtt}%`, weight: '10', earned: attEarned },
-        { factor: 'Syllabus updated', inputs: `${syllabusPct}%`, achievement: `${syllabusPct}%`, weight: '10', earned: syllabusEarned },
-        { factor: 'Assessments Conducted', inputs: `${completedTests} / ${targetTests}`, achievement: `${assessmentAchievement}%`, weight: '20', earned: assessmentEarned },
-        { factor: 'Weak reviewed', inputs: `${weakReviewedCount} / ${Math.max(1, weakCount)}`, achievement: `${weakAchievement}%`, weight: '10', earned: weakEarned },
-        { factor: 'Student feedback / doubts', inputs: `${doubtResRate}%`, achievement: `${doubtResRate}%`, weight: '10', earned: feedbackEarned },
-        { factor: 'Demos done', inputs: `${attendedDemos} / ${Math.max(1, totalDemos)}`, achievement: `${demoAchievement}%`, weight: '10', earned: demoEarned },
-        { factor: 'Interviews done', inputs: `${completedInterviews} / ${Math.max(1, totalStudents)}`, achievement: `${interviewAchievement}%`, weight: '10', earned: interviewEarned },
-        { factor: 'Cert counselling', tag: 'N/A', inputs: 'not assigned', achievement: '0%', weight: '5', earned: '0.00', isNa: true },
-        { factor: 'Same-day updates', inputs: `${updatePct}%`, achievement: `${updatePct}%`, weight: '5', earned: updateEarned }
-      ],
-      qualityBuckets: [
-        { bucket: 'Attendance', weight: '30', achieved: `${qAttendanceAchieved}%`, earned: qAttendanceEarned.toFixed(2) },
-        { bucket: 'Assessments conducted', weight: '25', achieved: `${qAssessmentAchieved}%`, earned: qAssessmentEarned.toFixed(2) },
-        { bucket: 'Student feedback', weight: '20', achieved: `${qFeedbackAchieved}%`, earned: qFeedbackEarned.toFixed(2) },
-        { bucket: 'Employee feedback', weight: '15', achieved: `${qEmployeeAchieved}%`, earned: qEmployeeEarned.toFixed(2) },
-        { bucket: 'Quality rating', weight: '10', achieved: `${qRatingAchieved}%`, earned: qRatingEarned.toFixed(2) }
-      ]
-    };
-  }, [batches, attendanceList, assessmentTests, weakStudents, doubts, demos, students]);
-
-  // Real Incentive Events derived from actual student enrollments & completed demos
+  // Incentive events — demos I delivered this month + admissions converted from my demos
   const incentiveEvents = React.useMemo(() => {
+    const demoRate = Number(trainerProfile?.demoIncentive) || 0;
+    const admRate = Number(trainerProfile?.admissionIncentive) || 0;
     const events = [];
-
-    demos.forEach((d, idx) => {
-      const isAttended = d.status === 'Attended' || d.status === 'confirmed';
+    myMonthDemos.forEach((d, idx) => {
+      const verified = isAttended(d);
       events.push({
         id: d._id || `DEMO-${idx + 1}`,
         code: `DEMO-${String(idx + 1).padStart(3, '0')}`,
         type: 'Course Demo Session',
-        candidate: d.candidateName || `Candidate ${idx + 1}`,
-        role: 'Faculty SME',
-        baseAmt: 150,
+        candidate: d.candidateName,
+        role: 'Demo Trainer',
+        baseAmt: demoRate,
         share: '100%',
-        isVerified: isAttended,
-        payable: isAttended ? 150 : 0
+        isVerified: verified,
+        payable: verified ? demoRate : 0
       });
     });
-
-    students.forEach((s, idx) => {
-      const isEnrolled = s.statusGroup !== 'on_hold';
+    convertedStudents.filter(s => String(s.createdAt || '').slice(0, 7) === monthKey).forEach((s, idx) => {
+      const verified = s.statusGroup !== 'on_hold';
       events.push({
-        id: s._id || `STD-${idx + 1}`,
+        id: s._id || `ADM-${idx + 1}`,
         code: `ADM-${String(idx + 1).padStart(3, '0')}`,
-        type: 'Course Admission',
+        type: 'Admission from my demo',
         candidate: s.name,
-        role: 'Primary Faculty',
-        baseAmt: 200,
+        role: 'Demo Trainer',
+        baseAmt: admRate,
         share: '100%',
-        isVerified: isEnrolled,
-        payable: isEnrolled ? 200 : 0
+        isVerified: verified,
+        payable: verified ? admRate : 0
       });
     });
-
     return events;
-  }, [demos, students]);
+  }, [myMonthDemos, convertedStudents, trainerProfile, monthKey]);
+
+  const incentivesConfigured = Number(trainerProfile?.demoIncentive) > 0 || Number(trainerProfile?.admissionIncentive) > 0;
 
   const totalEventCash = React.useMemo(() => {
     return incentiveEvents.reduce((acc, ev) => acc + (ev.isVerified ? ev.payable : 0), 0);
@@ -504,35 +530,46 @@ export default function TrainingDepartmentDashboard({
 
   const monthlyTake = (scorecardMetrics.variablePay || 0) + totalEventCash;
 
+  // Materials the trainer has pushed to a batch (shown in the session room)
+  const materialsForBatch = (batchName) => materials.filter(m => (m.assignments || []).some(a => a.batch === batchName));
+
   const [demoToast, setDemoToast] = useState(null);
+  const flashDemoToast = (msg, ms = 3500) => { setDemoToast(msg); setTimeout(() => setDemoToast(null), ms); };
 
   const handleAcknowledgeDemo = async (demoId) => {
     try {
-      await acknowledgeDemo(demoId);
-      setDemos(prev => prev.map(d => (d._id === demoId || d.id === demoId) ? { ...d, notificationRead: true, status: 'confirmed' } : d));
-      setDemoToast('✓ Demo slot acknowledged & confirmed! HR & candidate notified.');
-      setTimeout(() => setDemoToast(null), 3500);
+      const updated = await acknowledgeDemo(demoId, { trainerId, trainerName });
+      setDemos(prev => prev.map(d => (d._id === demoId || d.id === demoId) ? { ...d, ...updated } : d));
+      flashDemoToast('✓ Demo slot accepted — the HR who booked it has been notified.');
     } catch (e) {
-      console.warn('Failed to acknowledge demo:', e);
-      setDemos(prev => prev.map(d => (d._id === demoId || d.id === demoId) ? { ...d, notificationRead: true, status: 'confirmed' } : d));
-      setDemoToast('✓ Demo slot acknowledged!');
-      setTimeout(() => setDemoToast(null), 3500);
+      flashDemoToast(e?.response?.data?.error || 'Could not accept this demo slot', 5000);
+    }
+  };
+
+  const setDemoOutcome = async (lead, status) => {
+    try {
+      if (!lead._id) throw new Error('Demo is not saved');
+      const updated = await updateDemo(lead._id, { status, updatedBy: 'trainer' });
+      setDemos(prev => prev.map(l => l._id === lead._id ? { ...l, ...updated } : l));
+      flashDemoToast(status === 'attended'
+        ? `✓ ${lead.candidateName} marked Attended · lead moved to Demo Attended · HR notified`
+        : `${lead.candidateName} marked No-show · HR notified to reschedule`);
+    } catch (e) {
+      flashDemoToast(e?.response?.data?.error || e.message || 'Could not update demo', 5000);
     }
   };
 
   // ---- Demo Zoom: create a unique meeting per booked demo, send link to student, join embedded ----
   const handleCreateDemoMeeting = async (lead) => {
-    if (!lead._id) { setDemoToast('This demo is not saved in the database yet'); setTimeout(() => setDemoToast(null), 3500); return null; }
+    if (!lead._id) { flashDemoToast('This demo is not saved in the database yet'); return null; }
     try {
       setDemoToast('Creating Zoom meeting…');
       const updated = await createDemoMeeting(lead._id);
       setDemos(prev => prev.map(l => l._id === lead._id ? { ...l, ...updated } : l));
-      setDemoToast('✓ Zoom meeting created');
-      setTimeout(() => setDemoToast(null), 3000);
+      flashDemoToast('✓ Zoom meeting created', 3000);
       return { ...lead, ...updated };
     } catch (e) {
-      setDemoToast(e?.response?.data?.error || 'Could not create Zoom meeting');
-      setTimeout(() => setDemoToast(null), 5000);
+      flashDemoToast(e?.response?.data?.error || 'Could not create Zoom meeting', 5000);
       return null;
     }
   };
@@ -542,39 +579,35 @@ export default function TrainingDepartmentDashboard({
     if (!d.zoomMeetingId) { d = await handleCreateDemoMeeting(lead); if (!d) return; }
     let phone = String(lead.phone || '').replace(/\D/g, '');
     if (phone.length === 10) phone = '91' + phone;
-    const text = `Hi ${lead.candidateName}, your ${lead.course} demo class with ${lead.trainer || trainerName} is scheduled for ${lead.time || lead.timeSlot || 'today'}. Join here: ${d.link}`;
+    const when = [lead.preferredDate, lead.timeSlot || lead.time].filter(Boolean).join(' ');
+    const text = `Hi ${lead.candidateName}, your ${lead.course} demo class with ${trainerName} is scheduled for ${when}. Join here: ${d.link}`;
     try { await navigator.clipboard.writeText(d.link); } catch (_) {}
     redirectToWhatsAppWeb(phone, text);
-    setDemoToast('Link copied · WhatsApp Web opened with the message');
-    setTimeout(() => setDemoToast(null), 3000);
+    flashDemoToast('Link copied · WhatsApp Web opened with the message', 3000);
   };
 
   const handleEmailDemoLink = async (lead) => {
-    if (!lead.email) { setDemoToast('No student email on this demo'); setTimeout(() => setDemoToast(null), 3500); return; }
+    if (!lead.email) { flashDemoToast('No student email on this demo'); return; }
     let d = lead;
     if (!d.zoomMeetingId) { d = await handleCreateDemoMeeting(lead); if (!d) return; }
     try {
       setDemoToast('Sending email…');
       await sendDemoLinkEmail(d._id);
-      setDemoToast(`✓ Zoom link emailed to ${lead.email}`);
+      flashDemoToast(`✓ Zoom link emailed to ${lead.email}`, 5000);
     } catch (e) {
-      // SMTP not set up (or failed): fall back to opening the trainer's own mail app with the message ready
-      const when = lead.time || lead.timeSlot || 'today';
+      // Email service not set up (or failed): open the trainer's own mail app with the message ready
+      const when = [lead.preferredDate, lead.timeSlot || lead.time].filter(Boolean).join(' ');
       const subject = `Your ${lead.course} demo class link – Thoughtflows Academy`;
-      const body = `Hi ${lead.candidateName},\n\nYour ${lead.course} demo class with ${lead.trainer || trainerName} is scheduled for ${when}.\n\nJoin on Zoom: ${d.link}\n\nPlease join 5 minutes early.`;
+      const body = `Hi ${lead.candidateName},\n\nYour ${lead.course} demo class with ${trainerName} is scheduled for ${when}.\n\nJoin on Zoom: ${d.link}\n\nPlease join 5 minutes early.`;
       window.open(`mailto:${lead.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`, '_self');
-      setDemoToast((e?.response?.data?.error || 'Email failed') + ' — opened your mail app instead');
+      flashDemoToast((e?.response?.data?.error || 'Email failed') + ' — opened your mail app instead', 5000);
     }
-    setTimeout(() => setDemoToast(null), 5000);
   };
 
-  // End the live demo: mark it Attended (server also moves the lead to "Demo Attended") and leave Zoom
+  // End the live demo: mark it Attended (server also moves the lead to "Demo Attended" and notifies HR) and leave Zoom
   const endDemo = async (room) => {
     try { if (room?._id) await endDemoMeeting(room._id); } catch (e) { console.warn(e); }
-    try { if (room?._id) await updateDemo(room._id, { status: 'Attended' }); } catch (e) { console.warn(e); }
-    setDemos(prev => prev.map(l => (room && l._id === room._id) ? { ...l, status: 'Attended' } : l));
-    setDemoToast(`✓ Demo ended · ${room?.candidateName || 'student'} marked Attended · lead moved to Demo Attended`);
-    setTimeout(() => setDemoToast(null), 4000);
+    if (room?._id) await setDemoOutcome(room, 'attended');
     setDemoRoom(null);
     setDemoMin(false);
   };
@@ -586,24 +619,26 @@ export default function TrainingDepartmentDashboard({
     setDemoRoom(d);
   };
 
+  // Batch the session room is running for (defaults to the first allocated batch)
+  const [sessionBatchId, setSessionBatchId] = useState('');
+  const sessionBatch = batches.find(b => b.id === sessionBatchId) || batches[0] || null;
+  const classMeetingUrl = sessionBatch?.zoomLink || import.meta.env.VITE_ZOOM_MEETING_LINK || '';
+
   // Trainer sends live batch meeting link to students (In-App broadcast + WhatsApp)
   const handleSendBatchClassLink = (channel = 'all') => {
-    const currentBatch = batches[0];
-    const meetingUrl = currentBatch?.zoomLink || currentBatch?.link || import.meta.env.VITE_ZOOM_MEETING_LINK || 'https://zoom.us/j/84366394686?pwd=7Pgqkoyz1uUSk7Rl-6hCiN7BygDQ0je.1';
-    const numStudents = currentBatch?.students?.length || attendanceList.length || 0;
-    const batchTitle = currentBatch?.name || 'AMCT - Advanced Medical Coding';
-    const topicTitle = currentBatch?.module || 'Module 1';
-    const { meetingNumber, password } = parseZoomLink(meetingUrl);
-
+    if (!sessionBatch) { flashDemoToast('No batch allocated to you yet'); return; }
+    if (!classMeetingUrl) { flashDemoToast('No class Zoom link is set on your trainer profile. Ask admin to add it.', 5000); return; }
+    const numStudents = sessionBatch.students.length;
+    const { meetingNumber, password } = parseZoomLink(classMeetingUrl);
     const sessionData = {
       isLive: true,
       startedAt: Date.now(),
-      topic: topicTitle,
-      batchName: batchTitle,
+      topic: sessionBatch.module,
+      batchName: sessionBatch.name,
       trainerName,
-      zoomLink: meetingUrl,
-      meetingNumber: meetingNumber || '84366394686',
-      password: password || '7Pgqkoyz1uUSk7Rl-6hCiN7BygDQ0je.1',
+      zoomLink: classMeetingUrl,
+      meetingNumber: meetingNumber || '',
+      password: password || '',
       studentsCount: numStudents
     };
     try {
@@ -612,26 +647,20 @@ export default function TrainingDepartmentDashboard({
     notifyDataUpdate('live_class');
 
     if (channel === 'whatsapp') {
-      const msg = `🎓 *Thoughtflows Academy — Live Class Session*\n\n📚 *Batch:* ${batchTitle}\n📖 *Topic:* ${topicTitle}\n👨‍🏫 *Trainer:* ${trainerName}\n\n🔗 *Join Zoom Meeting:*\n${meetingUrl}\n\n🆔 *Meeting ID:* ${sessionData.meetingNumber}\n🔑 *Passcode:* ${sessionData.password}\n\n⏰ Please join promptly! Live session is active.`;
-      const waUrl = `https://api.whatsapp.com/send?text=${encodeURIComponent(msg)}`;
-      window.open(waUrl, '_blank');
-      setDemoToast(`✓ WhatsApp opened with meeting invite for ${numStudents} students`);
+      const msg = `🎓 *Thoughtflows Academy — Live Class Session*\n\n📚 *Batch:* ${sessionBatch.name}\n${sessionBatch.module ? `📖 *Topic:* ${sessionBatch.module}\n` : ''}👨‍🏫 *Trainer:* ${trainerName}\n\n🔗 *Join Zoom Meeting:*\n${classMeetingUrl}${meetingNumber ? `\n\n🆔 *Meeting ID:* ${meetingNumber}` : ''}${password ? `\n🔑 *Passcode:* ${password}` : ''}\n\n⏰ Please join promptly! Live session is active.`;
+      window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent(msg)}`, '_blank');
+      flashDemoToast(`✓ WhatsApp opened with meeting invite for ${numStudents} students`, 4000);
     } else {
-      setDemoToast(`✓ Live meeting link sent to all ${numStudents} batch students!`);
+      flashDemoToast(`✓ Live meeting link shared with ${numStudents} batch students`, 4000);
     }
-    setTimeout(() => setDemoToast(null), 4000);
   };
 
-  // Live session timer countdown
+  // Live session timer (elapsed since the trainer started the session)
   useEffect(() => {
-    let interval = null;
-    if (isLiveClassActive && timerRunning) {
-      interval = setInterval(() => {
-        setSessionTimeSeconds(prev => (prev > 0 ? prev - 1 : 0));
-      }, 1000);
-    }
+    if (!isLiveClassActive || !sessionStartedAt) return undefined;
+    const interval = setInterval(() => setSessionElapsed(Math.floor((Date.now() - sessionStartedAt) / 1000)), 1000);
     return () => clearInterval(interval);
-  }, [isLiveClassActive, timerRunning]);
+  }, [isLiveClassActive, sessionStartedAt]);
 
   const formatTimer = (secs) => {
     const hrs = Math.floor(secs / 3600);
@@ -640,24 +669,32 @@ export default function TrainingDepartmentDashboard({
     return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
-  const syncToTfStore = (studentId, status) => {
+  // Save attendance marks to the server — updates each student's attendance %,
+  // their own dashboard, the Leadership risk view and alerts HR below 75%
+  const saveAttendanceMarks = async (records) => {
+    if (!attendanceBatch) return;
+    const optimistic = { ...(todaysSession?.records || {}), ...records };
+    setAttendanceSessions(prev => {
+      const others = prev.filter(a => !(a.batch === attendanceBatch.name && a.date === todayKey));
+      return [{ ...(todaysSession || { batch: attendanceBatch.name, date: todayKey, createdAt: new Date().toISOString() }), records: optimistic }, ...others];
+    });
     try {
-      const existing = JSON.parse(localStorage.getItem('TF_STORE') || '{}');
-      if (!existing.attendance) existing.attendance = {};
-      existing.attendance[studentId] = { status, date: new Date().toISOString().split('T')[0], timestamp: new Date().toISOString() };
-      localStorage.setItem('TF_STORE', JSON.stringify(existing));
-      setTfStoreSyncToast(true);
-      setTimeout(() => setTfStoreSyncToast(false), 2500);
-
-      // Record to backend API
-      recordTrainerAttendance({
-        batch: batches[0]?.name || 'Batch 01',
-        date: new Date().toISOString().split('T')[0],
-        records: { [studentId]: status }
-      }).catch(err => console.warn('recordTrainerAttendance error', err));
+      const res = await recordTrainerAttendance({
+        trainerId,
+        trainerName,
+        batch: attendanceBatch.name,
+        date: todayKey,
+        topic: attendanceBatch.module,
+        records
+      });
+      if (res?.data) {
+        setAttendanceSessions(prev => [res.data, ...prev.filter(a => !(a.batch === res.data.batch && a.date === res.data.date))]);
+      }
+      setAttendanceSavedToast('✓ Attendance saved to the student record · attendance % updated for student, HR & Leadership');
     } catch (e) {
-      console.warn('TF_STORE sync error', e);
+      setAttendanceSavedToast(`⚠ Could not save attendance: ${e?.response?.data?.error || e.message}`);
     }
+    setTimeout(() => setAttendanceSavedToast(null), 3000);
   };
 
   const [classChat, setClassChat] = useState([]);
@@ -669,7 +706,7 @@ export default function TrainingDepartmentDashboard({
       id: Date.now(),
       sender: `${trainerName} (You)`,
       text: classChatMsg,
-      time: 'Just now'
+      time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
     }]);
     setClassChatMsg('');
   };
@@ -677,13 +714,25 @@ export default function TrainingDepartmentDashboard({
   const handleResolveDoubt = async () => {
     if (!activeDoubtModal || !doubtReplyText.trim()) return;
     try {
-      await replyTrainerDoubt(activeDoubtModal.id, doubtReplyText);
+      const updated = await replyTrainerDoubt(activeDoubtModal.id, doubtReplyText);
+      setDoubts(prev => prev.map(d => d.id === activeDoubtModal.id ? { ...d, ...updated } : d));
+      setActiveDoubtModal(null);
+      setDoubtReplyText('');
     } catch (e) {
-      console.warn('reply error fallback', e);
+      flashDemoToast(e?.response?.data?.error || 'Could not send the reply', 5000);
     }
-    setDoubts(prev => prev.map(d => d.id === activeDoubtModal.id ? { ...d, status: 'Replied', reply: doubtReplyText } : d));
-    setActiveDoubtModal(null);
-    setDoubtReplyText('');
+  };
+
+  const unreadNotifs = trainerNotifications.filter(n => !n.read);
+  const handleOpenNotification = async (n) => {
+    if (!n.read) {
+      try { await markNotificationRead(n._id); } catch (_) {}
+      setTrainerNotifications(prev => prev.map(x => x._id === n._id ? { ...x, read: true } : x));
+    }
+    if (n.type === 'demo') setActiveNav('demos');
+    else if (n.type === 'doubt') setActiveNav('doubts');
+    else if (n.type === 'handover') setActiveNav('students');
+    setShowNotifPanel(false);
   };
 
   return (
@@ -1012,7 +1061,36 @@ export default function TrainingDepartmentDashboard({
           </div>
 
           <div className="flex items-center gap-3">
-
+            <div className="relative">
+              <button
+                onClick={() => setShowNotifPanel(v => !v)}
+                className="relative p-2 rounded-xl bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-600 cursor-pointer"
+                title="Notifications from HR & students"
+              >
+                <Bell className="w-4 h-4" />
+                {unreadNotifs.length > 0 && (
+                  <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-rose-600 text-white text-[9px] font-black flex items-center justify-center">{unreadNotifs.length}</span>
+                )}
+              </button>
+              {showNotifPanel && (
+                <div className="absolute right-0 mt-2 w-80 max-h-[420px] overflow-y-auto bg-white rounded-2xl border border-slate-200 shadow-2xl z-40">
+                  <div className="px-4 py-3 border-b border-slate-100 text-xs font-bold text-slate-900">Notifications</div>
+                  {trainerNotifications.length === 0 ? (
+                    <div className="px-4 py-8 text-center text-xs text-slate-400">No notifications yet.</div>
+                  ) : trainerNotifications.map(n => (
+                    <button
+                      key={n._id}
+                      onClick={() => handleOpenNotification(n)}
+                      className={`w-full text-left px-4 py-3 border-b border-slate-50 hover:bg-slate-50 ${n.read ? '' : 'bg-teal-50/60'}`}
+                    >
+                      <div className="text-xs font-bold text-slate-900">{n.title}</div>
+                      <div className="text-[11px] text-slate-600 mt-0.5 line-clamp-2">{n.message}</div>
+                      <div className="text-[10px] text-slate-400 mt-1">{new Date(n.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
 
             <button
               onClick={() => (onLogout ? onLogout() : onClose ? onClose() : null)}
@@ -1024,6 +1102,12 @@ export default function TrainingDepartmentDashboard({
             </button>
           </div>
         </header>
+
+        {profileError && (
+          <div className="mx-6 mt-4 p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs font-medium">
+            {profileError}. Your shift, course, pay and class link come from the trainer roster — ask the admin to link your login email to your trainer record in Trainer Settings.
+          </div>
+        )}
 
         {/* Demo Zoom room – lives at page level so it stays connected while the trainer browses other sections */}
         {demoRoom && (
@@ -1085,7 +1169,7 @@ export default function TrainingDepartmentDashboard({
                       Welcome back, {trainerName} <span className="text-lg">👋</span>
                     </h2>
                     <p className="text-[11px] font-medium text-slate-500 tracking-wide mt-0.5">
-                      {trainerId} · {trainerRole} · {trainerBranch} · Shift {trainerShift}
+                      {[trainerId, trainerRole, trainerBranch, trainerShift && `Shift ${trainerShift}`].filter(Boolean).join(' · ')}
                     </p>
 
                     {/* 5 Stats row */}
@@ -1096,7 +1180,7 @@ export default function TrainingDepartmentDashboard({
                       </div>
                       <div>
                         <div className="text-2xl font-black text-slate-900">
-                          {myExpertDemos.filter(d => d.status?.toLowerCase() !== 'attended').length}
+                          {myExpertDemos.filter(d => ['booked', 'confirmed'].includes(lc(d.status))).length}
                         </div>
                         <div className="text-[10px] font-bold text-slate-400 tracking-wider uppercase">DEMO</div>
                       </div>
@@ -1124,10 +1208,12 @@ export default function TrainingDepartmentDashboard({
                         NEXT SESSION
                       </span>
                       <h3 className="text-xl font-bold text-white pt-1">
-                        {batches[0]?.name || `${trainerCourseKey} — Medical Coding Core`}
+                        {batches[0]?.name || 'No batch allocated yet'}
                       </h3>
                       <p className="text-xs text-slate-300 font-medium">
-                        {batches[0]?.timing || `${trainerShift.split('–')[0]?.trim() || '8:00 AM'} Daily`} · {batches[0]?.mode || 'Online'} · {batches[0]?.students?.length || myStudents.length} students enrolled
+                        {batches[0]
+                          ? [batches[0].timing, batches[0].mode, `${batches[0].students.length} students enrolled`].filter(Boolean).join(' · ')
+                          : 'HR allocates students to you from the Handover Desk.'}
                       </p>
                     </div>
 
@@ -1170,7 +1256,7 @@ export default function TrainingDepartmentDashboard({
                             New Demo Booked: <span className="text-[#00897b]">{newDemoAlerts[0].candidateName}</span> <span className="font-mono text-xs font-semibold text-slate-500">({newDemoAlerts[0].phone})</span>
                           </h3>
                           <p className="text-xs text-slate-600 font-medium">
-                            Slot: <strong className="text-slate-900">{newDemoAlerts[0].time || newDemoAlerts[0].timeSlot || 'Today'}</strong> · Mode: <strong className="text-slate-800">{newDemoAlerts[0].mode || 'Online Live'}</strong> · Language: <strong className="text-slate-800">{newDemoAlerts[0].language || 'Tamil'}</strong>
+                            Slot: <strong className="text-slate-900">{[newDemoAlerts[0].preferredDate, newDemoAlerts[0].timeSlot || newDemoAlerts[0].time].filter(Boolean).join(' ') || '—'}</strong> · Mode: <strong className="text-slate-800">{newDemoAlerts[0].mode || '—'}</strong> · Language: <strong className="text-slate-800">{newDemoAlerts[0].language || '—'}</strong>
                           </p>
                           <div className="text-[11px] text-teal-900 font-semibold pt-0.5 flex items-center gap-1.5">
                             <CheckCircle2 className="w-3.5 h-3.5 text-teal-600 shrink-0" />
@@ -1205,12 +1291,12 @@ export default function TrainingDepartmentDashboard({
                       <div>
                         <div className="text-xs font-bold text-slate-900">
                           {myExpertDemos[0] 
-                            ? `DEMO DESK · ${myExpertDemos[0].course} · ${myExpertDemos[0].time || 'Confirmed'}` 
+                            ? `DEMO DESK · ${myExpertDemos[0].course} · ${[myExpertDemos[0].preferredDate, myExpertDemos[0].timeSlot].filter(Boolean).join(' ') || myExpertDemos[0].status}` 
                             : 'DEMO DESK · All Course Expert Demos Handled'}
                         </div>
                         <div className="text-[11px] text-slate-600 font-medium">
                           {myExpertDemos[0] 
-                            ? `${myExpertDemos[0].candidateName} · ${myExpertDemos[0].mode || 'Online Live'} · Assigned to you as Subject Matter Expert.`
+                            ? `${myExpertDemos[0].candidateName}${myExpertDemos[0].mode ? ` · ${myExpertDemos[0].mode}` : ''} · Routed to you by the demo engine.`
                             : 'All demo webinars up to date. Newly booked demos in your course expertise will alert you first.'}
                         </div>
                       </div>
@@ -1242,7 +1328,7 @@ export default function TrainingDepartmentDashboard({
                     onClick={() => setActiveNav('attendance')}
                     className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-sm cursor-pointer hover:border-teal-400 transition-all"
                   >
-                    <div className="text-2xl font-black text-[#f59e0b]">{myStudents.filter(s => s.statusGroup === 'on_hold').length}</div>
+                    <div className="text-2xl font-black text-[#f59e0b]">{myStudents.filter(s => typeof s.attendancePct === 'number' && s.attendancePct < 75).length}</div>
                     <div className="text-xs text-slate-600 font-medium mt-1">Attendance alert</div>
                   </div>
 
@@ -1260,7 +1346,7 @@ export default function TrainingDepartmentDashboard({
                     onClick={() => setActiveNav('demos')}
                     className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-sm cursor-pointer hover:border-teal-400 transition-all"
                   >
-                    <div className="text-2xl font-black text-slate-800">{myExpertDemos.filter(d => d.status === 'attended' || d.status === 'confirmed').length}</div>
+                    <div className="text-2xl font-black text-slate-800">{myExpertDemos.filter(isAttended).length}</div>
                     <div className="text-xs text-slate-600 font-medium mt-1">Demos done</div>
                   </div>
 
@@ -1285,7 +1371,7 @@ export default function TrainingDepartmentDashboard({
                             </div>
                             <div>
                               <div className="text-xs font-bold text-slate-900">{batch.name}</div>
-                              <div className="text-[11px] text-slate-500">{batch.timing} · {batch.mode} · {batch.students.length} students</div>
+                              <div className="text-[11px] text-slate-500">{[batch.timing, batch.mode, `${batch.students.length} students`].filter(Boolean).join(' · ')}</div>
                             </div>
                           </div>
                           <span className={`px-2.5 py-1 rounded-md text-[10px] font-bold ${
@@ -1411,56 +1497,71 @@ export default function TrainingDepartmentDashboard({
           {/* ================= TAB 2: CLASS SESSION ROOM ================= */}
           {activeNav === 'session_room' && (
             <div className="space-y-5 max-w-[1280px]">
-              {!isLiveClassActive ? (
-                /* PRE-SESSION LANDING VIEW (EXACT MATCH TO REFERENCE SCREENSHOT) */
+              {!sessionBatch ? (
+                <div className="bg-white rounded-2xl p-10 border border-slate-200/90 shadow-sm text-center text-xs text-slate-500">
+                  No batch has been allocated to you yet. HR allocates students to you from the Handover Desk.
+                </div>
+              ) : !isLiveClassActive ? (
                 <div className="space-y-5 animate-fadeIn">
-                  {/* Top Dark Banner Card */}
                   <div className="bg-[#0f212d] rounded-2xl p-6 sm:p-7 text-white border border-[#1b3446] shadow-sm">
-                    <h2 className="text-xl font-bold text-white tracking-tight">
-                      {batches[0]?.module || 'Anatomy — Digestive System'}
-                    </h2>
-                    <p className="text-xs text-slate-200 font-medium mt-1.5">
-                      {batches[0]?.name || 'CPC Morning Batch 03'} · {batches[0]?.students?.length || attendanceList.length || 0} students · {batches[0]?.mode || 'Online'} · {batches[0]?.timing || '7:00 AM – 9:00 AM'}
-                    </p>
-                    <p className="text-xs text-[#5aa8b7] font-medium mt-1">
-                      {batches[0]?.name || 'CPC'} — {batches[0]?.module || 'Anatomy — Ch. 9'}
-                    </p>
+                    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                      <div>
+                        <h2 className="text-xl font-bold text-white tracking-tight">{sessionBatch.name}</h2>
+                        <p className="text-xs text-slate-200 font-medium mt-1.5">
+                          {[sessionBatch.course, `${sessionBatch.students.length} students`, sessionBatch.mode, sessionBatch.timing].filter(Boolean).join(' · ')}
+                        </p>
+                        {sessionBatch.module && <p className="text-xs text-[#5aa8b7] font-medium mt-1">Current module: {sessionBatch.module}</p>}
+                      </div>
+                      {batches.length > 1 && (
+                        <select
+                          value={sessionBatch.id}
+                          onChange={(e) => setSessionBatchId(e.target.value)}
+                          className="bg-[#172b38] border border-[#244255] rounded-xl px-3 py-2 text-xs text-white"
+                        >
+                          {batches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                        </select>
+                      )}
+                    </div>
                   </div>
 
-                  {/* Before You Start Card */}
                   <div className="bg-white rounded-2xl p-6 sm:p-7 border border-slate-200/90 shadow-sm">
-                    <h3 className="text-base font-bold text-slate-900 pb-2">
-                      Before You Start
-                    </h3>
-
+                    <h3 className="text-base font-bold text-slate-900 pb-2">Before You Start</h3>
                     <div className="divide-y divide-slate-100 text-xs">
-                      <div className="py-3.5 flex items-center justify-between">
-                        <span className="text-slate-500 font-medium">Linked PPT</span>
-                        <span className="font-bold text-slate-900">Digestive System v3.pptx</span>
+                      <div className="py-3.5 flex items-start justify-between gap-4">
+                        <span className="text-slate-500 font-medium">Materials assigned to this batch</span>
+                        <span className="font-bold text-slate-900 text-right">
+                          {materialsForBatch(sessionBatch.name).length === 0
+                            ? <span className="text-slate-400 font-medium">None yet — assign from Library & Materials</span>
+                            : materialsForBatch(sessionBatch.name).map(m => (
+                              <a key={m._id} href={trainingMaterialFileUrl(m._id)} target="_blank" rel="noreferrer" className="block text-[#00897b] hover:underline">{m.title}</a>
+                            ))}
+                        </span>
                       </div>
-
-                      <div className="py-3.5 flex items-center justify-between">
-                        <span className="text-slate-500 font-medium">Reference</span>
-                        <span className="font-bold text-slate-900">ICD-10-CM Ch.9 PDF</span>
-                      </div>
-
                       <div className="py-3.5 flex items-center justify-between">
                         <span className="text-slate-500 font-medium">Session link</span>
-                        <span className="font-bold text-slate-900">Zoom · primary + backup ready</span>
+                        <span className={`font-bold ${classMeetingUrl ? 'text-slate-900' : 'text-rose-600'}`}>
+                          {classMeetingUrl ? 'Zoom class link ready' : 'No class Zoom link on your trainer profile'}
+                        </span>
                       </div>
-
                       <div className="py-3.5 flex items-center justify-between">
                         <span className="text-slate-500 font-medium">Students</span>
-                        <span className="font-bold text-slate-900">{batches[0]?.students?.length || attendanceList.length || 0}</span>
+                        <span className="font-bold text-slate-900">{sessionBatch.students.length}</span>
+                      </div>
+                      <div className="py-3.5 flex items-center justify-between">
+                        <span className="text-slate-500 font-medium">Today's attendance</span>
+                        <span className="font-bold text-slate-900">
+                          {todaysSession && attendanceBatch?.id === sessionBatch.id ? `${Object.keys(todaysSession.records || {}).length} marked` : 'Not marked yet'}
+                        </span>
                       </div>
                     </div>
                   </div>
 
-                  {/* Big Teal Action Button */}
                   <button
                     onClick={() => {
+                      setAttendanceBatchId(sessionBatch.id);
+                      setSessionStartedAt(Date.now());
+                      setSessionElapsed(0);
                       setIsLiveClassActive(true);
-                      setTimerRunning(true);
                     }}
                     className="w-full py-4 rounded-2xl bg-[#009688] hover:bg-[#00897b] text-white text-sm font-bold flex items-center justify-center gap-2 shadow-md shadow-[#009688]/20 transition-all hover:scale-[1.005] active:scale-[0.995]"
                   >
@@ -1469,10 +1570,7 @@ export default function TrainingDepartmentDashboard({
                   </button>
                 </div>
               ) : (
-                /* ACTIVE LIVE CLASSROOM WITH ATTENDANCE & RUNNING TIMER */
                 <div className="space-y-6 animate-fadeIn">
-                  
-                  {/* Top Classroom Bar */}
                   <div className="bg-[#0b242c] p-5 rounded-2xl border border-[#16414e] text-white flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-md">
                     <div>
                       <div className="flex items-center gap-3">
@@ -1480,183 +1578,84 @@ export default function TrainingDepartmentDashboard({
                           <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
                           LIVE SESSION IN PROGRESS
                         </span>
-                        
-                        {/* Live Timer Counter */}
                         <div className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-slate-900/90 border border-slate-700 text-xs font-mono font-bold text-amber-300">
                           <Clock className="w-3.5 h-3.5" />
-                          <span>{formatTimer(sessionTimeSeconds)} remaining</span>
-                          <button
-                            onClick={() => setTimerRunning(!timerRunning)}
-                            className="ml-1 text-[10px] text-slate-400 hover:text-white underline"
-                          >
-                            {timerRunning ? 'Pause' : 'Resume'}
-                          </button>
+                          <span>{formatTimer(sessionElapsed)} elapsed</span>
                         </div>
                       </div>
-
-                      <h2 className="text-xl font-extrabold text-white mt-1.5">{batches[0]?.module || 'Anatomy — Digestive System (Ch. 9)'}</h2>
-                      <p className="text-xs text-slate-300">{batches[0]?.name || 'CPC Morning Batch 03'} · {batches[0]?.students?.length || attendanceList.length || 0} Students · Zoom Primary Stream Connected</p>
+                      <h2 className="text-xl font-extrabold text-white mt-1.5">{sessionBatch.module || sessionBatch.name}</h2>
+                      <p className="text-xs text-slate-300">{sessionBatch.name} · {sessionBatch.students.length} Students</p>
                     </div>
-
                     <div className="flex items-center gap-2 shrink-0">
-                      <button 
+                      <button
                         onClick={() => setActiveNav('attendance')}
-                        className="px-4 py-2.5 rounded-xl bg-[#009688] hover:bg-[#00897b] text-white text-xs font-bold flex items-center gap-2 shadow-sm transition-all hover:scale-[1.02] active:scale-[0.98] cursor-pointer"
+                        className="px-4 py-2.5 rounded-xl bg-[#009688] hover:bg-[#00897b] text-white text-xs font-bold flex items-center gap-2 shadow-sm transition-all cursor-pointer"
                       >
                         <CheckSquare className="w-4 h-4" />
-                        <span>Attendance ({attendanceList.filter(s => s.status === 'Present').length}/{attendanceList.length || (batches[0]?.students?.length || 0)})</span>
+                        <span>Attendance ({attendanceList.filter(s => s.status === 'Present' || s.status === 'Late').length}/{attendanceList.length})</span>
+                      </button>
+                      <button
+                        onClick={() => { setIsLiveClassActive(false); setSessionStartedAt(null); }}
+                        className="px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold cursor-pointer"
+                      >
+                        End Session
                       </button>
                     </div>
                   </div>
 
-                  {/* Classroom Layout: Presentation Slide Canvas + Live Doubt Stream */}
                   <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                    
-                    {/* Main Presentation Board (8 cols) */}
                     <div className="lg:col-span-8 space-y-4">
-                      
-                      <ZoomMeeting
-                        link={batches[0]?.zoomLink || batches[0]?.link || import.meta.env.VITE_ZOOM_MEETING_LINK || 'https://zoom.us/j/84366394686?pwd=7Pgqkoyz1uUSk7Rl-6hCiN7BygDQ0je.1'}
-                        userName={trainerName}
-                        topic={batches[0]?.module || 'Module 1 — Anatomy & Digestive System'}
-                        batchName={batches[0]?.name || 'AMCT - Advanced Medical Coding'}
-                        studentsCount={batches[0]?.students?.length || attendanceList.length || 0}
-                        isTrainerHost={true}
-                        onSendLinkToStudents={handleSendBatchClassLink}
-                        onStartMeeting={() => {
-                          setDemoToast('🚀 Live meeting started! Students can now join.');
-                          setTimeout(() => setDemoToast(null), 4000);
-                        }}
-                      />
+                      {classMeetingUrl ? (
+                        <ZoomMeeting
+                          link={classMeetingUrl}
+                          userName={trainerName}
+                          topic={sessionBatch.module || sessionBatch.name}
+                          batchName={sessionBatch.name}
+                          studentsCount={sessionBatch.students.length}
+                          isTrainerHost={true}
+                          onSendLinkToStudents={handleSendBatchClassLink}
+                          onStartMeeting={() => flashDemoToast('🚀 Live meeting started! Students can now join.', 4000)}
+                        />
+                      ) : (
+                        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5 text-xs text-amber-900">
+                          No class Zoom link is configured for you. Ask the admin to set <strong>Class Zoom Link</strong> on your trainer profile.
+                        </div>
+                      )}
 
-                      <div className="bg-slate-900 rounded-2xl border border-slate-800 p-6 min-h-[440px] flex flex-col justify-between text-white relative shadow-lg">
-                        
-                        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-                          <div className="text-xs font-bold text-teal-300">
-                            Digestive System v3.pptx · Slide {activeBoardSlide} of 4 (CPT 43000 – 49999)
+                      <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-sm space-y-3">
+                        <div className="text-xs font-bold text-slate-900">Session materials</div>
+                        {materialsForBatch(sessionBatch.name).length === 0 ? (
+                          <div className="py-6 text-center text-xs text-slate-400">No materials assigned to {sessionBatch.name}. Assign PPTs / PDFs from Library & Materials.</div>
+                        ) : (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                            {materialsForBatch(sessionBatch.name).map(m => (
+                              <a key={m._id} href={trainingMaterialFileUrl(m._id)} target="_blank" rel="noreferrer" className="p-3 rounded-xl border border-slate-200 hover:border-teal-400 flex items-center gap-3 text-xs">
+                                <span className="w-9 h-9 rounded-lg bg-teal-50 text-teal-700 flex items-center justify-center font-bold text-[10px] shrink-0">{m.fileFormat}</span>
+                                <span className="min-w-0">
+                                  <span className="block font-bold text-slate-900 truncate">{m.title}</span>
+                                  <span className="block text-[10px] text-slate-500 truncate">{m.category}</span>
+                                </span>
+                              </a>
+                            ))}
                           </div>
-                          <div className="flex items-center gap-2">
-                            <button 
-                              onClick={() => setActiveBoardSlide(Math.max(1, activeBoardSlide - 1))}
-                              className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-xs font-bold"
-                            >
-                              ‹ Prev
-                            </button>
-                            <span className="text-xs text-slate-400 font-mono">{activeBoardSlide}/4</span>
-                            <button 
-                              onClick={() => setActiveBoardSlide(Math.min(4, activeBoardSlide + 1))}
-                              className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-xs font-bold"
-                            >
-                              Next ›
-                            </button>
-                          </div>
-                        </div>
-
-                        {/* Interactive Slide Content */}
-                        <div className="my-auto py-6">
-                          {activeBoardSlide === 1 && (
-                            <div className="space-y-4">
-                              <span className="px-2.5 py-1 rounded bg-teal-500/20 text-teal-300 text-[11px] font-mono font-bold">
-                                SLIDE 1: UPPER GI ENDOSCOPY (EGD)
-                              </span>
-                              <h3 className="text-2xl font-bold text-white">CPT 43235 vs 43239 — Biopsy Distinction</h3>
-                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
-                                <div className="p-4 rounded-xl bg-slate-800/80 border border-teal-500/30">
-                                  <div className="text-xs font-bold text-teal-300">CPT 43235 (Diagnostic)</div>
-                                  <p className="text-xs text-slate-300 mt-1 leading-relaxed">
-                                    Esophagogastroduodenoscopy, flexible, transoral; diagnostic, including specimen brushing/washing.
-                                  </p>
-                                </div>
-                                <div className="p-4 rounded-xl bg-slate-800/80 border border-teal-500/30">
-                                  <div className="text-xs font-bold text-teal-300">CPT 43239 (With Biopsy)</div>
-                                  <p className="text-xs text-slate-300 mt-1 leading-relaxed">
-                                    EGD with biopsy, single or multiple. Never bill 43235 with 43239; diagnostic is bundled into surgical biopsy.
-                                  </p>
-                                </div>
-                              </div>
-                            </div>
-                          )}
-
-                          {activeBoardSlide === 2 && (
-                            <div className="space-y-4">
-                              <span className="px-2.5 py-1 rounded bg-amber-500/20 text-amber-300 text-[11px] font-mono font-bold">
-                                SLIDE 2: LOWER GI — COLONOSCOPY SCOPE DEPTH
-                              </span>
-                              <h3 className="text-2xl font-bold text-white">Extent of Scope Determines Coding</h3>
-                              <ul className="space-y-2 text-xs text-slate-300 list-disc pl-5">
-                                <li><strong className="text-white">Anoscopy (46600):</strong> Examines anal canal only.</li>
-                                <li><strong className="text-white">Sigmoidoscopy (45330):</strong> Scope extends past splenic flexure to descending/sigmoid colon.</li>
-                                <li><strong className="text-white">Colonoscopy (45378):</strong> Scope reaches the cecum or terminal ileum. If cecum not reached, append Modifier 53 or 52.</li>
-                              </ul>
-                            </div>
-                          )}
-
-                          {activeBoardSlide === 3 && (
-                            <div className="space-y-4">
-                              <span className="px-2.5 py-1 rounded bg-purple-500/20 text-purple-300 text-[11px] font-mono font-bold">
-                                SLIDE 3: MULTIPLE POLYPECTOMY TECHNIQUES
-                              </span>
-                              <h3 className="text-2xl font-bold text-white">Different Polypectomies at Same Session</h3>
-                              <div className="p-4 rounded-xl bg-purple-900/30 border border-purple-500/40 text-xs text-slate-200">
-                                <strong>AAPC Rule:</strong> If cold biopsy forceps (45380) is used in ascending colon AND snare technique (45385) is used in descending colon, both are billed!
-                                Append <strong>Modifier 59</strong> or <strong>XS</strong> to code 45380 to indicate separate anatomical sites.
-                              </div>
-                            </div>
-                          )}
-
-                          {activeBoardSlide === 4 && (
-                            <div className="space-y-4 text-center">
-                              <span className="px-3 py-1 rounded-full bg-emerald-500/20 text-emerald-300 text-xs font-bold">
-                                LIVE POP QUIZ FOR BATCH 03
-                              </span>
-                              <h3 className="text-xl font-bold text-white mt-2">
-                                A physician performs an EGD with hot biopsy of a gastric polyp and snare polypectomy of a duodenal polyp. Which codes apply?
-                              </h3>
-                              <div className="inline-block text-left p-4 rounded-xl bg-slate-800 text-xs text-slate-300 mt-2 space-y-1">
-                                <div>A) 43239 only</div>
-                                <div className="text-emerald-400 font-bold">B) 43251 and 43250-59 (Correct!)</div>
-                                <div>C) 43235 and 43251</div>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Bottom Status Indicator */}
-                        <div className="flex items-center justify-between text-[11px] text-slate-400 border-t border-slate-800 pt-3">
-                          <span>Live Attendees: {attendanceList.filter(s => s.status === 'Present').length}/{attendanceList.length || (batches[0]?.students?.length || 0)} present</span>
-                          <button
-                            onClick={() => setIsLiveClassActive(false)}
-                            className="text-teal-300 hover:underline"
-                          >
-                            ‹ Back to Session Setup
-                          </button>
-                        </div>
-
+                        )}
                       </div>
-
                     </div>
 
-                    {/* Live Doubt & Chat Box (4 cols) */}
                     <div className="lg:col-span-4 bg-white rounded-2xl border border-slate-200/90 p-5 shadow-sm flex flex-col justify-between h-[480px]">
                       <div>
                         <div className="flex items-center justify-between pb-3 border-b border-slate-100">
                           <div className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
                             <MessageSquare className="w-4 h-4 text-[#00897b]" />
-                            <span>Live Session Questions</span>
+                            <span>Session Notes</span>
                           </div>
                           {classChat.length > 0 && (
-                            <span className="text-[10px] bg-teal-50 text-teal-700 px-2 py-0.5 rounded-full font-bold">
-                              {classChat.length} {classChat.length === 1 ? 'Message' : 'Messages'}
-                            </span>
+                            <span className="text-[10px] bg-teal-50 text-teal-700 px-2 py-0.5 rounded-full font-bold">{classChat.length}</span>
                           )}
                         </div>
-
-                        {/* Chat Stream */}
                         <div className="space-y-3 mt-3 overflow-y-auto max-h-[340px] pr-1">
                           {classChat.length === 0 ? (
-                            <div className="py-16 text-center text-xs text-slate-400">
-                              No live class messages yet. Chat and questions from students will appear here.
-                            </div>
+                            <div className="py-16 text-center text-xs text-slate-400">Notes you add during this session appear here.</div>
                           ) : (
                             classChat.map(item => (
                               <div key={item.id} className="p-2.5 rounded-xl bg-slate-50 border border-slate-100 text-xs space-y-1">
@@ -1670,27 +1669,18 @@ export default function TrainingDepartmentDashboard({
                           )}
                         </div>
                       </div>
-
-                      {/* Reply Input Form */}
                       <form onSubmit={handleSendClassChat} className="mt-3 pt-3 border-t border-slate-100 flex gap-2">
                         <input
                           type="text"
                           value={classChatMsg}
                           onChange={(e) => setClassChatMsg(e.target.value)}
-                          placeholder="Type explanation to class..."
+                          placeholder="Add a session note..."
                           className="flex-1 px-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:border-teal-500"
                         />
-                        <button
-                          type="submit"
-                          className="px-3.5 py-2 rounded-xl bg-[#009688] hover:bg-[#00897b] text-white text-xs font-bold shrink-0"
-                        >
-                          Send
-                        </button>
+                        <button type="submit" className="px-3.5 py-2 rounded-xl bg-[#009688] hover:bg-[#00897b] text-white text-xs font-bold shrink-0">Add</button>
                       </form>
                     </div>
-
                   </div>
-
                 </div>
               )}
             </div>
@@ -1699,38 +1689,31 @@ export default function TrainingDepartmentDashboard({
           {/* ================= TAB 3: ATTENDANCE ================= */}
           {activeNav === 'attendance' && (
             <div className="space-y-6 max-w-[1280px]">
-              
-              {/* Toast when TF_STORE updates */}
-              {tfStoreSyncToast && (
-                <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold flex items-center justify-between animate-fadeIn">
-                  <span>✓ Record saved to shared student record (TF_STORE). Synced with Student LMS & Leadership Hub.</span>
-                  <span className="text-[10px] text-emerald-600 font-mono font-bold">TF_STORE SYNCED</span>
+              {attendanceSavedToast && (
+                <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold animate-fadeIn">
+                  {attendanceSavedToast}
                 </div>
               )}
 
-              {/* Exact Live Attendance Card matching screenshot */}
               <div className="bg-white rounded-3xl p-7 border border-slate-200/90 shadow-sm space-y-4">
                 <div className="flex items-center justify-between flex-wrap gap-3">
                   <div className="flex items-center gap-2.5">
-                    <div className="w-5 h-5 rounded-md bg-[#22c55e] text-white flex items-center justify-center text-xs font-black shadow-sm">
-                      ✓
-                    </div>
-                    <h2 className="text-base font-bold text-slate-900 tracking-tight">
-                      Live Attendance
-                    </h2>
+                    <div className="w-5 h-5 rounded-md bg-[#22c55e] text-white flex items-center justify-center text-xs font-black shadow-sm">✓</div>
+                    <h2 className="text-base font-bold text-slate-900 tracking-tight">Live Attendance · {new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</h2>
                   </div>
-
-                  {/* Switcher to load or unload spine roster */}
-                  {/* Action buttons */}
                   <div className="flex items-center gap-2">
+                    {batches.length > 1 && (
+                      <select
+                        value={attendanceBatch?.id || ''}
+                        onChange={(e) => setAttendanceBatchId(e.target.value)}
+                        className="px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-semibold bg-white"
+                      >
+                        {batches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                      </select>
+                    )}
                     {attendanceList.length > 0 && (
                       <button
-                        onClick={() => {
-                          setAttendanceList(prev => prev.map(s => {
-                            syncToTfStore(s.roll, 'Present');
-                            return { ...s, status: 'Present' };
-                          }));
-                        }}
+                        onClick={() => saveAttendanceMarks(Object.fromEntries(attendanceList.map(s => [s.roll, 'Present'])))}
                         className="px-3.5 py-1.5 rounded-xl bg-[#009688] hover:bg-[#00897b] text-white text-xs font-bold shadow-sm transition-all active:scale-[0.98]"
                       >
                         Mark All Present
@@ -1740,34 +1723,28 @@ export default function TrainingDepartmentDashboard({
                 </div>
 
                 <p className="text-xs text-slate-600 font-medium leading-relaxed">
-                  Mark today's class. This updates the student's own dashboard <strong className="font-bold text-slate-900">and</strong> the dropout–risk view for the Branch Manager & Operational Head — instantly.
+                  Mark today's class. Each mark is saved to the student record and recalculates attendance % on the student's dashboard, the HR's student CRM and the Leadership dropout-risk view. HR is alerted automatically when a student drops below 75%.
                 </p>
-
-                <div className="p-3.5 rounded-2xl bg-[#f7fafb] border border-[#e5eef2] flex items-center gap-2.5 text-xs text-[#527482]">
-                  <span className="text-sm shrink-0">🔗</span>
-                  <span>Connected: every mark writes to the shared student record (TF_STORE). One source of truth across all roles.</span>
-                </div>
 
                 {attendanceList.length === 0 ? (
                   <div className="py-12 text-center text-xs text-slate-500 font-medium">
-                    No students currently enrolled in this batch roster.
+                    No students allocated to you yet.
                   </div>
                 ) : (
-                  /* POPULATED SPINE ROSTER TABLE */
                   <div className="pt-2 space-y-4 animate-fadeIn">
                     <div className="flex items-center justify-between text-xs text-slate-500 pb-1 border-b border-slate-100">
-                      <span className="font-bold text-slate-800">{batches[0]?.name || 'CPC Morning Batch 03'} · {attendanceList.length} Students</span>
-                      <span>Session: {batches[0]?.module || 'Anatomy — Digestive System'} · {batches[0]?.timing || '7:00 AM – 9:00 AM'}</span>
+                      <span className="font-bold text-slate-800">{attendanceBatch?.name} · {attendanceList.length} Students</span>
+                      <span>{[attendanceBatch?.module, attendanceBatch?.timing].filter(Boolean).join(' · ')}</span>
                     </div>
 
                     <div className="overflow-x-auto rounded-xl border border-slate-100">
                       <table className="w-full text-left text-xs border-collapse">
                         <thead>
                           <tr className="bg-slate-50 text-slate-500 border-b border-slate-200 uppercase tracking-wider text-[10px]">
-                            <th className="py-3 px-4 font-bold">Roll ID</th>
+                            <th className="py-3 px-4 font-bold">Student ID</th>
                             <th className="py-3 px-4 font-bold">Student Name</th>
                             <th className="py-3 px-4 font-bold">Cumulative Attendance</th>
-                            <th className="py-3 px-4 font-bold">Live Class Status</th>
+                            <th className="py-3 px-4 font-bold">Today</th>
                             <th className="py-3 px-4 font-bold text-right">Quick Mark</th>
                           </tr>
                         </thead>
@@ -1777,47 +1754,32 @@ export default function TrainingDepartmentDashboard({
                               <td className="py-3 px-4 font-mono font-bold text-slate-900">{s.roll}</td>
                               <td className="py-3 px-4 font-bold text-slate-900">{s.name}</td>
                               <td className="py-3 px-4">
-                                <span className={`font-bold ${s.attendancePct < 75 ? 'text-rose-600' : 'text-emerald-600'}`}>
-                                  {s.attendancePct}%
-                                </span>
+                                {s.attendancePct === null ? (
+                                  <span className="text-slate-400">—</span>
+                                ) : (
+                                  <span className={`font-bold ${s.attendancePct < 75 ? 'text-rose-600' : 'text-emerald-600'}`}>{s.attendancePct}%</span>
+                                )}
                               </td>
                               <td className="py-3 px-4">
                                 <span className={`inline-flex px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
                                   s.status === 'Present' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' :
                                   s.status === 'Late' ? 'bg-amber-50 text-amber-700 border border-amber-200' :
-                                  'bg-rose-50 text-rose-700 border border-rose-200'
+                                  s.status === 'Absent' ? 'bg-rose-50 text-rose-700 border border-rose-200' :
+                                  'bg-slate-50 text-slate-500 border border-slate-200'
                                 }`}>
                                   {s.status}
                                 </span>
                               </td>
                               <td className="py-3 px-4 text-right space-x-1.5">
-                                <button
-                                  onClick={() => {
-                                    setAttendanceList(prev => prev.map(item => item.id === s.id ? { ...item, status: 'Present' } : item));
-                                    syncToTfStore(s.roll, 'Present');
-                                  }}
-                                  className="px-2.5 py-1 rounded-md bg-slate-100 hover:bg-emerald-100 hover:text-emerald-800 text-[10px] font-bold transition-all"
-                                >
-                                  P
-                                </button>
-                                <button
-                                  onClick={() => {
-                                    setAttendanceList(prev => prev.map(item => item.id === s.id ? { ...item, status: 'Late' } : item));
-                                    syncToTfStore(s.roll, 'Late');
-                                  }}
-                                  className="px-2.5 py-1 rounded-md bg-slate-100 hover:bg-amber-100 hover:text-amber-800 text-[10px] font-bold transition-all"
-                                >
-                                  L
-                                </button>
-                                <button
-                                  onClick={() => {
-                                    setAttendanceList(prev => prev.map(item => item.id === s.id ? { ...item, status: 'Absent' } : item));
-                                    syncToTfStore(s.roll, 'Absent');
-                                  }}
-                                  className="px-2.5 py-1 rounded-md bg-slate-100 hover:bg-rose-100 hover:text-rose-800 text-[10px] font-bold transition-all"
-                                >
-                                  A
-                                </button>
+                                {[['Present', 'P', 'hover:bg-emerald-100 hover:text-emerald-800'], ['Late', 'L', 'hover:bg-amber-100 hover:text-amber-800'], ['Absent', 'A', 'hover:bg-rose-100 hover:text-rose-800']].map(([status, label, cls]) => (
+                                  <button
+                                    key={status}
+                                    onClick={() => saveAttendanceMarks({ [s.roll]: status })}
+                                    className={`px-2.5 py-1 rounded-md text-[10px] font-bold transition-all ${s.status === status ? 'bg-slate-800 text-white' : `bg-slate-100 ${cls}`}`}
+                                  >
+                                    {label}
+                                  </button>
+                                ))}
                               </td>
                             </tr>
                           ))}
@@ -1827,7 +1789,6 @@ export default function TrainingDepartmentDashboard({
                   </div>
                 )}
               </div>
-
             </div>
           )}
 
@@ -1884,10 +1845,10 @@ export default function TrainingDepartmentDashboard({
                             {alert.course}
                           </div>
                           <div className="text-[11px] text-slate-600 font-medium">
-                            Phone: <span className="font-mono font-bold text-slate-800">{alert.phone}</span> · Slot: <span className="font-bold text-slate-800">{alert.time || alert.timeSlot || 'Today'}</span>
+                            Phone: <span className="font-mono font-bold text-slate-800">{alert.phone}</span> · Slot: <span className="font-bold text-slate-800">{[alert.preferredDate, alert.timeSlot || alert.time].filter(Boolean).join(' ') || '—'}</span>
                           </div>
                           <div className="text-[11px] text-slate-500">
-                            Mode: {alert.mode || 'Online'} · Language: {alert.language || 'Tamil'}
+                            Mode: {alert.mode || '—'} · Language: {alert.language || '—'}{alert.bookedBy ? ` · Booked by ${alert.bookedBy}` : ''}
                           </div>
                           {alert.trainerMapping && (
                             <div className="text-[10.5px] text-slate-500 italic bg-slate-50 p-2 rounded-lg border border-slate-100">
@@ -1950,34 +1911,38 @@ export default function TrainingDepartmentDashboard({
                   </div>
                 ) : (
                   <div className="pt-2 space-y-4 animate-fadeIn">
-                    <div className="p-4 rounded-xl bg-teal-50/70 border border-teal-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-bold text-slate-900">
-                            {(myExpertDemos[0] || demos[0])?.course || 'CPC Intensive Medical Coding'}
-                          </span>
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-teal-100 text-teal-800 border border-teal-200">
-                            {(myExpertDemos[0] || demos[0])?.time || 'Scheduled Today'}
-                          </span>
+                    {(() => {
+                      const upcoming = myExpertDemos
+                        .filter(d => lc(d.status) === 'confirmed' && (!d.trainerId || d.trainerId === trainerId))
+                        .sort((x, y) => String(x.preferredDate).localeCompare(String(y.preferredDate)))[0];
+                      if (!upcoming) return null;
+                      return (
+                        <div className="p-4 rounded-xl bg-teal-50/70 border border-teal-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-bold text-slate-900">Next confirmed demo · {upcoming.candidateName}</span>
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-teal-100 text-teal-800 border border-teal-200">
+                                {[upcoming.preferredDate, upcoming.timeSlot].filter(Boolean).join(' ')}
+                              </span>
+                            </div>
+                            <div className="text-xs text-slate-600 mt-1">{upcoming.course}{upcoming.mode ? ` · ${upcoming.mode}` : ''}</div>
+                          </div>
+                          <button
+                            onClick={() => handleJoinDemo(upcoming)}
+                            className="px-4 py-2 rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white text-xs font-bold shadow-sm shrink-0 flex items-center gap-1.5 cursor-pointer"
+                          >
+                            <Play className="w-3.5 h-3.5 fill-current" />
+                            <span>Start Demo (Zoom)</span>
+                          </button>
                         </div>
-                        <div className="text-xs text-slate-600 mt-1">
-                          {myExpertDemos.length} candidate demo session(s) allocated to your faculty desk · Zoom Room 2 Ready
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => setActiveNav('session_room')}
-                        className="px-4 py-2 rounded-xl bg-[#00897b] hover:bg-[#00897b] text-white text-xs font-bold shadow-sm shrink-0 flex items-center gap-1.5 cursor-pointer"
-                      >
-                        <Play className="w-3.5 h-3.5 fill-current" />
-                        <span>Start Demo Session</span>
-                      </button>
-                    </div>
+                      );
+                    })()}
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3.5 pt-2">
                       {myExpertDemos.map((lead, idx) => (
                         <div key={lead._id || lead.id || idx} className="p-4 rounded-xl border border-slate-200/90 bg-white hover:border-teal-400/80 transition-all text-xs space-y-2.5 shadow-2xs">
                           <div className="flex items-center justify-between">
-                            <span className="font-extrabold text-slate-900 text-[13px]">{lead.candidateName || lead.name || `Candidate #${idx + 1}`}</span>
+                            <span className="font-extrabold text-slate-900 text-[13px]">{lead.candidateName}</span>
                             <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-md ${
                               lead.status?.toLowerCase() === 'attended' ? 'bg-emerald-100 text-emerald-800' :
                               lead.status?.toLowerCase() === 'missed' ? 'bg-rose-100 text-rose-800' :
@@ -1993,12 +1958,14 @@ export default function TrainingDepartmentDashboard({
                           <div className="text-[11px] text-slate-500 font-medium">
                             <div>📞 <span className="font-mono text-slate-700">{lead.phone}</span></div>
                             {lead.email && <div>✉️ <span className="text-slate-700">{lead.email}</span></div>}
-                            <div>🕒 {lead.time || lead.timeSlot || 'Today'} · {lead.mode || 'Online'}</div>
+                            <div>🕒 {[lead.preferredDate, lead.timeSlot || lead.time].filter(Boolean).join(' ') || '—'}{lead.mode ? ` · ${lead.mode}` : ''}</div>
+                            {lead.language && <div>🗣 {lead.language}{lead.location ? ` · ${lead.location}` : ''}</div>}
+                            {lead.bookedBy && <div>👤 Booked by {lead.bookedBy}</div>}
                           </div>
 
                           <div className="text-[10.5px] text-emerald-800 font-semibold bg-emerald-50/70 p-2 rounded-lg border border-emerald-100 flex items-center gap-1">
                             <span>🎯</span>
-                            <span>Assigned SME: <strong className="text-slate-900">{lead.trainer}</strong></span>
+                            <span>Assigned trainer: <strong className="text-slate-900">{lead.trainer || 'Awaiting acceptance'}</strong></span>
                           </div>
 
                           {/* Multi-Condition Notification Audit Badge */}
@@ -2014,7 +1981,7 @@ export default function TrainingDepartmentDashboard({
                               <div className="text-[9.5px] text-emerald-700 flex items-center gap-1.5 flex-wrap font-semibold">
                                 <span>✓ Experienced</span>
                                 <span>•</span>
-                                <span>✓ In Shift ({lead.shiftTiming || 'Morning'})</span>
+                                <span>✓ In Shift{lead.shiftTiming ? ` (${lead.shiftTiming})` : ''}</span>
                                 <span>•</span>
                                 <span>✓ No Class Conflict</span>
                               </div>
@@ -2034,10 +2001,25 @@ export default function TrainingDepartmentDashboard({
                             </div>
                           )}
 
-                          {lead.status?.toLowerCase() === 'attended' ? (
+                          {lc(lead.status) === 'attended' ? (
                             <div className="mt-1 py-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] font-bold text-center">
                               ✓ Demo Completed
                             </div>
+                          ) : lc(lead.status) === 'missed' ? (
+                            <div className="mt-1 py-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-[11px] font-bold text-center">
+                              No-show · HR notified to reschedule
+                            </div>
+                          ) : (lead.trainerId && lead.trainerId !== trainerId && lc(lead.status) === 'confirmed') ? (
+                            <div className="mt-1 py-2 rounded-lg bg-slate-50 border border-slate-200 text-slate-600 text-[11px] font-bold text-center">
+                              Accepted by {lead.trainer}
+                            </div>
+                          ) : lc(lead.status) === 'booked' ? (
+                            <button
+                              onClick={() => handleAcknowledgeDemo(lead._id)}
+                              className="w-full py-2 rounded-lg bg-[#00897b] hover:bg-[#00796b] text-white text-[11px] font-bold cursor-pointer"
+                            >
+                              Accept Demo Slot
+                            </button>
                           ) : (
                             <>
                           <div className="flex gap-1.5">
@@ -2051,7 +2033,7 @@ export default function TrainingDepartmentDashboard({
                               onClick={() => handleEmailDemoLink(lead)}
                               className="flex-1 py-1.5 rounded-lg bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-200 text-[10.5px] font-bold transition-colors cursor-pointer text-center"
                             >
-                              ✉️ Email Link to Student
+                              ✉️ Email Link
                             </button>
                             <button
                               onClick={() => handleSendDemoLink(lead)}
@@ -2064,30 +2046,16 @@ export default function TrainingDepartmentDashboard({
 
                           <div className="flex gap-1.5 pt-1.5 border-t border-slate-100">
                             <button
-                              onClick={async () => {
-                                try {
-                                  if (lead._id) await updateDemo(lead._id, { status: 'Attended' });
-                                } catch (e) { console.warn(e); }
-                                setDemos(prev => prev.map(l => (l._id === lead._id || l.candidateName === lead.candidateName) ? { ...l, status: 'Attended' } : l));
-                                setDemoToast(`✓ Marked demo for ${lead.candidateName} as Attended!`);
-                                setTimeout(() => setDemoToast(null), 3000);
-                              }}
+                              onClick={() => setDemoOutcome(lead, 'attended')}
                               className="flex-1 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-[10.5px] font-bold transition-colors cursor-pointer text-center"
                             >
                               Attended
                             </button>
                             <button
-                              onClick={async () => {
-                                try {
-                                  if (lead._id) await updateDemo(lead._id, { status: 'Missed' });
-                                } catch (e) { console.warn(e); }
-                                setDemos(prev => prev.map(l => (l._id === lead._id || l.candidateName === lead.candidateName) ? { ...l, status: 'Missed' } : l));
-                                setDemoToast(`Marked demo for ${lead.candidateName} as Missed`);
-                                setTimeout(() => setDemoToast(null), 3000);
-                              }}
+                              onClick={() => setDemoOutcome(lead, 'missed')}
                               className="flex-1 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-200 text-[10.5px] font-bold transition-colors cursor-pointer text-center"
                             >
-                              Missed
+                              No-show
                             </button>
                           </div>
                             </>
@@ -2099,98 +2067,61 @@ export default function TrainingDepartmentDashboard({
                 )}
               </div>
 
-              {/* Card 3: Academy Course-to-Faculty Expert Directory */}
+              {/* Card 3: Trainer roster (live from Trainer Settings) */}
               <div className="bg-white rounded-2xl p-6 sm:p-7 border border-slate-200/90 shadow-sm space-y-4">
                 <div className="flex items-center justify-between pb-1">
                   <div>
                     <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
-                      <span>🎓</span> Course Expert Faculty Routing Roster
+                      <span>🎓</span> Demo Routing Roster
                     </h3>
                     <p className="text-xs text-slate-500 font-medium mt-0.5">
-                      The automated engine assigns incoming candidate demos to these designated experts and alerts them first.
+                      Live trainer roster. A demo is routed to trainers matching the student's language and branch who are in shift and free at the slot.
                     </p>
                   </div>
                   <span className="text-xs font-bold px-3 py-1 rounded-full bg-slate-100 text-slate-700">
-                    8 Faculty Experts
+                    {trainerRoster.filter(t => t.active !== false).length} active trainers
                   </span>
                 </div>
 
-                <div className="overflow-x-auto rounded-xl border border-slate-100">
-                  <table className="w-full text-left text-xs border-collapse">
-                    <thead>
-                      <tr className="bg-slate-50 text-slate-500 border-b border-slate-200 uppercase tracking-wider text-[10px]">
-                        <th className="py-3 px-4 font-bold">Course / Certification</th>
-                        <th className="py-3 px-4 font-bold">Designated Faculty SME</th>
-                        <th className="py-3 px-4 font-bold">Faculty ID & Shift</th>
-                        <th className="py-3 px-4 font-bold">Core Specialization</th>
-                        <th className="py-3 px-4 font-bold text-right">Notification Order</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 text-slate-700 font-medium">
-                      <tr className="hover:bg-teal-50/40 transition-colors">
-                        <td className="py-3 px-4 font-bold text-slate-900">CPC — Medical Coding</td>
-                        <td className="py-3 px-4 font-bold text-[#00897b]">{trainerName}</td>
-                        <td className="py-3 px-4 font-mono text-slate-500">{trainerId} · {trainerShift}</td>
-                        <td className="py-3 px-4">Anatomy, ICD-10-CM & CPT Surgery</td>
-                        <td className="py-3 px-4 text-right">
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">1st Priority (You)</span>
-                        </td>
-                      </tr>
-                      <tr className="hover:bg-teal-50/40 transition-colors">
-                        <td className="py-3 px-4 font-bold text-slate-900">CIC — Inpatient Coding</td>
-                        <td className="py-3 px-4 font-bold text-[#00897b]">Priyadharshini K.</td>
-                        <td className="py-3 px-4 font-mono text-slate-500">TR-CBG-002 · 9 AM – 5 PM</td>
-                        <td className="py-3 px-4">Inpatient Hospital, ICD-10-PCS & IPDRG</td>
-                        <td className="py-3 px-4 text-right">
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">1st Priority</span>
-                        </td>
-                      </tr>
-                      <tr className="hover:bg-teal-50/40 transition-colors">
-                        <td className="py-3 px-4 font-bold text-slate-900">CPB — Medical Billing & RCM</td>
-                        <td className="py-3 px-4 font-bold text-[#00897b]">Suresh Babu</td>
-                        <td className="py-3 px-4 font-mono text-slate-500">TR-CBG-003 · 8 AM – 4 PM</td>
-                        <td className="py-3 px-4">US Healthcare RCM, Hospital Claims & Billing</td>
-                        <td className="py-3 px-4 text-right">
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">1st Priority</span>
-                        </td>
-                      </tr>
-                      <tr className="hover:bg-teal-50/40 transition-colors">
-                        <td className="py-3 px-4 font-bold text-slate-900">CPMA — Medical Auditing</td>
-                        <td className="py-3 px-4 font-bold text-[#00897b]">Manjunath R.</td>
-                        <td className="py-3 px-4 font-mono text-slate-500">TR-CBG-004 · 10 AM – 6 PM</td>
-                        <td className="py-3 px-4">Chart Auditing, Compliance & AAPC Guidelines</td>
-                        <td className="py-3 px-4 text-right">
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">1st Priority</span>
-                        </td>
-                      </tr>
-                      <tr className="hover:bg-teal-50/40 transition-colors">
-                        <td className="py-3 px-4 font-bold text-slate-900">CCS — Coding Specialist</td>
-                        <td className="py-3 px-4 font-bold text-[#00897b]">Karthik V.</td>
-                        <td className="py-3 px-4 font-mono text-slate-500">TR-ACAD-002 · 9 AM – 5 PM</td>
-                        <td className="py-3 px-4">AHIMA Inpatient/Outpatient Hospital Coding</td>
-                        <td className="py-3 px-4 text-right">
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">1st Priority</span>
-                        </td>
-                      </tr>
-                      <tr className="hover:bg-teal-50/40 transition-colors">
-                        <td className="py-3 px-4 font-bold text-slate-900">CRC / COC — Risk & Outpatient</td>
-                        <td className="py-3 px-4 font-bold text-[#00897b]">Dr. Vikram C.</td>
-                        <td className="py-3 px-4 font-mono text-slate-500">TR-ACAD-001 · 7 AM – 3 PM</td>
-                        <td className="py-3 px-4">HCC Risk Adjustment & Outpatient Surgery</td>
-                        <td className="py-3 px-4 text-right">
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">1st Priority</span>
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
+                {trainerRoster.length === 0 ? (
+                  <div className="py-6 text-center text-xs text-slate-400">No trainers configured in Trainer Settings yet.</div>
+                ) : (
+                  <div className="overflow-x-auto rounded-xl border border-slate-100">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead>
+                        <tr className="bg-slate-50 text-slate-500 border-b border-slate-200 uppercase tracking-wider text-[10px]">
+                          <th className="py-3 px-4 font-bold">Trainer</th>
+                          <th className="py-3 px-4 font-bold">Course</th>
+                          <th className="py-3 px-4 font-bold">Branch & Shift</th>
+                          <th className="py-3 px-4 font-bold">Languages</th>
+                          <th className="py-3 px-4 font-bold text-right">Demo status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 text-slate-700 font-medium">
+                        {trainerRoster.map(t => (
+                          <tr key={t.trainerId} className={`hover:bg-teal-50/40 transition-colors ${t.trainerId === trainerId ? 'bg-teal-50/50' : ''}`}>
+                            <td className="py-3 px-4 font-bold text-[#00897b]">{t.trainerName}{t.trainerId === trainerId ? ' (You)' : ''}<div className="font-mono text-[10px] text-slate-400">{t.trainerId}</div></td>
+                            <td className="py-3 px-4">{t.expertCourse || t.courseKey || '—'}</td>
+                            <td className="py-3 px-4">{[t.branchName, t.shift].filter(Boolean).join(' · ') || '—'}</td>
+                            <td className="py-3 px-4">{(t.languages || []).join(', ') || '—'}</td>
+                            <td className="py-3 px-4 text-right">
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${t.active === false ? 'bg-slate-100 text-slate-500' : 'bg-emerald-100 text-emerald-800'}`}>
+                                {t.active === false ? 'Inactive' : 'Receives demos'}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
 
               {/* Card 3: This Month (Metrics Table) */}
               <div className="bg-white rounded-2xl p-6 sm:p-7 border border-slate-200/90 shadow-sm space-y-4">
                 <div className="flex items-center justify-between pb-1">
                   <h3 className="text-base font-bold text-slate-900">
-                    This Month
+                    This Month · {monthLabel}
                   </h3>
                   <button
                     onClick={() => setShowConversionModal(true)}
@@ -2202,25 +2133,18 @@ export default function TrainingDepartmentDashboard({
                 </div>
 
                 <div className="divide-y divide-slate-100 text-xs">
-                  <div className="py-3.5 flex items-center justify-between">
-                    <span className="text-slate-500 font-medium">Demos assigned</span>
-                    <span className="font-bold text-slate-900 text-sm">{demos.length}</span>
-                  </div>
-
-                  <div className="py-3.5 flex items-center justify-between">
-                    <span className="text-slate-500 font-medium">Completed</span>
-                    <span className="font-bold text-slate-900 text-sm">{demos.filter(d => d.status === 'Attended' || d.status === 'confirmed').length}</span>
-                  </div>
-
-                  <div className="py-3.5 flex items-center justify-between">
-                    <span className="text-slate-500 font-medium">Leads attended</span>
-                    <span className="font-bold text-slate-900 text-sm">{demos.filter(d => d.status === 'Attended' || d.status === 'confirmed').length + leads.filter(l => l.status === 'demo_attended').length}</span>
-                  </div>
-
-                  <div className="py-3.5 flex items-center justify-between">
-                    <span className="text-slate-500 font-medium">Students joined</span>
-                    <span className="font-bold text-slate-900 text-sm">{students.length}</span>
-                  </div>
+                  {[
+                    ['Demos routed to you', myMonthDemos.length],
+                    ['Accepted', myMonthDemos.filter(d => ['confirmed', 'attended', 'missed'].includes(lc(d.status)) && d.trainerId === trainerId).length],
+                    ['Completed (attended)', myMonthDemos.filter(isAttended).length],
+                    ['No-shows', myMonthDemos.filter(d => lc(d.status) === 'missed').length],
+                    ['Admissions from your demos', convertedStudents.filter(st => String(st.createdAt || '').slice(0, 7) === monthKey).length]
+                  ].map(([label, value]) => (
+                    <div key={label} className="py-3.5 flex items-center justify-between">
+                      <span className="text-slate-500 font-medium">{label}</span>
+                      <span className="font-bold text-slate-900 text-sm">{value}</span>
+                    </div>
+                  ))}
                 </div>
               </div>
 
@@ -2400,10 +2324,10 @@ export default function TrainingDepartmentDashboard({
 
                 <div className="bg-[#2f2e5f] border border-[#3e3d79] rounded-2xl px-7 py-4 text-left md:text-right shrink-0 min-w-[150px]">
                   <div className="text-3xl sm:text-4xl font-black text-white tracking-tight">
-                    ₹{scorecardMetrics.variablePay.toLocaleString()}
+                    {scorecardMetrics.payBase > 0 ? `₹${scorecardMetrics.variablePay.toLocaleString()}` : '—'}
                   </div>
                   <div className="text-[10px] sm:text-[11px] font-bold tracking-[0.18em] text-slate-400 uppercase mt-1">
-                    VARIABLE PAY
+                    {scorecardMetrics.payBase > 0 ? 'VARIABLE PAY' : 'PAY NOT CONFIGURED'}
                   </div>
                 </div>
               </div>
@@ -2493,7 +2417,9 @@ export default function TrainingDepartmentDashboard({
                 </div>
 
                 <p className="text-xs text-slate-500 font-normal leading-relaxed">
-                  Quality score × ₹3,000 = your variable pay. Gates: attendance ≥75% AND assessments on schedule.
+                  {scorecardMetrics.payBase > 0
+                    ? `Quality score × ₹${scorecardMetrics.payBase.toLocaleString()} = your variable pay. Gate: batch attendance ≥75%.`
+                    : 'Variable pay base is not configured on your trainer profile yet (admin → Trainer Settings).'} Buckets marked N/A have no data source yet and are excluded from the score.
                 </p>
 
                 {/* Quality Buckets Table */}
@@ -2538,7 +2464,7 @@ export default function TrainingDepartmentDashboard({
                       VARIABLE PAY (rounded)
                     </div>
                     <div className="text-2xl sm:text-3xl font-black text-slate-900">
-                      ₹{scorecardMetrics.variablePay.toLocaleString()}
+                      {scorecardMetrics.payBase > 0 ? `₹${scorecardMetrics.variablePay.toLocaleString()}` : '—'}
                     </div>
                   </div>
                 </div>
@@ -2564,7 +2490,7 @@ export default function TrainingDepartmentDashboard({
                 </div>
 
                 <p className="text-xs text-slate-300 font-normal leading-relaxed">
-                  Every cash–earning event lands here. Rows are dynamically generated from verified student course enrollments and completed demo sessions.
+                  Demos you delivered this month and admissions that came from your demos (matched on the candidate's phone / email).{!incentivesConfigured && ' Incentive rates are not configured on your trainer profile yet — amounts show ₹0 until admin sets them.'}
                 </p>
               </div>
 
@@ -2714,7 +2640,7 @@ export default function TrainingDepartmentDashboard({
                               {batch.name}
                             </div>
                             <div className="text-xs text-slate-500 font-medium mt-0.5 truncate">
-                              {batch.module || 'Core Module'} · {batch.timing} · {batch.mode}
+                              {[batch.course, batch.module, batch.timing, batch.mode].filter(Boolean).join(' · ')}
                             </div>
                           </div>
                         </div>
@@ -2738,13 +2664,13 @@ export default function TrainingDepartmentDashboard({
                               <div key={s._id || s.studentId || idx} className="p-2.5 rounded-xl bg-white border border-slate-200/70 flex items-center justify-between shadow-none">
                                 <div>
                                   <div className="font-bold text-slate-900">{s.name}</div>
-                                  <div className="text-[11px] text-slate-400 font-mono">{s.studentId || `TF-${idx + 101}`} · {s.syllabusModule || batch.module || 'Core'}</div>
+                                  <div className="text-[11px] text-slate-400 font-mono">{studentKeyOf(s)}{s.syllabusModule ? ` · ${s.syllabusModule}` : ''}</div>
                                 </div>
                                 <div className="text-right">
                                   <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                    (s.attendancePct != null && s.attendancePct < 75) ? 'bg-rose-50 text-rose-700 border border-rose-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                    typeof s.attendancePct !== 'number' ? 'bg-slate-50 text-slate-500 border border-slate-200' : s.attendancePct < 75 ? 'bg-rose-50 text-rose-700 border border-rose-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
                                   }`}>
-                                    {s.attendancePct != null ? s.attendancePct : 0}%
+                                    {typeof s.attendancePct === 'number' ? `${s.attendancePct}%` : 'No classes yet'}
                                   </span>
                                 </div>
                               </div>
@@ -2794,69 +2720,61 @@ export default function TrainingDepartmentDashboard({
 
                 {/* Real Students Rows */}
                 <div className="space-y-3">
+                  {myStudents.length === 0 && (
+                    <div className="py-8 text-center text-xs text-slate-500">No students allocated to you yet. HR allocates students from the Handover Desk.</div>
+                  )}
                   {myStudents.map((student) => {
-                    const isWeak = student.statusGroup === 'on_hold' || (student.attendancePct && student.attendancePct < 80) || student.mockInterview === 'Pending';
+                    const weakInfo = weakStudents.find(w => w.id === (student._id || studentKeyOf(student)));
+                    const isWeak = Boolean(weakInfo);
                     const sId = student._id || student.studentId;
-                    const isSent = cccpSentStudents[sId] || student.placementStatus === 'Referred to CCCP' || student.syllabusCompleted;
-                    const rollText = `${student.studentId || 'TF-STD'} · ${student.course || 'CPC'} · ${student.syllabusModule || 'Core Syllabus'}`;
+                    const isSent = student.syllabusCompleted;
+                    const rollText = [student.studentId, student.course, student.batchName, student.syllabusModule].filter(Boolean).join(' · ');
                     return (
                       <div
                         key={sId}
                         className="rounded-2xl border border-slate-200/90 p-4 sm:p-4.5 flex items-center justify-between hover:border-slate-300 transition-all bg-white shadow-none group"
                       >
                         <div className="flex items-center gap-3 sm:gap-4 min-w-0">
-                          {/* Icon container */}
                           <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-sm shrink-0 ${
                             isWeak ? 'bg-[#f8fafc] text-slate-500 border border-slate-200/70' : 'bg-[#f1f5f9] text-slate-700'
                           }`}>
-                            {isWeak ? (
-                              <span className="text-sm font-bold text-slate-500">⚠</span>
-                            ) : (
-                              <span className="text-base">🎓</span>
-                            )}
+                            {isWeak ? <span className="text-sm font-bold text-slate-500">⚠</span> : <span className="text-base">🎓</span>}
                           </div>
-
-                          {/* Student Info */}
                           <div className="min-w-0">
                             <div className="flex items-center gap-2">
-                              <span className="text-sm font-bold text-slate-900 group-hover:text-teal-700 transition-colors truncate">
-                                {student.name}
-                              </span>
-                              {isWeak && (
-                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#fee2e2] text-[#dc2626]">
-                                  weak
-                                </span>
-                              )}
+                              <span className="text-sm font-bold text-slate-900 group-hover:text-teal-700 transition-colors truncate">{student.name}</span>
+                              {isWeak && <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#fee2e2] text-[#dc2626]">weak</span>}
                             </div>
-                            <div className="text-xs text-slate-400 font-mono mt-0.5 truncate">
-                              {rollText}
+                            <div className="text-xs text-slate-400 font-mono mt-0.5 truncate">{rollText}</div>
+                            <div className="text-[11px] text-slate-500 mt-0.5 truncate">
+                              {[
+                                typeof student.attendancePct === 'number' ? `Attendance ${student.attendancePct}%` : null,
+                                typeof student.assessmentScore === 'number' ? `Tests ${student.assessmentScore}%` : null,
+                                student.hrName ? `HR: ${student.hrName}` : null
+                              ].filter(Boolean).join(' · ')}
                             </div>
+                            {student.trainerNote && (
+                              <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1 mt-1.5">HR note: {student.trainerNote}</div>
+                            )}
                           </div>
                         </div>
 
-                        {/* Right Action Button */}
                         <div className="shrink-0 ml-3">
                           <button
+                            disabled={isSent}
                             onClick={async () => {
-                              setCccpSentStudents(prev => ({ ...prev, [sId]: true }));
                               try {
-                                if (student._id) {
-                                  await updateStudent(student._id, {
-                                    readinessScore: 95,
-                                    placementStatus: 'Referred to CCCP',
-                                    syllabusCompleted: true
-                                  });
-                                }
+                                const updated = await markSyllabusComplete(sId, { trainerId, trainerName });
+                                setStudents(prev => prev.map(x => x._id === updated._id ? { ...x, ...updated } : x));
+                                setCccpToast(`${student.name} marked syllabus complete → sent to CCCP · ${student.hrName || 'HR'} notified.`);
                               } catch (e) {
-                                console.warn('CCCP referral error', e);
+                                setCccpToast(`Could not update ${student.name}: ${e?.response?.data?.error || e.message}`);
                               }
-                              setStudents(prev => prev.map(s => s._id === student._id ? { ...s, readinessScore: 95, placementStatus: 'Referred to CCCP', syllabusCompleted: true } : s));
-                              setCccpToast(`${student.name} marked syllabus complete → Pushed to CCCP for placement & HR notified.`);
                               setTimeout(() => setCccpToast(null), 4000);
                             }}
                             className={`px-4 py-2 rounded-full text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm active:scale-[0.98] ${
                               isSent
-                                ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                ? 'bg-emerald-100 text-emerald-800 border border-emerald-300 cursor-default'
                                 : 'bg-[#064e3b] hover:bg-[#065f46] text-[#34d399]'
                             }`}
                           >
@@ -2936,6 +2854,9 @@ export default function TrainingDepartmentDashboard({
                             <div className="text-xs text-slate-500 font-medium mt-0.5 truncate">
                               {student.issue}
                             </div>
+                            {student.lastAction && (
+                              <div className="text-[11px] text-teal-700 mt-0.5 truncate">✓ {student.lastAction.action.replace('_', ' ')} · {new Date(student.lastAction.at).toLocaleDateString('en-IN')}</div>
+                            )}
                           </div>
                         </div>
 
@@ -2956,10 +2877,10 @@ export default function TrainingDepartmentDashboard({
 
               {/* Bottom Footnote Line */}
               <div className="text-xs text-slate-500 font-medium px-1 leading-relaxed">
-                Auto-flagged when: attendance &lt;80%, test &lt;60%, 2+ missed classes, assignments skipped, or 3+ doubts on one topic. Take action early — ignored weak students become drop-outs.
+                Auto-flagged from real records: attendance &lt;80%, test average &lt;60%, or enrollment on hold. Every action you log is saved on the student and sent to their HR.
               </div>
 
-              {/* Interactive Action Modal */}
+              {/* Interactive Action Modal — every action is saved on the student and sent to their HR */}
               {activeWeakStudentModal && (
                 <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
                   <div className="bg-white rounded-3xl p-6 sm:p-7 max-w-md w-full shadow-2xl border border-slate-200 space-y-4 animate-scaleUp">
@@ -2968,69 +2889,60 @@ export default function TrainingDepartmentDashboard({
                         <span className="text-base">⚠️</span>
                         <h3 className="font-bold text-slate-900 text-sm">Remedial Action Plan</h3>
                       </div>
-                      <button
-                        onClick={() => setActiveWeakStudentModal(null)}
-                        className="text-slate-400 hover:text-slate-600 font-bold text-lg"
-                      >
-                        ✕
-                      </button>
+                      <button onClick={() => setActiveWeakStudentModal(null)} className="text-slate-400 hover:text-slate-600 font-bold text-lg">✕</button>
                     </div>
 
                     <div>
                       <div className="font-bold text-slate-900 text-base">{activeWeakStudentModal.name}</div>
                       <div className="text-xs text-slate-500">{activeWeakStudentModal.batch}</div>
-                      <div className="mt-2 p-2.5 rounded-xl bg-rose-50 text-rose-800 text-xs font-medium border border-rose-100">
-                        {activeWeakStudentModal.issue}
-                      </div>
+                      <div className="mt-2 p-2.5 rounded-xl bg-rose-50 text-rose-800 text-xs font-medium border border-rose-100">{activeWeakStudentModal.issue}</div>
+                      {activeWeakStudentModal.lastAction && (
+                        <div className="mt-2 text-[11px] text-slate-500">
+                          Last action: <strong>{activeWeakStudentModal.lastAction.action}</strong>{activeWeakStudentModal.lastAction.note ? ` — ${activeWeakStudentModal.lastAction.note}` : ''} ({new Date(activeWeakStudentModal.lastAction.at).toLocaleDateString('en-IN')})
+                        </div>
+                      )}
                     </div>
 
                     <div className="space-y-2 text-xs">
-                      <div className="font-bold text-slate-700">Choose Remedial Intervention:</div>
-                      
-                      <button
-                        onClick={() => {
-                          setWeakStudentToast(`1-on-1 modifier drill scheduled for ${activeWeakStudentModal.name} this Saturday 10:00 AM.`);
-                          setActiveWeakStudentModal(null);
-                          setTimeout(() => setWeakStudentToast(null), 4000);
-                        }}
-                        className="w-full text-left p-3 rounded-xl border border-slate-200 hover:border-teal-500 hover:bg-teal-50/50 transition-all font-semibold text-slate-800 flex items-center justify-between group"
-                      >
-                        <span>📅 Schedule 1-on-1 Remedial Call</span>
-                        <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-teal-600" />
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          setWeakStudentToast(`Shared recorded revision lecture & practice quiz with ${activeWeakStudentModal.name}.`);
-                          setActiveWeakStudentModal(null);
-                          setTimeout(() => setWeakStudentToast(null), 4000);
-                        }}
-                        className="w-full text-left p-3 rounded-xl border border-slate-200 hover:border-teal-500 hover:bg-teal-50/50 transition-all font-semibold text-slate-800 flex items-center justify-between group"
-                      >
-                        <span>📹 Share Video Lecture + Practice Quiz</span>
-                        <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-teal-600" />
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          setWeakStudentToast(`Notified Branch Academic Mentor & Counselor for ${activeWeakStudentModal.name}.`);
-                          setActiveWeakStudentModal(null);
-                          setTimeout(() => setWeakStudentToast(null), 4000);
-                        }}
-                        className="w-full text-left p-3 rounded-xl border border-slate-200 hover:border-teal-500 hover:bg-teal-50/50 transition-all font-semibold text-slate-800 flex items-center justify-between group"
-                      >
-                        <span>📞 Escalate to Branch Mentor for Counseling</span>
-                        <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-teal-600" />
-                      </button>
+                      <label className="font-bold text-slate-700 block">Details (date/time, topic, what was shared):</label>
+                      <textarea
+                        rows={2}
+                        value={remedialNote}
+                        onChange={(e) => setRemedialNote(e.target.value)}
+                        placeholder="e.g. 1-on-1 on modifiers, Sat 10 AM"
+                        className="w-full p-2.5 rounded-xl border border-slate-200 text-xs focus:outline-none focus:border-teal-500"
+                      />
+                      <div className="font-bold text-slate-700 pt-1">Choose Remedial Intervention:</div>
+                      {[
+                        ['remedial_call', '📅 Schedule 1-on-1 Remedial Session'],
+                        ['shared_material', '📹 Share Revision Material + Practice Quiz'],
+                        ['escalate', '📞 Escalate to HR / Branch Mentor for Counselling']
+                      ].map(([action, label]) => (
+                        <button
+                          key={action}
+                          onClick={async () => {
+                            const target = activeWeakStudentModal;
+                            try {
+                              const updated = await logRemedialAction(target.realId, { action, note: remedialNote.trim() || label.replace(/^\S+\s/, ''), trainerName });
+                              setStudents(prev => prev.map(x => x._id === updated._id ? { ...x, ...updated } : x));
+                              setWeakStudentToast(`${label.replace(/^\S+\s/, '')} logged for ${target.name} · HR notified.`);
+                            } catch (e) {
+                              setWeakStudentToast(`Could not save action: ${e?.response?.data?.error || e.message}`);
+                            }
+                            setRemedialNote('');
+                            setActiveWeakStudentModal(null);
+                            setTimeout(() => setWeakStudentToast(null), 4000);
+                          }}
+                          className="w-full text-left p-3 rounded-xl border border-slate-200 hover:border-teal-500 hover:bg-teal-50/50 transition-all font-semibold text-slate-800 flex items-center justify-between group"
+                        >
+                          <span>{label}</span>
+                          <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-teal-600" />
+                        </button>
+                      ))}
                     </div>
 
                     <div className="pt-2">
-                      <button
-                        onClick={() => setActiveWeakStudentModal(null)}
-                        className="w-full py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-all"
-                      >
-                        Close
-                      </button>
+                      <button onClick={() => setActiveWeakStudentModal(null)} className="w-full py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-all">Close</button>
                     </div>
                   </div>
                 </div>
@@ -3040,10 +2952,54 @@ export default function TrainingDepartmentDashboard({
           )}
 
           {/* ================= TAB: ASSESSMENTS ================= */}
-          {activeNav === 'assessments' && (
+          {activeNav === 'assessments' && (() => {
+            const scoresOf = (t) => assessmentScores[t.id] || {};
+            const hasScores = (t) => Object.keys(scoresOf(t)).length > 0;
+            const activeTests = assessmentTests.filter(t => !hasScores(t) && t.date >= todayKey);
+            const pendingTests = assessmentTests.filter(t => !hasScores(t) && t.date < todayKey);
+            const scoredTests = assessmentTests.filter(hasScores);
+            const studentsForTest = (t) => {
+              const inBatch = myStudents.filter(st => (st.batchName || st.course) === t.batch);
+              return inBatch.length ? inBatch : myStudents;
+            };
+            const nameOf = (key) => students.find(st => studentKeyOf(st) === key || st._id === key)?.name || key;
+            const testCard = (test) => (
+              <div key={test.id} className="bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-7 shadow-sm space-y-4 transition-all">
+                <div className="flex items-center justify-between pb-1">
+                  <div>
+                    <h3 className="text-sm sm:text-base font-bold text-slate-900">{test.name}</h3>
+                    <p className="text-xs text-slate-500 font-medium mt-0.5">{[test.type, test.batch, test.topic].filter(Boolean).join(' · ')}</p>
+                  </div>
+                  <span className={`px-3 py-1 rounded-full text-xs font-bold border ${test.date < todayKey ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-[#ecfdf5] text-[#059669] border-emerald-200'}`}>
+                    {test.date < todayKey ? 'Awaiting scores' : 'Upcoming'}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
+                  {[['DATE', test.date], ['TIME LIMIT', test.timeLimit], ['TOTAL / PASS', `${test.totalMarks} / ${test.passMark}`], ['STUDENTS', studentsForTest(test).length]].map(([k, v]) => (
+                    <div key={k} className="bg-slate-50/70 rounded-2xl border border-slate-200/80 p-3 sm:p-3.5">
+                      <div className="text-[10px] tracking-wider uppercase font-bold text-slate-400">{k}</div>
+                      <div className="text-sm sm:text-base font-bold text-slate-900 font-mono mt-0.5">{v}</div>
+                    </div>
+                  ))}
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                  <button
+                    onClick={() => setActiveScoreModalTest({ id: test.id, title: test.name, max: test.totalMarks, pass: test.passMark, batch: test.batch, test })}
+                    className="bg-[#009688] hover:bg-[#00897b] text-white text-xs sm:text-sm font-bold py-3 rounded-2xl transition-all text-center shadow-sm active:scale-[0.98]"
+                  >
+                    Enter Scores
+                  </button>
+                  <button
+                    onClick={() => setActiveRationaleModalTest({ id: test.id, title: test.name })}
+                    className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs sm:text-sm font-bold py-3 rounded-2xl transition-all text-center shadow-sm active:scale-[0.98]"
+                  >
+                    {rationaleTexts[test.id] ? 'Edit Rationale' : 'Add Rationale'}
+                  </button>
+                </div>
+              </div>
+            );
+            return (
             <div className="space-y-4 max-w-[1280px] animate-fadeIn">
-
-              {/* Toast Notification */}
               {assessmentToast && (
                 <div className="p-3.5 rounded-2xl bg-[#0c1921] text-white text-xs font-semibold flex items-center justify-between shadow-lg animate-fadeIn border border-[#1b3446]">
                   <div className="flex items-center gap-2">
@@ -3054,178 +3010,96 @@ export default function TrainingDepartmentDashboard({
                 </div>
               )}
 
-              {/* 1. Top Card: Assessment Desk */}
               <div className="bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-7 shadow-sm space-y-4">
                 <div className="flex items-center justify-between flex-wrap gap-3 pb-1">
                   <div className="flex items-center gap-2.5">
                     <span className="text-base">📊</span>
                     <h2 className="text-sm sm:text-base font-bold text-slate-900">Assessment Desk</h2>
                   </div>
-
                   <button
-                    onClick={() => setShowCreateTestModal(true)}
-                    className="px-4 py-2 rounded-xl bg-[#0c1921] hover:bg-[#152a36] text-white text-xs font-bold transition-all shadow-sm active:scale-[0.98]"
+                    onClick={() => {
+                      setNewTestForm({ ...emptyTestForm(), batch: batches[0]?.name || '', course: batches[0]?.course || '' });
+                      setShowCreateTestModal(true);
+                    }}
+                    disabled={batches.length === 0}
+                    className="px-4 py-2 rounded-xl bg-[#0c1921] hover:bg-[#152a36] disabled:opacity-40 text-white text-xs font-bold transition-all shadow-sm active:scale-[0.98]"
                   >
                     + Create Test
                   </button>
                 </div>
-
-                {/* Filter Tabs */}
                 <div className="flex items-center gap-2 flex-wrap text-xs">
-                  <button
-                    onClick={() => setActiveAssessmentTab('active')}
-                    className={`px-3.5 py-1.5 rounded-full font-semibold transition-all flex items-center gap-2 ${
-                      activeAssessmentTab === 'active'
-                        ? 'bg-[#0c1921] text-white shadow-sm'
-                        : 'bg-slate-50 hover:bg-slate-100 text-slate-600 border border-slate-200/80'
-                    }`}
-                  >
-                    <span>Active Tests</span>
-                    <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold ${
-                      activeAssessmentTab === 'active' ? 'bg-slate-800 text-white' : 'bg-slate-200 text-slate-700'
-                    }`}>
-                      {assessmentTests.filter(t => t.status === 'Active').length}
-                    </span>
-                  </button>
-
-                  <button
-                    onClick={() => setActiveAssessmentTab('pending')}
-                    className={`px-3.5 py-1.5 rounded-full font-semibold transition-all flex items-center gap-2 ${
-                      activeAssessmentTab === 'pending'
-                        ? 'bg-[#0c1921] text-white shadow-sm'
-                        : 'bg-slate-50 hover:bg-slate-100 text-slate-600 border border-slate-200/80'
-                    }`}
-                  >
-                    <span>Pending Review</span>
-                    <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold ${
-                      activeAssessmentTab === 'pending' ? 'bg-slate-800 text-white' : 'bg-slate-200 text-slate-700'
-                    }`}>
-                      0
-                    </span>
-                  </button>
-
-                  <button
-                    onClick={() => setActiveAssessmentTab('results')}
-                    className={`px-3.5 py-1.5 rounded-full font-semibold transition-all flex items-center gap-2 ${
-                      activeAssessmentTab === 'results'
-                        ? 'bg-[#0c1921] text-white shadow-sm'
-                        : 'bg-slate-50 hover:bg-slate-100 text-slate-600 border border-slate-200/80'
-                    }`}
-                  >
-                    <span>Results & Weak Topics</span>
-                    <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold ${
-                      activeAssessmentTab === 'results' ? 'bg-slate-800 text-white' : 'bg-slate-200 text-slate-700'
-                    }`}>
-                      {Object.keys(assessmentScores).length}
-                    </span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Active Tests List */}
-              {activeAssessmentTab === 'active' && (
-                <div className="space-y-4">
-                  {assessmentTests.filter(t => t.status === 'Active').map((test) => (
-                    <div key={test.id} className="bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-7 shadow-sm space-y-4 transition-all">
-                      <div className="flex items-center justify-between pb-1">
-                        <div>
-                          <h3 className="text-sm sm:text-base font-bold text-slate-900">
-                            {test.name}
-                          </h3>
-                          <p className="text-xs text-slate-500 font-medium mt-0.5">
-                            {test.type} · {test.batch} · {test.topic}
-                          </p>
-                        </div>
-
-                        <span className="px-3 py-1 rounded-full text-xs font-bold bg-[#ecfdf5] text-[#059669] border border-emerald-200">
-                          {test.status}
-                        </span>
-                      </div>
-
-                      {/* 4 Stat Boxes */}
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
-                        <div className="bg-slate-50/70 rounded-2xl border border-slate-200/80 p-3 sm:p-3.5">
-                          <div className="text-[10px] tracking-wider uppercase font-bold text-slate-400">DATE</div>
-                          <div className="text-sm sm:text-base font-bold text-slate-900 font-mono mt-0.5">{test.date}</div>
-                        </div>
-
-                        <div className="bg-slate-50/70 rounded-2xl border border-slate-200/80 p-3 sm:p-3.5">
-                          <div className="text-[10px] tracking-wider uppercase font-bold text-slate-400">TIME LIMIT</div>
-                          <div className="text-sm sm:text-base font-bold text-slate-900 mt-0.5">{test.timeLimit}</div>
-                        </div>
-
-                        <div className="bg-slate-50/70 rounded-2xl border border-slate-200/80 p-3 sm:p-3.5">
-                          <div className="text-[10px] tracking-wider uppercase font-bold text-slate-400">TOTAL / PASS</div>
-                          <div className="text-sm sm:text-base font-bold text-slate-900 font-mono mt-0.5">{test.totalMarks} / {test.passMark}</div>
-                        </div>
-
-                        <div className="bg-slate-50/70 rounded-2xl border border-slate-200/80 p-3 sm:p-3.5">
-                          <div className="text-[10px] tracking-wider uppercase font-bold text-slate-400">STUDENTS</div>
-                          <div className="text-sm sm:text-base font-bold text-slate-900 font-mono mt-0.5">{test.studentsCount || 3}</div>
-                        </div>
-                      </div>
-
-                      {/* Action Buttons Row */}
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                        <button
-                          onClick={() => setActiveScoreModalTest({ id: test.id, title: test.name, max: test.totalMarks, pass: test.passMark })}
-                          className="bg-[#009688] hover:bg-[#00897b] text-white text-xs sm:text-sm font-bold py-3 rounded-2xl transition-all text-center shadow-sm active:scale-[0.98]"
-                        >
-                          Enter Scores
-                        </button>
-
-                        <button
-                          onClick={() => setActiveRationaleModalTest({ id: test.id, title: test.name })}
-                          className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs sm:text-sm font-bold py-3 rounded-2xl transition-all text-center shadow-sm active:scale-[0.98]"
-                        >
-                          Add Rationale
-                        </button>
-                      </div>
-                    </div>
+                  {[['active', 'Upcoming Tests', activeTests.length], ['pending', 'Pending Scores', pendingTests.length], ['results', 'Results & Weak Topics', scoredTests.length]].map(([key, label, count]) => (
+                    <button
+                      key={key}
+                      onClick={() => setActiveAssessmentTab(key)}
+                      className={`px-3.5 py-1.5 rounded-full font-semibold transition-all flex items-center gap-2 ${
+                        activeAssessmentTab === key ? 'bg-[#0c1921] text-white shadow-sm' : 'bg-slate-50 hover:bg-slate-100 text-slate-600 border border-slate-200/80'
+                      }`}
+                    >
+                      <span>{label}</span>
+                      <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold ${activeAssessmentTab === key ? 'bg-slate-800 text-white' : 'bg-slate-200 text-slate-700'}`}>{count}</span>
+                    </button>
                   ))}
                 </div>
-              )}
-
-              {/* Pending Review Tab */}
-              {activeAssessmentTab === 'pending' && (
-                <div className="bg-white rounded-3xl border border-slate-200/90 p-8 text-center shadow-sm space-y-2">
-                  <div className="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mx-auto text-xl font-bold">
-                    📝
-                  </div>
-                  <h3 className="text-sm font-bold text-slate-900">All Tests Reviewed</h3>
-                  <p className="text-xs text-slate-500 max-w-sm mx-auto">No tests currently pending faculty review or grading verification.</p>
-                </div>
-              )}
-
-              {/* Results & Weak Topics Tab */}
-              {activeAssessmentTab === 'results' && (
-                <div className="bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-7 shadow-sm space-y-4">
-                  <h3 className="text-sm font-bold text-slate-900">Historical Batch Performance & Weak Topic Analysis</h3>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200/80 space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-bold text-slate-800">E/M Coding Weekly Test</span>
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">Weak Area Detected</span>
-                      </div>
-                      <p className="text-xs text-slate-500">Modifier 25 & MDM Risk calculation flagged 1 student below pass mark (Arjun R: 24/50).</p>
-                    </div>
-                    <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200/80 space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-bold text-slate-800">CPC Full Mock Exam</span>
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">Passing Average</span>
-                      </div>
-                      <p className="text-xs text-slate-500">Batch average 74.0%. 2 of 3 students cleared AAPC 70% threshold.</p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Bottom Footnote Line */}
-              <div className="text-xs text-slate-500 font-medium px-1 leading-relaxed">
-                Scores below the pass mark auto-tag the test topic as a weak area and flag the student in the Weak Student Tracker. Publishing also feeds each student's assessment average into their Placement Readiness.
               </div>
 
-              {/* 5. Enter Scores Modal */}
+              {activeAssessmentTab === 'active' && (
+                <div className="space-y-4">
+                  {activeTests.length === 0 && <div className="bg-white rounded-3xl border border-slate-200/90 p-8 text-center text-xs text-slate-500">No upcoming tests. Create one for your batch.</div>}
+                  {activeTests.map(testCard)}
+                </div>
+              )}
+
+              {activeAssessmentTab === 'pending' && (
+                <div className="space-y-4">
+                  {pendingTests.length === 0 && <div className="bg-white rounded-3xl border border-slate-200/90 p-8 text-center text-xs text-slate-500">All conducted tests have scores entered.</div>}
+                  {pendingTests.map(testCard)}
+                </div>
+              )}
+
+              {activeAssessmentTab === 'results' && (
+                <div className="bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-7 shadow-sm space-y-4">
+                  <h3 className="text-sm font-bold text-slate-900">Batch Performance & Weak Topic Analysis</h3>
+                  {scoredTests.length === 0 ? (
+                    <div className="py-6 text-center text-xs text-slate-500">No scored tests yet.</div>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {scoredTests.map(t => {
+                        const entries = Object.entries(scoresOf(t));
+                        const avgPct = entries.length && t.totalMarks ? (entries.reduce((a, [, v]) => a + Number(v || 0), 0) / entries.length / t.totalMarks) * 100 : 0;
+                        const below = entries.filter(([, v]) => Number(v) < t.passMark);
+                        return (
+                          <div key={t.id} className="p-4 rounded-2xl bg-slate-50 border border-slate-200/80 space-y-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-xs font-bold text-slate-800">{t.name}</span>
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${below.length ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
+                                {below.length ? 'Weak area detected' : 'All passed'}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-500">
+                              {t.topic ? `${t.topic} · ` : ''}Batch average {avgPct.toFixed(1)}% · {entries.length - below.length} of {entries.length} passed (pass mark {t.passMark}/{t.totalMarks}).
+                            </p>
+                            {below.length > 0 && (
+                              <p className="text-xs text-rose-700">Below pass: {below.map(([k, v]) => `${nameOf(k)} (${v}/${t.totalMarks})`).join(', ')}</p>
+                            )}
+                            <button
+                              onClick={() => setActiveScoreModalTest({ id: t.id, title: t.name, max: t.totalMarks, pass: t.passMark, batch: t.batch, test: t })}
+                              className="text-[11px] font-bold text-[#00897b] hover:underline"
+                            >
+                              Edit scores
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="text-xs text-slate-500 font-medium px-1 leading-relaxed">
+                Publishing scores updates each student's test average and placement readiness on their record — visible to the student, their HR and CCCP. Averages below 60% flag the student in the Weak Student Tracker.
+              </div>
+
               {activeScoreModalTest && (
                 <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
                   <div className="bg-white rounded-3xl p-6 sm:p-7 max-w-md w-full shadow-2xl border border-slate-200 space-y-4 animate-scaleUp">
@@ -3236,448 +3110,267 @@ export default function TrainingDepartmentDashboard({
                       </div>
                       <button onClick={() => setActiveScoreModalTest(null)} className="text-slate-400 hover:text-slate-600 font-bold text-lg">✕</button>
                     </div>
-
                     <div className="space-y-3 max-h-[340px] overflow-y-auto pr-1">
-                      {students.map(st => {
-                        const stKey = st._id || st.studentId;
-                        const score = assessmentScores[activeScoreModalTest.id]?.[stKey] ?? (typeof st.assessmentScore === 'number' ? st.assessmentScore : 0);
-                        const isPass = score >= activeScoreModalTest.pass;
+                      {studentsForTest(activeScoreModalTest.test).length === 0 && <div className="text-xs text-slate-500 text-center py-6">No students in this batch.</div>}
+                      {studentsForTest(activeScoreModalTest.test).map(st => {
+                        const stKey = studentKeyOf(st);
+                        const raw = assessmentScores[activeScoreModalTest.id]?.[stKey];
+                        const hasScore = typeof raw === 'number';
+                        const isPass = hasScore && raw >= activeScoreModalTest.pass;
                         return (
                           <div key={stKey} className="p-3 rounded-2xl bg-slate-50 border border-slate-200/80 flex items-center justify-between">
                             <div>
                               <div className="text-xs font-bold text-slate-900">{st.name}</div>
-                              <div className="text-[10px] text-slate-400 font-mono">{st.studentId || 'TF-STD'} · {st.course}</div>
+                              <div className="text-[10px] text-slate-400 font-mono">{stKey}</div>
                             </div>
                             <div className="flex items-center gap-2">
                               <input
                                 type="number"
                                 min="0"
                                 max={activeScoreModalTest.max}
-                                value={score}
+                                value={hasScore ? raw : ''}
+                                placeholder="—"
                                 onChange={(e) => {
-                                  const val = parseInt(e.target.value) || 0;
-                                  setAssessmentScores(prev => ({
-                                    ...prev,
-                                    [activeScoreModalTest.id]: {
-                                      ...prev[activeScoreModalTest.id],
-                                      [stKey]: val
-                                    }
-                                  }));
+                                  const v = e.target.value;
+                                  setAssessmentScores(prev => {
+                                    const cur = { ...(prev[activeScoreModalTest.id] || {}) };
+                                    if (v === '') delete cur[stKey];
+                                    else cur[stKey] = Math.max(0, Math.min(Number(activeScoreModalTest.max), Number(v)));
+                                    return { ...prev, [activeScoreModalTest.id]: cur };
+                                  });
                                 }}
                                 className="w-16 px-2 py-1 bg-white border border-slate-200 rounded-lg text-xs font-bold text-center"
                               />
-                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                isPass ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-rose-50 text-rose-700 border border-rose-200'
-                              }`}>
-                                {isPass ? 'PASS' : 'FAIL'}
-                              </span>
+                              {hasScore && (
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${isPass ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-rose-50 text-rose-700 border border-rose-200'}`}>
+                                  {isPass ? 'PASS' : 'FAIL'}
+                                </span>
+                              )}
                             </div>
                           </div>
                         );
                       })}
                     </div>
-
                     <div className="pt-2 flex items-center gap-2">
                       <button
                         onClick={async () => {
                           const testId = activeScoreModalTest.id;
                           const currentScores = assessmentScores[testId] || {};
+                          if (!Object.keys(currentScores).length) { setAssessmentToast('Enter at least one score before publishing.'); setTimeout(() => setAssessmentToast(null), 3000); return; }
                           try {
-                            await updateAssessmentScores(testId, currentScores);
+                            const updated = await updateAssessmentScores(testId, currentScores);
+                            setAssessmentTests(prev => prev.map(t => t.id === testId ? { ...t, ...updated } : t));
+                            setAssessmentToast(`Scores published for ${activeScoreModalTest.title} — student averages & readiness updated.`);
+                            setActiveScoreModalTest(null);
                           } catch (e) {
-                            console.warn('updateAssessmentScores API error', e);
+                            setAssessmentToast(`Could not publish scores: ${e?.response?.data?.error || e.message}`);
                           }
-                          setAssessmentToast(`Scores published for ${activeScoreModalTest.title}! Synced to Student Records & Placement Readiness.`);
-                          setActiveScoreModalTest(null);
                           setTimeout(() => setAssessmentToast(null), 4000);
                         }}
                         className="flex-1 py-3 rounded-xl bg-[#009688] hover:bg-[#00897b] text-white text-xs font-bold transition-all shadow-sm"
                       >
                         Publish Scores
                       </button>
-                      <button
-                        onClick={() => setActiveScoreModalTest(null)}
-                        className="px-4 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-all"
-                      >
-                        Cancel
-                      </button>
+                      <button onClick={() => setActiveScoreModalTest(null)} className="px-4 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-all">Cancel</button>
                     </div>
                   </div>
                 </div>
               )}
 
-              {/* 6. Add Rationale Modal */}
               {activeRationaleModalTest && (
                 <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
                   <div className="bg-white rounded-3xl p-6 sm:p-7 max-w-md w-full shadow-2xl border border-slate-200 space-y-4 animate-scaleUp">
                     <div className="flex items-center justify-between border-b border-slate-100 pb-3">
                       <div>
-                        <h3 className="font-bold text-slate-900 text-sm">AAPC Coding Rationale</h3>
+                        <h3 className="font-bold text-slate-900 text-sm">Coding Rationale</h3>
                         <p className="text-xs text-slate-500">{activeRationaleModalTest.title}</p>
                       </div>
                       <button onClick={() => setActiveRationaleModalTest(null)} className="text-slate-400 hover:text-slate-600 font-bold text-lg">✕</button>
                     </div>
-
-                    <div className="space-y-2">
-                      <label className="text-xs font-bold text-slate-700 block">Faculty Rationale & Case Guidelines:</label>
-                      <textarea
-                        rows={4}
-                        value={rationaleTexts[activeRationaleModalTest.id] || ''}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          setRationaleTexts(prev => ({ ...prev, [activeRationaleModalTest.id]: val }));
-                        }}
-                        className="w-full p-3 rounded-xl border border-slate-200 text-xs text-slate-800 leading-relaxed focus:outline-teal-500"
-                        placeholder="Write AAPC coding conventions, guidelines and question breakdown..."
-                      />
-                    </div>
-
+                    <textarea
+                      rows={5}
+                      value={rationaleTexts[activeRationaleModalTest.id] || ''}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setRationaleTexts(prev => ({ ...prev, [activeRationaleModalTest.id]: val }));
+                      }}
+                      className="w-full p-3 rounded-xl border border-slate-200 text-xs text-slate-800 leading-relaxed focus:outline-teal-500"
+                      placeholder="Guidelines and question-wise breakdown for students to review..."
+                    />
                     <div className="pt-2 flex items-center gap-2">
                       <button
                         onClick={async () => {
                           const testId = activeRationaleModalTest.id;
-                          const rationale = rationaleTexts[testId] || '';
                           try {
-                            await updateAssessmentRationale(testId, rationale);
+                            await updateAssessmentRationale(testId, rationaleTexts[testId] || '');
+                            setAssessmentToast(`Rationale saved for ${activeRationaleModalTest.title}.`);
+                            setActiveRationaleModalTest(null);
                           } catch (e) {
-                            console.warn('updateAssessmentRationale API error', e);
+                            setAssessmentToast(`Could not save rationale: ${e?.response?.data?.error || e.message}`);
                           }
-                          setAssessmentToast(`Rationale saved for ${activeRationaleModalTest.title}. Students can view it in their review portal.`);
-                          setActiveRationaleModalTest(null);
                           setTimeout(() => setAssessmentToast(null), 4000);
                         }}
                         className="flex-1 py-3 rounded-xl bg-[#0c1921] hover:bg-[#152a36] text-white text-xs font-bold transition-all shadow-sm"
                       >
                         Save Rationale
                       </button>
-                      <button
-                        onClick={() => setActiveRationaleModalTest(null)}
-                        className="px-4 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-all"
-                      >
-                        Cancel
-                      </button>
+                      <button onClick={() => setActiveRationaleModalTest(null)} className="px-4 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-all">Cancel</button>
                     </div>
                   </div>
                 </div>
               )}
 
-              {/* 7. Create Test Modal with all 9 fields */}
               {showCreateTestModal && (
                 <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn overflow-y-auto">
                   <div className="bg-white rounded-3xl p-6 sm:p-7 max-w-lg w-full shadow-2xl border border-slate-200 space-y-4 animate-scaleUp my-8 max-h-[90vh] overflow-y-auto">
-                    {/* Header */}
                     <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                      <div className="flex items-center gap-2.5">
-                        <span className="w-8 h-8 rounded-xl bg-purple-100 text-purple-700 flex items-center justify-center font-bold text-sm">
-                          ➕
-                        </span>
-                        <div>
-                          <h3 className="font-bold text-slate-900 text-sm sm:text-base">Create Test</h3>
-                          <p className="text-xs text-slate-500">Configure new assessment & assign to batch</p>
-                        </div>
+                      <div>
+                        <h3 className="font-bold text-slate-900 text-sm sm:text-base">Create Test</h3>
+                        <p className="text-xs text-slate-500">Configure a new assessment for one of your batches</p>
                       </div>
-                      <button
-                        onClick={() => setShowCreateTestModal(false)}
-                        className="w-8 h-8 rounded-full hover:bg-slate-100 text-slate-400 hover:text-slate-600 flex items-center justify-center font-bold text-base transition-colors"
-                      >
-                        ✕
-                      </button>
+                      <button onClick={() => setShowCreateTestModal(false)} className="w-8 h-8 rounded-full hover:bg-slate-100 text-slate-400 hover:text-slate-600 flex items-center justify-center font-bold text-base">✕</button>
                     </div>
-
-                    {/* Alert Notice Banner as in prototype */}
-                    <div className="bg-[#1c242c] text-white p-3.5 rounded-2xl text-xs space-y-1.5 shadow-sm border border-slate-700/50">
-                      <div className="flex items-center gap-1.5 font-bold text-purple-300">
-                        <span>➕</span>
-                        <span>Create Test</span>
-                      </div>
-                      <p className="text-slate-300 text-[11px] leading-relaxed">
-                        <strong className="text-white">Fields:</strong> name · type (Daily Quiz / Weekly Test / Module Test / CPC Practice Test ...) · course · batch · topic · date · time limit · total marks · pass mark.
-                      </p>
-                      <p className="text-emerald-400 text-[11px] font-medium pt-0.5">
-                        In the wired build this opens a modal form and the new test lands in Active Tests, ready to assign to a batch.
-                      </p>
-                    </div>
-
-                    {/* 9 Form Fields */}
                     <form
-                      onSubmit={(e) => {
+                      onSubmit={async (e) => {
                         e.preventDefault();
-                        const testTitle = newTestForm.name.trim() || `${newTestForm.type} - ${newTestForm.topic || 'General Drill'}`;
-                        const newTest = {
-                          id: `test-${Date.now()}`,
-                          name: testTitle,
+                        const total = Number(newTestForm.totalMarks);
+                        const pass = Number(newTestForm.passMark);
+                        if (pass > total) { setAssessmentToast('Pass mark cannot exceed total marks.'); setTimeout(() => setAssessmentToast(null), 3000); return; }
+                        const payload = {
+                          name: newTestForm.name.trim(),
                           type: newTestForm.type,
                           course: newTestForm.course,
                           batch: newTestForm.batch,
-                          topic: newTestForm.topic.trim() || 'Comprehensive Curriculum',
-                          date: newTestForm.date || new Date().toISOString().split('T')[0],
-                          timeLimit: newTestForm.timeLimit || '45 min',
-                          totalMarks: Number(newTestForm.totalMarks) || 50,
-                          passMark: Number(newTestForm.passMark) || 30,
-                          studentsCount: students.length || 3,
-                          status: 'Active'
+                          topic: newTestForm.topic.trim(),
+                          date: newTestForm.date,
+                          timeLimit: newTestForm.timeLimit,
+                          totalMarks: total,
+                          passMark: pass,
+                          studentsCount: myStudents.filter(st => (st.batchName || st.course) === newTestForm.batch).length,
+                          trainerId,
+                          trainerName
                         };
-
                         try {
-                          createTrainerAssessment(newTest).catch(e => console.warn(e));
-                        } catch (e) {}
-
-                        const initScores = {};
-                        students.forEach(st => {
-                          initScores[st._id || st.studentId] = 0;
-                        });
-
-                        setAssessmentTests(prev => [newTest, ...prev]);
-                        setAssessmentScores(prev => ({
-                          ...prev,
-                          [newTest.id]: initScores
-                        }));
-                        setRationaleTexts(prev => ({
-                          ...prev,
-                          [newTest.id]: `Faculty AAPC guidelines for ${newTest.name}.`
-                        }));
-
-                        setAssessmentToast(`Test "${testTitle}" created! Landed in Active Tests ready for ${newTestForm.batch}.`);
-                        setShowCreateTestModal(false);
-                        setActiveAssessmentTab('active');
-                        setNewTestForm({
-                          name: '',
-                          type: 'Daily Quiz',
-                          course: 'CPC — Medical Coding',
-                          batch: 'CPC Morning 03',
-                          topic: '',
-                          date: new Date().toISOString().split('T')[0],
-                          timeLimit: '45 min',
-                          totalMarks: 50,
-                          passMark: 30
-                        });
+                          const created = await createTrainerAssessment(payload);
+                          setAssessmentTests(prev => [created, ...prev]);
+                          setAssessmentToast(`Test "${created.name}" created for ${created.batch}.`);
+                          setShowCreateTestModal(false);
+                          setActiveAssessmentTab(created.date < todayKey ? 'pending' : 'active');
+                        } catch (err) {
+                          setAssessmentToast(`Could not create test: ${err?.response?.data?.error || err.message}`);
+                        }
                         setTimeout(() => setAssessmentToast(null), 4500);
                       }}
                       className="space-y-3.5 text-xs"
                     >
-                      {/* 1. Name */}
                       <div>
-                        <label className="font-bold text-slate-700 block mb-1">
-                          1. Test Name <span className="text-rose-500">*</span>
-                        </label>
-                        <input
-                          type="text"
-                          required
-                          value={newTestForm.name}
-                          onChange={(e) => setNewTestForm(prev => ({ ...prev, name: e.target.value }))}
-                          placeholder="e.g. ICD-10-CM Neoplasms Weekly Drill"
-                          className="w-full p-2.5 rounded-xl border border-slate-200 font-medium focus:outline-teal-500 text-xs"
-                        />
+                        <label className="font-bold text-slate-700 block mb-1">Test Name <span className="text-rose-500">*</span></label>
+                        <input type="text" required value={newTestForm.name} onChange={(e) => setNewTestForm(prev => ({ ...prev, name: e.target.value }))} className="w-full p-2.5 rounded-xl border border-slate-200 font-medium focus:outline-teal-500 text-xs" />
                       </div>
-
-                      {/* 2. Type & 3. Course */}
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                         <div>
-                          <label className="font-bold text-slate-700 block mb-1">
-                            2. Type <span className="text-rose-500">*</span>
-                          </label>
-                          <select
-                            value={newTestForm.type}
-                            onChange={(e) => setNewTestForm(prev => ({ ...prev, type: e.target.value }))}
-                            className="w-full p-2.5 rounded-xl border border-slate-200 bg-white font-medium focus:outline-teal-500 text-xs"
-                          >
-                            <option value="Daily Quiz">Daily Quiz</option>
-                            <option value="Weekly Test">Weekly Test</option>
-                            <option value="Module Test">Module Test</option>
-                            <option value="CPC Practice Test">CPC Practice Test</option>
-                            <option value="Full Mock Exam">Full Mock Exam</option>
+                          <label className="font-bold text-slate-700 block mb-1">Type <span className="text-rose-500">*</span></label>
+                          <select value={newTestForm.type} onChange={(e) => setNewTestForm(prev => ({ ...prev, type: e.target.value }))} className="w-full p-2.5 rounded-xl border border-slate-200 bg-white font-medium text-xs">
+                            {['Daily Quiz', 'Weekly Test', 'Module Test', 'Practice Test', 'Full Mock Exam'].map(t => <option key={t} value={t}>{t}</option>)}
                           </select>
                         </div>
-
                         <div>
-                          <label className="font-bold text-slate-700 block mb-1">
-                            3. Course <span className="text-rose-500">*</span>
-                          </label>
+                          <label className="font-bold text-slate-700 block mb-1">Target Batch <span className="text-rose-500">*</span></label>
                           <select
-                            value={newTestForm.course}
-                            onChange={(e) => setNewTestForm(prev => ({ ...prev, course: e.target.value }))}
-                            className="w-full p-2.5 rounded-xl border border-slate-200 bg-white font-medium focus:outline-teal-500 text-xs"
-                          >
-                            <option value="CPC — Medical Coding">CPC — Medical Coding</option>
-                            <option value="CIC — Inpatient Coding">CIC — Inpatient Coding</option>
-                            <option value="CPB — Medical Billing">CPB — Medical Billing</option>
-                            <option value="CPMA — Medical Auditing">CPMA — Medical Auditing</option>
-                          </select>
-                        </div>
-                      </div>
-
-                      {/* 4. Batch & 5. Topic */}
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <div>
-                          <label className="font-bold text-slate-700 block mb-1">
-                            4. Target Batch <span className="text-rose-500">*</span>
-                          </label>
-                          <select
+                            required
                             value={newTestForm.batch}
-                            onChange={(e) => setNewTestForm(prev => ({ ...prev, batch: e.target.value }))}
-                            className="w-full p-2.5 rounded-xl border border-slate-200 bg-white font-medium focus:outline-teal-500 text-xs"
+                            onChange={(e) => {
+                              const b = batches.find(x => x.name === e.target.value);
+                              setNewTestForm(prev => ({ ...prev, batch: e.target.value, course: b?.course || prev.course }));
+                            }}
+                            className="w-full p-2.5 rounded-xl border border-slate-200 bg-white font-medium text-xs"
                           >
-                            <option value="CPC Morning 03">CPC Morning 03 (Active)</option>
-                            <option value="CPC Evening 07">CPC Evening 07 (Active)</option>
-                            <option value="FastTrack CPC 02">FastTrack CPC 02</option>
-                          </select>
-                        </div>
-
-                        <div>
-                          <label className="font-bold text-slate-700 block mb-1">
-                            5. Topic / Guidelines <span className="text-rose-500">*</span>
-                          </label>
-                          <input
-                            type="text"
-                            required
-                            value={newTestForm.topic}
-                            onChange={(e) => setNewTestForm(prev => ({ ...prev, topic: e.target.value }))}
-                            placeholder="e.g. CPT 43000–49999 Digestive"
-                            className="w-full p-2.5 rounded-xl border border-slate-200 font-medium focus:outline-teal-500 text-xs"
-                          />
-                        </div>
-                      </div>
-
-                      {/* 6. Date & 7. Time Limit */}
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <div>
-                          <label className="font-bold text-slate-700 block mb-1">
-                            6. Date <span className="text-rose-500">*</span>
-                          </label>
-                          <input
-                            type="date"
-                            required
-                            value={newTestForm.date}
-                            onChange={(e) => setNewTestForm(prev => ({ ...prev, date: e.target.value }))}
-                            className="w-full p-2.5 rounded-xl border border-slate-200 bg-white font-medium focus:outline-teal-500 text-xs"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="font-bold text-slate-700 block mb-1">
-                            7. Time Limit <span className="text-rose-500">*</span>
-                          </label>
-                          <select
-                            value={newTestForm.timeLimit}
-                            onChange={(e) => setNewTestForm(prev => ({ ...prev, timeLimit: e.target.value }))}
-                            className="w-full p-2.5 rounded-xl border border-slate-200 bg-white font-medium focus:outline-teal-500 text-xs"
-                          >
-                            <option value="15 min">15 min (Flash Quiz)</option>
-                            <option value="30 min">30 min (Daily Drill)</option>
-                            <option value="45 min">45 min (Weekly Test)</option>
-                            <option value="60 min">60 min (Module Test)</option>
-                            <option value="90 min">90 min</option>
-                            <option value="120 min">120 min</option>
-                            <option value="240 min">240 min (CPC Practice Mock)</option>
+                            {batches.map(b => <option key={b.id} value={b.name}>{b.name} ({b.students.length})</option>)}
                           </select>
                         </div>
                       </div>
-
-                      {/* 8. Total Marks & 9. Pass Mark */}
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                         <div>
-                          <label className="font-bold text-slate-700 block mb-1">
-                            8. Total Marks <span className="text-rose-500">*</span>
-                          </label>
-                          <input
-                            type="number"
-                            min="1"
-                            max="200"
-                            required
-                            value={newTestForm.totalMarks}
-                            onChange={(e) => setNewTestForm(prev => ({ ...prev, totalMarks: e.target.value }))}
-                            className="w-full p-2.5 rounded-xl border border-slate-200 font-medium focus:outline-teal-500 text-xs"
-                          />
+                          <label className="font-bold text-slate-700 block mb-1">Course</label>
+                          <select value={newTestForm.course} onChange={(e) => setNewTestForm(prev => ({ ...prev, course: e.target.value }))} className="w-full p-2.5 rounded-xl border border-slate-200 bg-white font-medium text-xs">
+                            {newTestForm.course && !TRAINER_COURSES.some(c => c.label === newTestForm.course) && <option value={newTestForm.course}>{newTestForm.course}</option>}
+                            {TRAINER_COURSES.map(c => <option key={c.key} value={c.label}>{c.label}</option>)}
+                          </select>
                         </div>
-
                         <div>
-                          <label className="font-bold text-slate-700 block mb-1">
-                            9. Pass Mark <span className="text-rose-500">*</span>
-                          </label>
-                          <input
-                            type="number"
-                            min="1"
-                            max="200"
-                            required
-                            value={newTestForm.passMark}
-                            onChange={(e) => setNewTestForm(prev => ({ ...prev, passMark: e.target.value }))}
-                            className="w-full p-2.5 rounded-xl border border-slate-200 font-medium focus:outline-teal-500 text-xs"
-                          />
+                          <label className="font-bold text-slate-700 block mb-1">Topic / Guidelines <span className="text-rose-500">*</span></label>
+                          <input type="text" required value={newTestForm.topic} onChange={(e) => setNewTestForm(prev => ({ ...prev, topic: e.target.value }))} className="w-full p-2.5 rounded-xl border border-slate-200 font-medium text-xs" />
                         </div>
                       </div>
-
-                      {/* Modal Footer Buttons */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="font-bold text-slate-700 block mb-1">Date <span className="text-rose-500">*</span></label>
+                          <input type="date" required value={newTestForm.date} onChange={(e) => setNewTestForm(prev => ({ ...prev, date: e.target.value }))} className="w-full p-2.5 rounded-xl border border-slate-200 bg-white font-medium text-xs" />
+                        </div>
+                        <div>
+                          <label className="font-bold text-slate-700 block mb-1">Time Limit <span className="text-rose-500">*</span></label>
+                          <select value={newTestForm.timeLimit} onChange={(e) => setNewTestForm(prev => ({ ...prev, timeLimit: e.target.value }))} className="w-full p-2.5 rounded-xl border border-slate-200 bg-white font-medium text-xs">
+                            {['15 min', '30 min', '45 min', '60 min', '90 min', '120 min', '240 min'].map(t => <option key={t} value={t}>{t}</option>)}
+                          </select>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="font-bold text-slate-700 block mb-1">Total Marks <span className="text-rose-500">*</span></label>
+                          <input type="number" min="1" max="500" required value={newTestForm.totalMarks} onChange={(e) => setNewTestForm(prev => ({ ...prev, totalMarks: e.target.value }))} className="w-full p-2.5 rounded-xl border border-slate-200 font-medium text-xs" />
+                        </div>
+                        <div>
+                          <label className="font-bold text-slate-700 block mb-1">Pass Mark <span className="text-rose-500">*</span></label>
+                          <input type="number" min="1" max="500" required value={newTestForm.passMark} onChange={(e) => setNewTestForm(prev => ({ ...prev, passMark: e.target.value }))} className="w-full p-2.5 rounded-xl border border-slate-200 font-medium text-xs" />
+                        </div>
+                      </div>
                       <div className="pt-3 flex items-center gap-2">
-                        <button
-                          type="submit"
-                          className="flex-1 py-3 rounded-xl bg-[#009688] hover:bg-[#00897b] text-white text-xs font-bold transition-all shadow-sm active:scale-[0.98]"
-                        >
-                          Create & Land in Active Tests
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setShowCreateTestModal(false)}
-                          className="px-5 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-all"
-                        >
-                          Cancel
-                        </button>
+                        <button type="submit" className="flex-1 py-3 rounded-xl bg-[#009688] hover:bg-[#00897b] text-white text-xs font-bold transition-all shadow-sm active:scale-[0.98]">Create Test</button>
+                        <button type="button" onClick={() => setShowCreateTestModal(false)} className="px-5 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-all">Cancel</button>
                       </div>
                     </form>
                   </div>
                 </div>
               )}
-
             </div>
-          )}
+            );
+          })()}
 
           {/* ================= TAB 10: LIBRARY & MATERIALS ================= */}
           {activeNav === 'library' && (
             <TrainingLibraryMaterials
-              currentUser={{
-                name: trainerName,
-                id: trainerId,
-                branch: trainerBranch
-              }}
+              currentUser={{ name: trainerName, id: trainerId, branch: trainerBranch }}
+              batches={batches}
+              materials={materials}
+              onChanged={loadRealData}
             />
           )}
 
           {/* ================= TAB: PLACEMENT PREP & CERTIFICATION ================= */}
           {activeNav === 'placement' && (
             <TrainingPlacementPrep
-              currentUser={{
-                name: trainerName,
-                id: trainerId,
-                branch: trainerBranch
-              }}
-              students={students}
+              currentUser={{ name: trainerName, id: trainerId, branch: trainerBranch }}
+              students={myStudents}
+              onStudentUpdated={(updated) => setStudents(prev => prev.map(x => x._id === updated._id ? { ...x, ...updated } : x))}
             />
           )}
 
           {/* ================= TAB 11: MY PROFILE ================= */}
           {activeNav === 'profile' && (
-            <TrainingMyProfile
-              currentUser={currentUser || {
-                name: trainerName,
-                id: trainerId,
-                role: trainerRole,
-                branch: trainerBranch
-              }}
-            />
+            <TrainingMyProfile trainer={trainerProfile} currentUser={currentUser} profileError={profileError} />
           )}
 
           {/* ================= TAB 12: SKILLS & COURSES ================= */}
           {activeNav === 'skills' && (
-            <TrainingSkillsCourses />
+            <TrainingSkillsCourses trainer={trainerProfile} />
           )}
 
           {/* ================= TAB 13: SHIFT & AVAILABILITY ================= */}
           {activeNav === 'shift' && (
-            <TrainingShiftAvailability 
-              batches={batches} 
-              demos={demos} 
-              currentTrainerId={trainerId} 
-              currentTrainerName={trainerName}
-              currentTrainerRole={trainerRole}
+            <TrainingShiftAvailability
+              trainer={trainerProfile}
+              demos={myExpertDemos}
+              batches={batches}
             />
           )}
 
@@ -3739,38 +3432,45 @@ export default function TrainingDepartmentDashboard({
             <div className="flex items-center justify-between pb-2 border-b border-slate-100">
               <div className="flex items-center gap-2">
                 <span className="text-base">📈</span>
-                <h3 className="text-sm font-bold text-slate-900">September 2026 Demo Conversion Ledger</h3>
+                <h3 className="text-sm font-bold text-slate-900">{monthLabel} · Demo Conversion</h3>
               </div>
               <button onClick={() => setShowConversionModal(false)} className="text-slate-400 hover:text-slate-600">
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <div className="p-4 rounded-xl bg-teal-50/70 border border-teal-200 text-teal-900 space-y-1">
-              <div className="text-2xl font-black text-[#00897b]">
-                {demos.length > 0 ? Math.min(100, Math.round((students.length / demos.length) * 100)) : 0}% Conversion Rate
-              </div>
-              <div className="text-xs text-teal-700 font-medium">{students.length} enrolled students from {demos.length} demo candidates</div>
-            </div>
-
-            <div className="space-y-2 text-xs divide-y divide-slate-100">
-              <div className="pt-2 flex justify-between">
-                <span className="text-slate-500">Total Demos Assigned by HR:</span>
-                <span className="font-bold text-slate-900">{demos.length}</span>
-              </div>
-              <div className="pt-2 flex justify-between">
-                <span className="text-slate-500">Faculty Sessions Delivered:</span>
-                <span className="font-bold text-slate-900">{demos.filter(d => d.status === 'Attended' || d.status === 'confirmed').length} ({demos.length > 0 ? Math.round((demos.filter(d => d.status === 'Attended' || d.status === 'confirmed').length / demos.length) * 100) : 0}% fulfillment)</span>
-              </div>
-              <div className="pt-2 flex justify-between">
-                <span className="text-slate-500">Direct Course Enrollments:</span>
-                <span className="font-bold text-emerald-600">{students.length} students</span>
-              </div>
-              <div className="pt-2 flex justify-between">
-                <span className="text-slate-500">Faculty Incentive Accrued:</span>
-                <span className="font-bold text-emerald-600">₹{(students.length * 500).toLocaleString()} (@ ₹500 / enroll)</span>
-              </div>
-            </div>
+            {(() => {
+              const attended = myMonthDemos.filter(isAttended).length;
+              const converted = convertedStudents.filter(st => String(st.createdAt || '').slice(0, 7) === monthKey).length;
+              const rate = attended > 0 ? Math.round((converted / attended) * 100) : 0;
+              const admRate = Number(trainerProfile?.admissionIncentive) || 0;
+              return (
+                <>
+                  <div className="p-4 rounded-xl bg-teal-50/70 border border-teal-200 text-teal-900 space-y-1">
+                    <div className="text-2xl font-black text-[#00897b]">{rate}% Conversion Rate</div>
+                    <div className="text-xs text-teal-700 font-medium">{converted} admissions from {attended} demos you delivered</div>
+                  </div>
+                  <div className="space-y-2 text-xs divide-y divide-slate-100">
+                    <div className="pt-2 flex justify-between">
+                      <span className="text-slate-500">Demos routed to you:</span>
+                      <span className="font-bold text-slate-900">{myMonthDemos.length}</span>
+                    </div>
+                    <div className="pt-2 flex justify-between">
+                      <span className="text-slate-500">Demos delivered:</span>
+                      <span className="font-bold text-slate-900">{attended} ({myMonthDemos.length > 0 ? Math.round((attended / myMonthDemos.length) * 100) : 0}%)</span>
+                    </div>
+                    <div className="pt-2 flex justify-between">
+                      <span className="text-slate-500">Admissions from your demos:</span>
+                      <span className="font-bold text-emerald-600">{converted}</span>
+                    </div>
+                    <div className="pt-2 flex justify-between">
+                      <span className="text-slate-500">Admission incentive:</span>
+                      <span className="font-bold text-emerald-600">{admRate > 0 ? `₹${(converted * admRate).toLocaleString()} (@ ₹${admRate.toLocaleString()} / admission)` : 'Not configured'}</span>
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
 
             <div className="pt-2 flex justify-end">
               <button

@@ -148,13 +148,34 @@ const studentSchema = new mongoose.Schema({
     type: String,
     default: 'Pending Handover'
   },
+  // Filled from real class attendance recorded by the trainer (ClassAttendance)
   attendancePct: {
     type: Number,
-    default: 92
+    default: null
   },
+  // Average of the trainer-entered scores (mock / technical / assessment)
   readinessScore: {
     type: Number,
-    default: 85
+    default: null
+  },
+  // ---- HR → Training handover & trainer allocation ----
+  trainerId: { type: String, default: '' },
+  trainerName: { type: String, default: '' },
+  batchName: { type: String, default: '' },
+  trainerNote: { type: String, default: '' },
+  handedOverBy: { type: String, default: '' },
+  handedOverAt: { type: Date, default: null },
+  // ---- Trainer → HR / CCCP progress ----
+  assessmentScore: { type: Number, default: null },
+  mockScore: { type: Number, default: null },
+  technicalScore: { type: Number, default: null },
+  syllabusCompleted: { type: Boolean, default: false },
+  syllabusCompletedAt: { type: Date, default: null },
+  trainerRecommendation: { type: String, default: '' },
+  trainerRecommendationAt: { type: Date, default: null },
+  remedialActions: {
+    type: [{ action: String, note: String, by: String, at: Date }],
+    default: []
   },
   checklist: {
     course: { type: Boolean, default: true },

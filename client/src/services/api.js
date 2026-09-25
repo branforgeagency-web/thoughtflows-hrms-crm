@@ -236,8 +236,8 @@ export const getMyDemos = async (email) => {
   return res.data;
 };
 
-export const acknowledgeDemo = async (id) => {
-  const res = await api.put(`/demos/${id}/acknowledge`);
+export const acknowledgeDemo = async (id, data) => {
+  const res = await api.put(`/demos/${id}/acknowledge`, data || {});
   notifyDataUpdate('demos');
   return res.data;
 };
@@ -279,8 +279,13 @@ export const getPortalStats = async () => {
 };
 
 // Trainer & Faculty API
-export const getTrainerDoubts = async () => {
-  const res = await api.get('/trainer/doubts');
+export const getTrainerProfile = async ({ trainerId, email, name } = {}) => {
+  const res = await api.get('/trainer/me', { params: { trainerId, email, name } });
+  return res.data;
+};
+
+export const getTrainerDoubts = async (params) => {
+  const res = await api.get('/trainer/doubts', { params });
   return res.data;
 };
 
@@ -296,8 +301,8 @@ export const replyTrainerDoubt = async (id, reply) => {
   return res.data;
 };
 
-export const getTrainerAssessments = async () => {
-  const res = await api.get('/trainer/assessments');
+export const getTrainerAssessments = async (params) => {
+  const res = await api.get('/trainer/assessments', { params });
   return res.data;
 };
 
@@ -319,14 +324,95 @@ export const updateAssessmentRationale = async (id, rationale) => {
   return res.data;
 };
 
-export const getTrainerAttendance = async () => {
-  const res = await api.get('/trainer/attendance');
+export const getTrainerAttendance = async (params) => {
+  const res = await api.get('/trainer/attendance', { params });
   return res.data;
 };
 
 export const recordTrainerAttendance = async (attendanceData) => {
   const res = await api.post('/trainer/attendance', attendanceData);
   notifyDataUpdate('trainer_attendance');
+  notifyDataUpdate('students');
+  return res.data;
+};
+
+// HR → Training handover & Training → HR progress
+export const handoverStudentToTrainer = async (id, data) => {
+  const res = await api.post(`/students/${id}/handover`, data);
+  notifyDataUpdate('students');
+  notifyDataUpdate('notifications');
+  return res.data;
+};
+
+export const markSyllabusComplete = async (id, data) => {
+  const res = await api.put(`/students/${id}/syllabus-complete`, data);
+  notifyDataUpdate('students');
+  notifyDataUpdate('notifications');
+  return res.data;
+};
+
+export const setTrainerRecommendation = async (id, data) => {
+  const res = await api.put(`/students/${id}/recommendation`, data);
+  notifyDataUpdate('students');
+  notifyDataUpdate('notifications');
+  return res.data;
+};
+
+export const logRemedialAction = async (id, data) => {
+  const res = await api.post(`/students/${id}/remedial`, data);
+  notifyDataUpdate('students');
+  notifyDataUpdate('notifications');
+  return res.data;
+};
+
+// Cross-department notifications (HR ⇄ Training)
+export const getNotifications = async (params) => {
+  const res = await api.get('/notifications', { params });
+  return res.data;
+};
+
+export const markNotificationRead = async (id) => {
+  const res = await api.put(`/notifications/${id}/read`);
+  notifyDataUpdate('notifications');
+  return res.data;
+};
+
+export const markNotificationsRead = async (ids) => {
+  const res = await api.put('/notifications/read-all', { ids });
+  notifyDataUpdate('notifications');
+  return res.data;
+};
+
+// Training library & materials
+export const getTrainingMaterials = async (params) => {
+  const res = await api.get('/training/materials', { params });
+  return res.data;
+};
+
+export const uploadTrainingMaterial = async (data) => {
+  const res = await api.post('/training/materials', data);
+  notifyDataUpdate('materials');
+  return res.data;
+};
+
+export const trainingMaterialFileUrl = (id, download = false) =>
+  `${API_BASE}/training/materials/${id}/file${download ? '?download=1' : ''}`;
+
+export const pinTrainingMaterial = async (id, trainerId, pinned) => {
+  const res = await api.put(`/training/materials/${id}/pin`, { trainerId, pinned });
+  notifyDataUpdate('materials');
+  return res.data;
+};
+
+export const assignTrainingMaterial = async (id, data) => {
+  const res = await api.post(`/training/materials/${id}/assign`, data);
+  notifyDataUpdate('materials');
+  return res.data;
+};
+
+export const deleteTrainingMaterial = async (id) => {
+  const res = await api.delete(`/training/materials/${id}`);
+  notifyDataUpdate('materials');
   return res.data;
 };
 
