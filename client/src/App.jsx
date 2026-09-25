@@ -281,7 +281,12 @@ export default function App() {
 
       {/* Course Catalog — mounted once here so the floating button & popup
           are available on every page of the site, not just specific tabs */}
-      <CourseCatalogWidget />
+      <CourseCatalogWidget
+        hidden={
+          isDashboardOpen &&
+          (selectedDashboard?.id === 'leadership' || selectedDashboard === 'leadership')
+        }
+      />
     </div>
   );
 }

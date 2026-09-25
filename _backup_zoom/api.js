@@ -1587,10 +1587,10 @@ const norm = (s = '') => String(s).trim().toLowerCase();
  * ALL of the following hold:
  *   1. Same Language   — trainer teaches in the student's selected language
  *   2. Same Location   — trainer's branch matches the student's selected branch
- *   3. Free at the Time — demo slot is inside the trainer's shift, does not
- *                          overlap one of their scheduled classes, and does not
- *                          overlap another booked/confirmed demo
- * (Only inactive trainers are skipped. Course is a ranking preference only.)
+ *   3. Free at the Time — trainer has no other booked/confirmed demo whose
+ *                          slot overlaps the requested date + time
+ *   4. Experienced in Demo — trainer.demoTrainer === true
+ *   5. Active Trainer  — trainer.active === true
  * Returns { eligible: Trainer[], reason } where `reason` explains a zero
  * match (used to populate Demo.noEligibleTrainerReason).
  */
@@ -1598,7 +1598,7 @@ async function findEligibleTrainers({ language, location, preferredDate, timeSlo
   const langNorm = norm(language);
   const locNorm = norm(location);
 
-  const roster = await Trainer.find({ active: { $ne: false } });
+  const roster = await Trainer.find({ active: true, demoTrainer: true });
 
   const languageLocationMatched = roster.filter((t) => {
     const languageOk = !langNorm || (t.languages || []).some((l) => norm(l) === langNorm);
@@ -1609,41 +1609,15 @@ async function findEligibleTrainers({ language, location, preferredDate, timeSlo
   if (languageLocationMatched.length === 0) {
     return {
       eligible: [],
-      reason: `No trainer found for language "${language}" at "${location}".`
+      reason: `No active, demo-experienced trainer found for language "${language}" at "${location}".`
     };
   }
 
-  // Condition 3a: free by schedule — slot inside shift and not during one of their classes
-  const slot = parseSlotToRange(timeSlot);
-  const freeBySchedule = languageLocationMatched.filter((t) => {
-    if (!slot) return true; // unparseable slot → can't judge, don't exclude
-    const shiftStart = Number.isFinite(t.shiftStartMin) ? t.shiftStartMin : 0;
-    const shiftEnd = Number.isFinite(t.shiftEndMin) ? t.shiftEndMin : 1440;
-    const inShift = shiftEnd > shiftStart
-      ? slot.startMin >= shiftStart && slot.endMin <= shiftEnd
-      : slot.startMin >= shiftStart || slot.endMin <= shiftEnd; // overnight shift
-    if (!inShift) return false;
-    const inClass = (t.scheduledClasses || []).some((c) => {
-      const r = Number.isFinite(c.startMin) && Number.isFinite(c.endMin)
-        ? { startMin: c.startMin, endMin: c.endMin }
-        : parseSlotToRange(c.timeSlot);
-      return r && Math.max(r.startMin, slot.startMin) < Math.min(r.endMin, slot.endMin);
-    });
-    return !inClass;
-  });
-
-  if (freeBySchedule.length === 0) {
-    return {
-      eligible: [],
-      reason: `Trainer(s) matching language "${language}" and location "${location}" are off-shift or in class at ${timeSlot}.`
-    };
-  }
-
-  // Condition 3b: free at the exact demo date + time — exclude anyone who
+  // Condition 3: free at the exact demo date + time — exclude anyone who
   // already has a booked/confirmed demo whose slot overlaps this one.
   const busyQuery = {
     preferredDate,
-    trainerId: { $in: freeBySchedule.map((t) => t.trainerId) },
+    trainerId: { $in: languageLocationMatched.map((t) => t.trainerId) },
     status: { $in: ['booked', 'confirmed'] }
   };
   if (excludeDemoId) busyQuery._id = { $ne: excludeDemoId };
@@ -1653,7 +1627,7 @@ async function findEligibleTrainers({ language, location, preferredDate, timeSlo
     sameDayDemos.filter((d) => slotsOverlap(d.timeSlot, timeSlot)).map((d) => d.trainerId)
   );
 
-  const eligible = freeBySchedule.filter((t) => !busyTrainerIds.has(t.trainerId));
+  const eligible = languageLocationMatched.filter((t) => !busyTrainerIds.has(t.trainerId));
 
   if (eligible.length === 0) {
     return {
@@ -1754,7 +1728,8 @@ router.post('/demos', async (req, res) => {
 
     // Demo Booking Notification Requirement: find every trainer who is
     // simultaneously (1) fluent in the student's language, (2) at the
-    // student's location, and (3) free at this exact date + time.
+    // student's location, (3) free at this exact date + time, (4) marked
+    // "Experienced in Demo", and (5) active/eligible.
     const { eligible, reason: noEligibleTrainerReason } = await findEligibleTrainers({
       language,
       location,
@@ -3032,16 +3007,14 @@ function signZoom(meetingNumber, role = 0) {
   return { signature, appKey: ZOOM_SDK_KEY, sdkKey: ZOOM_SDK_KEY };
 }
 
-// Server-to-Server OAuth token (needed to create meetings / fetch host ZAK) — cached ~55 min
-let zoomTokenCache = { token: '', exp: 0 };
+// Server-to-Server OAuth token (needed to create meetings / fetch host ZAK)
 async function zoomApiToken() {
   const { ZOOM_ACCOUNT_ID, ZOOM_S2S_CLIENT_ID, ZOOM_S2S_CLIENT_SECRET } = process.env;
-  if (!ZOOM_ACCOUNT_ID || !ZOOM_S2S_CLIENT_ID || !ZOOM_S2S_CLIENT_SECRET) {
-    const err = new Error('Zoom API not configured: set ZOOM_ACCOUNT_ID, ZOOM_S2S_CLIENT_ID, ZOOM_S2S_CLIENT_SECRET in server/.env');
+  if (!ZOOM_ACCOUNT_ID || !ZOOM_S2S_CLIENT_ID || !ZOOM_S2S_CLIENT_SECRET || !process.env.ZOOM_HOST_EMAIL) {
+    const err = new Error('Zoom API not configured: set ZOOM_ACCOUNT_ID, ZOOM_S2S_CLIENT_ID, ZOOM_S2S_CLIENT_SECRET, ZOOM_HOST_EMAIL in server/.env');
     err.status = 501;
     throw err;
   }
-  if (zoomTokenCache.token && Date.now() < zoomTokenCache.exp) return zoomTokenCache.token;
   const basic = Buffer.from(`${ZOOM_S2S_CLIENT_ID}:${ZOOM_S2S_CLIENT_SECRET}`).toString('base64');
   const r = await fetch(`https://zoom.us/oauth/token?grant_type=account_credentials&account_id=${ZOOM_ACCOUNT_ID}`, {
     method: 'POST',
@@ -3049,98 +3022,7 @@ async function zoomApiToken() {
   });
   const d = await r.json();
   if (!r.ok) throw new Error(d.reason || d.message || 'Zoom auth failed');
-  zoomTokenCache = { token: d.access_token, exp: Date.now() + Math.max(60, (d.expires_in || 3600) - 300) * 1000 };
   return d.access_token;
-}
-
-async function zoomApi(path, { method = 'GET', body } = {}) {
-  const token = await zoomApiToken();
-  const r = await fetch(`https://api.zoom.us/v2${path}`, {
-    method,
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined
-  });
-  const data = r.status === 204 ? {} : await r.json().catch(() => ({}));
-  return { ok: r.ok, status: r.status, data };
-}
-
-const sharedZoomHost = () => String(process.env.ZOOM_HOST_EMAIL || '').trim().toLowerCase();
-
-// Each trainer hosts on their OWN Zoom user (Trainer.zoomEmail). Zoom lets one
-// user host only one live meeting at a time — a single shared host is what
-// causes "Already has other meetings in progress" when two demos overlap.
-async function trainerZoomHost(demo) {
-  let t = null;
-  if (demo.trainerId) t = await Trainer.findOne({ trainerId: demo.trainerId }).lean();
-  if (!t?.zoomEmail && demo.trainer) t = await Trainer.findOne({ trainerName: demo.trainer }).lean();
-  const host = String(t?.zoomEmail || sharedZoomHost()).trim().toLowerCase();
-  if (!host) {
-    const err = new Error('No Zoom host: set this trainer\'s Zoom email (Trainer.zoomEmail) or ZOOM_HOST_EMAIL in server/.env');
-    err.status = 501;
-    throw err;
-  }
-  return host;
-}
-
-// Create a fresh Zoom meeting for the demo under the given host user
-async function createDemoZoomMeeting(demo, host) {
-  const body = {
-    topic: `Demo Class – ${demo.course} – ${demo.candidateName}`,
-    type: 2,
-    duration: 45,
-    timezone: 'Asia/Kolkata',
-    settings: {
-      join_before_host: true,
-      jbh_time: 0,
-      waiting_room: false,
-      meeting_authentication: false,
-      host_video: true,
-      participant_video: true
-    }
-  };
-  const start = demoStartTime(demo);
-  if (start) body.start_time = start;
-
-  const r = await zoomApi(`/users/${encodeURIComponent(host)}/meetings`, { method: 'POST', body });
-  if (!r.ok) {
-    const err = new Error(r.data.message || `Zoom meeting creation failed for ${host}`);
-    err.status = 502;
-    throw err;
-  }
-  demo.link = r.data.join_url;
-  demo.zoomMeetingId = String(r.data.id);
-  demo.zoomHostEmail = host;
-  await demo.save();
-  return demo;
-}
-
-// Per-demo lock: concurrent join requests share one creation instead of each making a meeting
-const zoomCreateLocks = new Map();
-async function createOnce(demo, host) {
-  const key = String(demo._id);
-  if (!zoomCreateLocks.has(key)) {
-    zoomCreateLocks.set(key, (async () => {
-      const fresh = await Demo.findById(demo._id);
-      if (fresh?.zoomMeetingId && String(fresh.zoomHostEmail || '').toLowerCase() === host && fresh.zoomMeetingId !== demo.zoomMeetingId) return fresh;
-      return createDemoZoomMeeting(fresh || demo, host);
-    })().finally(() => setTimeout(() => zoomCreateLocks.delete(key), 5000)));
-  }
-  const d = await zoomCreateLocks.get(key);
-  Object.assign(demo, { link: d.link, zoomMeetingId: d.zoomMeetingId, zoomHostEmail: d.zoomHostEmail });
-  return demo;
-}
-
-// Meetings currently LIVE on this host → { ids, error }
-async function liveMeetings(host) {
-  try {
-    const r = await zoomApi(`/users/${encodeURIComponent(host)}/meetings?type=live&page_size=30`);
-    if (!r.ok) return { ids: [], error: `${r.status} ${r.data.message || 'live list failed'}` };
-    return { ids: (r.data.meetings || []).map(m => String(m.id)), error: '' };
-  } catch (e) { return { ids: [], error: e.message }; }
-}
-
-async function endZoomMeeting(meetingId) {
-  try { await zoomApi(`/meetings/${meetingId}/status`, { method: 'PUT', body: { action: 'end' } }); } catch (_) {}
 }
 
 // Parse "Today 17:00" / "4:00 PM" + preferredDate into a Zoom start_time (IST). Returns undefined if unclear/past.
@@ -3162,26 +3044,36 @@ router.post('/zoom-signature', (req, res) => {
   try { res.json(signZoom(meetingNumber, role)); } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Create a unique Zoom meeting for one booked demo (hosted by that demo's trainer)
+// Create a unique Zoom meeting for one booked demo and store the join link on it
 router.post('/demos/:id/zoom-meeting', async (req, res) => {
   try {
     const demo = await Demo.findById(req.params.id);
     if (!demo) return res.status(404).json({ error: 'Demo not found' });
     if (demo.zoomMeetingId) return res.json(demo);
-    await createOnce(demo, await trainerZoomHost(demo));
-    res.json(demo);
-  } catch (e) {
-    res.status(e.status || 500).json({ error: e.message });
-  }
-});
 
-// End the demo's Zoom meeting so the trainer's Zoom user is free for the next one
-router.post('/demos/:id/zoom-end', async (req, res) => {
-  try {
-    const demo = await Demo.findById(req.params.id);
-    if (!demo) return res.status(404).json({ error: 'Demo not found' });
-    if (demo.zoomMeetingId) await endZoomMeeting(demo.zoomMeetingId);
-    res.json({ ok: true });
+    const token = await zoomApiToken();
+    const body = {
+      topic: `Demo Class – ${demo.course} – ${demo.candidateName}`,
+      type: 2,
+      duration: 45,
+      timezone: 'Asia/Kolkata',
+      settings: { join_before_host: true, waiting_room: false, host_video: true, participant_video: true }
+    };
+    const start = demoStartTime(demo);
+    if (start) body.start_time = start;
+
+    const r = await fetch(`https://api.zoom.us/v2/users/${encodeURIComponent(process.env.ZOOM_HOST_EMAIL)}/meetings`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const d = await r.json();
+    if (!r.ok) return res.status(502).json({ error: d.message || 'Zoom meeting creation failed' });
+
+    demo.link = d.join_url;
+    demo.zoomMeetingId = String(d.id);
+    await demo.save();
+    res.json(demo);
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
   }
@@ -3250,9 +3142,7 @@ router.post('/demos/:id/send-link', async (req, res) => {
   }
 });
 
-// Everything the embedded client needs to join. Trainer joins as HOST of their
-// own meeting (ZAK); stale live meetings on that trainer's Zoom user are ended
-// first so the SDK never hits "Already has other meetings in progress".
+// Everything the embedded client needs for the trainer to join (as host when ZAK is available)
 router.get('/demos/:id/zoom-join', async (req, res) => {
   try {
     const demo = await Demo.findById(req.params.id);
@@ -3265,56 +3155,23 @@ router.get('/demos/:id/zoom-join', async (req, res) => {
       }
       if (!demo.zoomMeetingId) return res.status(409).json({ error: 'Your trainer has not started the demo yet' });
     }
-
-    let zak;
-    const debug = {};
-    if (!asStudent) {
-      const reset = req.query.reset === '1';
-      const host = await trainerZoomHost(demo);
-      const dedicated = host !== sharedZoomHost();
-      Object.assign(debug, { host, dedicated });
-      const currentHost = String(demo.zoomHostEmail || sharedZoomHost()).toLowerCase();
-
-      const live = await liveMeetings(host);
-      debug.liveBefore = live.ids;
-      if (live.error) debug.liveError = live.error;
-
-      // Close other stuck meetings on the trainer's own Zoom user (never on the shared account)
-      const own = String(demo.zoomMeetingId || '');
-      const toEnd = dedicated ? live.ids.filter(id => id !== own) : [];
-      if (toEnd.length) {
-        await Promise.all(toEnd.map(endZoomMeeting));
-        await new Promise(r => setTimeout(r, 2000));
-        debug.ended = toEnd;
-      }
-      // Exactly ONE meeting per demo. Only recreate when Zoom says the saved one is truly gone (404 / 3001).
-      let needNew = !demo.zoomMeetingId || currentHost !== host;
-      if (!needNew) {
-        const m = await zoomApi(`/meetings/${demo.zoomMeetingId}`);
-        if (m.status === 404 || m.data.code === 3001) { needNew = true; debug.staleMeeting = demo.zoomMeetingId; }
-        else if (!m.ok) debug.meetingCheckError = `${m.status} ${m.data.message || ''}`;
-      }
-      if (needNew) await createOnce(demo, host);
-      debug.meetingId = demo.zoomMeetingId;
-
-      const stillBusy = !dedicated && live.ids.some(id => id !== own);
-      if (!stillBusy) {
-        try {
-          const z = await zoomApi(`/users/${encodeURIComponent(host)}/token?type=zak`);
-          if (z.ok) zak = z.data.token; else debug.zakError = `${z.status} ${z.data.message || ''}`;
-        } catch (e) { debug.zakError = e.message; }
-      } else debug.joinedAsParticipant = true;
-      console.log('[zoom-join]', demo._id.toString(), JSON.stringify(debug));
-    }
-
     const meetingNumber = demo.zoomMeetingId || (demo.link.match(/\/j\/(\d+)/) || [])[1];
     if (!meetingNumber) return res.status(400).json({ error: 'No Zoom meeting for this demo yet' });
     const password = (demo.link.match(/[?&]pwd=([^&]+)/) || [])[1] || '';
 
+    let zak;
+    if (!asStudent) try {
+      const token = await zoomApiToken();
+      const z = await fetch(`https://api.zoom.us/v2/users/${encodeURIComponent(process.env.ZOOM_HOST_EMAIL)}/token?type=zak`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (z.ok) zak = (await z.json()).token;
+    } catch (_) { /* fall back to participant join */ }
+
     const { signature, sdkKey } = signZoom(meetingNumber, zak ? 1 : 0);
-    res.json({ signature, sdkKey, meetingNumber: String(meetingNumber), password: decodeURIComponent(password), zak, host: !!zak, hostEmail: demo.zoomHostEmail || '', debug });
+    res.json({ signature, sdkKey, meetingNumber: String(meetingNumber), password: decodeURIComponent(password), zak, host: !!zak });
   } catch (e) {
-    res.status(e.status || 500).json({ error: e.message });
+    res.status(500).json({ error: e.message });
   }
 });
 

@@ -23,6 +23,7 @@ import StudentProfileModal from './StudentProfileModal';
 import CompleteRegistrationModal from './CompleteRegistrationModal';
 
 import { getStudents, createStudent } from '../services/api';
+import { getCurrentMonthYear, getCurrentMonthName } from '../utils/dateUtils';
 
 export default function HrAdmittedStudentsCrm({ students: propStudents, onRefreshStudents, currentUser }) {
   const [activeTabFilter, setActiveTabFilter] = useState('all'); // all, in_course, placed, on_hold
@@ -91,7 +92,7 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
       phone: newWalkin.phone,
       course: newWalkin.course,
       mode: newWalkin.mode.includes('Online') ? 'Online' : 'Classroom',
-      batchDate: 'May 2026',
+      batchDate: getCurrentMonthYear(),
       hrName: currentUser?.name || 'Kavitha N.',
       batchTiming: newWalkin.timing,
       qualification: newWalkin.qualification || 'BSc Graduate',
@@ -100,7 +101,7 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
       location: 'Saravanampatti',
       email: newWalkin.email || `student.${Date.now().toString().slice(-4)}@thoughtflows.in`,
       dob: '01-01-2002',
-      enqDate: 'May',
+      enqDate: getCurrentMonthName(),
       source: 'WALK-IN',
       onboardStatus: '7/7 ✓',
       syllabusModule: 'Module 1',
@@ -239,7 +240,7 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
           Admitted <span className="text-[#00897b]">Students</span> <span className="text-slate-500 font-medium">· CRM</span>
         </h1>
         <p className="text-xs sm:text-[13px] text-slate-500 font-medium mt-1 font-mono">
-          Auto-filled from registration forms · same columns as your Hopes Branch sheet - May 2026
+          Auto-filled from registration forms · same columns as your Hopes Branch sheet - {getCurrentMonthYear()}
         </p>
       </div>
 
@@ -642,7 +643,11 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
             });
             setStudents(prev => [created, ...prev]);
             if (onRefreshStudents) onRefreshStudents();
-            showToast(`✓ Registered real student: ${created.name} (${created.studentId || created.id})`);
+            if (created?.studentLogin?.created) {
+              showToast(`✓ Registered ${created.name}! Login Created — Email: ${created.studentLogin.email} | Pass: ${created.studentLogin.password}`);
+            } else {
+              showToast(`✓ Registered real student: ${created.name} (${created.studentId || created.id})`);
+            }
           } catch (err) {
             console.error('Failed to create student in database:', err);
             showToast('Error saving student to database');
@@ -681,7 +686,11 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
             const savedStudent = created || studentRecord;
             setStudents(prev => [savedStudent, ...prev]);
             if (onRefreshStudents) onRefreshStudents();
-            showToast(`✓ Admitted ${savedStudent.name} (${savedStudent.studentId || savedStudent.id}) & saved to CRM!`);
+            if (created?.studentLogin?.created) {
+              showToast(`✓ Admitted ${savedStudent.name}! Login Created — Email: ${created.studentLogin.email} | Pass: ${created.studentLogin.password}`);
+            } else {
+              showToast(`✓ Admitted ${savedStudent.name} (${savedStudent.studentId || savedStudent.id}) & saved to CRM!`);
+            }
           } catch (err) {
             console.error('Failed to create admitted student:', err);
             showToast('Error saving admitted student to database');

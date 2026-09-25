@@ -28,7 +28,9 @@ import {
   Sparkles,
   ExternalLink,
   ChevronDown,
-  ArrowRight
+  ArrowRight,
+  Activity,
+  CreditCard
 } from 'lucide-react';
 import logoImg from '../assets/thoughtflows-logo.png';
 import { 

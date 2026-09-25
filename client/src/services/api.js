@@ -16,10 +16,13 @@ const api = axios.create({
   }
 });
 
-// Real-Time Cross-Dashboard Sync Event Bus
+// Real-Time Cross-Dashboard Sync Event Bus (in-tab + multi-tab)
 export const notifyDataUpdate = (entity) => {
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('thoughtflows_data_updated', { detail: { entity } }));
+    try {
+      localStorage.setItem('thoughtflows_sync_event', JSON.stringify({ entity, time: Date.now() }));
+    } catch (_) {}
   }
 };
 
@@ -28,9 +31,19 @@ export const onDataUpdate = (callback) => {
   const handler = (e) => {
     if (callback) callback(e.detail?.entity);
   };
+  const storageHandler = (e) => {
+    if (e.key === 'thoughtflows_sync_event' && e.newValue) {
+      try {
+        const data = JSON.parse(e.newValue);
+        if (callback) callback(data?.entity);
+      } catch (_) {}
+    }
+  };
   window.addEventListener('thoughtflows_data_updated', handler);
+  window.addEventListener('storage', storageHandler);
   return () => {
     window.removeEventListener('thoughtflows_data_updated', handler);
+    window.removeEventListener('storage', storageHandler);
   };
 };
 
@@ -166,6 +179,30 @@ export const getDailyClosures = async (params) => {
   return res.data;
 };
 
+// HR Targets API
+export const getHrTargets = async (params) => {
+  const res = await api.get('/hr/targets', { params });
+  return res.data;
+};
+
+export const createHrTarget = async (targetData) => {
+  const res = await api.post('/hr/targets', targetData);
+  notifyDataUpdate('targets');
+  return res.data;
+};
+
+export const updateHrTarget = async (id, targetData) => {
+  const res = await api.put(`/hr/targets/${id}`, targetData);
+  notifyDataUpdate('targets');
+  return res.data;
+};
+
+export const deleteHrTarget = async (id) => {
+  const res = await api.delete(`/hr/targets/${id}`);
+  notifyDataUpdate('targets');
+  return res.data;
+};
+
 export const createDemo = async (demoData) => {
   const res = await api.post('/demos', demoData);
   notifyDataUpdate('demos');
@@ -181,6 +218,11 @@ export const updateDemo = async (id, demoData) => {
 export const createDemoMeeting = async (id) => {
   const res = await api.post(`/demos/${id}/zoom-meeting`);
   notifyDataUpdate('demos');
+  return res.data;
+};
+
+export const endDemoMeeting = async (id) => {
+  const res = await api.post(`/demos/${id}/zoom-end`);
   return res.data;
 };
 

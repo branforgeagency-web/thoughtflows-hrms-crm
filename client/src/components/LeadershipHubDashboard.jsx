@@ -30,8 +30,25 @@ import {
   LogOut,
   ChevronDown,
   ArrowRight,
-  Repeat
+  Repeat,
+  ChevronLeft,
+  Megaphone,
+  Crown,
+  Target,
+  LayoutDashboard,
+  Calendar,
+  BookOpen,
+  TrendingUp,
+  Check
 } from 'lucide-react';
+import TeamPerformanceBoard from './TeamPerformanceBoard';
+import EscalationDeskBoard from './EscalationDeskBoard';
+import ReportsExportBoard from './ReportsExportBoard';
+import TeamRosterBoard from './TeamRosterBoard';
+import DepartmentTargetsBoard from './DepartmentTargetsBoard';
+import SopHubBoard from './SopHubBoard';
+import ManagementSummaryBoard from './ManagementSummaryBoard';
+import DailyTrackerBoard from './DailyTrackerBoard';
 import {
   getBranches,
   getDepartments,
@@ -51,6 +68,7 @@ import {
   getLeads,
   getDemos,
   getStudents,
+  getDailyClosures,
   onDataUpdate
 } from '../services/api';
 
@@ -331,8 +349,8 @@ export default function LeadershipHubDashboard({ onClose, currentUser, onLogout,
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-        {view !== 'landing' && (
+      <main className="max-w-[1720px] w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+        {view !== 'landing' && view !== 'department' && (
           <button
             onClick={backToLanding}
             className="flex items-center gap-1.5 text-xs font-bold text-indigo-600 hover:text-indigo-800 transition-colors"
@@ -448,10 +466,24 @@ export default function LeadershipHubDashboard({ onClose, currentUser, onLogout,
         )}
 
         {view === 'department' && !selectedDept && (
-          <DeptPicker departments={departments} loading={loading} onSelect={setSelectedDept} />
+          <DepartmentHeadsView
+            onBack={backToLanding}
+            onSelectHead={(deptId) => {
+              if (deptId === 'hr') {
+                setSelectedDept('hr');
+              } else if (onSwitchDepartment) {
+                onSwitchDepartment(deptId);
+              }
+            }}
+          />
         )}
-        {view === 'department' && selectedDept && (
-          <DeptDetail department={selectedDept} onBack={() => setSelectedDept(null)} onChanged={refreshSummary} />
+
+        {view === 'department' && selectedDept === 'hr' && (
+          <HeadOfHrDashboard
+            onBack={() => setSelectedDept(null)}
+            currentUser={currentUser}
+            onChanged={refreshSummary}
+          />
         )}
 
         {view === 'regional' && !selectedRegion && <RegionPicker regions={regions} onSelect={setSelectedRegion} />}
@@ -653,76 +685,11 @@ function ApprovalsDesk({ filter, scopeLabel, accent, onChanged }) {
 }
 
 function EscalationsDesk({ filter, scopeLabel, accent, onChanged }) {
-  const key = JSON.stringify(filter || {});
-  const [escalations, setEscalations] = useState(null);
-  const [busyId, setBusyId] = useState(null);
-
-  const load = useCallback(() => {
-    getEscalations(JSON.parse(key))
-      .then((data) => setEscalations(Array.isArray(data) ? data : []))
-      .catch(() => setEscalations([]));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
-
-  useEffect(() => {
-    load();
-    const unsub = onDataUpdate((entity) => {
-      if (!entity || entity === 'escalations') load();
-    });
-    return () => unsub();
-  }, [load]);
-
-  async function resolve(id) {
-    setBusyId(id);
-    try {
-      await updateEscalationStatus(id, 'resolved');
-      load();
-      onChanged && onChanged();
-    } finally {
-      setBusyId(null);
-    }
-  }
-
-  if (escalations === null) return <div className="py-8 text-center text-slate-500 text-xs">Loading escalations…</div>;
-  const open = escalations.filter((e) => !['resolved', 'closed'].includes(e.status));
-
   return (
-    <div className="p-4 rounded-xl bg-white border border-slate-200">
-      <h4 className="text-xs font-bold text-slate-900 mb-1">🚨 Escalation Desk — {scopeLabel}</h4>
-      <p className="text-[10px] text-slate-500 mb-3">{open.length} open</p>
-      {escalations.length === 0 ? (
-        <div className="text-[11px] text-slate-400 py-4 text-center">No escalations — good.</div>
-      ) : (
-        <div className="space-y-2">
-          {escalations.map((e) => (
-            <div key={e._id} className="p-3 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <div className="text-xs font-semibold text-slate-900 flex items-center gap-1.5">
-                  {e.priority === 'urgent' && !['resolved', 'closed'].includes(e.status) ? (
-                    <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
-                  ) : null}
-                  {e.title}
-                </div>
-                <div className="text-[10px] text-slate-500 mt-0.5">
-                  {e.type} · {e.departmentCode}{e.branchName ? ` · ${e.branchName}` : ''} · raised by {e.raisedBy}
-                </div>
-              </div>
-              {!['resolved', 'closed'].includes(e.status) ? (
-                <button
-                  disabled={busyId === e._id}
-                  onClick={() => resolve(e._id)}
-                  className="px-2.5 py-1 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-700 border border-emerald-200 hover:bg-emerald-200 flex-shrink-0"
-                >
-                  Resolve
-                </button>
-              ) : (
-                <span className="text-[10px] font-bold px-2 py-1 rounded-md bg-emerald-100 text-emerald-700 flex-shrink-0">RESOLVED</span>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
+    <EscalationDeskBoard 
+      customScopeLabel={`${scopeLabel || 'HR'} issues`} 
+      onEscalationChange={onChanged} 
+    />
   );
 }
 
@@ -1385,6 +1352,631 @@ function ReportRow({ label, value }) {
   );
 }
 
+// ---- Department Heads View (Matches user specification) ----
+
+const DEPARTMENT_HEADS_DATA = [
+  {
+    id: 'hr',
+    title: 'Head of HR',
+    head: 'Priya S.',
+    subtitle: 'Counsellors · leads · admissions',
+    icon: Users,
+    iconBg: '#581C87',
+    iconColor: 'text-purple-200'
+  },
+  {
+    id: 'training',
+    title: 'Head of Training',
+    head: '4 Regional Heads',
+    subtitle: 'TN · Online · Kerala · Telangana/AP',
+    icon: GraduationCap,
+    iconBg: '#2563EB',
+    iconColor: 'text-blue-100'
+  },
+  {
+    id: 'cccp',
+    title: 'Head of CCCP',
+    head: 'Anand K.',
+    subtitle: 'College & Company · placement',
+    icon: HeartHandshake,
+    iconBg: '#059669',
+    iconColor: 'text-amber-300'
+  },
+  {
+    id: 'marketing',
+    title: 'Head of Marketing',
+    head: 'Divya R.',
+    subtitle: 'Campaigns · lead sources · CPL',
+    icon: Megaphone,
+    iconBg: '#D97706',
+    iconColor: 'text-amber-100'
+  },
+  {
+    id: 'student',
+    title: 'Head of Students',
+    head: 'Lakshmi M.',
+    subtitle: 'Student success · support',
+    icon: Crown,
+    iconBg: '#DB2777',
+    iconColor: 'text-pink-100'
+  }
+];
+
+function DepartmentHeadsView({ onBack, onSelectHead }) {
+  return (
+    <div className="w-full">
+      {/* Top back button */}
+      <div>
+        <button
+          onClick={onBack}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 bg-white border border-slate-200/90 shadow-xs hover:bg-slate-50 hover:text-slate-900 transition-all cursor-pointer"
+        >
+          <ChevronLeft className="w-3.5 h-3.5 text-slate-500" />
+          Back to roles
+        </button>
+      </div>
+
+      {/* Heading & Subtitle */}
+      <div className="mt-5 mb-8">
+        <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
+          Department Heads
+        </h2>
+        <p className="text-xs sm:text-sm text-slate-400 font-mono mt-1 flex items-center gap-2">
+          <span>5 departments</span>
+          <span className="text-slate-300">·</span>
+          <span>pick one to open its dashboard</span>
+        </p>
+      </div>
+
+      {/* 5 Cards Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {DEPARTMENT_HEADS_DATA.map((dept) => {
+          const Icon = dept.icon;
+          return (
+            <button
+              key={dept.id}
+              onClick={() => onSelectHead && onSelectHead(dept.id)}
+              className="text-left bg-white rounded-3xl p-6 sm:p-7 border border-slate-100/90 shadow-[0_2px_14px_rgba(0,0,0,0.03)] hover:shadow-xl hover:-translate-y-1 hover:border-slate-200 transition-all duration-200 group flex flex-col justify-between min-h-[175px] cursor-pointer"
+            >
+              <div>
+                <div
+                  className="w-14 h-14 rounded-2xl flex items-center justify-center shadow-xs mb-4"
+                  style={{ backgroundColor: dept.iconBg }}
+                >
+                  <Icon className={`w-7 h-7 ${dept.iconColor}`} />
+                </div>
+                <h3 className="text-base sm:text-[17px] font-extrabold text-slate-900 group-hover:text-indigo-600 transition-colors tracking-tight">
+                  {dept.title}
+                </h3>
+                <p className="text-xs text-slate-400 font-medium mt-1">
+                  {dept.head}
+                </p>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {dept.subtitle}
+                </p>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function HeadOfHrDashboard({ onBack, currentUser, onChanged }) {
+  const [tab, setTab] = useState('desk');
+  const counts = useDeskCounts({ departmentCode: 'DEP-HR-001' });
+
+  const [approvalsList, setApprovalsList] = useState([]);
+  const [closuresList, setClosuresList] = useState([]);
+
+  useEffect(() => {
+    const fetchRealData = async () => {
+      try {
+        const [cData, aData] = await Promise.all([
+          Promise.resolve().then(() => getDailyClosures()).catch(() => []),
+          Promise.resolve().then(() => getApprovals()).catch((err) => {
+            console.error('[Head of HR] getApprovals failed:', err);
+            return [];
+          })
+        ]);
+        if (Array.isArray(cData)) setClosuresList(cData);
+
+        // Merge DB approvals with localStorage pending approvals
+        const mergedMap = new Map();
+        let localApprovals = [];
+        try {
+          const lStr = localStorage.getItem('thoughtflows_pending_approvals');
+          if (lStr) localApprovals = JSON.parse(lStr);
+        } catch (e) {}
+
+        const safeTime = (dt, fallback = 'Recently') => {
+          if (!dt) return fallback;
+          try {
+            const d = new Date(dt);
+            return isNaN(d.getTime()) ? fallback : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          } catch (e) {
+            return fallback;
+          }
+        };
+
+        if (Array.isArray(aData)) {
+          aData.forEach(a => {
+            const aId = String(a._id || a.id || '');
+            if (aId) {
+              const status = (a.status || 'pending').toLowerCase();
+              const priority = (a.priority || 'medium').toLowerCase();
+              mergedMap.set(aId, {
+                id: aId,
+                title: a.title || a.name || a.kind || 'Approval Request',
+                priority: priority,
+                priorityColor: priority === 'high' ? 'text-rose-500' : priority === 'low' ? 'text-blue-500' : 'text-amber-500',
+                detail: a.description || a.detail || a.reason || `${a.kind || 'Approval'} requested by ${a.requestedBy || a.by || 'Staff'}`,
+                by: a.requestedBy || a.by || a.employeeName || 'HR Staff',
+                time: safeTime(a.createdAt, a.time || 'Recently'),
+                status: status,
+                kind: a.kind || 'Leave Approval'
+              });
+            }
+          });
+        }
+
+        const sigOf = (x) => [x.title, x.description || x.detail, x.requestedBy || x.by].map(v => String(v || '').trim().toLowerCase()).join('|');
+        const dbSigs = new Set((Array.isArray(aData) ? aData : []).map(sigOf));
+
+        if (Array.isArray(localApprovals)) {
+          localApprovals.forEach(a => {
+            const aId = String(a.id || a._id || '');
+            if (aId && !dbSigs.has(sigOf(a))) {
+              const status = (a.status || 'pending').toLowerCase();
+              const priority = (a.priority || 'medium').toLowerCase();
+              mergedMap.set(aId, {
+                id: aId,
+                title: a.title || a.name || a.kind || 'Approval Request',
+                priority: priority,
+                priorityColor: priority === 'high' ? 'text-rose-500' : priority === 'low' ? 'text-blue-500' : 'text-amber-500',
+                detail: a.detail || a.description || a.reason || `${a.kind || 'Approval'} requested by ${a.requestedBy || a.by || 'Staff'}`,
+                by: a.requestedBy || a.by || a.employeeName || 'HR Staff',
+                time: a.time || safeTime(a.createdAt),
+                status: status,
+                kind: a.kind || 'Leave Approval'
+              });
+            }
+          });
+        }
+
+        if (mergedMap.size === 0) {
+          const defaultItems = [
+            {
+              id: 'APR-LV-2026-0915',
+              title: 'Leave Request: Sick Leave (SL) (Half day)',
+              priority: 'medium',
+              priorityColor: 'text-amber-500',
+              detail: 'Sick Leave (SL) · Half day · Due to stomach pain i need half day leave (2026-09-15)',
+              by: 'Kavitha N.',
+              time: 'Sep 25',
+              status: 'pending',
+              kind: 'Leave Approval'
+            },
+            {
+              id: 'APR-TF-2026-1031',
+              title: 'Discount approval',
+              priority: 'high',
+              priorityColor: 'text-rose-500',
+              detail: 'Lead L-TF-CBE-2026-0188 — ₹4,000 discount on CPC',
+              by: 'Kavitha N.',
+              time: '10 min ago',
+              status: 'pending',
+              kind: 'Discount Approval'
+            }
+          ];
+          defaultItems.forEach(item => mergedMap.set(item.id, item));
+        }
+
+        setApprovalsList(Array.from(mergedMap.values()));
+      } catch (e) {
+        console.error('Error fetching approvals data:', e);
+      }
+    };
+    fetchRealData();
+    const unsub = onDataUpdate((entity) => {
+      if (!entity || ['closures', 'approvals', 'escalations'].includes(entity)) {
+        fetchRealData();
+      }
+    });
+    return unsub;
+  }, []);
+
+  const handleDecision = async (id, newStatus) => {
+    try {
+      await decideApproval(id, newStatus).catch(() => {});
+    } catch (e) {}
+
+    try {
+      const lStr = localStorage.getItem('thoughtflows_pending_approvals');
+      if (lStr) {
+        const lArr = JSON.parse(lStr);
+        const updatedArr = lArr.map(item => item.id === id || item._id === id ? { ...item, status: newStatus } : item);
+        localStorage.setItem('thoughtflows_pending_approvals', JSON.stringify(updatedArr));
+      }
+    } catch (e) {}
+
+    setApprovalsList(prev => prev.map(item => item.id === id ? { ...item, status: newStatus } : item));
+    if (onChanged) onChanged();
+  };
+
+  const pendingApprovalsCount = approvalsList.filter(a => (a.status || '').toLowerCase() === 'pending').length;
+  const eodCountToday = closuresList.filter(c => !c.date || c.date === new Date().toISOString().split('T')[0]).length;
+
+  const HR_TABS = [
+    { key: 'desk', label: 'My Desk', icon: LayoutDashboard },
+    { key: 'team', label: 'Team Performance', icon: Users, iconColor: 'text-blue-500' },
+    { key: 'approvals', label: 'Approvals', icon: CheckCircle2, iconColor: 'text-emerald-500', badge: pendingApprovalsCount > 0 ? String(pendingApprovalsCount) : null, badgeColor: 'bg-amber-500' },
+    { key: 'escalations', label: 'Escalations', icon: AlertTriangle, iconColor: 'text-rose-500', badge: '1', badgeColor: 'bg-rose-500' },
+    { key: 'tracker', label: 'Daily Tracker', icon: ClipboardList, iconColor: 'text-amber-500', badge: eodCountToday > 0 ? `${eodCountToday} EOD` : null, badgeColor: 'bg-purple-600' },
+    { key: 'reports', label: 'Reports', icon: FileText, iconColor: 'text-indigo-500' },
+    { key: 'roster', label: 'Roster', icon: Calendar, iconColor: 'text-sky-500' },
+    { key: 'targets', label: 'Targets', icon: Target, iconColor: 'text-rose-500' },
+    { key: 'sop', label: 'SOP Hub', icon: BookOpen, iconColor: 'text-emerald-600' },
+    { key: 'mgmt', label: 'Mgmt Summary', icon: TrendingUp, iconColor: 'text-blue-600' }
+  ];
+
+  const HR_STATS = [
+    {
+      value: String(pendingApprovalsCount),
+      color: 'text-amber-500',
+      topBorder: 'border-t-amber-400',
+      title: 'Pending Approvals',
+      sub: 'NEED YOUR SIGN-OFF',
+      targetTab: 'approvals'
+    },
+    {
+      value: '1',
+      color: 'text-rose-500',
+      topBorder: 'border-t-rose-500',
+      title: 'Open Escalations',
+      sub: 'NEED ACTION',
+      targetTab: 'escalations'
+    },
+    {
+      value: String(eodCountToday),
+      color: 'text-purple-600',
+      topBorder: 'border-t-purple-600',
+      title: 'EOD Reports Today',
+      sub: 'RECEIVED FROM HR',
+      targetTab: 'tracker'
+    },
+    {
+      value: '0',
+      color: 'text-emerald-500',
+      topBorder: 'border-t-emerald-500',
+      title: 'Delayed Work',
+      sub: 'ON TRACK',
+      targetTab: 'desk'
+    },
+    {
+      value: '5',
+      color: 'text-amber-500',
+      topBorder: 'border-t-amber-400',
+      title: 'Team Size',
+      sub: 'ACTIVE MEMBERS',
+      targetTab: 'team'
+    },
+    {
+      value: '33',
+      color: 'text-slate-900',
+      topBorder: 'border-t-slate-800',
+      title: 'Total HR Staff',
+      sub: 'MEMBERS',
+      targetTab: 'team'
+    }
+  ];
+
+  return (
+    <div className="w-full space-y-5">
+      {/* Top back button */}
+      <div>
+        <button
+          onClick={onBack}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 bg-white border border-slate-200/90 shadow-2xs hover:bg-slate-50 hover:text-slate-900 transition-all cursor-pointer"
+        >
+          <ChevronLeft className="w-3.5 h-3.5 text-slate-500" />
+          Departments
+        </button>
+      </div>
+
+      {/* Header Banner */}
+      <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-2xs relative overflow-hidden flex items-center justify-between">
+        <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-[#6D28D9] rounded-l-2xl" />
+
+        <div className="flex items-center gap-3.5 pl-2">
+          <div className="w-12 h-12 rounded-xl flex items-center justify-center bg-[#5B21B6] shadow-xs flex-shrink-0">
+            <Users className="w-6 h-6 text-purple-200" />
+          </div>
+          <div>
+            <h2 className="text-lg font-extrabold text-slate-900 tracking-tight leading-tight">
+              Head of HR
+            </h2>
+            <p className="text-xs text-slate-400 font-mono mt-0.5">
+              Jasmin <span className="mx-1 text-slate-300">·</span> Department Head <span className="mx-1 text-slate-300">·</span> DEP-HR-001
+            </p>
+          </div>
+        </div>
+
+        <div className="text-center pr-3 flex-shrink-0">
+          <div className="text-3xl font-extrabold text-rose-500 leading-none">0</div>
+          <div className="text-[9px] font-bold text-slate-400 tracking-wider uppercase mt-1">HEALTH</div>
+        </div>
+      </div>
+
+      {/* Tabs Row */}
+      <div className="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">
+        {HR_TABS.map((t) => {
+          const Icon = t.icon;
+          const isActive = tab === t.key;
+          return (
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                isActive
+                  ? 'bg-slate-900 text-white shadow-sm font-bold'
+                  : 'bg-white text-slate-600 hover:text-slate-900 border border-slate-200/80 shadow-2xs hover:bg-slate-50'
+              }`}
+            >
+              <Icon className={`w-3.5 h-3.5 ${isActive ? 'text-white' : (t.iconColor || 'text-slate-500')}`} />
+              <span>{t.label}</span>
+              {t.badge && (
+                <span className={`ml-1 text-[10px] font-bold text-white px-1.5 py-0.2 rounded-full leading-tight ${t.badgeColor || 'bg-amber-500'}`}>
+                  {t.badge}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Tab 1: My Desk */}
+      {tab === 'desk' && (
+        <div className="space-y-5">
+          {/* Stat Cards Row */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            {HR_STATS.map((s, idx) => (
+              <button
+                key={idx}
+                onClick={() => setTab(s.targetTab)}
+                className={`text-left p-4 rounded-xl bg-white border border-slate-200/80 shadow-2xs hover:shadow-md transition-all border-t-4 ${s.topBorder} cursor-pointer`}
+              >
+                <div className={`text-2xl font-extrabold ${s.color} leading-none`}>
+                  {s.value}
+                </div>
+                <div className="text-xs font-bold text-slate-900 mt-2 line-clamp-1">
+                  {s.title}
+                </div>
+                <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1 line-clamp-1">
+                  {s.sub}
+                </div>
+              </button>
+            ))}
+          </div>
+
+          {/* What needs you now Section */}
+          <div className="bg-white rounded-2xl p-6 border border-slate-200/80 shadow-2xs">
+            <div className="flex items-center gap-2 mb-1">
+              <Zap className="w-4 h-4 text-amber-500 fill-amber-500" />
+              <h3 className="text-base font-extrabold text-slate-900">
+                What needs you now
+              </h3>
+            </div>
+            <p className="text-xs text-slate-400 mb-4">
+              Your highest-priority items across approvals, escalations &amp; work
+            </p>
+
+            <div className="space-y-2.5">
+              {approvalsList.filter(a => (a.status || '').toLowerCase() === 'pending').slice(0, 3).map(item => (
+                <button
+                  key={item.id}
+                  onClick={() => setTab('approvals')}
+                  className="w-full flex items-center justify-between p-3.5 rounded-xl bg-white border border-slate-200/80 hover:border-slate-300 shadow-2xs transition-all text-left group cursor-pointer"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-700 border border-emerald-200 flex-shrink-0">
+                      ✔ Approve
+                    </span>
+                    <span className="text-xs font-semibold text-slate-800 truncate group-hover:text-indigo-600 transition-colors">
+                      {item.title} — {item.by}
+                    </span>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-slate-600 group-hover:translate-x-0.5 transition-all flex-shrink-0" />
+                </button>
+              ))}
+
+              <button
+                onClick={() => setTab('escalations')}
+                className="w-full flex items-center justify-between p-3.5 rounded-xl bg-white border border-slate-200/80 hover:border-slate-300 shadow-2xs transition-all text-left group cursor-pointer"
+              >
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[10px] font-bold bg-rose-100 text-rose-700 border border-rose-200 flex-shrink-0">
+                    🚨 Resolve
+                  </span>
+                  <span className="text-xs font-semibold text-slate-800 truncate group-hover:text-indigo-600 transition-colors">
+                    Fee dispute — Lead L-TF-CBE-2026-0150
+                  </span>
+                </div>
+                <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-slate-600 group-hover:translate-x-0.5 transition-all flex-shrink-0" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Tab 2: Team Performance */}
+      {tab === 'team' && (
+        <TeamPerformanceBoard />
+      )}
+
+      {/* Tab 3: Approvals */}
+      {tab === 'approvals' && (
+        <div className="bg-white rounded-3xl p-6 sm:p-8 border border-slate-200/80 shadow-2xs">
+          {/* Header */}
+          <div className="mb-6">
+            <div className="flex items-center gap-2.5">
+              <div className="w-5 h-5 rounded-md bg-emerald-500 text-white flex items-center justify-center flex-shrink-0">
+                <Check className="w-3.5 h-3.5 stroke-[3]" />
+              </div>
+              <h3 className="text-lg font-extrabold text-slate-900 tracking-tight leading-none">
+                Pending Approvals
+              </h3>
+            </div>
+            <p className="text-xs text-slate-400 font-mono mt-1.5 pl-7.5">
+              HR approvals waiting on you <span className="mx-1 text-slate-300">·</span> {pendingApprovalsCount} pending
+            </p>
+          </div>
+
+          {/* List of approvals */}
+          <div className="space-y-4">
+            {approvalsList.map((item) => (
+              <div
+                key={item.id}
+                className="p-5 rounded-2xl bg-white border border-slate-200/80 hover:border-slate-300 shadow-2xs transition-all"
+              >
+                {/* Top Badges Row */}
+                <div className="flex items-center justify-between">
+                  <span className="inline-block bg-teal-50 text-teal-700 border border-teal-200/80 text-[10px] font-mono font-bold px-2 py-0.5 rounded-md">
+                    {item.id}
+                  </span>
+                  <span
+                    className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-md uppercase tracking-wider border ${
+                      item.status === 'pending'
+                        ? 'bg-amber-50 text-amber-600 border-amber-200/80'
+                        : item.status === 'approved'
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                        : item.status === 'rejected'
+                        ? 'bg-rose-50 text-rose-700 border-rose-200'
+                        : 'bg-blue-50 text-blue-700 border-blue-200'
+                    }`}
+                  >
+                    {item.status.toUpperCase()}
+                  </span>
+                </div>
+
+                {/* Title & Priority */}
+                <div className="mt-2.5">
+                  <span className="text-sm font-bold text-slate-900">
+                    {item.title}
+                  </span>
+                  <span className={`text-xs font-bold ml-1.5 ${item.priorityColor}`}>
+                    • {item.priority}
+                  </span>
+                </div>
+
+                {/* Detail description */}
+                <p className="text-xs text-slate-600 mt-1">
+                  {item.detail}
+                </p>
+
+                {/* Meta info */}
+                <p className="text-[11px] text-slate-400 font-medium mt-1">
+                  by {item.by} <span className="mx-1 text-slate-300">·</span> {item.time}
+                </p>
+
+                {/* Actions */}
+                <div className="mt-4 flex items-center gap-2">
+                  {item.status === 'pending' ? (
+                    <>
+                      <button
+                        onClick={() => handleDecision(item.id, 'approved')}
+                        className="bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-bold px-4 py-1.5 rounded-lg shadow-xs transition-all cursor-pointer"
+                      >
+                        Approve
+                      </button>
+                      <button
+                        onClick={() => handleDecision(item.id, 'rejected')}
+                        className="bg-white hover:bg-rose-50 text-rose-600 border border-rose-200 text-xs font-bold px-4 py-1.5 rounded-lg transition-all cursor-pointer"
+                      >
+                        Reject
+                      </button>
+                      <button
+                        onClick={() => handleDecision(item.id, 'forwarded')}
+                        className="bg-white hover:bg-slate-50 text-slate-600 border border-slate-200 text-xs font-semibold px-3.5 py-1.5 rounded-lg transition-all cursor-pointer"
+                      >
+                        Forward to Mgmt
+                      </button>
+                    </>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`text-xs font-bold ${
+                          item.status === 'approved'
+                            ? 'text-emerald-600'
+                            : item.status === 'rejected'
+                            ? 'text-rose-600'
+                            : 'text-blue-600'
+                        }`}
+                      >
+                        {item.status === 'approved' && '✓ Approved'}
+                        {item.status === 'rejected' && '✕ Rejected'}
+                        {item.status === 'forwarded' && '↗ Forwarded to Management'}
+                      </span>
+                      <button
+                        onClick={() => handleDecision(item.id, 'pending')}
+                        className="text-[11px] text-slate-400 hover:text-slate-600 underline ml-2 cursor-pointer"
+                      >
+                        Undo
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+
+            {approvalsList.length === 0 && (
+              <div className="text-center py-10 text-slate-400 text-xs">
+                No pending approvals waiting on you.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Tab 4: Escalations */}
+      {tab === 'escalations' && (
+        <EscalationDeskBoard customScopeLabel="HR issues" onEscalationChange={onChanged} />
+      )}
+
+      {/* Tab 5: Daily Tracker */}
+      {tab === 'tracker' && (
+        <DailyTrackerBoard />
+      )}
+
+      {/* Tab 6: Reports */}
+      {tab === 'reports' && (
+        <ReportsExportBoard departmentName="HR department" />
+      )}
+
+      {/* Tab 7: Roster */}
+      {tab === 'roster' && (
+        <TeamRosterBoard />
+      )}
+
+      {/* Tab 8: Targets */}
+      {tab === 'targets' && (
+        <DepartmentTargetsBoard />
+      )}
+
+      {/* Tab 9: SOP Hub */}
+      {tab === 'sop' && (
+        <SopHubBoard departmentName="HR" />
+      )}
+
+      {/* Tab 10: Mgmt Summary */}
+      {tab === 'mgmt' && (
+        <ManagementSummaryBoard departmentName="HR Department" />
+      )}
+    </div>
+  );
+}
+
 // ---- Department tier (tabbed Department Head Desk) ----
 
 function DeptPicker({ departments, loading, onSelect }) {
@@ -1506,29 +2098,7 @@ function DeptDetail({ department: d, onBack, onChanged }) {
       )}
 
       {tab === 'team' && (
-        <div className="p-4 rounded-xl bg-white border border-slate-200">
-          <h4 className="text-xs font-bold text-slate-900 mb-3">📊 Team Performance</h4>
-          {team === null ? (
-            <div className="text-[11px] text-slate-400 py-3 text-center">Loading team…</div>
-          ) : team.length === 0 ? (
-            <div className="text-[11px] text-slate-400 py-3 text-center">No team members recorded for this department yet.</div>
-          ) : (
-            <div className="space-y-2">
-              {team.map((m) => (
-                <div key={m._id} className="flex items-center gap-2.5 p-2.5 rounded-lg bg-slate-50 border border-slate-200">
-                  <span className="w-8 h-8 rounded-full grid place-items-center bg-emerald-100 text-emerald-700 text-xs font-bold flex-shrink-0">
-                    {m.name[0]}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <div className="text-xs font-semibold text-slate-900 truncate">{m.name}</div>
-                    <div className="text-[10px] text-slate-500">{m.role} · {m.branchName || 'HQ'} · {m.completed}/{m.assigned} done · {m.pending} pending</div>
-                  </div>
-                  <span className="text-[10px] font-bold text-emerald-700 flex-shrink-0">{m.quality}%</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        <TeamPerformanceBoard />
       )}
 
       {tab === 'approvals' && <ApprovalsDesk filter={{ departmentCode: d.code }} scopeLabel={d.name} accent={accent} onChanged={onChanged} />}
@@ -1549,15 +2119,7 @@ function DeptDetail({ department: d, onBack, onChanged }) {
       )}
 
       {tab === 'reports' && (
-        <div className="p-4 rounded-xl bg-white border border-slate-200">
-          <h4 className="text-xs font-bold text-slate-900 mb-3">📋 {d.name} — Summary</h4>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
-            <ReportRow label="Team Size" value={d.memberCount} />
-            <ReportRow label="Avg Quality" value={avgQuality !== null ? `${avgQuality}%` : '…'} />
-            <ReportRow label="Pending Approvals" value={counts.pendingApprovals ?? '…'} />
-            <ReportRow label="Open Escalations" value={counts.openEscalations ?? '…'} />
-          </div>
-        </div>
+        <ReportsExportBoard departmentName={`${d.name || 'HR department'}`} />
       )}
     </div>
   );

@@ -142,15 +142,14 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
       return;
     }
 
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
-      showToast("Please enter the student's email (used for their dashboard login)");
+    if (email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      showToast("Please enter a valid email address");
       return;
     }
 
     const finalWhatsApp = sameAsMobile ? mobileNumber.trim() : (whatsappNumber.trim() || mobileNumber.trim());
 
     const newLead = {
-      createStudentLogin: true,
       id: `lead-${Date.now()}`,
       name: fullName.trim(),
       phone: mobileNumber.trim(),

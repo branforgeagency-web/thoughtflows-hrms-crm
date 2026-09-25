@@ -3,6 +3,8 @@ import { X, Sparkles, Check, ArrowRight } from 'lucide-react';
 import logoImg from '../assets/thoughtflows-logo.png';
 import { COURSE_CATEGORIES } from '../constants/courses';
 
+import { getCurrentMonthYear, getCurrentMonthName } from '../utils/dateUtils';
+
 export default function WalkinRegistrationModal({ isOpen, onClose, onRegister, currentUser }) {
   if (!isOpen) return null;
 
@@ -95,13 +97,13 @@ export default function WalkinRegistrationModal({ isOpen, onClose, onRegister, c
       source,
       batchTiming: preferredTimings || '8-10 PM Weekdays',
       batchType,
-      batchDate: 'May 2026',
+      batchDate: getCurrentMonthYear(),
       hrName: consultHr || currentUser?.name || 'Kavitha N.',
       branch: branch || currentUser?.branch || 'Saravanampatti',
       qualTag: education.toLowerCase().includes('bsc') || education.toLowerCase().includes('bpharm') ? 'Life Sci' : 'Grad',
       collegeCompany: college || company || 'Coimbatore',
       location: address.split(',')[0] || 'Saravanampatti',
-      enqDate: 'May',
+      enqDate: getCurrentMonthName(),
       onboardStatus: '7/7 ✓',
       syllabusModule: 'Module 1',
       mockInterview: 'Pending',

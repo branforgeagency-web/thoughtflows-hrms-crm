@@ -54,7 +54,6 @@ import {
   updateDemo,
   acknowledgeDemo,
   createDemoMeeting,
-  endDemoMeeting,
   sendDemoLinkEmail,
   getLeads,
   getTrainerDoubts,
@@ -320,27 +319,38 @@ export default function TrainingDepartmentDashboard({
     return filtered.length > 0 ? filtered : doubts;
   }, [doubts, isChiefFaculty, trainerCourseKey]);
 
-  // Demos routed to this trainer: ONLY those the server notified them about
-  // (language + location + free time match) or that are assigned to them.
+  // Demos auto-routed specifically to this trainer based on Course Subject Matter Expertise
   const myExpertDemos = React.useMemo(() => {
-    const norm = (v) => String(v || '').trim().toLowerCase();
     return demos.filter(d => {
-      // Branch must match: a Saravanampatti demo never shows on the Gandhipuram desk
-      if (d.location && trainerBranch && norm(d.location) !== norm(trainerBranch)) return false;
-      return (Array.isArray(d.notifiedTrainerIds) && d.notifiedTrainerIds.includes(trainerId)) ||
-        d.notificationSentTo === trainerId ||
-        (d.trainerId && d.trainerId === trainerId);
+      const idMatch = d.trainerId && (d.trainerId === trainerId);
+      const nameMatch = d.trainer && (
+        d.trainer.toLowerCase().includes(trainerName.toLowerCase()) ||
+        trainerName.toLowerCase().includes(d.trainer.toLowerCase())
+      );
+      const notifMatch = d.notificationSentTo && (
+        d.notificationSentTo === trainerId || 
+        d.notificationSentToName?.toLowerCase().includes(trainerName.toLowerCase())
+      );
+      const courseMatch = !isChiefFaculty && (
+        (d.course && d.course.toUpperCase().includes(trainerCourseKey)) ||
+        (d.expertCourse && d.expertCourse.toUpperCase().includes(trainerCourseKey))
+      );
+      return idMatch || nameMatch || notifMatch || courseMatch;
     });
-  }, [demos, trainerId, trainerBranch]);
+  }, [demos, trainerId, trainerName, trainerCourseKey, isChiefFaculty]);
 
-  // New demo alerts — strictly the demos this trainer was notified about
+  // High-Priority Demo Notifications dispatched to this trainer first
+  // STRICT MULTI-CONDITION RULE: Send notification ONLY when:
+  // Trainer = Experienced + Demo time within trainer's shift + Trainer has no class during demo time
   const newDemoAlerts = React.useMemo(() => {
-    return myExpertDemos.filter(d =>
-      (d.status === 'booked' || d.status === 'confirmed') &&
+    const list = myExpertDemos.length > 0 ? myExpertDemos : (isChiefFaculty ? demos : []);
+    return list.filter(d => 
+      (d.status === 'booked' || d.status === 'confirmed') && 
       !d.notificationRead &&
-      d.notificationSent === true
+      d.notificationSent === true &&
+      (isChiefFaculty || d.notificationSentTo === trainerId || d.trainerId === trainerId || (d.trainer && d.trainer.toLowerCase().includes(trainerName.toLowerCase())))
     );
-  }, [myExpertDemos]);
+  }, [myExpertDemos, isChiefFaculty, demos, trainerId, trainerName]);
 
   // Dynamic Scorecard & Quality Buckets derived from real database records
   const scorecardMetrics = React.useMemo(() => {
@@ -570,7 +580,6 @@ export default function TrainingDepartmentDashboard({
 
   // End the live demo: mark it Attended (server also moves the lead to "Demo Attended") and leave Zoom
   const endDemo = async (room) => {
-    try { if (room?._id) await endDemoMeeting(room._id); } catch (e) { console.warn(e); }
     try { if (room?._id) await updateDemo(room._id, { status: 'Attended' }); } catch (e) { console.warn(e); }
     setDemos(prev => prev.map(l => (room && l._id === room._id) ? { ...l, status: 'Attended' } : l));
     setDemoToast(`✓ Demo ended · ${room?.candidateName || 'student'} marked Attended · lead moved to Demo Attended`);
@@ -1096,7 +1105,7 @@ export default function TrainingDepartmentDashboard({
                       </div>
                       <div>
                         <div className="text-2xl font-black text-slate-900">
-                          {myExpertDemos.filter(d => d.status?.toLowerCase() !== 'attended').length}
+                          {(myExpertDemos.length > 0 ? myExpertDemos : demos).filter(d => d.status?.toLowerCase() !== 'attended').length}
                         </div>
                         <div className="text-[10px] font-bold text-slate-400 tracking-wider uppercase">DEMO</div>
                       </div>
@@ -1191,7 +1200,7 @@ export default function TrainingDepartmentDashboard({
                           onClick={() => setActiveNav('demos')}
                           className="px-4 py-2 rounded-xl bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 text-xs font-bold transition-all shadow-xs flex items-center justify-center gap-1 cursor-pointer"
                         >
-                          <span>Open Demos Desk ({myExpertDemos.length})</span>
+                          <span>Open Demos Desk ({myExpertDemos.length || demos.length})</span>
                         </button>
                       </div>
                     </div>
@@ -1260,7 +1269,7 @@ export default function TrainingDepartmentDashboard({
                     onClick={() => setActiveNav('demos')}
                     className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-sm cursor-pointer hover:border-teal-400 transition-all"
                   >
-                    <div className="text-2xl font-black text-slate-800">{myExpertDemos.filter(d => d.status === 'attended' || d.status === 'confirmed').length}</div>
+                    <div className="text-2xl font-black text-slate-800">{(myExpertDemos.length > 0 ? myExpertDemos : demos).filter(d => d.status === 'attended' || d.status === 'confirmed').length}</div>
                     <div className="text-xs text-slate-600 font-medium mt-1">Demos done</div>
                   </div>
 
@@ -1939,12 +1948,12 @@ export default function TrainingDepartmentDashboard({
                       {showDemoBucket ? 'Toggle View' : 'Show All'}
                     </button>
                     <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-teal-50 text-teal-800 border border-teal-200 font-mono">
-                      {`${myExpertDemos.length} assigned to you`}
+                      {myExpertDemos.length > 0 ? `${myExpertDemos.length} assigned to you` : `${demos.length} academy total`}
                     </span>
                   </div>
                 </div>
 
-                {!showDemoBucket || myExpertDemos.length === 0 ? (
+                {!showDemoBucket || (myExpertDemos.length === 0 && demos.length === 0) ? (
                   <div className="py-8 text-center text-xs text-slate-500 font-medium">
                     No upcoming demos booked for your course expertise right now.
                   </div>
@@ -1961,7 +1970,7 @@ export default function TrainingDepartmentDashboard({
                           </span>
                         </div>
                         <div className="text-xs text-slate-600 mt-1">
-                          {myExpertDemos.length} candidate demo session(s) allocated to your faculty desk · Zoom Room 2 Ready
+                          {(myExpertDemos.length > 0 ? myExpertDemos : demos).length} candidate demo session(s) allocated to your faculty desk · Zoom Room 2 Ready
                         </div>
                       </div>
                       <button
@@ -1974,7 +1983,7 @@ export default function TrainingDepartmentDashboard({
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3.5 pt-2">
-                      {myExpertDemos.map((lead, idx) => (
+                      {(myExpertDemos.length > 0 ? myExpertDemos : demos).map((lead, idx) => (
                         <div key={lead._id || lead.id || idx} className="p-4 rounded-xl border border-slate-200/90 bg-white hover:border-teal-400/80 transition-all text-xs space-y-2.5 shadow-2xs">
                           <div className="flex items-center justify-between">
                             <span className="font-extrabold text-slate-900 text-[13px]">{lead.candidateName || lead.name || `Candidate #${idx + 1}`}</span>

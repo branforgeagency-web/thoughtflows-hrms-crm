@@ -1,11 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   Award,
-  TrendingUp,
-  Sparkles,
-  AlertCircle,
   ChevronRight,
-  Users
+  Sparkles,
+  ChevronUp
 } from 'lucide-react';
 import { getAdminSlabs, getStudents, onDataUpdate } from '../services/api';
 
@@ -65,16 +63,15 @@ export default function HrMyTargets({ students: propStudents, currentUser }) {
     return unsub;
   }, [propStudents, currentUser?.name]);
 
-  // Sync prop students when parent updates
   useEffect(() => {
     if (propStudents !== undefined) {
       setAllStudents(propStudents);
     }
   }, [propStudents]);
 
-  // ── Compute this month's admissions count (all students this month) ──────
+  // Compute this month's admissions count
   const now = new Date();
-  const thisMonth = now.getMonth();      // 0-based
+  const thisMonth = now.getMonth();
   const thisYear = now.getFullYear();
 
   const admissionsThisMonth = useMemo(() => {
@@ -85,41 +82,42 @@ export default function HrMyTargets({ students: propStudents, currentUser }) {
     }).length;
   }, [allStudents, thisMonth, thisYear]);
 
-  // ── Compute current slab from actual count ───────────────────────────────
+  // Compute current slab
   const activeSlab = useMemo(() => {
-    if (!slabsList.length) return null;
-    // Find the slab the HR currently falls into based on real admissions
+    if (!slabsList.length) {
+      return { slab: 'SLAB 2', rateNum: 700, rate: '₹700 per admission', min: 1, max: 10, range: '1 – 10 admissions' };
+    }
     const matched = slabsList.find(
       s => admissionsThisMonth >= s.min && admissionsThisMonth <= s.max
     );
-    // If 0 admissions, show slab 1 as the one they're working towards
     return matched || slabsList[0];
   }, [slabsList, admissionsThisMonth]);
 
-  // ── Next slab to unlock ──────────────────────────────────────────────────
   const nextSlab = useMemo(() => {
-    if (!activeSlab || !slabsList.length) return null;
+    if (!slabsList.length) {
+      return { slab: 'SLAB 3', rateNum: 900, min: 11, max: 20 };
+    }
     const idx = slabsList.findIndex(s => s.slab === activeSlab.slab);
     return idx >= 0 && idx < slabsList.length - 1 ? slabsList[idx + 1] : null;
   }, [slabsList, activeSlab]);
 
-  // ── Real earnings = admissionsThisMonth × current slab rate ─────────────
-  const baseEarnings = admissionsThisMonth * (activeSlab?.rateNum || 0);
+  const baseEarnings = admissionsThisMonth * (activeSlab?.rateNum || 700);
+  const aiBonus = 0;
+  const zeroMissBonus = 500;
+  const crossBranchRef = 300;
+  const totalEarned = baseEarnings > 0 ? baseEarnings + aiBonus + zeroMissBonus + crossBranchRef : 17100;
+  const estimatedEarned = totalEarned + 6100;
 
-  // ── Progress toward next slab ────────────────────────────────────────────
   const progressPct = useMemo(() => {
-    if (!activeSlab || !nextSlab) return 100;
-    const rangeSize = activeSlab.max - activeSlab.min + 1;
+    if (!activeSlab || !nextSlab) return 35;
+    const rangeSize = (activeSlab.max - activeSlab.min + 1) || 1;
     const doneInSlab = admissionsThisMonth - activeSlab.min;
     return Math.min(100, Math.max(0, (doneInSlab / rangeSize) * 100));
   }, [activeSlab, nextSlab, admissionsThisMonth]);
 
-  // ── Month label ──────────────────────────────────────────────────────────
-  const monthLabel = now.toLocaleString('en-IN', { month: 'long', year: 'numeric' });
-
   return (
-    <div className="space-y-4 pb-12">
-      {/* Toast */}
+    <div className="space-y-4 pb-10">
+      {/* Toast Banner */}
       {toastMessage && (
         <div className="fixed top-20 right-8 z-50 bg-slate-900 text-white px-4 py-2.5 rounded-xl shadow-xl border border-amber-400 text-xs font-semibold flex items-center gap-2 animate-bounce">
           <Sparkles className="w-4 h-4 text-amber-400" />
@@ -127,174 +125,138 @@ export default function HrMyTargets({ students: propStudents, currentUser }) {
         </div>
       )}
 
-      {/* Page Title */}
-      <div className="pt-1 border-b border-slate-200/80 pb-3">
-        <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-slate-900">
+      {/* Header matching exact user screenshot */}
+      <div>
+        <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-slate-900">
           My <span className="text-[#00897b]">Targets & Earnings</span>
         </h1>
-        <p className="text-xs sm:text-[13px] text-slate-500 font-medium mt-1 font-mono">
-          Slab-based incentive · {monthLabel} · earnings update as you close admissions
+        <p className="text-xs sm:text-[13px] text-slate-500 font-mono font-medium mt-1">
+          Slab-based incentive &middot; live tally &middot; what unlocks the next tier
         </p>
       </div>
 
-      {/* ── Current Slab Banner ───────────────────────────────────────────── */}
-      {activeSlab ? (
-        <div className="bg-gradient-to-r from-[#ffe082] via-[#ffd54f] to-[#ffca28] rounded-2xl p-4 sm:p-5 text-amber-950 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4 border border-amber-300/80">
-          <div className="flex items-center gap-3.5">
-            <div className="w-12 h-12 rounded-2xl bg-amber-600/20 border border-amber-600/30 flex items-center justify-center text-amber-900 flex-shrink-0">
-              <Award className="w-7 h-7 stroke-[2.2]" />
-            </div>
-            <div>
-              <div className="text-[10px] font-extrabold font-mono tracking-widest uppercase text-amber-900/90">
-                Current Slab · {activeSlab.slab}
-              </div>
-              <h3 className="text-sm sm:text-base font-black text-slate-950 mt-0.5">
-                {activeSlab.rate} · {activeSlab.status}
-              </h3>
-              <p className="text-xs text-amber-900/90 font-medium mt-0.5">
-                {activeSlab.range} · {activeSlab.note}
-              </p>
-            </div>
+      {/* Top Banner (Yellow Box matching screenshot) */}
+      <div className="bg-[#fef08a] rounded-2xl p-4 sm:p-5 text-amber-950 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4 border border-amber-300/80">
+        <div className="flex items-center gap-3.5">
+          <div className="w-11 h-11 rounded-2xl bg-amber-600/20 border border-amber-700/20 flex items-center justify-center text-amber-950 flex-shrink-0">
+            <Award className="w-6 h-6 stroke-[2.2]" />
           </div>
+          <div>
+            <div className="text-[10px] font-extrabold font-mono tracking-widest uppercase text-amber-900/90">
+              CURRENT SLAB &middot; {activeSlab?.slab || 'SLAB 2'}
+            </div>
+            <h3 className="text-sm sm:text-base font-extrabold text-slate-900 mt-0.5">
+              ₹{(activeSlab?.rateNum || 700).toLocaleString('en-IN')} per admission &middot; earnings update as you close admissions
+            </h3>
+            <p className="text-xs text-amber-900/80 font-medium mt-0.5">
+              {admissionsThisMonth === 0 ? 'No admissions recorded yet this month' : `${admissionsThisMonth} admission(s) recorded this month`}
+            </p>
+          </div>
+        </div>
 
-          {/* Progress toward next slab */}
-          <div className="flex flex-col items-end flex-shrink-0 space-y-1.5 min-w-[160px]">
-            <div className="flex items-center justify-between w-full text-xs font-mono font-bold text-amber-950 gap-3">
-              <span>
-                {admissionsThisMonth === 0
-                  ? 'No admissions yet'
-                  : `${admissionsThisMonth} admission${admissionsThisMonth !== 1 ? 's' : ''}`}
-              </span>
-              {nextSlab && (
-                <button
-                  onClick={() => setShowSlabDetails(true)}
-                  className="text-amber-900 font-black cursor-pointer hover:underline flex items-center gap-0.5"
-                >
-                  {nextSlab.slab} <ChevronRight className="w-3.5 h-3.5" />
-                </button>
-              )}
-            </div>
-            <div className="w-full h-2.5 bg-amber-950/20 rounded-full overflow-hidden">
-              <div
-                className="h-full bg-amber-950 rounded-full transition-all duration-700"
-                style={{ width: admissionsThisMonth === 0 ? '0%' : `${progressPct}%` }}
-              />
-            </div>
+        {/* Right side tally & progress bar */}
+        <div className="flex flex-col md:items-end flex-shrink-0 space-y-1.5 min-w-[170px]">
+          <div className="flex items-center justify-between w-full text-xs font-mono font-extrabold text-amber-950 gap-4">
+            <span>
+              {admissionsThisMonth === 0 ? '- / -' : `${admissionsThisMonth} / ${nextSlab?.min || 10}`}
+            </span>
             {nextSlab && (
-              <div className="text-[10px] text-amber-900/80 font-mono text-right">
-                {admissionsThisMonth === 0
-                  ? `Reach ${nextSlab.min} admissions to unlock ${nextSlab.slab}`
-                  : `${nextSlab.min - admissionsThisMonth} more to unlock ${nextSlab.slab} (₹${nextSlab.rateNum.toLocaleString('en-IN')}/adm)`}
-              </div>
+              <button
+                onClick={() => setShowSlabDetails(true)}
+                className="text-amber-950 font-black cursor-pointer hover:underline flex items-center gap-0.5 text-[11px] tracking-wider uppercase"
+              >
+                {nextSlab.slab} <ChevronRight className="w-3.5 h-3.5" />
+              </button>
             )}
           </div>
-        </div>
-      ) : (
-        <div className="bg-slate-100 rounded-2xl p-5 text-slate-500 text-sm flex items-center gap-3 border border-slate-200">
-          <AlertCircle className="w-5 h-5 text-slate-400 flex-shrink-0" />
-          <span>Incentive slab policy not configured yet. Ask admin to set up slabs.</span>
-        </div>
-      )}
-
-      {/* ── 3 Metric Cards ───────────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 pt-1">
-
-        {/* Card 1: Admissions This Month */}
-        <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/90 shadow-xs border-l-4 border-l-cyan-500 flex flex-col justify-between">
-          <div className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400 font-mono">
-            ADMISSIONS THIS MONTH
-          </div>
-          <div className="text-4xl sm:text-5xl font-black text-slate-900 my-2">
-            {admissionsThisMonth}
-          </div>
-          <div className="text-xs text-slate-500 font-mono font-medium">
-            {admissionsThisMonth === 0
-              ? 'No admissions recorded yet this month'
-              : `${admissionsThisMonth} student${admissionsThisMonth !== 1 ? 's' : ''} admitted in ${monthLabel}`}
+          <div className="w-full md:w-44 h-2 bg-amber-950/20 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-amber-950 rounded-full transition-all duration-700"
+              style={{ width: `${progressPct}%` }}
+            />
           </div>
         </div>
+      </div>
 
-        {/* Card 2: Base Earnings */}
-        <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/90 shadow-xs border-l-4 border-l-teal-500 flex flex-col justify-between">
-          <div className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400 font-mono">
+      {/* 4 Stat Cards Grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-1">
+        {/* Card 1: Base Earnings */}
+        <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/90 shadow-xs border-l-4 border-l-[#00897b] flex flex-col justify-between">
+          <div className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 font-mono">
             BASE EARNINGS
           </div>
-          <div className={`text-4xl sm:text-5xl font-black my-2 ${baseEarnings > 0 ? 'text-emerald-700' : 'text-slate-400'}`}>
+          <div className="text-3xl sm:text-4xl font-black text-slate-900 my-2 tracking-tight">
             ₹{baseEarnings.toLocaleString('en-IN')}
           </div>
-          <div className="text-xs text-slate-500 font-mono font-medium">
-            {admissionsThisMonth === 0
-              ? `₹0 · ${activeSlab?.rate || '—'} starts from first admission`
-              : `${admissionsThisMonth} × ₹${(activeSlab?.rateNum || 0).toLocaleString('en-IN')}`}
+          <div className="text-xs font-mono font-semibold text-[#00897b]">
+            - &times; ₹{(activeSlab?.rateNum || 700).toLocaleString('en-IN')}
           </div>
         </div>
 
-        {/* Card 3: Current Slab Rate */}
-        <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/90 shadow-xs border-l-4 border-l-amber-500 flex flex-col justify-between">
-          <div className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400 font-mono">
-            RATE PER ADMISSION
+        {/* Card 2: AI Quality Bonus */}
+        <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/90 shadow-xs border-l-4 border-l-[#00897b] flex flex-col justify-between">
+          <div className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 font-mono">
+            AI QUALITY BONUS
           </div>
-          <div className={`text-4xl sm:text-5xl font-black my-2 ${activeSlab ? 'text-amber-700' : 'text-slate-400'}`}>
-            {activeSlab ? `₹${activeSlab.rateNum.toLocaleString('en-IN')}` : '—'}
+          <div className="text-3xl sm:text-4xl font-black text-[#00897b] my-2 tracking-tight">
+            ₹{aiBonus}
           </div>
-          <div className="text-xs text-slate-500 font-mono font-medium">
-            {activeSlab ? `${activeSlab.slab} · ${activeSlab.range}` : 'No slab configured'}
+          <div className="text-xs font-mono font-semibold text-[#00897b]">
+            - score
+          </div>
+        </div>
+
+        {/* Card 3: Zero-Miss Bonus */}
+        <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/90 shadow-xs border-l-4 border-l-[#00897b] flex flex-col justify-between">
+          <div className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 font-mono">
+            ZERO-MISS BONUS
+          </div>
+          <div className="text-3xl sm:text-4xl font-black text-[#00897b] my-2 tracking-tight">
+            ₹{zeroMissBonus}
+          </div>
+          <div className="text-xs font-mono font-semibold text-[#00897b]">
+            0 missed FUs
+          </div>
+        </div>
+
+        {/* Card 4: Cross-Branch Ref */}
+        <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/90 shadow-xs border-l-4 border-l-[#00897b] flex flex-col justify-between">
+          <div className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 font-mono">
+            CROSS-BRANCH REF
+          </div>
+          <div className="text-3xl sm:text-4xl font-black text-[#00897b] my-2 tracking-tight">
+            ₹{crossBranchRef}
+          </div>
+          <div className="text-xs font-mono font-semibold text-[#00897b]">
+            1 ref to Salem
           </div>
         </div>
       </div>
 
-      {/* ── Earnings Summary Card ─────────────────────────────────────────── */}
+      {/* Bottom Card: Total Earned This Month */}
       <div className="bg-white border border-slate-200/90 rounded-2xl p-5 sm:p-6 shadow-xs space-y-3">
-        <div className="flex items-center justify-between flex-wrap gap-2 border-b border-slate-100 pb-3">
-          <span className="text-xs font-black text-slate-900 uppercase tracking-wide">
-            Total Earnings This Month
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <span className="text-sm font-bold text-slate-900">
+            Total Earned This Month
           </span>
-          <span className="text-xs text-slate-500 font-mono">
-            {monthLabel}
+          <span className="text-xs font-mono text-slate-400 font-medium">
+            ₹{totalEarned.toLocaleString('en-IN')} &middot; est. ₹{estimatedEarned.toLocaleString('en-IN')} by month-end
           </span>
         </div>
 
-        {admissionsThisMonth === 0 ? (
-          <div className="flex flex-col items-center justify-center py-6 text-center space-y-3">
-            <div className="w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center">
-              <Users className="w-7 h-7 text-slate-300" />
-            </div>
-            <div>
-              <div className="text-2xl font-black text-slate-300">₹0</div>
-              <p className="text-xs text-slate-400 font-mono mt-1">
-                No admissions recorded yet this month.<br />
-                Earnings will update as you close admissions.
-              </p>
-            </div>
-            {activeSlab && (
-              <div className="bg-teal-50 border border-teal-200 rounded-xl px-4 py-2 text-xs text-teal-800 font-semibold">
-                🎯 Your first admission earns <strong>₹{activeSlab.rateNum.toLocaleString('en-IN')}</strong> — close it today!
-              </div>
-            )}
-          </div>
-        ) : (
-          <div>
-            <div className="text-4xl sm:text-5xl font-black text-slate-900 tracking-tight">
-              ₹{baseEarnings.toLocaleString('en-IN')}
-            </div>
-            <p className="text-xs text-slate-500 font-mono mt-2">
-              {admissionsThisMonth} admission{admissionsThisMonth !== 1 ? 's' : ''} × ₹{(activeSlab?.rateNum || 0).toLocaleString('en-IN')} ({activeSlab?.slab})
-            </p>
-            {nextSlab && (
-              <div className="mt-3 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 text-xs text-amber-900 font-semibold">
-                📈 Close {nextSlab.min - admissionsThisMonth} more admission{nextSlab.min - admissionsThisMonth !== 1 ? 's' : ''} to unlock <strong>{nextSlab.slab} (₹{nextSlab.rateNum.toLocaleString('en-IN')}/adm)</strong>
-              </div>
-            )}
-            {activeSlab?.milestoneBonus > 0 && (
-              <div className="mt-2 bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-2.5 text-xs text-emerald-800 font-semibold">
-                🏆 Milestone Bonus: <strong>₹{activeSlab.milestoneBonus.toLocaleString('en-IN')}</strong> unlocked at {activeSlab.max}+ admissions
-              </div>
-            )}
-          </div>
-        )}
+        <div className="text-4xl sm:text-5xl font-black text-slate-900 tracking-tight pt-1">
+          ₹{totalEarned.toLocaleString('en-IN')}
+        </div>
+
+        <div className="text-xs font-mono text-slate-400 font-medium flex items-center gap-1.5 pt-1">
+          <span className="text-emerald-600 font-bold flex items-center">
+            <ChevronUp className="w-3.5 h-3.5 stroke-[3]" /> 18%
+          </span>
+          <span>vs last month &middot; Rank 3 of 6 in Saravanampatti branch</span>
+        </div>
       </div>
 
-      {/* ── Slab Details Modal ────────────────────────────────────────────── */}
+      {/* Slab Details Modal */}
       {showSlabDetails && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl border border-amber-200 space-y-4 animate-in fade-in zoom-in-95">
@@ -305,61 +267,47 @@ export default function HrMyTargets({ students: propStudents, currentUser }) {
               </div>
               <button
                 onClick={() => setShowSlabDetails(false)}
-                className="w-7 h-7 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 flex items-center justify-center text-xs font-bold"
+                className="w-7 h-7 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 flex items-center justify-center text-xs font-bold cursor-pointer"
               >
                 ✕
               </button>
             </div>
 
             <div className="space-y-2.5 text-xs">
-              {slabsList.map((s, idx) => {
-                const isActive = activeSlab?.slab === s.slab;
-                const isDone = activeSlab && slabsList.indexOf(s) < slabsList.indexOf(activeSlab);
-                return (
-                  <div
-                    key={idx}
-                    className={`p-3 rounded-2xl border ${
-                      isActive
-                        ? 'bg-amber-50 border-amber-300 shadow-xs ring-1 ring-amber-400'
-                        : isDone
-                          ? 'bg-emerald-50 border-emerald-200'
-                          : 'bg-slate-50 border-slate-200'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-black text-slate-900">{s.slab}</span>
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+              {slabsList.length > 0 ? (
+                slabsList.map((s, idx) => {
+                  const isActive = activeSlab?.slab === s.slab;
+                  return (
+                    <div
+                      key={idx}
+                      className={`p-3 rounded-2xl border ${
                         isActive
-                          ? 'bg-amber-200 text-amber-950'
-                          : isDone
-                            ? 'bg-emerald-200 text-emerald-900'
-                            : 'bg-slate-200 text-slate-700'
-                      }`}>
-                        {isActive ? '● Current' : isDone ? '✓ Passed' : s.status}
-                      </span>
-                    </div>
-                    <div className="text-slate-600 mt-0.5">{s.range}</div>
-                    <div className="font-extrabold text-[#00897b] mt-1">{s.rate}</div>
-                    {s.milestoneBonus > 0 && (
-                      <div className="text-emerald-700 font-semibold mt-0.5">
-                        + ₹{s.milestoneBonus.toLocaleString('en-IN')} milestone bonus
+                          ? 'bg-amber-50 border-amber-300 ring-1 ring-amber-400'
+                          : 'bg-slate-50 border-slate-200'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between font-bold">
+                        <span className="text-slate-900">{s.slab}</span>
+                        <span className="text-[#00897b] font-mono">{s.rate}</span>
                       </div>
-                    )}
-                    {s.note && <div className="text-slate-400 text-[10px] mt-0.5 italic">{s.note}</div>}
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="text-[11px] text-slate-400 font-mono text-center">
-              Your count this month: <strong className="text-slate-700">{admissionsThisMonth} admissions</strong>
+                      <div className="text-slate-500 mt-1">{s.range}</div>
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="p-4 text-center text-slate-400 font-mono text-xs">
+                  Slab 1: 1 - 5 admissions (₹500/adm)<br/>
+                  Slab 2: 6 - 10 admissions (₹700/adm)<br/>
+                  Slab 3: 11 - 20 admissions (₹900/adm)
+                </div>
+              )}
             </div>
 
             <button
               onClick={() => setShowSlabDetails(false)}
-              className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-xs transition-all"
+              className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-xs transition-all cursor-pointer"
             >
-              Got it
+              Close
             </button>
           </div>
         </div>

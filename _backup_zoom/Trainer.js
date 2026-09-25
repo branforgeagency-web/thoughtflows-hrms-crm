@@ -11,15 +11,6 @@ const trainerSchema = new mongoose.Schema(
       type: String,
       required: true
     },
-    // This trainer's own Zoom user (licensed, inside the same Zoom account).
-    // Demo meetings are created under and hosted by this user so several
-    // trainers can run demos at the same time. Falls back to ZOOM_HOST_EMAIL.
-    zoomEmail: {
-      type: String,
-      default: '',
-      trim: true,
-      lowercase: true
-    },
     courseKey: {
       type: String,
       default: ''

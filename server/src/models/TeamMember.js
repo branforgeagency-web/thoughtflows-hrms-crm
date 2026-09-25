@@ -11,7 +11,8 @@ const teamMemberSchema = new mongoose.Schema(
     pending: { type: Number, default: 0 },
     quality: { type: Number, default: 80 },
     available: { type: Boolean, default: true },
-    shift: { type: String, enum: ['morning', 'general', 'evening', 'off'], default: 'general' }
+    shift: { type: String, default: 'general' },
+    weeklySchedule: { type: mongoose.Schema.Types.Mixed, default: null }
   },
   { timestamps: true }
 );

@@ -48,16 +48,16 @@ export default function StudentDemoNotice({ email, name }) {
       ))}
 
       {room && (
-        <div className="fixed inset-0 z-[90] bg-black/70 flex items-center justify-center p-4">
-          <div className="bg-[#0f212d] rounded-2xl w-full max-w-5xl p-4 space-y-3 border border-[#1b3446]">
+        <div className="fixed inset-0 z-[90] bg-black/75 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 overflow-y-auto">
+          <div className="bg-[#0f212d] rounded-2xl w-full max-w-6xl p-4 sm:p-5 space-y-3 border border-[#1b3446] shadow-2xl">
             <div className="flex items-center justify-between text-white">
               <div>
-                <div className="text-sm font-bold">Demo class · {room.course}</div>
-                <div className="text-[11px] text-slate-300">Trainer: {room.trainer}</div>
+                <div className="text-sm sm:text-base font-extrabold">Demo class · {room.course}</div>
+                <div className="text-xs text-slate-300">Trainer: {room.trainer}</div>
               </div>
-              <button onClick={() => setRoom(null)} className="px-3 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold">Leave</button>
+              <button onClick={() => setRoom(null)} className="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-all cursor-pointer">Leave</button>
             </div>
-            <ZoomMeeting demoId={room._id} studentEmail={email} userName={name || 'Student'} height={520} />
+            <ZoomMeeting demoId={room._id} studentEmail={email} userName={name || 'Student'} isTrainerHost={false} height={580} />
           </div>
         </div>
       )}

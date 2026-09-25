@@ -625,7 +625,6 @@ export default function AdminManagementDashboard({
     // Trainer-only fields — shown when role === 'Trainer' and used to
     // seed the Trainer roster (Demo Booking eligibility engine)
     trainerId: '',
-    zoomEmail: '',
     expertCourse: 'CPC',
     trainerLanguages: ['Tamil', 'English'],
     shiftStart: '06:00',
@@ -827,7 +826,6 @@ export default function AdminManagementDashboard({
       try {
         await axios.put(`/api/trainer/settings/${encodeURIComponent(newUserForm.trainerId)}`, {
           trainerName: newUserForm.name,
-          zoomEmail: (newUserForm.zoomEmail || newUserForm.email || '').trim().toLowerCase(),
           courseKey: newUserForm.expertCourse,
           expertCourse: courseLabel,
           specialization: courseLabel,
@@ -876,7 +874,6 @@ export default function AdminManagementDashboard({
       branch: 'Saravanampatti',
       password: '',
       trainerId: '',
-      zoomEmail: '',
       expertCourse: 'CPC',
       trainerLanguages: ['Tamil', 'English'],
       shiftStart: '06:00',
@@ -2746,19 +2743,6 @@ export default function AdminManagementDashboard({
                       placeholder="e.g., TR-CBG-001"
                       value={newUserForm.trainerId}
                       onChange={(e) => setNewUserForm({ ...newUserForm, trainerId: e.target.value })}
-                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 hover:border-slate-300 focus:border-blue-500 bg-white text-slate-800 placeholder:text-slate-400 focus:outline-none text-sm shadow-2xs font-medium transition-all"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-[#2563eb] font-extrabold text-[11px] tracking-wider uppercase mb-1.5 block">
-                      ZOOM ACCOUNT EMAIL (HOST)
-                    </label>
-                    <input
-                      type="email"
-                      placeholder="Trainer's own Zoom user — defaults to login email"
-                      value={newUserForm.zoomEmail || ''}
-                      onChange={(e) => setNewUserForm({ ...newUserForm, zoomEmail: e.target.value })}
                       className="w-full px-4 py-2.5 rounded-xl border border-slate-200 hover:border-slate-300 focus:border-blue-500 bg-white text-slate-800 placeholder:text-slate-400 focus:outline-none text-sm shadow-2xs font-medium transition-all"
                     />
                   </div>

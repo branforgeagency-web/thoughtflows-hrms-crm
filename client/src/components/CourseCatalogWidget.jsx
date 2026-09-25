@@ -542,7 +542,9 @@ const COURSES = [
 
 const formatINR = (n) => `₹${n.toLocaleString('en-IN')}`;
 
-export default function CourseCatalogWidget() {
+export default function CourseCatalogWidget({ hidden = false }) {
+  if (hidden) return null;
+
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [expandedCode, setExpandedCode] = useState(null);

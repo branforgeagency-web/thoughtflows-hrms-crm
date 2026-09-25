@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import ZoomMeeting from './ZoomMeeting';
 import { 
   Home, 
   CreditCard, 
@@ -60,6 +61,32 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
   const [serverStudent, setServerStudent] = useState(null);
   const [trainersList, setTrainersList] = useState([]);
   const [studentDoubts, setStudentDoubts] = useState([]);
+
+  // Live Class Session state synced from trainer
+  const [liveClassSession, setLiveClassSession] = useState(() => {
+    try {
+      const stored = localStorage.getItem('TF_LIVE_CLASS_SESSION');
+      return stored ? JSON.parse(stored) : null;
+    } catch (_) {
+      return null;
+    }
+  });
+
+  useEffect(() => {
+    const handleUpdate = () => {
+      try {
+        const stored = localStorage.getItem('TF_LIVE_CLASS_SESSION');
+        setLiveClassSession(stored ? JSON.parse(stored) : null);
+      } catch (_) {}
+    };
+
+    window.addEventListener('storage', handleUpdate);
+    window.addEventListener('thoughtflows_data_updated', handleUpdate);
+    return () => {
+      window.removeEventListener('storage', handleUpdate);
+      window.removeEventListener('thoughtflows_data_updated', handleUpdate);
+    };
+  }, []);
 
   // Modals state
   const [activeModal, setActiveModal] = useState(null);
@@ -387,7 +414,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
     <div className="w-full space-y-6 pb-12">
       <StudentDemoNotice email={currentUser?.email} name={displayName} />
 
-      {/* Top Banner: Today's Live Class (Luxury Executive Styling) */}
+      {/* Top Banner: Today's Live Class (Synced with Trainer Session) */}
       <div className="bg-gradient-to-r from-[#07252a] via-[#0b3842] to-[#061e22] border border-teal-500/30 rounded-3xl p-5 sm:p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-[0_8px_30px_rgba(7,37,42,0.25)] relative overflow-hidden">
         <div className="absolute -right-10 -top-10 w-48 h-48 bg-teal-500/10 rounded-full blur-2xl pointer-events-none" />
         
@@ -397,36 +424,55 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
           </div>
           <div>
             <div className="flex items-center gap-2.5 flex-wrap">
-              <span className="text-[10px] font-black uppercase tracking-widest text-amber-300 bg-amber-400/15 border border-amber-400/40 px-2.5 py-0.5 rounded-md shadow-xs">
-                {serverStudent ? 'TODAY 7:00 PM' : 'WELCOME'}
-              </span>
+              {liveClassSession?.isLive ? (
+                <span className="text-[10px] font-black uppercase tracking-widest text-emerald-300 bg-emerald-500/20 border border-emerald-400/40 px-2.5 py-0.5 rounded-md shadow-xs flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+                  LIVE NOW
+                </span>
+              ) : (
+                <span className="text-[10px] font-black uppercase tracking-widest text-amber-300 bg-amber-400/15 border border-amber-400/40 px-2.5 py-0.5 rounded-md shadow-xs">
+                  {serverStudent ? 'SCHEDULED CLASS' : 'WELCOME'}
+                </span>
+              )}
               <span className="text-white font-black text-base sm:text-lg tracking-tight">
-                {serverStudent ? `${student.course} — ${student.currentStage}` : 'Student Onboarding & Curriculum Desk'}
+                {liveClassSession?.isLive 
+                  ? `${liveClassSession.topic || 'Live Session'} — Trainer ${liveClassSession.trainerName || 'Faculty'} is Live!`
+                  : (serverStudent ? `${student.course} — ${student.currentStage}` : 'Student Onboarding & Curriculum Desk')}
               </span>
             </div>
             <p className="text-xs text-slate-300 mt-1 flex items-center gap-2">
-              {serverStudent ? (
-                <>
-                  <span className="font-semibold text-white">{student.counselor}</span>
-                  <span className="text-slate-500">·</span>
-                  <span className="text-teal-300 font-medium">{student.schedule}</span>
-                  <span className="text-slate-500">·</span>
-                  <span className="text-slate-400">{student.location}</span>
-                </>
-              ) : (
-                <span className="text-slate-300">
-                  Welcome, {student.name}. Your active batch schedule and classroom links will appear here once allocated by faculty.
+              {liveClassSession?.isLive ? (
+                <span className="text-emerald-300 font-medium">
+                  Class session has been started by your trainer. Click below to enter the Zoom classroom!
                 </span>
+              ) : (
+                serverStudent ? (
+                  <>
+                    <span className="font-semibold text-white">{student.counselor}</span>
+                    <span className="text-slate-500">·</span>
+                    <span className="text-teal-300 font-medium">{student.schedule}</span>
+                    <span className="text-slate-500">·</span>
+                    <span className="text-slate-400">Waiting for trainer to start session</span>
+                  </>
+                ) : (
+                  <span className="text-slate-300">
+                    Welcome, {student.name}. Your active batch schedule and classroom links will appear here once allocated by faculty.
+                  </span>
+                )
               )}
             </p>
           </div>
         </div>
 
         <button 
-          onClick={() => setActiveModal(serverStudent ? 'liveClass' : 'batchDetails')}
-          className="w-full sm:w-auto px-7 py-3 rounded-2xl bg-[#0d9488] hover:bg-[#0f766e] text-white text-xs font-bold tracking-wide transition-all shadow-md flex items-center justify-center gap-2 active:scale-95 flex-shrink-0 cursor-pointer relative z-10"
+          onClick={() => setActiveModal('liveClass')}
+          className={`w-full sm:w-auto px-7 py-3 rounded-2xl text-xs font-bold tracking-wide transition-all shadow-md flex items-center justify-center gap-2 active:scale-95 flex-shrink-0 cursor-pointer relative z-10 ${
+            liveClassSession?.isLive 
+              ? 'bg-[#009688] hover:bg-[#00897b] text-white shadow-emerald-900/30' 
+              : 'bg-slate-800 hover:bg-slate-700 text-teal-300 border border-slate-700'
+          }`}
         >
-          <span>{serverStudent ? 'Join Virtual Classroom' : 'View Course Curriculum'}</span>
+          <span>{liveClassSession?.isLive ? '▶ Join Virtual Classroom' : 'View Classroom Status'}</span>
           <ArrowRight className="w-4 h-4" />
         </button>
       </div>
@@ -3428,43 +3474,77 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
 
       {/* 5. LIVE CLASS JOIN MODAL */}
       {activeModal === 'liveClass' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl border border-slate-100 relative text-center">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-900/80 backdrop-blur-xs animate-fadeIn overflow-y-auto">
+          <div className={`bg-[#0f212d] w-full ${liveClassSession?.isLive ? 'max-w-6xl p-4 sm:p-5 space-y-3' : 'max-w-md p-6 text-center'} rounded-2xl shadow-2xl border border-slate-700 relative text-left`}>
             <button 
               onClick={() => setActiveModal(null)}
-              className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-slate-800 rounded-lg hover:bg-slate-100"
+              className="absolute top-4 right-4 z-20 p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
 
-            <div className="w-12 h-12 rounded-full bg-teal-100 text-teal-700 flex items-center justify-center mx-auto mb-3">
-              <Video className="w-6 h-6" />
-            </div>
-            <h3 className="text-base font-bold text-slate-900">Virtual Classroom Connecting</h3>
-            <p className="text-xs text-slate-500 mt-1">{student.course} — {student.currentStage} · {trainersList[0]?.name || 'Faculty Lead'}</p>
-            <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs text-slate-600 my-4 text-left">
-              <div>• Audio/Video ready</div>
-              <div>• Session ID: {student.studentId}-LIVE</div>
-              <div>• {student.location} &amp; Webinar Live Stream</div>
-            </div>
+            {liveClassSession?.isLive ? (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-3 text-white pr-8">
+                  <div>
+                    <div className="text-sm sm:text-base font-extrabold">{liveClassSession.topic || student.course || 'Live Virtual Classroom'}</div>
+                    <div className="text-xs text-teal-300">Faculty: {liveClassSession.trainerName || 'Trainer'}</div>
+                  </div>
+                  <span className="px-3 py-1 rounded-full text-xs font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                    ● LIVE NOW
+                  </span>
+                </div>
+                <ZoomMeeting 
+                  link={liveClassSession.zoomLink || `https://zoom.us/j/${liveClassSession.meetingNumber}?pwd=${liveClassSession.password}`}
+                  studentEmail={student.email}
+                  userName={student.name || 'Student'}
+                  topic={liveClassSession.topic || student.course}
+                  batchName={student.course}
+                  isTrainerHost={false}
+                  height={560}
+                />
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="w-14 h-14 rounded-2xl bg-amber-100 border border-amber-300 text-amber-700 flex items-center justify-center mx-auto">
+                  <Clock className="w-7 h-7" />
+                </div>
 
-            <div className="flex gap-2 justify-center">
-              <button
-                onClick={() => setActiveModal(null)}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => {
-                  setActiveModal(null);
-                  showToast('Connected to classroom webinar session!');
-                }}
-                className="px-5 py-2 rounded-xl text-xs font-bold bg-[#0d9488] hover:bg-[#0f766e] text-white transition-colors"
-              >
-                Enter Class Now
-              </button>
-            </div>
+                <div>
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
+                    <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+                    MEETING NOT STARTED
+                  </span>
+                  <h3 className="text-base font-extrabold text-slate-900 mt-1.5">
+                    Waiting for Trainer to Start
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-1 max-w-xs mx-auto">
+                    Your trainer has not started this meeting yet. You will be able to join as soon as your trainer launches the session.
+                  </p>
+                </div>
+
+                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-600 text-left space-y-1">
+                  <div>• Program: <b>{student.course}</b></div>
+                  <div>• Mode: <b>{student.mode || 'Online'}</b></div>
+                  <div>• Timing: <b>{student.schedule}</b></div>
+                </div>
+
+                <div className="flex gap-2 justify-center pt-1">
+                  <button
+                    onClick={() => setActiveModal(null)}
+                    className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100"
+                  >
+                    Close
+                  </button>
+                  <button
+                    disabled
+                    className="px-5 py-2 rounded-xl text-xs font-bold bg-slate-200 text-slate-400 cursor-not-allowed"
+                  >
+                    Waiting for Trainer…
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

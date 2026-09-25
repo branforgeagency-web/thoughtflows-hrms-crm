@@ -24,7 +24,9 @@ import {
   ChevronRight,
   Palette,
   RefreshCw,
-  PhoneCall
+  PhoneCall,
+  Users,
+  AlertTriangle
 } from 'lucide-react';
 import HrPipelineView from './HrPipelineView';
 import HrFollowUpBoard from './HrFollowUpBoard';
@@ -427,7 +429,6 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       { name: 'Admitted Students', badge: admittedCount, icon: GraduationCap, iconBg: 'bg-emerald-600', badgeBg: 'bg-emerald-500', color: 'emerald' },
       { name: 'Call Recordings', badge: null, icon: PhoneCall, iconBg: 'bg-[#0e6977]', color: 'teal' },
       { name: 'My Targets', badge: null, icon: Target, iconBg: 'bg-rose-500', color: 'pink' },
-      { name: 'Reports', badge: null, icon: BarChart2, iconBg: 'bg-amber-600', color: 'amber' },
       { name: 'My Schedule', badge: null, icon: Calendar, iconBg: 'bg-blue-500', color: 'blue' },
       { name: 'LMS', badge: 'Learn', isPillBadge: true, icon: BookOpen, iconBg: 'bg-yellow-700', color: 'green' },
       { name: 'Fees', badge: null, icon: IndianRupee, iconBg: 'bg-teal-600', color: 'teal' },
@@ -823,9 +824,9 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       {/* Main Content Body */}
       <main className="w-full px-4 sm:px-6 lg:px-8 py-5 space-y-5">
         {activeTab === 'My Schedule' ? (
-          <HrMySchedule isOnBreak={isOnBreak} setIsOnBreak={setIsOnBreak} />
+          <HrMySchedule isOnBreak={isOnBreak} setIsOnBreak={setIsOnBreak} currentUser={currentUser} />
         ) : activeTab === 'My Targets' ? (
-          <HrMyTargets students={scopedStudents} currentUser={currentUser} />
+          <HrMyTargets currentUser={currentUser} students={scopedStudents} />
         ) : activeTab === 'Admitted Students' ? (
           <HrAdmittedStudentsCrm 
             students={scopedStudents} 
@@ -861,13 +862,6 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             students={scopedStudents} 
             onRefreshStudents={loadAllData} 
             currentUser={currentUser} 
-          />
-        ) : activeTab === 'Reports' ? (
-          <HrReportsView
-            leads={scopedLeads}
-            students={scopedStudents}
-            demos={scopedDemos}
-            currentUser={currentUser}
           />
         ) : activeTab === 'Home' ? (
           <>

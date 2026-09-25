@@ -1587,10 +1587,10 @@ const norm = (s = '') => String(s).trim().toLowerCase();
  * ALL of the following hold:
  *   1. Same Language   — trainer teaches in the student's selected language
  *   2. Same Location   — trainer's branch matches the student's selected branch
- *   3. Free at the Time — demo slot is inside the trainer's shift, does not
- *                          overlap one of their scheduled classes, and does not
- *                          overlap another booked/confirmed demo
- * (Only inactive trainers are skipped. Course is a ranking preference only.)
+ *   3. Free at the Time — trainer has no other booked/confirmed demo whose
+ *                          slot overlaps the requested date + time
+ *   4. Experienced in Demo — trainer.demoTrainer === true
+ *   5. Active Trainer  — trainer.active === true
  * Returns { eligible: Trainer[], reason } where `reason` explains a zero
  * match (used to populate Demo.noEligibleTrainerReason).
  */
@@ -1598,7 +1598,7 @@ async function findEligibleTrainers({ language, location, preferredDate, timeSlo
   const langNorm = norm(language);
   const locNorm = norm(location);
 
-  const roster = await Trainer.find({ active: { $ne: false } });
+  const roster = await Trainer.find({ active: true, demoTrainer: true });
 
   const languageLocationMatched = roster.filter((t) => {
     const languageOk = !langNorm || (t.languages || []).some((l) => norm(l) === langNorm);
@@ -1609,41 +1609,15 @@ async function findEligibleTrainers({ language, location, preferredDate, timeSlo
   if (languageLocationMatched.length === 0) {
     return {
       eligible: [],
-      reason: `No trainer found for language "${language}" at "${location}".`
+      reason: `No active, demo-experienced trainer found for language "${language}" at "${location}".`
     };
   }
 
-  // Condition 3a: free by schedule — slot inside shift and not during one of their classes
-  const slot = parseSlotToRange(timeSlot);
-  const freeBySchedule = languageLocationMatched.filter((t) => {
-    if (!slot) return true; // unparseable slot → can't judge, don't exclude
-    const shiftStart = Number.isFinite(t.shiftStartMin) ? t.shiftStartMin : 0;
-    const shiftEnd = Number.isFinite(t.shiftEndMin) ? t.shiftEndMin : 1440;
-    const inShift = shiftEnd > shiftStart
-      ? slot.startMin >= shiftStart && slot.endMin <= shiftEnd
-      : slot.startMin >= shiftStart || slot.endMin <= shiftEnd; // overnight shift
-    if (!inShift) return false;
-    const inClass = (t.scheduledClasses || []).some((c) => {
-      const r = Number.isFinite(c.startMin) && Number.isFinite(c.endMin)
-        ? { startMin: c.startMin, endMin: c.endMin }
-        : parseSlotToRange(c.timeSlot);
-      return r && Math.max(r.startMin, slot.startMin) < Math.min(r.endMin, slot.endMin);
-    });
-    return !inClass;
-  });
-
-  if (freeBySchedule.length === 0) {
-    return {
-      eligible: [],
-      reason: `Trainer(s) matching language "${language}" and location "${location}" are off-shift or in class at ${timeSlot}.`
-    };
-  }
-
-  // Condition 3b: free at the exact demo date + time — exclude anyone who
+  // Condition 3: free at the exact demo date + time — exclude anyone who
   // already has a booked/confirmed demo whose slot overlaps this one.
   const busyQuery = {
     preferredDate,
-    trainerId: { $in: freeBySchedule.map((t) => t.trainerId) },
+    trainerId: { $in: languageLocationMatched.map((t) => t.trainerId) },
     status: { $in: ['booked', 'confirmed'] }
   };
   if (excludeDemoId) busyQuery._id = { $ne: excludeDemoId };
@@ -1653,7 +1627,7 @@ async function findEligibleTrainers({ language, location, preferredDate, timeSlo
     sameDayDemos.filter((d) => slotsOverlap(d.timeSlot, timeSlot)).map((d) => d.trainerId)
   );
 
-  const eligible = freeBySchedule.filter((t) => !busyTrainerIds.has(t.trainerId));
+  const eligible = languageLocationMatched.filter((t) => !busyTrainerIds.has(t.trainerId));
 
   if (eligible.length === 0) {
     return {
@@ -1754,7 +1728,8 @@ router.post('/demos', async (req, res) => {
 
     // Demo Booking Notification Requirement: find every trainer who is
     // simultaneously (1) fluent in the student's language, (2) at the
-    // student's location, and (3) free at this exact date + time.
+    // student's location, (3) free at this exact date + time, (4) marked
+    // "Experienced in Demo", and (5) active/eligible.
     const { eligible, reason: noEligibleTrainerReason } = await findEligibleTrainers({
       language,
       location,

@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 
 import { getLeads, updateLead, createStudent } from '../services/api';
+import { getCurrentMonthYear } from '../utils/dateUtils';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 
 // Classifies a lead's follow-up against real dates instead of guessing.
@@ -119,7 +120,7 @@ export default function HrPipelineView({
             email: targetLead.email || `student.${Date.now().toString().slice(-4)}@thoughtflows.in`,
             course: targetLead.course || 'CPC',
             mode: 'Online',
-            batchDate: 'May 2026',
+            batchDate: getCurrentMonthYear(),
             hrName: targetLead.counselorAssigned || currentUser?.name || 'Kavitha N.',
             batchTiming: '8-10 PM Weekdays',
             qualification: targetLead.education || 'Graduate',

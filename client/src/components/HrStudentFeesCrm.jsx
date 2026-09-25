@@ -14,6 +14,7 @@ import {
   FileSpreadsheet
 } from 'lucide-react';
 import { getCourseFeeRates, saveCourseFeeRate, createStudent, getStudents, updateStudent } from '../services/api';
+import { getCurrentMonthYear } from '../utils/dateUtils';
 import AddCourseRateModal from './AddCourseRateModal';
 
 export default function HrStudentFeesCrm({ students: propStudents, onRefreshStudents, currentUser }) {
@@ -212,7 +213,7 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
           hrName: newRecord.counsellor,
           phone: '98401 00000',
           mode: 'Online',
-          batchDate: 'May 2026',
+          batchDate: getCurrentMonthYear(),
           statusGroup: 'in_course'
         });
       }

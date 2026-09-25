@@ -47,15 +47,15 @@ const demoSchema = new mongoose.Schema({
   },
   trainer: {
     type: String,
-    default: ''
+    default: 'Dr. Vikram C.'
   },
   trainerMapping: {
     type: String,
-    default: ''
+    default: 'Maps to Revathi K · Tamil · Anatomy + ICD-10-CM · 90% · load 2/5'
   },
   trainerId: {
     type: String,
-    default: ''
+    default: 'TR-CBG-001'
   },
   trainerRole: {
     type: String,
@@ -137,11 +137,6 @@ const demoSchema = new mongoose.Schema({
     default: 'https://zoom.us/j/9823412345'
   },
   zoomMeetingId: {
-    type: String,
-    default: ''
-  },
-  // Zoom user that owns/hosts this demo's meeting (the trainer's own Zoom user)
-  zoomHostEmail: {
     type: String,
     default: ''
   },
