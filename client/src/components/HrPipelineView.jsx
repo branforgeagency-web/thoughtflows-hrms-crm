@@ -114,33 +114,31 @@ export default function HrPipelineView({
       if (nextStage === 'admitted' && targetLead) {
         try {
           await createStudent({
-            studentId: `TFMC0Y${Math.floor(1000 + Math.random() * 9000)}`,
-            name: (targetLead.fullName || targetLead.name || 'Admitted Student').toUpperCase(),
-            phone: targetLead.phone || '99999 99999',
-            email: targetLead.email || `student.${Date.now().toString().slice(-4)}@thoughtflows.in`,
-            course: targetLead.course || 'CPC',
-            mode: 'Online',
+            name: (targetLead.fullName || targetLead.name || '').toUpperCase(),
+            phone: targetLead.phone || '',
+            whatsappNumber: targetLead.whatsappNumber || '',
+            email: targetLead.email || '',
+            course: targetLead.course || '',
+            mode: /class|off/i.test(targetLead.mode || '') ? 'Classroom' : 'Online',
             batchDate: getCurrentMonthYear(),
-            hrName: targetLead.counselorAssigned || currentUser?.name || 'Kavitha N.',
-            batchTiming: '8-10 PM Weekdays',
-            qualification: targetLead.education || 'Graduate',
-            qualTag: 'Life Sci',
-            location: targetLead.location || 'Coimbatore',
+            hrName: targetLead.counselorAssigned || currentUser?.name || '',
+            batchTiming: targetLead.batchTiming || '',
+            qualification: targetLead.education || '',
+            location: targetLead.branch || targetLead.location || '',
             source: targetLead.sourceName || targetLead.source || 'LEAD PIPELINE',
-            onboardStatus: '7/7 ✓',
             syllabusModule: 'Module 1',
             mockInterview: 'Pending',
             examStatus: 'Not Booked',
             certified: 'Non-certified',
             placementStatus: 'In course',
-            feeStatus: 'Part Paid',
-            feeAmount: '₹15,000 / ₹25,000',
-            courseFee: 25000,
+            feeStatus: 'Pending',
             statusGroup: 'in_course',
             handoverStatus: 'Ready'
           });
         } catch (enrollErr) {
-          console.warn('Auto-enroll student notice:', enrollErr.message);
+          triggerAction(`⚠ Lead moved to admitted, but the student record was not created: ${enrollErr?.response?.data?.error || enrollErr.message}`);
+          if (onRefreshLeads) onRefreshLeads();
+          return;
         }
       }
 

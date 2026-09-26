@@ -16,7 +16,7 @@ export default function WalkinRegistrationModal({ isOpen, onClose, onRegister, c
   const [phone, setPhone] = useState('');
   const [whatsappNumber, setWhatsappNumber] = useState('');
   const [sameAsMobile, setSameAsMobile] = useState(false);
-  const [consultHr, setConsultHr] = useState(currentUser?.name || 'Kavitha N.');
+  const [consultHr, setConsultHr] = useState(currentUser?.name || '');
   const [branch, setBranch] = useState(currentUser?.branch || 'Saravanampatti (CBE)');
   const [email, setEmail] = useState('');
   const [facebookId, setFacebookId] = useState('');
@@ -98,7 +98,7 @@ export default function WalkinRegistrationModal({ isOpen, onClose, onRegister, c
       batchTiming: preferredTimings || '8-10 PM Weekdays',
       batchType,
       batchDate: getCurrentMonthYear(),
-      hrName: consultHr || currentUser?.name || 'Kavitha N.',
+      hrName: consultHr || currentUser?.name || '',
       branch: branch || currentUser?.branch || 'Saravanampatti',
       qualTag: education.toLowerCase().includes('bsc') || education.toLowerCase().includes('bpharm') ? 'Life Sci' : 'Grad',
       collegeCompany: college || company || 'Coimbatore',
@@ -299,7 +299,6 @@ export default function WalkinRegistrationModal({ isOpen, onClose, onRegister, c
                   className="w-full bg-slate-50/60 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-slate-900 outline-none focus:border-[#00796b] transition-all font-medium"
                 />
                 <datalist id="consult-hr-list">
-                  <option value="Kavitha N." />
                   <option value="Pooja J." />
                   <option value="Kalaiselvi M." />
                   <option value="Priyadharshini" />

@@ -48,6 +48,8 @@ import TrainingPlacementPrep from './TrainingPlacementPrep';
 import TrainingMyProfile from './TrainingMyProfile';
 import TrainingSkillsCourses from './TrainingSkillsCourses';
 import TrainingShiftAvailability from './TrainingShiftAvailability';
+import TrainerStudentDesk from './TrainerStudentDesk';
+import ClassSessionRoom from './ClassSessionRoom';
 import {
   getStudents,
   updateStudent,
@@ -138,10 +140,6 @@ export default function TrainingDepartmentDashboard({
     window.addEventListener('beforeunload', warn);
     return () => window.removeEventListener('beforeunload', warn);
   }, [demoRoom]);
-  const [isLiveClassActive, setIsLiveClassActive] = useState(false);
-  const [sessionStartedAt, setSessionStartedAt] = useState(null);
-  const [sessionElapsed, setSessionElapsed] = useState(0);
-  const [classChatMsg, setClassChatMsg] = useState('');
 
   // Live Database States
   const [loading, setLoading] = useState(true);
@@ -619,56 +617,6 @@ export default function TrainingDepartmentDashboard({
     setDemoRoom(d);
   };
 
-  // Batch the session room is running for (defaults to the first allocated batch)
-  const [sessionBatchId, setSessionBatchId] = useState('');
-  const sessionBatch = batches.find(b => b.id === sessionBatchId) || batches[0] || null;
-  const classMeetingUrl = sessionBatch?.zoomLink || import.meta.env.VITE_ZOOM_MEETING_LINK || '';
-
-  // Trainer sends live batch meeting link to students (In-App broadcast + WhatsApp)
-  const handleSendBatchClassLink = (channel = 'all') => {
-    if (!sessionBatch) { flashDemoToast('No batch allocated to you yet'); return; }
-    if (!classMeetingUrl) { flashDemoToast('No class Zoom link is set on your trainer profile. Ask admin to add it.', 5000); return; }
-    const numStudents = sessionBatch.students.length;
-    const { meetingNumber, password } = parseZoomLink(classMeetingUrl);
-    const sessionData = {
-      isLive: true,
-      startedAt: Date.now(),
-      topic: sessionBatch.module,
-      batchName: sessionBatch.name,
-      trainerName,
-      zoomLink: classMeetingUrl,
-      meetingNumber: meetingNumber || '',
-      password: password || '',
-      studentsCount: numStudents
-    };
-    try {
-      localStorage.setItem('TF_LIVE_CLASS_SESSION', JSON.stringify(sessionData));
-    } catch (_) {}
-    notifyDataUpdate('live_class');
-
-    if (channel === 'whatsapp') {
-      const msg = `🎓 *Thoughtflows Academy — Live Class Session*\n\n📚 *Batch:* ${sessionBatch.name}\n${sessionBatch.module ? `📖 *Topic:* ${sessionBatch.module}\n` : ''}👨‍🏫 *Trainer:* ${trainerName}\n\n🔗 *Join Zoom Meeting:*\n${classMeetingUrl}${meetingNumber ? `\n\n🆔 *Meeting ID:* ${meetingNumber}` : ''}${password ? `\n🔑 *Passcode:* ${password}` : ''}\n\n⏰ Please join promptly! Live session is active.`;
-      window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent(msg)}`, '_blank');
-      flashDemoToast(`✓ WhatsApp opened with meeting invite for ${numStudents} students`, 4000);
-    } else {
-      flashDemoToast(`✓ Live meeting link shared with ${numStudents} batch students`, 4000);
-    }
-  };
-
-  // Live session timer (elapsed since the trainer started the session)
-  useEffect(() => {
-    if (!isLiveClassActive || !sessionStartedAt) return undefined;
-    const interval = setInterval(() => setSessionElapsed(Math.floor((Date.now() - sessionStartedAt) / 1000)), 1000);
-    return () => clearInterval(interval);
-  }, [isLiveClassActive, sessionStartedAt]);
-
-  const formatTimer = (secs) => {
-    const hrs = Math.floor(secs / 3600);
-    const mins = Math.floor((secs % 3600) / 60);
-    const s = secs % 60;
-    return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-  };
-
   // Save attendance marks to the server — updates each student's attendance %,
   // their own dashboard, the Leadership risk view and alerts HR below 75%
   const saveAttendanceMarks = async (records) => {
@@ -695,20 +643,6 @@ export default function TrainingDepartmentDashboard({
       setAttendanceSavedToast(`⚠ Could not save attendance: ${e?.response?.data?.error || e.message}`);
     }
     setTimeout(() => setAttendanceSavedToast(null), 3000);
-  };
-
-  const [classChat, setClassChat] = useState([]);
-
-  const handleSendClassChat = (e) => {
-    e.preventDefault();
-    if (!classChatMsg.trim()) return;
-    setClassChat(prev => [...prev, {
-      id: Date.now(),
-      sender: `${trainerName} (You)`,
-      text: classChatMsg,
-      time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
-    }]);
-    setClassChatMsg('');
   };
 
   const handleResolveDoubt = async () => {
@@ -933,6 +867,18 @@ export default function TrainingDepartmentDashboard({
                   <BookOpen className="w-4 h-4 shrink-0" />
                   <span>Library & Materials</span>
                 </button>
+
+                <button
+                  onClick={() => setActiveNav('student_desk')}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold transition-all ${
+                    activeNav === 'student_desk'
+                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                  }`}
+                >
+                  <FileCheck className="w-4 h-4 shrink-0" />
+                  <span>Submissions & Requests</span>
+                </button>
               </div>
             </div>
 
@@ -1035,6 +981,7 @@ export default function TrainingDepartmentDashboard({
               {activeNav === 'weak_students' && 'Weak Students'}
               {activeNav === 'assessments' && 'Assessment Desk'}
               {activeNav === 'library' && 'Library & Materials'}
+              {activeNav === 'student_desk' && 'Student Submissions & Requests'}
               {activeNav === 'placement' && 'Placement & Certification Recommendation'}
               {activeNav === 'profile' && 'My Profile'}
               {activeNav === 'skills' && 'Skill & Course Mapping'}
@@ -1052,6 +999,7 @@ export default function TrainingDepartmentDashboard({
               {activeNav === 'weak_students' && 'Auto-flagged drop-out risk · remediation'}
               {activeNav === 'assessments' && 'Weekly tests · mock exams · rationale'}
               {activeNav === 'library' && 'Coding books · PPTs · LMS'}
+              {activeNav === 'student_desk' && 'Assignments, resumes, video intros · mock interview & 1-on-1 requests'}
               {activeNav === 'placement' && "Mark each student's readiness · CCCP Certification Cell sync"}
               {activeNav === 'profile' && `${trainerName} · ${trainerId} · ${trainerRole} · ${trainerBranch}`}
               {activeNav === 'skills' && 'L1 Assistant · L2 Regular · L3 Senior · L4 Lead. You can be allocated to a subject only at L2 or above.'}
@@ -1496,194 +1444,13 @@ export default function TrainingDepartmentDashboard({
 
           {/* ================= TAB 2: CLASS SESSION ROOM ================= */}
           {activeNav === 'session_room' && (
-            <div className="space-y-5 max-w-[1280px]">
-              {!sessionBatch ? (
-                <div className="bg-white rounded-2xl p-10 border border-slate-200/90 shadow-sm text-center text-xs text-slate-500">
-                  No batch has been allocated to you yet. HR allocates students to you from the Handover Desk.
-                </div>
-              ) : !isLiveClassActive ? (
-                <div className="space-y-5 animate-fadeIn">
-                  <div className="bg-[#0f212d] rounded-2xl p-6 sm:p-7 text-white border border-[#1b3446] shadow-sm">
-                    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
-                      <div>
-                        <h2 className="text-xl font-bold text-white tracking-tight">{sessionBatch.name}</h2>
-                        <p className="text-xs text-slate-200 font-medium mt-1.5">
-                          {[sessionBatch.course, `${sessionBatch.students.length} students`, sessionBatch.mode, sessionBatch.timing].filter(Boolean).join(' · ')}
-                        </p>
-                        {sessionBatch.module && <p className="text-xs text-[#5aa8b7] font-medium mt-1">Current module: {sessionBatch.module}</p>}
-                      </div>
-                      {batches.length > 1 && (
-                        <select
-                          value={sessionBatch.id}
-                          onChange={(e) => setSessionBatchId(e.target.value)}
-                          className="bg-[#172b38] border border-[#244255] rounded-xl px-3 py-2 text-xs text-white"
-                        >
-                          {batches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-                        </select>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="bg-white rounded-2xl p-6 sm:p-7 border border-slate-200/90 shadow-sm">
-                    <h3 className="text-base font-bold text-slate-900 pb-2">Before You Start</h3>
-                    <div className="divide-y divide-slate-100 text-xs">
-                      <div className="py-3.5 flex items-start justify-between gap-4">
-                        <span className="text-slate-500 font-medium">Materials assigned to this batch</span>
-                        <span className="font-bold text-slate-900 text-right">
-                          {materialsForBatch(sessionBatch.name).length === 0
-                            ? <span className="text-slate-400 font-medium">None yet — assign from Library & Materials</span>
-                            : materialsForBatch(sessionBatch.name).map(m => (
-                              <a key={m._id} href={trainingMaterialFileUrl(m._id)} target="_blank" rel="noreferrer" className="block text-[#00897b] hover:underline">{m.title}</a>
-                            ))}
-                        </span>
-                      </div>
-                      <div className="py-3.5 flex items-center justify-between">
-                        <span className="text-slate-500 font-medium">Session link</span>
-                        <span className={`font-bold ${classMeetingUrl ? 'text-slate-900' : 'text-rose-600'}`}>
-                          {classMeetingUrl ? 'Zoom class link ready' : 'No class Zoom link on your trainer profile'}
-                        </span>
-                      </div>
-                      <div className="py-3.5 flex items-center justify-between">
-                        <span className="text-slate-500 font-medium">Students</span>
-                        <span className="font-bold text-slate-900">{sessionBatch.students.length}</span>
-                      </div>
-                      <div className="py-3.5 flex items-center justify-between">
-                        <span className="text-slate-500 font-medium">Today's attendance</span>
-                        <span className="font-bold text-slate-900">
-                          {todaysSession && attendanceBatch?.id === sessionBatch.id ? `${Object.keys(todaysSession.records || {}).length} marked` : 'Not marked yet'}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={() => {
-                      setAttendanceBatchId(sessionBatch.id);
-                      setSessionStartedAt(Date.now());
-                      setSessionElapsed(0);
-                      setIsLiveClassActive(true);
-                    }}
-                    className="w-full py-4 rounded-2xl bg-[#009688] hover:bg-[#00897b] text-white text-sm font-bold flex items-center justify-center gap-2 shadow-md shadow-[#009688]/20 transition-all hover:scale-[1.005] active:scale-[0.995]"
-                  >
-                    <Play className="w-4 h-4 fill-current" />
-                    <span>Start Session (opens attendance + timer)</span>
-                  </button>
-                </div>
-              ) : (
-                <div className="space-y-6 animate-fadeIn">
-                  <div className="bg-[#0b242c] p-5 rounded-2xl border border-[#16414e] text-white flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-md">
-                    <div>
-                      <div className="flex items-center gap-3">
-                        <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
-                          LIVE SESSION IN PROGRESS
-                        </span>
-                        <div className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-slate-900/90 border border-slate-700 text-xs font-mono font-bold text-amber-300">
-                          <Clock className="w-3.5 h-3.5" />
-                          <span>{formatTimer(sessionElapsed)} elapsed</span>
-                        </div>
-                      </div>
-                      <h2 className="text-xl font-extrabold text-white mt-1.5">{sessionBatch.module || sessionBatch.name}</h2>
-                      <p className="text-xs text-slate-300">{sessionBatch.name} · {sessionBatch.students.length} Students</p>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <button
-                        onClick={() => setActiveNav('attendance')}
-                        className="px-4 py-2.5 rounded-xl bg-[#009688] hover:bg-[#00897b] text-white text-xs font-bold flex items-center gap-2 shadow-sm transition-all cursor-pointer"
-                      >
-                        <CheckSquare className="w-4 h-4" />
-                        <span>Attendance ({attendanceList.filter(s => s.status === 'Present' || s.status === 'Late').length}/{attendanceList.length})</span>
-                      </button>
-                      <button
-                        onClick={() => { setIsLiveClassActive(false); setSessionStartedAt(null); }}
-                        className="px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold cursor-pointer"
-                      >
-                        End Session
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                    <div className="lg:col-span-8 space-y-4">
-                      {classMeetingUrl ? (
-                        <ZoomMeeting
-                          link={classMeetingUrl}
-                          userName={trainerName}
-                          topic={sessionBatch.module || sessionBatch.name}
-                          batchName={sessionBatch.name}
-                          studentsCount={sessionBatch.students.length}
-                          isTrainerHost={true}
-                          onSendLinkToStudents={handleSendBatchClassLink}
-                          onStartMeeting={() => flashDemoToast('🚀 Live meeting started! Students can now join.', 4000)}
-                        />
-                      ) : (
-                        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5 text-xs text-amber-900">
-                          No class Zoom link is configured for you. Ask the admin to set <strong>Class Zoom Link</strong> on your trainer profile.
-                        </div>
-                      )}
-
-                      <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-sm space-y-3">
-                        <div className="text-xs font-bold text-slate-900">Session materials</div>
-                        {materialsForBatch(sessionBatch.name).length === 0 ? (
-                          <div className="py-6 text-center text-xs text-slate-400">No materials assigned to {sessionBatch.name}. Assign PPTs / PDFs from Library & Materials.</div>
-                        ) : (
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                            {materialsForBatch(sessionBatch.name).map(m => (
-                              <a key={m._id} href={trainingMaterialFileUrl(m._id)} target="_blank" rel="noreferrer" className="p-3 rounded-xl border border-slate-200 hover:border-teal-400 flex items-center gap-3 text-xs">
-                                <span className="w-9 h-9 rounded-lg bg-teal-50 text-teal-700 flex items-center justify-center font-bold text-[10px] shrink-0">{m.fileFormat}</span>
-                                <span className="min-w-0">
-                                  <span className="block font-bold text-slate-900 truncate">{m.title}</span>
-                                  <span className="block text-[10px] text-slate-500 truncate">{m.category}</span>
-                                </span>
-                              </a>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="lg:col-span-4 bg-white rounded-2xl border border-slate-200/90 p-5 shadow-sm flex flex-col justify-between h-[480px]">
-                      <div>
-                        <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-                          <div className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
-                            <MessageSquare className="w-4 h-4 text-[#00897b]" />
-                            <span>Session Notes</span>
-                          </div>
-                          {classChat.length > 0 && (
-                            <span className="text-[10px] bg-teal-50 text-teal-700 px-2 py-0.5 rounded-full font-bold">{classChat.length}</span>
-                          )}
-                        </div>
-                        <div className="space-y-3 mt-3 overflow-y-auto max-h-[340px] pr-1">
-                          {classChat.length === 0 ? (
-                            <div className="py-16 text-center text-xs text-slate-400">Notes you add during this session appear here.</div>
-                          ) : (
-                            classChat.map(item => (
-                              <div key={item.id} className="p-2.5 rounded-xl bg-slate-50 border border-slate-100 text-xs space-y-1">
-                                <div className="flex items-center justify-between">
-                                  <span className="font-bold text-slate-800">{item.sender}</span>
-                                  <span className="text-[10px] text-slate-400">{item.time}</span>
-                                </div>
-                                <p className="text-slate-600">{item.text}</p>
-                              </div>
-                            ))
-                          )}
-                        </div>
-                      </div>
-                      <form onSubmit={handleSendClassChat} className="mt-3 pt-3 border-t border-slate-100 flex gap-2">
-                        <input
-                          type="text"
-                          value={classChatMsg}
-                          onChange={(e) => setClassChatMsg(e.target.value)}
-                          placeholder="Add a session note..."
-                          className="flex-1 px-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:border-teal-500"
-                        />
-                        <button type="submit" className="px-3.5 py-2 rounded-xl bg-[#009688] hover:bg-[#00897b] text-white text-xs font-bold shrink-0">Add</button>
-                      </form>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
+            <ClassSessionRoom
+              trainerId={trainerId}
+              trainerName={trainerName}
+              batches={batches}
+              materials={materials}
+              onAttendanceSaved={loadRealData}
+            />
           )}
 
           {/* ================= TAB 3: ATTENDANCE ================= */}
@@ -3344,6 +3111,11 @@ export default function TrainingDepartmentDashboard({
               materials={materials}
               onChanged={loadRealData}
             />
+          )}
+
+          {/* ================= TAB: STUDENT SUBMISSIONS & REQUESTS ================= */}
+          {activeNav === 'student_desk' && (
+            <TrainerStudentDesk trainerId={trainerId} trainerName={trainerName} />
           )}
 
           {/* ================= TAB: PLACEMENT PREP & CERTIFICATION ================= */}

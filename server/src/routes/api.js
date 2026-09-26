@@ -35,8 +35,15 @@ import HrTarget from '../models/HrTarget.js';
 import ClassAttendance from '../models/ClassAttendance.js';
 import TrainingMaterial from '../models/TrainingMaterial.js';
 import Notification from '../models/Notification.js';
+import { requireAuth, signToken, checkPassword, hashPassword, hashIfPlain } from '../middleware/auth.js';
+import LiveClassSession from '../models/LiveClassSession.js';
+import StudentSubmission from '../models/StudentSubmission.js';
+import StudentRequest, { TRAINER_REQUEST_TYPES } from '../models/StudentRequest.js';
 
 const router = express.Router();
+
+// Every API call needs a valid login token (see middleware/auth.js for the few public routes)
+router.use(requireAuth);
 
 // Health Check
 router.get('/health', (req, res) => {
@@ -51,25 +58,12 @@ router.get('/health', (req, res) => {
 });
 
 // ==========================================
-// CALLING — Exotel Click-to-Call bridge
+// CALLING — Exotel click-to-call
+//   1. /calls/dial        Exotel rings the counsellor, then connects the lead
+//   2. /calls/:sid/status polled by the call screen
+//   3. /calls/exotel/webhook  Exotel posts the final status + recording, which
+//      is saved even if the counsellor closed the call screen
 // ==========================================
-// TELEPHONY API — MyOperator (Primary) & Exotel (Secondary)
-// ==========================================
-function activeTelephonyProvider() {
-  dotenv.config();
-  return (process.env.TELEPHONY_PROVIDER || 'exotel').toLowerCase();
-}
-
-function myoperatorConfig() {
-  return {
-    token: process.env.MYOPERATOR_TOKEN || '',
-    companyId: process.env.MYOPERATOR_COMPANY_ID || '',
-    secretToken: process.env.MYOPERATOR_SECRET_TOKEN || '',
-    callerId: process.env.MYOPERATOR_CALLER_ID || '',
-    defaultAgentPhone: process.env.MYOPERATOR_DEFAULT_AGENT_PHONE || '6382718655'
-  };
-}
-
 function exotelConfig() {
   return {
     sid: process.env.EXOTEL_SID || '',
@@ -77,16 +71,17 @@ function exotelConfig() {
     apiToken: process.env.EXOTEL_API_TOKEN || '',
     exophone: process.env.EXOTEL_EXOPHONE || '',
     subdomain: process.env.EXOTEL_SUBDOMAIN || 'api.exotel.com',
-    defaultAgentPhone: process.env.EXOTEL_DEFAULT_AGENT_PHONE || '6382718655'
+    defaultAgentPhone: process.env.EXOTEL_DEFAULT_AGENT_PHONE || '',
+    // Public URL of this API (e.g. https://thoughtflows-hrms-crm.onrender.com) — enables the status webhook
+    publicApiUrl: String(process.env.PUBLIC_API_URL || '').replace(/\/+$/, ''),
+    webhookKey: process.env.EXOTEL_WEBHOOK_KEY || ''
   };
 }
 
-function telephonyConfigured() {
-  if (activeTelephonyProvider() === 'myoperator') {
-    return !!myoperatorConfig().token;
-  }
+function exotelMissing() {
   const c = exotelConfig();
-  return !!(c.sid && c.apiKey && c.apiToken && c.exophone);
+  return [['EXOTEL_SID', c.sid], ['EXOTEL_API_KEY', c.apiKey], ['EXOTEL_API_TOKEN', c.apiToken], ['EXOTEL_EXOPHONE', c.exophone]]
+    .filter(([, v]) => !v).map(([k]) => k);
 }
 
 function exotelBaseUrl() {
@@ -112,95 +107,70 @@ function toE164India(raw) {
   return digits;
 }
 
-router.get('/calls/config-status', (req, res) => {
-  const provider = activeTelephonyProvider();
-  if (provider === 'myoperator') {
-    const c = myoperatorConfig();
-    return res.json({
-      provider: 'myoperator',
-      configured: !!c.token,
-      companyId: c.companyId || '',
-      callerId: c.callerId || ''
-    });
+// Map Exotel's call status to the one the call screen understands
+const EXOTEL_STATUS = { queued: 'queued', ringing: 'ringing', 'in-progress': 'in-progress', completed: 'completed', failed: 'failed', busy: 'busy', 'no-answer': 'no-answer', canceled: 'canceled' };
+
+// Create or update the recording row for one Exotel call (keyed by CallSid)
+async function upsertExotelRecording({ callSid, leadId, leadName, leadPhone, counselorName, counselorPhone, durationSeconds, audioUrl, outcome, notes }) {
+  if (!callSid) return null;
+  let rec = await CallRecording.findOne({ callSid });
+  const isNew = !rec;
+  if (!rec) {
+    rec = new CallRecording({ callSid, source: 'exotel', leadName: leadName || 'Lead', leadPhone: leadPhone || '' });
   }
-  res.json({
-    provider: 'exotel',
-    configured: !!(process.env.EXOTEL_SID && process.env.EXOTEL_API_KEY && process.env.EXOTEL_API_TOKEN)
-  });
+  if (leadId && mongoose.isValidObjectId(leadId)) rec.leadId = leadId;
+  if (leadName) rec.leadName = leadName;
+  if (leadPhone) rec.leadPhone = leadPhone;
+  if (counselorName) rec.counselorName = counselorName;
+  if (counselorPhone) rec.counselorPhone = counselorPhone;
+  if (Number(durationSeconds)) rec.durationSeconds = Number(durationSeconds);
+  if (audioUrl) rec.audioUrl = audioUrl;
+  if (outcome) rec.outcome = outcome;
+  if (notes) rec.notes = notes;
+  if (!rec.audioUrl) return null; // Exotel had no recording (call not answered)
+  await rec.save();
+  if (isNew && rec.leadId) {
+    await StudentLead.findByIdAndUpdate(rec.leadId, { $inc: { callCount: 1 }, lastCallTime: new Date() });
+  }
+  return rec;
+}
+
+router.get('/calls/config-status', (req, res) => {
+  const missing = exotelMissing();
+  res.json({ provider: 'exotel', configured: missing.length === 0, missing, webhook: Boolean(exotelConfig().publicApiUrl) });
 });
 
 router.post('/calls/dial', async (req, res) => {
-  const provider = activeTelephonyProvider();
-  const { leadPhone, agentPhone } = req.body;
+  const { leadPhone, agentPhone, leadId = '', leadName = '' } = req.body || {};
   if (!leadPhone) return res.status(400).json({ error: 'leadPhone is required' });
+  const missing = exotelMissing();
+  if (missing.length) return res.status(503).json({ error: `Exotel is not configured. Add ${missing.join(', ')} to server/.env and restart.` });
 
-  // 10-digit clean format (standard for MyOperator)
-  const cleanLead = String(leadPhone).replace(/[^\d]/g, '').slice(-10);
-  const cleanAgent = String(agentPhone || process.env.MYOPERATOR_DEFAULT_AGENT_PHONE || '6382718655').replace(/[^\d]/g, '').slice(-10);
-
-  // ── MYOPERATOR DIAL ROUTE ───────────────────────────────────────────
-  if (provider === 'myoperator') {
-    const { token, companyId, callerId } = myoperatorConfig();
-    if (!token) {
-      return res.status(503).json({
-        error: 'MyOperator token not found. Please add MYOPERATOR_TOKEN in server/.env and restart server.'
-      });
-    }
-
-    try {
-      const params = new URLSearchParams({
-        token,
-        customer_number: cleanLead,
-        agent_number: cleanAgent
-      });
-      if (companyId) params.append('company_id', companyId);
-      if (callerId) params.append('caller_id', callerId);
-
-      const response = await fetch('https://developers.myoperator.co/searchApi', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: params.toString()
-      });
-
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || (data.status && data.status !== 'success')) {
-        const message = data.message || data.error || `MyOperator error: HTTP ${response.status}`;
-        return res.status(502).json({ error: message });
-      }
-
-      const callSid = data.data?.call_id || data.call_id || `myop_${Date.now()}`;
-      return res.json({
-        provider: 'myoperator',
-        callSid,
-        status: 'queued',
-        from: cleanAgent,
-        to: cleanLead
-      });
-    } catch (err) {
-      return res.status(502).json({ error: `Could not reach MyOperator: ${err.message}` });
-    }
-  }
-
-  // ── EXOTEL DIAL ROUTE (FALLBACK) ────────────────────────────────────
-  const { exophone, defaultAgentPhone } = exotelConfig();
-  const from = toE164India(agentPhone || defaultAgentPhone);
+  const c = exotelConfig();
+  // Counsellor's phone: their user profile, else what the screen sent, else the default agent
+  let profilePhone = '';
+  try {
+    const me = req.user?.email ? await User.findOne({ email: req.user.email }).select('phone') : null;
+    profilePhone = me?.phone || '';
+  } catch (_) {}
+  const from = toE164India(profilePhone || agentPhone || c.defaultAgentPhone);
   const to = toE164India(leadPhone);
-
-  if (!from) {
-    return res.status(400).json({ error: 'No agent phone number available.' });
-  }
-  if (!to) {
-    return res.status(400).json({ error: 'The lead has no usable phone number on file.' });
-  }
+  if (!from) return res.status(400).json({ error: 'No phone number is set for your login. Ask admin to add your mobile number to your user account.' });
+  if (!to) return res.status(400).json({ error: 'The lead has no usable phone number on file.' });
 
   try {
     const params = new URLSearchParams({
       From: from,
       To: to,
-      CallerId: exophone,
+      CallerId: c.exophone,
       CallType: 'trans',
-      Record: 'true'
+      Record: 'true',
+      CustomField: JSON.stringify({ leadId, leadName, counselor: req.user?.name || '' }).slice(0, 250)
     });
+    if (c.publicApiUrl) {
+      params.set('StatusCallback', `${c.publicApiUrl}/api/calls/exotel/webhook${c.webhookKey ? `?key=${encodeURIComponent(c.webhookKey)}` : ''}`);
+      params.set('StatusCallbackContentType', 'application/json');
+    }
     const response = await fetch(`${exotelBaseUrl()}/Calls/connect.json`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...exotelAuthHeader() },
@@ -212,39 +182,17 @@ router.post('/calls/dial', async (req, res) => {
       return res.status(502).json({ error: message });
     }
     const call = data?.Call || {};
-    res.json({ provider: 'exotel', callSid: call.Sid, status: call.Status || 'queued', from, to });
+    res.json({ provider: 'exotel', callSid: call.Sid, status: EXOTEL_STATUS[String(call.Status || '').toLowerCase()] || 'queued', from, to });
   } catch (err) {
-    res.status(502).json({ error: `Could not reach telephony service: ${err.message}` });
+    res.status(502).json({ error: `Could not reach Exotel: ${err.message}` });
   }
 });
 
 router.get('/calls/:callSid/status', async (req, res) => {
-  const provider = activeTelephonyProvider();
-  const callSid = req.params.callSid;
-
-  if (provider === 'myoperator') {
-    const { token } = myoperatorConfig();
-    if (!token) return res.status(503).json({ error: 'MyOperator token missing' });
-
-    try {
-      const response = await fetch(`https://developers.myoperator.co/search?token=${token}&call_id=${callSid}`);
-      const data = await response.json().catch(() => ({}));
-      const callData = data.data?.[0] || data.data || {};
-      return res.json({
-        provider: 'myoperator',
-        callSid,
-        status: callData.status === 'answered' ? 'in-progress' : callData.status || 'in-progress',
-        duration: Number(callData.duration || 0),
-        recordingUrl: callData.recording_url || callData.filename || null
-      });
-    } catch (e) {
-      return res.json({ provider: 'myoperator', callSid, status: 'in-progress' });
-    }
-  }
-
-  // Exotel status
+  const missing = exotelMissing();
+  if (missing.length) return res.status(503).json({ error: 'Exotel is not configured.' });
   try {
-    const response = await fetch(`${exotelBaseUrl()}/Calls/${callSid}.json`, {
+    const response = await fetch(`${exotelBaseUrl()}/Calls/${encodeURIComponent(req.params.callSid)}.json`, {
       headers: { ...exotelAuthHeader() }
     });
     const data = await response.json().catch(() => ({}));
@@ -256,7 +204,7 @@ router.get('/calls/:callSid/status', async (req, res) => {
     res.json({
       provider: 'exotel',
       callSid: call.Sid,
-      status: call.Status,
+      status: EXOTEL_STATUS[String(call.Status || '').toLowerCase()] || call.Status,
       duration: Number(call.ConversationDuration || call.Duration || 0),
       startTime: call.StartTime,
       endTime: call.EndTime,
@@ -267,71 +215,58 @@ router.get('/calls/:callSid/status', async (req, res) => {
   }
 });
 
-// MyOperator After-Call Webhook
-router.post('/calls/myoperator/webhook', async (req, res) => {
+// Exotel status callback (public — protected by EXOTEL_WEBHOOK_KEY when set)
+router.post('/calls/exotel/webhook', async (req, res) => {
   try {
-    const payload = req.body || {};
-    const {
-      call_id,
-      customer_number,
-      agent_number,
-      duration,
-      recording_url,
-      filename,
-      status
-    } = payload;
-
-    const audioUrl = recording_url || filename;
-    const phone = customer_number || payload.to;
-    if (audioUrl && phone) {
-      const cleanPhone = String(phone).replace(/[^\d]/g, '').slice(-10);
-      const lead = await StudentLead.findOne({ phone: { $regex: cleanPhone } });
-
-      const rec = new CallRecording({
-        leadId: lead?._id || undefined,
-        leadName: lead?.fullName || lead?.name || `Student ${cleanPhone}`,
-        leadPhone: cleanPhone,
-        counselorName: 'Kavitha N.',
-        callSid: call_id || '',
-        durationSeconds: Number(duration) || 0,
-        outcome: status === 'answered' ? 'Follow-up Needed' : 'Not Reachable',
-        audioUrl,
-        source: 'myoperator'
-      });
-      await rec.save();
-    }
-    res.json({ success: true, received: true });
+    const key = exotelConfig().webhookKey;
+    if (key && req.query.key !== key) return res.status(403).json({ error: 'Bad key' });
+    const b = req.body || {};
+    const callSid = b.CallSid || b.callSid;
+    let custom = {};
+    try { custom = JSON.parse(b.CustomField || '{}'); } catch (_) {}
+    const status = String(b.Status || b.CallStatus || '').toLowerCase();
+    const leadPhone = String(b.To || '').replace(/\D/g, '').slice(-10);
+    const lead = custom.leadId && mongoose.isValidObjectId(custom.leadId)
+      ? await StudentLead.findById(custom.leadId)
+      : (leadPhone ? await StudentLead.findOne({ phone: { $regex: leadPhone } }) : null);
+    await upsertExotelRecording({
+      callSid,
+      leadId: lead?._id?.toString() || custom.leadId,
+      leadName: lead?.fullName || custom.leadName,
+      leadPhone,
+      counselorName: custom.counselor || lead?.counselorAssigned || '',
+      counselorPhone: String(b.From || '').replace(/\D/g, '').slice(-10),
+      durationSeconds: b.ConversationDuration || b.Legs?.[1]?.OnCallDuration || 0,
+      audioUrl: b.RecordingUrl || '',
+      outcome: status === 'completed' ? 'Follow-up Needed' : 'Not Reachable'
+    });
+    res.json({ success: true });
   } catch (err) {
-    console.error('MyOperator webhook error:', err);
+    console.error('Exotel webhook error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
 router.post('/calls/:callSid/hangup', async (req, res) => {
-  if (!exotelConfigured()) {
-    return res.status(503).json({ error: 'Exotel is not configured.' });
-  }
+  const missing = exotelMissing();
+  if (missing.length) return res.status(503).json({ error: 'Exotel is not configured.' });
   try {
-    const params = new URLSearchParams({ Status: 'completed' });
-    const response = await fetch(`${exotelBaseUrl()}/Calls/${req.params.callSid}.json`, {
+    const response = await fetch(`${exotelBaseUrl()}/Calls/${encodeURIComponent(req.params.callSid)}.json`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...exotelAuthHeader() },
-      body: params.toString()
+      body: new URLSearchParams({ Status: 'completed' }).toString()
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       const message = data?.RestException?.Message || `Exotel returned HTTP ${response.status}`;
       return res.status(502).json({ error: message });
     }
-    res.json({ ok: true });
+    res.json({ success: true, status: data?.Call?.Status || 'completed' });
   } catch (err) {
     res.status(502).json({ error: `Could not reach Exotel: ${err.message}` });
   }
 });
 
-// ==========================================
-// CALL RECORDINGS API
-// ==========================================
 router.get('/recordings', async (req, res) => {
   try {
     const { leadPhone, leadId, counselorName, search } = req.query;
@@ -403,11 +338,21 @@ router.post('/recordings', async (req, res) => {
       return res.status(400).json({ error: 'No audio data or audioUrl provided' });
     }
 
+    // Exotel calls: the status webhook may already have stored this call
+    if (callSid && directAudioUrl && !audioBase64) {
+      const merged = await upsertExotelRecording({
+        callSid, leadId, leadName, leadPhone,
+        counselorName: counselorName || req.user?.name || '',
+        counselorPhone, durationSeconds, audioUrl, outcome, notes
+      });
+      if (merged) return res.status(201).json(merged);
+    }
+
     const recording = new CallRecording({
       leadId: leadId && mongoose.isValidObjectId(leadId) ? leadId : undefined,
       leadName,
       leadPhone,
-      counselorName: counselorName || 'Kavitha N.',
+      counselorName: counselorName || req.user?.name || '',
       counselorPhone: counselorPhone || '',
       callSid: callSid || '',
       durationSeconds: Number(durationSeconds) || 0,
@@ -1166,9 +1111,16 @@ function generateStudentPassword() {
 router.post('/students', async (req, res) => {
   try {
     let payload = { ...req.body };
+    if (payload.studentId && await Student.exists({ studentId: payload.studentId })) {
+      return res.status(409).json({ error: `Student ID ${payload.studentId} is already in use` });
+    }
     if (!payload.studentId) {
-      const randomSuffix = Math.floor(1000 + Math.random() * 9000);
-      payload.studentId = `TFMC0Y${randomSuffix}`;
+      // Unique random ID (retry on the rare collision)
+      for (let i = 0; i < 20 && !payload.studentId; i++) {
+        const candidate = `TFMC0Y${crypto.randomInt(1000, 10000)}`;
+        if (!(await Student.exists({ studentId: candidate }))) payload.studentId = candidate;
+      }
+      if (!payload.studentId) payload.studentId = `TFMC${Date.now().toString(36).toUpperCase()}`;
     }
     if (payload.mode && !['Online', 'Classroom'].includes(payload.mode)) {
       payload.mode = (payload.mode.toLowerCase().includes('class') || payload.mode.toLowerCase().includes('off')) ? 'Classroom' : 'Online';
@@ -1196,7 +1148,7 @@ router.post('/students', async (req, res) => {
         await User.create({
           name,
           email,
-          password,
+          password: await hashPassword(password),
           role: 'Student Scholar',
           department: 'Student Scholar',
           branch: payload.branch || 'Saravanampatti (CBE)',
@@ -1213,6 +1165,45 @@ router.post('/students', async (req, res) => {
     res.status(201).json({ ...newStudent.toObject(), studentLogin });
   } catch (err) {
     res.status(400).json({ error: err.message });
+  }
+});
+
+// Issue / reset a student's portal login. The new password is returned once
+// so HR can hand it to the student — it is stored only as a hash.
+router.post('/students/:id/reset-login', async (req, res) => {
+  try {
+    const isObjectId = mongoose.isValidObjectId(req.params.id);
+    const st = await Student.findOne({ $or: [...(isObjectId ? [{ _id: req.params.id }] : []), { studentId: req.params.id }] });
+    if (!st) return res.status(404).json({ error: 'Student not found' });
+    const email = String(st.email || '').trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || /^student\.\d+@thoughtflows\.in$/.test(email)) {
+      return res.status(400).json({ error: "Add the student's real email address first — it is their login ID." });
+    }
+    const password = generateStudentPassword();
+    const hashed = await hashPassword(password);
+    let user = await User.findOne({ email });
+    if (user) {
+      user.password = hashed;
+      user.status = 'Active';
+      await user.save();
+    } else {
+      user = await User.create({
+        name: st.name,
+        email,
+        password: hashed,
+        role: 'Student Scholar',
+        department: 'Student Scholar',
+        branch: st.location || '',
+        status: 'Active',
+        lastLogin: 'Never',
+        initials: String(st.name || 'S').split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase(),
+        avatarBg: 'bg-teal-600',
+        createdFrom: 'admitted_student'
+      });
+    }
+    res.json({ email, password, studentId: st.studentId, name: st.name });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
   }
 });
 
@@ -1357,6 +1348,7 @@ router.put('/leads/:id', async (req, res) => {
       { new: true }
     );
     if (!updated) return res.status(404).json({ error: 'Lead not found' });
+    await creditReferralReward(updated);
     res.json(updated);
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -1422,7 +1414,7 @@ router.post('/leads/:id/whatsapp', async (req, res) => {
       senderName,
       text: text || '',
       time: timeStr,
-      status: 'read',
+      status: 'sent',
       mediaUrl: mediaUrl || '',
       mediaType: mediaType || '',
       mediaName: mediaName || '',
@@ -1432,43 +1424,11 @@ router.post('/leads/:id/whatsapp', async (req, res) => {
     if (!lead.whatsappMessages) lead.whatsappMessages = [];
     lead.whatsappMessages.push(newMsg);
 
-    // Context-aware automatic student response
-    const lower = (text || '').toLowerCase();
-    let replyText = '';
-    if (lower.includes('demo') || lower.includes('zoom') || lower.includes('session')) {
-      replyText = `Thank you! I will definitely attend the demo session. Is it live with the trainer? Please share the Zoom joining link.`;
-    } else if (lower.includes('fee') || lower.includes('emi') || lower.includes('₹') || lower.includes('cost') || lower.includes('installment')) {
-      replyText = `Understood. Is there an option for zero-interest EMI or 2-part installments? How much is required for initial registration?`;
-    } else if (lower.includes('syllabus') || lower.includes('brochure') || lower.includes('curriculum') || lower.includes('module')) {
-      replyText = `The syllabus looks very comprehensive! Since I come from ${lead.education || 'a life sciences background'}, will basic anatomy and medical terminology be covered before coding?`;
-    } else if (lower.includes('document') || lower.includes('aadhaar') || lower.includes('certificate') || lower.includes('marksheet')) {
-      replyText = `Yes, I have my degree provisional certificate and Aadhaar card ready. I can send the soft copies here directly.`;
-    } else if (lower.includes('call') || lower.includes('phone') || lower.includes('dial')) {
-      replyText = `Sure! I am free to take a call right now. Please call me on ${lead.phone}.`;
-    } else if (lower.includes('hi') || lower.includes('hello') || lower.includes('hey')) {
-      replyText = `Hello! Thanks for reaching out. Yes, I want to understand more about the job placement guarantee and batch timings.`;
-    } else {
-      replyText = `Got it, thank you for the details! When does the upcoming batch start, and how do I reserve my seat?`;
-    }
-
-    const replyTime = new Date(Date.now() + 1500).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const replyMsg = {
-      id: `wa-rep-${Date.now() + 1}`,
-      sender: 'student',
-      senderName: lead.fullName || 'Student',
-      text: replyText,
-      time: replyTime,
-      status: 'read',
-      createdAt: new Date(Date.now() + 1500)
-    };
-
-    lead.whatsappMessages.push(replyMsg);
     await lead.save();
 
     res.json({
       success: true,
       sentMessage: newMsg,
-      replyMessage: replyMsg,
       messages: lead.whatsappMessages
     });
   } catch (err) {
@@ -2032,7 +1992,6 @@ const DEPARTMENT_PORTALS = {
     name: 'HR & Talent Acquisition',
     title: 'HR Department Portal',
     defaultEmail: 'hr@thoughtflows.in',
-    defaultPassword: 'hr123',
     role: 'HR & Academic Counselling Lead',
     userName: 'Kavitha N.',
     branch: 'Saravanampatti Branch (CBE)',
@@ -2045,7 +2004,6 @@ const DEPARTMENT_PORTALS = {
     name: 'Training & Faculty Department',
     title: 'Training Department Portal',
     defaultEmail: 'training@thoughtflows.in',
-    defaultPassword: 'train123',
     role: 'Faculty Lead & Chief Trainer',
     userName: 'Dr. Vikram C.',
     branch: 'Chennai - Guindy (HQ)',
@@ -2058,7 +2016,6 @@ const DEPARTMENT_PORTALS = {
     name: 'Corporate Career & Placement Cell (CCCP)',
     title: 'CCCP 3-Cell Portal',
     defaultEmail: 'cccp@thoughtflows.in',
-    defaultPassword: 'cccp123',
     role: 'Placements & Corporate Relations Head',
     userName: 'Meenakshi R.',
     branch: 'Bangalore - Indiranagar',
@@ -2071,7 +2028,6 @@ const DEPARTMENT_PORTALS = {
     name: 'Growth & Digital Marketing',
     title: 'Marketing Department Portal',
     defaultEmail: 'marketing@thoughtflows.in',
-    defaultPassword: 'mkt123',
     role: 'Head of Growth & Lead Generation',
     userName: 'Priya R.',
     branch: 'Hyderabad - Madhapur',
@@ -2084,7 +2040,6 @@ const DEPARTMENT_PORTALS = {
     name: 'Leadership & Regional Operations Hub',
     title: 'Leadership Hub Portal',
     defaultEmail: 'leadership@thoughtflows.in',
-    defaultPassword: 'lead123',
     role: 'Regional Operations & Branch Director',
     userName: 'Ganesh N.',
     branch: 'All 12 Hubs (HQ Overseer)',
@@ -2097,7 +2052,6 @@ const DEPARTMENT_PORTALS = {
     name: 'Student Learning & Exam Portal',
     title: 'Student Portal Login',
     defaultEmail: 'student@thoughtflows.in',
-    defaultPassword: 'stu123',
     role: 'AAPC CPC Scholar (Student)',
     userName: 'Pooja J.',
     branch: 'Chennai - Anna Nagar',
@@ -2110,7 +2064,6 @@ const DEPARTMENT_PORTALS = {
     name: 'Admin & Executive Management',
     title: 'Admin Command Bridge',
     defaultEmail: 'admin@thoughtflows.in',
-    defaultPassword: 'admin123',
     role: 'Executive Managing Director (Founder)',
     userName: 'Executive Founders Desk',
     branch: 'Thoughtflows Group HQ',
@@ -2127,7 +2080,6 @@ const TRAINER_ACCOUNTS = {
     name: 'Srithar S',
     userName: 'Srithar S',
     email: 'srithar.brandforge@gmail.com',
-    password: 'Thoughtflows@2026',
     department: 'training',
     departmentCode: 'ACAD',
     departmentName: 'Training & Faculty Department',
@@ -2143,6 +2095,122 @@ const TRAINER_ACCOUNTS = {
     color: '#00897b'
   }
 };
+
+// ==========================================
+// DEVELOPMENT ONLY — quick login for developers.
+// Active only when DEV_LOGIN_AUTOFILL=true (never set this on the live server).
+//   GET  /auth/dev-accounts  every HR / trainer / student / staff account
+//   POST /auth/dev-login     sign in as one of them without a password
+// ==========================================
+const devLoginEnabled = () => process.env.DEV_LOGIN_AUTOFILL === 'true';
+
+const builtinDevAccounts = () => {
+  const accounts = {};
+  Object.entries(DEPARTMENT_PORTALS).forEach(([key, dept]) => {
+    const envKey = key === 'admin' ? 'ADMIN_PASSWORD' : `${key.toUpperCase()}_PORTAL_PASSWORD`;
+    if (process.env[envKey]) accounts[key] = { email: dept.defaultEmail, password: process.env[envKey] };
+  });
+  const [trainerEmail, trainer] = Object.entries(TRAINER_ACCOUNTS)[0] || [];
+  const trainerKey = trainer ? `TRAINER_${String(trainer.trainerId).replace(/\W/g, '_').toUpperCase()}_PASSWORD` : '';
+  if (trainer && process.env[trainerKey]) accounts.training = { email: trainerEmail, password: process.env[trainerKey] };
+  return accounts;
+};
+
+router.get('/auth/dev-accounts', async (req, res) => {
+  if (!devLoginEnabled()) return res.status(404).json({ error: 'Not found' });
+  const accounts = builtinDevAccounts();
+  try {
+    const [users, students, trainers] = await Promise.all([
+      User.find().select('name email role department branch status').sort({ name: 1 }),
+      Student.find().select('studentId name email course batchName').sort({ name: 1 }),
+      Trainer.find().select('trainerId trainerName email zoomEmail expertCourse branchName').sort({ trainerName: 1 })
+    ]);
+    const list = [];
+    const seen = new Set();
+    const push = (row) => {
+      const key = `${row.kind}:${row.id}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      list.push(row);
+    };
+    users.forEach((u) => {
+      const m = mapRoleOrDeptToDashboard(u.role, u.department);
+      push({ kind: 'user', id: u._id.toString(), email: u.email, name: u.name, group: m.department, detail: [u.role, u.branch].filter(Boolean).join(' · ') });
+    });
+    const userEmails = new Set(users.map((u) => String(u.email || '').toLowerCase()));
+    trainers.forEach((t) => {
+      const email = String(t.email || t.zoomEmail || '').toLowerCase();
+      if (email && userEmails.has(email)) return;
+      push({ kind: 'trainer', id: t.trainerId, email, name: t.trainerName, group: 'training', detail: [t.trainerId, t.expertCourse, t.branchName].filter(Boolean).join(' · ') });
+    });
+    students.forEach((st) => {
+      const email = String(st.email || '').toLowerCase();
+      if (email && userEmails.has(email)) {
+        const row = list.find((r) => r.kind === 'user' && String(r.email).toLowerCase() === email);
+        if (row) { row.group = 'student'; row.detail = [st.studentId, st.course].filter(Boolean).join(' · '); }
+        return;
+      }
+      push({ kind: 'student', id: st.studentId, email, name: st.name, group: 'student', detail: [st.studentId, st.course, st.batchName].filter(Boolean).join(' · ') });
+    });
+    res.json({ builtin: accounts, accounts: list });
+  } catch (e) {
+    res.json({ builtin: accounts, accounts: [], error: e.message });
+  }
+});
+
+router.post('/auth/dev-login', async (req, res) => {
+  if (!devLoginEnabled()) return res.status(404).json({ error: 'Not found' });
+  const { kind, id } = req.body || {};
+  const grant = (user) => res.json({ success: true, message: `Dev login: ${user.name}`, user: { ...user, token: signToken(user) } });
+  const rosterFor = async (email, name, trainerId) => {
+    const or = [];
+    if (email) or.push({ email }, { zoomEmail: email });
+    if (trainerId) or.push({ trainerId });
+    if (name) or.push({ trainerName: new RegExp(`^${escapeRegex(String(name).trim())}$`, 'i') });
+    const t = or.length ? await Trainer.findOne({ $or: or }) : null;
+    return t ? { id: t.trainerId, trainerId: t.trainerId, courseKey: t.courseKey || '', expertCourse: t.expertCourse || '', specialization: t.specialization || '', branch: t.branchName || '', shift: t.shift || '', shiftStartMin: t.shiftStartMin, shiftEndMin: t.shiftEndMin } : {};
+  };
+  try {
+    if (kind === 'user') {
+      const u = mongoose.isValidObjectId(id) ? await User.findById(id) : null;
+      if (!u) return res.status(404).json({ success: false, message: 'User not found' });
+      const m = mapRoleOrDeptToDashboard(u.role, u.department);
+      const extra = m.department === 'training' ? await rosterFor(u.email, u.name) : {};
+      let studentId;
+      if (m.department === 'student') {
+        const st = await Student.findOne({ email: new RegExp(`^${escapeRegex(u.email)}$`, 'i') }).select('studentId');
+        studentId = st?.studentId;
+      }
+      return grant({
+        id: u._id.toString(), name: u.name, userName: u.name, email: u.email, phone: u.phone || '', role: u.role,
+        branch: u.branch || '', status: u.status || 'Active', department: m.department, departmentCode: m.departmentCode,
+        departmentName: m.departmentName, color: m.color, ...extra, ...(studentId ? { studentId } : {})
+      });
+    }
+    if (kind === 'trainer') {
+      const t = await Trainer.findOne({ trainerId: id });
+      if (!t) return res.status(404).json({ success: false, message: 'Trainer not found' });
+      return grant({
+        id: t.trainerId, trainerId: t.trainerId, name: t.trainerName, userName: t.trainerName, email: t.email || t.zoomEmail || '',
+        role: t.role || 'Trainer', department: 'training', departmentCode: 'ACAD', departmentName: 'Training & Faculty Department',
+        color: '#0284c7', courseKey: t.courseKey || '', expertCourse: t.expertCourse || '', specialization: t.specialization || '',
+        branch: t.branchName || '', shift: t.shift || '', shiftStartMin: t.shiftStartMin, shiftEndMin: t.shiftEndMin
+      });
+    }
+    if (kind === 'student') {
+      const st = await Student.findOne({ studentId: id });
+      if (!st) return res.status(404).json({ success: false, message: 'Student not found' });
+      return grant({
+        id: st._id.toString(), studentId: st.studentId, name: st.name, userName: st.name, email: st.email || '',
+        role: 'Student Scholar', department: 'student', departmentCode: 'STU', departmentName: 'Student Learning & Exam Portal',
+        branch: st.location || '', color: '#0d9488'
+      });
+    }
+    return res.status(400).json({ success: false, message: 'Unknown account type' });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
 
 router.get('/auth/departments', (req, res) => {
   res.json(DEPARTMENT_PORTALS);
@@ -2221,31 +2289,13 @@ const mapRoleOrDeptToDashboard = (role = '', department = '') => {
 };
 
 router.post('/auth/login', async (req, res) => {
-  const { email, password, department } = req.body;
-
+  const { email, password } = req.body || {};
   if (!email || !password) {
-    return res.status(400).json({
-      success: false,
-      message: 'Please provide both email and password.'
-    });
+    return res.status(400).json({ success: false, message: 'Please provide both email and password.' });
   }
-
-  const normalizedEmail = (email || '').trim().toLowerCase();
-
-  // Helper to validate password against DB password, seeded password, and standard department passwords
-  const isPasswordValid = (enteredPwd, userPwd, emailStr) => {
-    if (!userPwd) return true;
-    if (enteredPwd === userPwd) return true;
-    if (['admin123', 'Thoughtflows@2026', '123456'].includes(enteredPwd)) return true;
-    const lower = (enteredPwd || '').toLowerCase();
-    if (emailStr.startsWith('hr') && ['hr123', 'kavitha@hr2026', 'hr@2026'].includes(lower)) return true;
-    if ((emailStr.startsWith('training') || emailStr.includes('brandforge')) && ['training123', 'faculty#2026', 'thoughtflows@2026'].includes(lower)) return true;
-    if (emailStr.startsWith('cccp') && ['cccp123', 'placement@2026'].includes(lower)) return true;
-    if (emailStr.startsWith('marketing') && ['mkt123', 'growth#tf2026'].includes(lower)) return true;
-    if ((emailStr.startsWith('lead') || emailStr.startsWith('aswanth')) && ['lead123', 'aswanth#lead26'].includes(lower)) return true;
-    if (emailStr.startsWith('student') && ['stu123', 'scholar#tf26'].includes(lower)) return true;
-    return false;
-  };
+  const normalizedEmail = String(email).trim().toLowerCase();
+  const deny = (message = 'Invalid email or password.') => res.status(401).json({ success: false, message });
+  const grant = (user, message) => res.json({ success: true, message, user: { ...user, token: signToken(user) } });
 
   // Attach the signed-in trainer's roster record (Trainer collection) so the
   // trainer dashboard runs on real shift / course / branch data
@@ -2273,157 +2323,80 @@ router.post('/auth/login', async (req, res) => {
   };
   const dropUndefined = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined));
 
-  // 0. Built-in trainer accounts take precedence over DB records with the same email
-  const trainerUser = TRAINER_ACCOUNTS[normalizedEmail];
-  if (trainerUser) {
-    if (!isPasswordValid(password, trainerUser.password, normalizedEmail)) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid password. Please check your credentials.'
-      });
-    }
-    Object.assign(trainerUser, dropUndefined(await trainerRosterFields(normalizedEmail, trainerUser.name, trainerUser.trainerId)));
-    return res.json({
-      success: true,
-      message: `Authenticated successfully for ${trainerUser.name} (${trainerUser.role})`,
-      user: (() => {
-        const { password: _pw, ...safe } = trainerUser;
-        return { ...safe, department: 'training', token: `jwt_tf_trainer_${trainerUser.id}_token` };
-      })()
-    });
-  }
-
-  // 1. Check MongoDB User model first (contains real seeded and admin-created accounts)
   try {
+    // 0. Built-in trainer accounts — password comes from the server environment
+    const trainerUser = TRAINER_ACCOUNTS[normalizedEmail];
+    const trainerEnvKey = trainerUser ? `TRAINER_${String(trainerUser.trainerId).replace(/\W/g, '_').toUpperCase()}_PASSWORD` : '';
+    if (trainerUser && process.env[trainerEnvKey]) {
+      if (!(await checkPassword(password, process.env[trainerEnvKey])).ok) return deny();
+      const roster = dropUndefined(await trainerRosterFields(normalizedEmail, trainerUser.name, trainerUser.trainerId));
+      return grant({ ...trainerUser, ...roster, department: 'training' }, `Welcome ${trainerUser.name}`);
+    }
+
+    // 1. Accounts created by Admin / at admission (User collection)
     const dbUser = await User.findOne({ email: normalizedEmail });
     if (dbUser) {
-      const passwordOk = dbUser.createdFrom === 'lead' ? password === dbUser.password : isPasswordValid(password, dbUser.password, normalizedEmail);
-      if (!passwordOk) {
-        return res.status(401).json({
-          success: false,
-          message: 'Invalid password. Please check your credentials.'
-        });
-      }
+      if (dbUser.status && /inactive|disabled|suspended/i.test(dbUser.status)) return deny('This account is disabled. Contact your admin.');
+      const { ok, needsUpgrade } = await checkPassword(password, dbUser.password);
+      if (!ok) return deny();
+      if (needsUpgrade) dbUser.password = await hashPassword(password);
+      dbUser.lastLogin = new Date().toLocaleString('en-IN');
+      await dbUser.save().catch(() => {});
+
       const mapping = mapRoleOrDeptToDashboard(dbUser.role, dbUser.department);
-      const rosterFields = mapping.department === 'training'
-        ? dropUndefined(await trainerRosterFields(normalizedEmail, dbUser.name))
-        : {};
-      return res.json({
-        success: true,
-        message: `Authenticated successfully for ${dbUser.name} (${dbUser.role})`,
-        user: {
-          id: dbUser._id ? dbUser._id.toString() : (dbUser.id || 'usr_' + Date.now()),
-          name: dbUser.name,
-          userName: dbUser.name,
-          email: dbUser.email,
-          phone: dbUser.phone || '',
-          role: dbUser.role,
-          branch: dbUser.branch || 'Gandhipuram',
-          status: dbUser.status || 'Active',
-          department: mapping.department,
-          departmentCode: mapping.departmentCode,
-          departmentName: mapping.departmentName,
-          color: mapping.color,
-          ...rosterFields,
-          token: `jwt_tf_${dbUser.role}_${Date.now()}`
-        }
-      });
-    }
-  } catch (e) {
-    console.warn('DB User lookup warning in /auth/login:', e.message);
-  }
-
-  // 4. Admin Management Authentication
-  if (normalizedEmail === 'admin@thoughtflows.in' || normalizedEmail === 'admin') {
-    const validAdminPasswords = ['admin123', 'Admin@2026', 'Admin@HQ2026'];
-    if (!validAdminPasswords.includes(password)) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid admin password. Default password is admin123'
-      });
-    }
-
-    return res.json({
-      success: true,
-      message: 'Authenticated successfully for Executive Admin',
-      user: {
-        id: 'usr_1',
-        name: 'Executive Founders Desk',
-        userName: 'Executive Founders Desk',
-        email: 'admin@thoughtflows.in',
-        department: 'admin',
-        departmentCode: 'ADM',
-        departmentName: 'Admin & Management',
-        role: 'Super Admin',
-        branch: 'Thoughtflows Group HQ',
-        color: '#4338ca',
-        token: 'jwt_tf_admin_token_2026'
+      const rosterFields = mapping.department === 'training' ? dropUndefined(await trainerRosterFields(normalizedEmail, dbUser.name)) : {};
+      let studentId;
+      if (mapping.department === 'student') {
+        const st = await Student.findOne({ email: new RegExp(`^${escapeRegex(normalizedEmail)}$`, 'i') }).select('studentId');
+        studentId = st?.studentId;
       }
-    });
-  }
-
-  // 5. Check Student collection
-  try {
-    const student = await Student.findOne({ email: normalizedEmail });
-    if (student) {
-      return res.json({
-        success: true,
-        message: `Authenticated successfully for ${student.name} (Student)`,
-        user: {
-          id: student._id?.toString() || student.studentId,
-          studentId: student.studentId,
-          name: student.name,
-          userName: student.name,
-          email: student.email,
-          role: 'Student Scholar',
-          department: 'student',
-          departmentCode: 'STU',
-          departmentName: 'Student Learning & Exam Portal',
-          branch: student.location || 'Gandhipuram',
-          color: '#0d9488',
-          token: `jwt_tf_student_${student.studentId}_token`
-        }
-      });
-    }
-  } catch (e) {}
-
-  // 6. Default Department Portal Accounts
-  const matchedDeptKey = Object.keys(DEPARTMENT_PORTALS).find(
-    k => DEPARTMENT_PORTALS[k].defaultEmail.toLowerCase() === normalizedEmail
-  );
-
-  if (matchedDeptKey) {
-    const dept = DEPARTMENT_PORTALS[matchedDeptKey];
-    if (dept.defaultPassword && password !== dept.defaultPassword) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid password. Please check your credentials.'
-      });
+      return grant({
+        id: dbUser._id.toString(),
+        name: dbUser.name,
+        userName: dbUser.name,
+        email: dbUser.email,
+        phone: dbUser.phone || '',
+        role: dbUser.role,
+        branch: dbUser.branch || '',
+        status: dbUser.status || 'Active',
+        department: mapping.department,
+        departmentCode: mapping.departmentCode,
+        departmentName: mapping.departmentName,
+        color: mapping.color,
+        ...rosterFields,
+        ...(studentId ? { studentId } : {})
+      }, `Welcome ${dbUser.name}`);
     }
 
-    return res.json({
-      success: true,
-      message: `Authenticated successfully for ${dept.name}`,
-      user: {
-        id: `usr_${dept.id}_${Date.now().toString().slice(-4)}`,
+    // 2. Built-in department portal accounts (incl. Admin) — enabled only when
+    //    their password is set in the server environment
+    const deptKey = normalizedEmail === 'admin'
+      ? 'admin'
+      : Object.keys(DEPARTMENT_PORTALS).find((k) => DEPARTMENT_PORTALS[k].defaultEmail.toLowerCase() === normalizedEmail);
+    if (deptKey && deptKey !== 'student') {
+      const dept = DEPARTMENT_PORTALS[deptKey];
+      const envKey = deptKey === 'admin' ? 'ADMIN_PASSWORD' : `${deptKey.toUpperCase()}_PORTAL_PASSWORD`;
+      if (!process.env[envKey]) return deny(`This built-in account is disabled. Ask the administrator to set ${envKey}.`);
+      if (!(await checkPassword(password, process.env[envKey])).ok) return deny();
+      return grant({
+        id: `usr_${dept.id}`,
         name: dept.userName,
         userName: dept.userName,
-        email: normalizedEmail,
+        email: dept.defaultEmail,
         department: dept.id,
         departmentCode: dept.code,
         departmentName: dept.name,
-        role: dept.role,
+        role: deptKey === 'admin' ? 'Super Admin' : dept.role,
         branch: dept.branch,
-        color: dept.color,
-        token: `jwt_tf_${dept.id}_token_2026`
-      }
-    });
+        color: dept.color
+      }, `Welcome ${dept.userName}`);
+    }
+  } catch (e) {
+    console.error('Login error:', e.message);
+    return res.status(500).json({ success: false, message: 'Login failed. Please try again.' });
   }
 
-  return res.status(401).json({
-    success: false,
-    message: 'Access denied. Account is not registered in ThoughtFlows ERP.'
-  });
+  return deny('Access denied. This account is not registered in ThoughtFlows ERP.');
 });
 
 // ==========================================
@@ -2486,7 +2459,7 @@ router.get('/admin/users', async (req, res) => {
       name: u.name,
       email: u.email,
       phone: u.phone || '',
-      password: u.password,
+      hasPassword: Boolean(u.password),
       role: u.role,
       department: u.department,
       branch: u.branch,
@@ -2506,6 +2479,9 @@ router.post('/admin/users', async (req, res) => {
     if (!email) {
       return res.status(400).json({ error: 'Email is required' });
     }
+    if (!password || String(password).length < 8) {
+      return res.status(400).json({ error: 'Set a password of at least 8 characters' });
+    }
     const cleanEmail = email.toLowerCase().trim();
     const existing = await User.findOne({ email: cleanEmail });
     if (existing) {
@@ -2515,7 +2491,7 @@ router.post('/admin/users', async (req, res) => {
       name: name || cleanEmail.split('@')[0],
       email: cleanEmail,
       phone: phone || '',
-      password: password || 'Thoughtflows@2026',
+      password: await hashPassword(password),
       role: role || 'Staff',
       department: department || 'Medical Coding Faculty',
       branch: branch || 'Gandhipuram',
@@ -2524,10 +2500,11 @@ router.post('/admin/users', async (req, res) => {
       avatarBg: avatarBg || 'bg-indigo-600'
     });
     await user.save();
+    const { password: _pw, ...safeUser } = user.toObject();
     res.status(201).json({
       id: user._id.toString(),
       _id: user._id.toString(),
-      ...user.toObject()
+      ...safeUser
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2537,14 +2514,21 @@ router.post('/admin/users', async (req, res) => {
 router.put('/admin/users/:id', async (req, res) => {
   try {
     const { id } = req.params;
+    const update = { ...req.body };
+    delete update._id;
+    if ('password' in update) {
+      if (!update.password || String(update.password).length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+      update.password = await hashPassword(update.password);
+    }
     let user;
     if (mongoose.Types.ObjectId.isValid(id)) {
-      user = await User.findByIdAndUpdate(id, req.body, { new: true });
+      user = await User.findByIdAndUpdate(id, update, { new: true });
     } else {
-      user = await User.findOneAndUpdate({ email: req.body.email }, req.body, { new: true });
+      user = await User.findOneAndUpdate({ email: req.body.email }, update, { new: true });
     }
     if (!user) return res.status(404).json({ error: 'User not found' });
-    res.json(user);
+    const { password: _pw, ...safeUser } = user.toObject();
+    res.json(safeUser);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -3504,6 +3488,12 @@ async function trainerZoomHost(demo) {
 
 // Create a fresh Zoom meeting for the demo under the given host user
 async function createDemoZoomMeeting(demo, host) {
+  const hosts = [];
+  if (host) hosts.push(host);
+  const shared = sharedZoomHost();
+  if (shared && !hosts.includes(shared)) hosts.push(shared);
+  if (!hosts.includes('me')) hosts.push('me');
+
   const body = {
     topic: `Demo Class – ${demo.course} – ${demo.candidateName}`,
     type: 2,
@@ -3521,17 +3511,27 @@ async function createDemoZoomMeeting(demo, host) {
   const start = demoStartTime(demo);
   if (start) body.start_time = start;
 
-  const r = await zoomApi(`/users/${encodeURIComponent(host)}/meetings`, { method: 'POST', body });
-  if (!r.ok) {
-    const err = new Error(r.data.message || `Zoom meeting creation failed for ${host}`);
-    err.status = 502;
-    throw err;
+  let lastError = null;
+  for (const h of hosts) {
+    const r = await zoomApi(`/users/${encodeURIComponent(h)}/meetings`, { method: 'POST', body });
+    if (r.ok && r.data?.id) {
+      demo.link = r.data.join_url;
+      demo.zoomMeetingId = String(r.data.id);
+      demo.zoomHostEmail = h;
+      await demo.save();
+      return demo;
+    }
+    const msg = r.data?.message || `Zoom meeting creation failed for ${h}`;
+    lastError = new Error(msg);
+    if (r.data?.code === 1001 || msg.toLowerCase().includes('user does not exist')) {
+      console.warn(`[zoom-demo] Host '${h}' does not exist in Zoom Account, trying fallback candidate host...`);
+      continue;
+    }
   }
-  demo.link = r.data.join_url;
-  demo.zoomMeetingId = String(r.data.id);
-  demo.zoomHostEmail = host;
-  await demo.save();
-  return demo;
+
+  const err = new Error(lastError?.message || `Zoom meeting creation failed for ${host}`);
+  err.status = 502;
+  throw err;
 }
 
 // Per-demo lock: concurrent join requests share one creation instead of each making a meeting
@@ -3733,6 +3733,778 @@ router.get('/demos/:id/zoom-join', async (req, res) => {
 
     const { signature, sdkKey } = signZoom(meetingNumber, zak ? 1 : 0);
     res.json({ signature, sdkKey, meetingNumber: String(meetingNumber), password: decodeURIComponent(password), zak, host: !!zak, hostEmail: demo.zoomHostEmail || '', debug });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+
+// ==========================================
+// STUDENT PORTAL ⇄ TRAINER DATA FLOW
+// Everything the Student Portal shows comes from here — no mock data.
+//   Trainer → Student : live class, attendance, assessment scores, materials,
+//                       doubt replies, submission reviews, request responses
+//   Student → Trainer : doubts, assignment / resume / video submissions,
+//                       mock-interview & consultation requests
+//   Student → HR      : referrals (leads), fee / payment / profile requests
+// ==========================================
+const LIVE_CLASS_MAX_HOURS = 6;
+const REFERRAL_REWARD_POINTS = 1500;
+const MAX_SUBMISSION_BYTES = 12 * 1024 * 1024;
+
+// A student's batch key is the same one the trainer dashboard groups by
+const studentBatchOf = (st) => st?.batchName || st?.course || '';
+const plainMap = (m) => (m instanceof Map ? Object.fromEntries(m) : (m || {}));
+
+const isSessionLive = (sess) => Boolean(
+  sess?.isLive && sess.startedAt && (Date.now() - new Date(sess.startedAt).getTime()) < LIVE_CLASS_MAX_HOURS * 36e5
+);
+
+const publicTrainer = (t) => (t ? {
+  trainerId: t.trainerId,
+  trainerName: t.trainerName,
+  role: t.role || '',
+  specialization: t.specialization || '',
+  expertCourse: t.expertCourse || '',
+  branchName: t.branchName || '',
+  shift: t.shift || '',
+  workingDays: t.workingDays || '',
+  languages: t.languages || [],
+  certifications: t.certifications || [],
+  experienceLevel: t.experienceLevel || '',
+  email: t.email || ''
+} : null);
+
+// What a student sees about a live class (meeting credentials come only from /student-portal/live-class/join)
+const liveSessionView = (sess) => (isSessionLive(sess) ? {
+  isLive: true,
+  sessionId: sess._id.toString(),
+  trainerId: sess.trainerId,
+  trainerName: sess.trainerName,
+  batch: sess.batch,
+  topic: sess.topic,
+  startedAt: sess.startedAt,
+  hasMeeting: Boolean(sess.zoomMeetingId)
+} : null);
+
+async function findPortalStudent({ studentId, email }) {
+  if (studentId) {
+    const st = await findStudentByAnyId(String(studentId));
+    if (st) return st;
+  }
+  if (email) {
+    const e = String(email).trim();
+    if (e) return Student.findOne({ email: new RegExp(`^${escapeRegex(e)}$`, 'i') });
+  }
+  return null;
+}
+
+// Credit the referring student once, when a referred lead is admitted
+async function creditReferralReward(lead) {
+  try {
+    if (!lead || lead.stage !== 'admitted' || !lead.referredByStudentId || lead.referralRewarded) return;
+    const referrer = await findStudentByAnyId(lead.referredByStudentId);
+    if (!referrer) return;
+    referrer.rewardPoints = (referrer.rewardPoints || 0) + REFERRAL_REWARD_POINTS;
+    await referrer.save();
+    lead.referralRewarded = true;
+    await lead.save();
+    await pushNotification({
+      audience: 'hr', recipientName: referrer.hrName || '', type: 'referral',
+      title: `Referral reward credited: ${referrer.name}`,
+      message: `${lead.fullName} was admitted. ${REFERRAL_REWARD_POINTS} points credited to ${referrer.name} (${referrer.studentId}).`,
+      studentId: referrer.studentId
+    });
+  } catch (e) {
+    console.warn('creditReferralReward failed:', e.message);
+  }
+}
+
+// ---- Full portal payload for one student ----
+router.get('/student-portal/me', async (req, res) => {
+  try {
+    const st = await findPortalStudent(req.query);
+    if (!st) return res.status(404).json({ error: 'No admitted student record is linked to this login. Please contact your HR counsellor.' });
+
+    const key = studentKeyOf(st);
+    const batch = studentBatchOf(st);
+
+    const [trainer, liveSessions, attendanceDocs, assessments, materials, doubts, submissions, requests, referrals, placements, tickets, partners] = await Promise.all([
+      st.trainerId ? Trainer.findOne({ trainerId: st.trainerId }) : null,
+      batch ? LiveClassSession.find({ batch, isLive: true }) : [],
+      ClassAttendance.find({ [`records.${key}`]: { $exists: true } }).sort({ date: -1 }).limit(120),
+      TrainerAssessment.find({ $or: [...(batch ? [{ batch }] : []), { [`scores.${key}`]: { $exists: true } }] }).sort({ createdAt: -1 }),
+      batch ? TrainingMaterial.find({ 'assignments.batch': batch }).sort({ createdAt: -1 }) : [],
+      TrainerDoubt.find({ studentId: st.studentId }).sort({ createdAt: -1 }),
+      StudentSubmission.find({ studentId: st.studentId }).sort({ createdAt: -1 }),
+      StudentRequest.find({ studentId: st.studentId }).sort({ createdAt: -1 }),
+      StudentLead.find({ referredByStudentId: st.studentId })
+        .select('fullName phone course counselorAssigned stage status referralRewarded createdAt')
+        .sort({ createdAt: -1 }),
+      PlacementRecord.find({ $or: [{ studentId: st.studentId }, { tfId: st.studentId }] }).sort({ createdAt: -1 }),
+      Escalation.find({ raisedBy: new RegExp(escapeRegex(st.studentId)) }).sort({ createdAt: -1 }).limit(20),
+      CorporatePartner.find({ hiring: /hiring/i }).select('name city type activeVacancies').limit(8)
+    ]);
+
+    // Prefer the allocated trainer's live session, else any live one for the batch
+    const live = liveSessions.find((s) => s.trainerId === st.trainerId && isSessionLive(s)) || liveSessions.find(isSessionLive) || null;
+
+    const attendance = attendanceDocs.map((a) => ({
+      id: a._id.toString(),
+      date: a.date,
+      topic: a.topic || '',
+      batch: a.batch,
+      trainerName: a.trainerName || '',
+      status: a.records.get(key) || 'Unmarked'
+    }));
+
+    const tests = assessments.map((t) => {
+      const scores = plainMap(t.scores);
+      const myScore = typeof scores[key] === 'number' ? scores[key] : null;
+      const pct = myScore !== null && t.totalMarks > 0 ? Math.round((myScore / t.totalMarks) * 100) : null;
+      return {
+        id: t._id.toString(),
+        name: t.name,
+        type: t.type,
+        topic: t.topic || '',
+        date: t.date || '',
+        course: t.course || '',
+        timeLimit: t.timeLimit,
+        totalMarks: t.totalMarks,
+        passMark: t.passMark,
+        trainerName: t.trainerName || '',
+        status: t.status,
+        rationale: myScore !== null ? (t.rationale || '') : '',
+        myScore,
+        pct,
+        passed: myScore !== null ? myScore >= (t.passMark || 0) : null,
+        createdAt: t.createdAt
+      };
+    });
+
+    const materialList = materials.map((m) => {
+      const assignment = (m.assignments || []).find((a) => a.batch === batch) || {};
+      return {
+        id: m._id.toString(),
+        title: m.title,
+        description: m.description,
+        category: m.category,
+        fileName: m.fileName,
+        fileFormat: m.fileFormat,
+        fileSize: m.fileSize,
+        uploadedBy: m.uploadedBy,
+        module: assignment.module || '',
+        note: assignment.note || '',
+        assignedBy: assignment.by || '',
+        assignedAt: assignment.at || m.createdAt
+      };
+    });
+
+    // Notes the trainer shared in recent classes of this batch
+    const pastSessions = batch
+      ? await LiveClassSession.find({ batch, isLive: false, 'notes.0': { $exists: true } }).sort({ startedAt: -1 }).limit(20).select('topic trainerName startedAt notes')
+      : [];
+    const classNotes = pastSessions.map((sess) => ({
+      id: sess._id.toString(),
+      topic: sess.topic,
+      trainerName: sess.trainerName,
+      date: sess.startedAt,
+      notes: (sess.notes || []).map((n) => ({ text: n.text, at: n.at }))
+    }));
+
+    res.json({
+      student: st,
+      batch,
+      trainer: publicTrainer(trainer),
+      liveSession: liveSessionView(live),
+      classNotes,
+      attendance,
+      assessments: tests,
+      materials: materialList,
+      doubts: doubts.map(formatDoubt),
+      submissions,
+      requests,
+      referrals,
+      placements,
+      tickets,
+      hiringPartners: partners
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---- Student-editable profile fields (everything else is HR-verified) ----
+router.put('/student-portal/:id/profile', async (req, res) => {
+  try {
+    const st = await findStudentByAnyId(req.params.id);
+    if (!st) return res.status(404).json({ error: 'Student not found' });
+    const { skills, certificates, preferredLocations } = req.body || {};
+    const cleanList = (arr) => [...new Set((arr || []).map((v) => String(v || '').trim()).filter(Boolean))].slice(0, 30);
+    if (Array.isArray(skills)) st.skills = cleanList(skills);
+    if (Array.isArray(preferredLocations)) st.preferredLocations = cleanList(preferredLocations);
+    if (Array.isArray(certificates)) {
+      st.certificates = certificates
+        .filter((c) => c && c.name)
+        .slice(0, 30)
+        .map((c) => ({
+          id: String(c.id || new mongoose.Types.ObjectId()),
+          name: String(c.name).trim(),
+          issuer: String(c.issuer || '').trim(),
+          year: String(c.year || '').trim()
+        }));
+    }
+    await st.save();
+    res.json(st);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ---- Referrals: student refers a friend → a real lead for their HR ----
+router.post('/student-portal/:id/referrals', async (req, res) => {
+  try {
+    const st = await findStudentByAnyId(req.params.id);
+    if (!st) return res.status(404).json({ error: 'Student not found' });
+    const { name, phone, course = '', email = '' } = req.body || {};
+    const cleanPhone = String(phone || '').replace(/[^\d+]/g, '');
+    if (!name || cleanPhone.replace(/\D/g, '').length < 10) {
+      return res.status(400).json({ error: "Your friend's name and a valid 10-digit mobile number are required" });
+    }
+    const existing = await StudentLead.findOne({ phone: new RegExp(`${escapeRegex(cleanPhone.slice(-10))}$`) });
+    if (existing) return res.status(409).json({ error: 'This number is already registered with our admissions team' });
+    const lead = await StudentLead.create({
+      fullName: String(name).trim(),
+      phone: cleanPhone,
+      email: String(email || '').trim().toLowerCase(),
+      course: course || st.course,
+      branch: st.location || '',
+      sourceName: 'Student Referral',
+      counselorAssigned: st.hrName || '',
+      stage: 'new',
+      notes: `Referred by ${st.name} (${st.studentId})`,
+      referredByStudentId: st.studentId,
+      referredByName: st.name
+    });
+    await pushNotification({
+      audience: 'hr', recipientName: st.hrName || '', type: 'referral',
+      title: `New referral from ${st.name}`,
+      message: `${lead.fullName} · ${lead.phone} · ${lead.course}. Referred by ${st.name} (${st.studentId}).`,
+      studentId: st.studentId, createdBy: st.name
+    });
+    res.status(201).json(lead);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ---- Submissions: student → trainer ----
+router.post('/student-portal/:id/submissions', async (req, res) => {
+  try {
+    const st = await findStudentByAnyId(req.params.id);
+    if (!st) return res.status(404).json({ error: 'Student not found' });
+    const { type, title, note = '', link = '', materialId = '', fileName = '', mimeType = '', data = '' } = req.body || {};
+    if (!type) return res.status(400).json({ error: 'type is required' });
+    if (!data && !link) return res.status(400).json({ error: 'Attach a file or share a link' });
+    let base64 = '';
+    let size = 0;
+    if (data) {
+      base64 = String(data).includes(',') ? String(data).split(',').pop() : String(data);
+      size = Math.floor((base64.length * 3) / 4);
+      if (size > MAX_SUBMISSION_BYTES) return res.status(413).json({ error: 'File is larger than 12 MB' });
+    }
+    const doc = await StudentSubmission.create({
+      studentId: st.studentId,
+      studentName: st.name,
+      course: st.course,
+      batch: studentBatchOf(st),
+      trainerId: st.trainerId || '',
+      trainerName: st.trainerName || '',
+      type,
+      title: title || fileName || type,
+      note,
+      link,
+      materialId,
+      fileName,
+      mimeType: mimeType || (fileName ? 'application/octet-stream' : ''),
+      fileSize: size,
+      data: base64
+    });
+    if (st.trainerId) {
+      await pushNotification({
+        audience: 'trainer', recipientId: st.trainerId, recipientName: st.trainerName, type: 'submission',
+        title: `New submission from ${st.name}`,
+        message: `${doc.title}${note ? ` — ${note}` : ''}`,
+        studentId: st.studentId, createdBy: st.name
+      });
+    }
+    const obj = doc.toObject();
+    delete obj.data;
+    res.status(201).json(obj);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.get('/student-portal/submissions', async (req, res) => {
+  try {
+    const { trainerId, studentId, status } = req.query;
+    const query = {};
+    if (trainerId) query.trainerId = trainerId;
+    if (studentId) query.studentId = studentId;
+    if (status) query.status = status;
+    res.json(await StudentSubmission.find(query).sort({ createdAt: -1 }).limit(300));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.get('/student-portal/submissions/:id/file', async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+    const doc = await StudentSubmission.findById(req.params.id).select('+data');
+    if (!doc || !doc.data) return res.status(404).json({ error: 'File not found' });
+    res.setHeader('Content-Type', doc.mimeType || 'application/octet-stream');
+    const disposition = req.query.download ? 'attachment' : 'inline';
+    res.setHeader('Content-Disposition', `${disposition}; filename="${encodeURIComponent(doc.fileName || 'file')}"`);
+    res.send(Buffer.from(doc.data, 'base64'));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Trainer reviews a submission. Approved resume / video intro also tick the
+// student's placement checklist items.
+router.put('/student-portal/submissions/:id/review', async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+    const { status, score, feedback = '', reviewedBy = '' } = req.body || {};
+    if (!['Approved', 'Needs Revision'].includes(status)) return res.status(400).json({ error: 'Status must be Approved or Needs Revision' });
+    const set = { status, feedback, reviewedBy, reviewedAt: new Date() };
+    if (score !== undefined && score !== '' && score !== null) {
+      const n = Number(score);
+      if (!Number.isFinite(n) || n < 0 || n > 100) return res.status(400).json({ error: 'Score must be between 0 and 100' });
+      set.score = n;
+    }
+    const doc = await StudentSubmission.findByIdAndUpdate(req.params.id, { $set: set }, { new: true });
+    if (!doc) return res.status(404).json({ error: 'Submission not found' });
+    if (doc.type === 'resume' || doc.type === 'video_intro') {
+      await pushNotification({
+        audience: 'hr', type: 'placement',
+        title: `${doc.type === 'resume' ? 'Resume' : 'Video intro'} ${status.toLowerCase()}: ${doc.studentName}`,
+        message: `${reviewedBy || 'Trainer'} reviewed ${doc.studentName}'s ${doc.type === 'resume' ? 'resume' : 'video introduction'}${feedback ? ` — ${feedback}` : ''}.`,
+        studentId: doc.studentId, createdBy: reviewedBy
+      });
+    }
+    res.json(doc);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ---- Requests: student → trainer (academic) or → HR (admin) ----
+router.post('/student-portal/:id/requests', async (req, res) => {
+  try {
+    const st = await findStudentByAnyId(req.params.id);
+    if (!st) return res.status(404).json({ error: 'Student not found' });
+    const { type, subject = '', message = '', preferredDate = '', details = {} } = req.body || {};
+    if (!type) return res.status(400).json({ error: 'type is required' });
+    const audience = TRAINER_REQUEST_TYPES.includes(type) ? 'trainer' : 'hr';
+    if (audience === 'trainer' && !st.trainerId) {
+      return res.status(400).json({ error: 'No trainer has been allocated to you yet. Your HR counsellor will allocate one.' });
+    }
+    if (type === 'redeem_points') {
+      const pts = Number(details.points || 0);
+      if (!pts || pts > (st.rewardPoints || 0)) return res.status(400).json({ error: 'Not enough reward points to redeem' });
+    }
+    const doc = await StudentRequest.create({
+      studentId: st.studentId,
+      studentName: st.name,
+      course: st.course,
+      batch: studentBatchOf(st),
+      type,
+      audience,
+      trainerId: audience === 'trainer' ? st.trainerId : '',
+      trainerName: audience === 'trainer' ? st.trainerName : '',
+      hrName: st.hrName || '',
+      subject,
+      message,
+      preferredDate,
+      details
+    });
+    await pushNotification({
+      audience,
+      recipientId: audience === 'trainer' ? st.trainerId : '',
+      recipientName: audience === 'trainer' ? st.trainerName : (st.hrName || ''),
+      type: `request_${type}`,
+      title: `${st.name}: ${subject || type.replace(/_/g, ' ')}`,
+      message: [message, preferredDate ? `Preferred: ${preferredDate}` : ''].filter(Boolean).join(' · '),
+      studentId: st.studentId, createdBy: st.name
+    });
+    res.status(201).json(doc);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.get('/student-portal/requests', async (req, res) => {
+  try {
+    const { audience, trainerId, studentId, status } = req.query;
+    const query = {};
+    if (audience) query.audience = audience;
+    if (trainerId) query.trainerId = trainerId;
+    if (studentId) query.studentId = studentId;
+    if (status) query.status = status;
+    res.json(await StudentRequest.find(query).sort({ createdAt: -1 }).limit(300));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.put('/student-portal/requests/:id', async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+    const { status, response = '', scheduledFor = '', respondedBy = '', mockScore } = req.body || {};
+    if (!['Open', 'Scheduled', 'Resolved', 'Declined'].includes(status)) return res.status(400).json({ error: 'Invalid status' });
+    if (mockScore !== undefined && mockScore !== '' && mockScore !== null) {
+      const n = Number(mockScore);
+      if (!Number.isFinite(n) || n < 0 || n > 100) return res.status(400).json({ error: 'Mock score must be between 0 and 100' });
+    }
+    const doc = await StudentRequest.findById(req.params.id);
+    if (!doc) return res.status(404).json({ error: 'Request not found' });
+    const wasResolved = doc.status === 'Resolved';
+    doc.status = status;
+    doc.response = response;
+    doc.scheduledFor = scheduledFor || doc.scheduledFor;
+    doc.respondedBy = respondedBy;
+    doc.respondedAt = new Date();
+    await doc.save();
+    const st = await findStudentByAnyId(doc.studentId);
+    if (st) {
+      // Mock interview done → reflect on the student record HR & CCCP read
+      if (doc.type === 'mock_interview') {
+        st.mockInterview = status === 'Resolved' ? 'Completed' : status === 'Scheduled' ? 'Scheduled' : st.mockInterview;
+        if (mockScore !== undefined && mockScore !== '' && mockScore !== null) {
+          st.mockScore = Number(mockScore);
+          st.readinessScore = computeReadiness(st);
+          doc.details = { ...(doc.details || {}), mockScore: Number(mockScore) };
+          await doc.save();
+        }
+        await st.save();
+      }
+      // Approved redemption → deduct the points once
+      if (doc.type === 'redeem_points' && status === 'Resolved' && !wasResolved) {
+        st.rewardPoints = Math.max(0, (st.rewardPoints || 0) - Number(doc.details?.points || 0));
+        await st.save();
+      }
+    }
+    res.json(doc);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ==========================================
+// LIVE CLASS — Class Session Room ⇄ Student Portal
+//   1. Trainer starts: a fresh Zoom meeting is created on the trainer's own
+//      Zoom user (Trainer.zoomEmail, else ZOOM_HOST_EMAIL). Falls back to the
+//      trainer's fixed Class Zoom Link when the Zoom API is not configured.
+//   2. Trainer joins as HOST (signature role 1 + ZAK) inside the dashboard.
+//   3. Students of that batch join from their portal (role 0). Every join is
+//      logged so the trainer can mark attendance from it.
+//   4. Trainer ends: the Zoom meeting is closed for everyone, and the join
+//      log is returned for one-click attendance.
+// ==========================================
+const LATE_AFTER_MIN = 15;
+
+// The first version kept one row per trainer+batch (unique index). Drop that
+// index once so every class session gets its own record.
+let liveIndexesSynced = false;
+async function ensureLiveIndexes() {
+  if (liveIndexesSynced) return;
+  liveIndexesSynced = true;
+  try { await LiveClassSession.syncIndexes(); } catch (e) { console.warn('LiveClassSession index sync:', e.message); }
+}
+
+const sessionTrainerId = (req) => req.user?.trainerId || req.body?.trainerId || req.query?.trainerId || '';
+
+// Trainer-facing view (includes the join log and notes)
+const trainerSessionView = (sess) => sess && ({
+  sessionId: sess._id.toString(),
+  isLive: isSessionLive(sess),
+  trainerId: sess.trainerId,
+  trainerName: sess.trainerName,
+  batch: sess.batch,
+  topic: sess.topic,
+  startedAt: sess.startedAt,
+  endedAt: sess.endedAt,
+  meetingSource: sess.meetingSource,
+  zoomMeetingId: sess.zoomMeetingId,
+  zoomJoinUrl: sess.zoomJoinUrl,
+  joins: (sess.joins || []).map((j) => ({
+    studentId: j.studentId,
+    name: j.name,
+    joinedAt: j.joinedAt,
+    late: Boolean(sess.startedAt && j.joinedAt && (new Date(j.joinedAt) - new Date(sess.startedAt)) > LATE_AFTER_MIN * 60000)
+  })),
+  notes: sess.notes || [],
+  attendanceSaved: sess.attendanceSaved
+});
+
+const zoomApiConfigured = () => Boolean(process.env.ZOOM_ACCOUNT_ID && process.env.ZOOM_S2S_CLIENT_ID && process.env.ZOOM_S2S_CLIENT_SECRET);
+
+async function classZoomHosts(trainer) {
+  const hosts = [];
+  const primary = String(trainer?.zoomEmail || '').trim().toLowerCase();
+  if (primary) hosts.push(primary);
+  const shared = sharedZoomHost();
+  if (shared && !hosts.includes(shared)) hosts.push(shared);
+  if (!hosts.includes('me')) hosts.push('me');
+  return hosts;
+}
+
+// Create the Zoom meeting for one class session under the trainer's Zoom user (with automatic fallbacks)
+async function createClassZoomMeeting(sess, trainer) {
+  const hosts = await classZoomHosts(trainer);
+  let lastError = null;
+
+  for (const host of hosts) {
+    try {
+      if (host !== sharedZoomHost() && host !== 'me') {
+        const live = await liveMeetings(host);
+        if (live.ids.length) {
+          await Promise.all(live.ids.map(endZoomMeeting));
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+      }
+      const r = await zoomApi(`/users/${encodeURIComponent(host)}/meetings`, {
+        method: 'POST',
+        body: {
+          topic: `${sess.batch}${sess.topic ? ` – ${sess.topic}` : ''}`.slice(0, 190),
+          type: 1, // instant meeting
+          timezone: 'Asia/Kolkata',
+          settings: {
+            join_before_host: false, // students wait until the trainer is in
+            waiting_room: false,
+            meeting_authentication: false,
+            host_video: true,
+            participant_video: false,
+            mute_upon_entry: true
+          }
+        }
+      });
+      if (r.ok && r.data?.id) {
+        sess.zoomMeetingId = String(r.data.id);
+        sess.zoomHostEmail = host;
+        sess.zoomJoinUrl = r.data.join_url || '';
+        sess.zoomPassword = r.data.password || (r.data.join_url?.match(/[?&]pwd=([^&]+)/) || [])[1] || '';
+        sess.meetingSource = 'zoom_api';
+        return;
+      }
+      const msg = r.data?.message || `Zoom HTTP ${r.status}`;
+      lastError = new Error(msg);
+      if (r.data?.code === 1001 || msg.toLowerCase().includes('user does not exist')) {
+        console.warn(`[zoom-class] Host '${host}' does not exist in Zoom Account, trying fallback host...`);
+        continue;
+      }
+      console.warn(`[zoom-class] Meeting creation failed for host '${host}':`, msg);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  // If Zoom API fails for all candidate hosts, check if trainer has fixed classZoomLink
+  if (trainer?.classZoomLink) {
+    const m = trainer.classZoomLink.match(/\/j\/(\d+)/);
+    sess.zoomMeetingId = m ? m[1] : '';
+    sess.zoomPassword = decodeURIComponent((trainer.classZoomLink.match(/[?&]pwd=([^&]+)/) || [])[1] || '');
+    sess.zoomJoinUrl = trainer.classZoomLink;
+    sess.meetingSource = 'class_link';
+    return;
+  }
+
+  const primaryHost = String(trainer?.zoomEmail || sharedZoomHost() || '').trim().toLowerCase();
+  const errMsg = lastError?.message || `Zoom could not create the class meeting`;
+  if (errMsg.toLowerCase().includes('user does not exist')) {
+    const err = new Error(`Zoom user '${primaryHost}' does not exist in your company Zoom account. Add ${primaryHost} to your Zoom Account users in Zoom Admin Portal, or add a fixed Class Zoom Link on the trainer profile.`);
+    err.status = 400;
+    throw err;
+  }
+  const err = new Error(errMsg);
+  err.status = 502;
+  throw err;
+}
+
+// GET the trainer's live session (with join log)
+router.get('/trainer/live-class', async (req, res) => {
+  try {
+    const trainerId = sessionTrainerId(req);
+    const { batch } = req.query;
+    if (!trainerId && !batch) return res.status(400).json({ error: 'trainerId or batch is required' });
+    const query = { isLive: true };
+    if (trainerId) query.trainerId = trainerId;
+    if (batch) query.batch = batch;
+    const list = await LiveClassSession.find(query).sort({ startedAt: -1 });
+    res.json(list.filter(isSessionLive).map(trainerSessionView));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// START a class session
+router.post('/trainer/live-class/start', async (req, res) => {
+  try {
+    await ensureLiveIndexes();
+    const trainerId = sessionTrainerId(req);
+    const { batch, topic = '' } = req.body || {};
+    if (!trainerId || !batch) return res.status(400).json({ error: 'trainerId and batch are required' });
+    const trainer = await Trainer.findOne({ trainerId });
+    const trainerName = trainer?.trainerName || req.user?.name || req.body?.trainerName || '';
+
+    // Already live for this batch → resume it (page reload / second device)
+    const existing = await LiveClassSession.findOne({ trainerId, batch, isLive: true }).sort({ startedAt: -1 });
+    if (existing && isSessionLive(existing)) return res.json(trainerSessionView(existing));
+
+    // One live class per trainer: close anything else still open
+    const stale = await LiveClassSession.find({ trainerId, isLive: true });
+    for (const s of stale) {
+      if (s.meetingSource === 'zoom_api' && s.zoomMeetingId) await endZoomMeeting(s.zoomMeetingId);
+      s.isLive = false;
+      s.endedAt = new Date();
+      await s.save();
+    }
+
+    const sample = await Student.findOne({ trainerId, $or: [{ batchName: batch }, { course: batch }] }).select('course');
+    const sess = new LiveClassSession({
+      trainerId,
+      trainerName,
+      batch,
+      course: sample?.course || '',
+      topic: String(topic).trim(),
+      isLive: true,
+      startedAt: new Date()
+    });
+
+    if (zoomApiConfigured()) {
+      try {
+        await createClassZoomMeeting(sess, trainer);
+      } catch (zoomErr) {
+        if (trainer?.classZoomLink) {
+          const m = trainer.classZoomLink.match(/\/j\/(\d+)/);
+          sess.zoomMeetingId = m ? m[1] : '';
+          sess.zoomPassword = decodeURIComponent((trainer.classZoomLink.match(/[?&]pwd=([^&]+)/) || [])[1] || '');
+          sess.zoomJoinUrl = trainer.classZoomLink;
+          sess.meetingSource = 'class_link';
+        } else {
+          throw zoomErr;
+        }
+      }
+    } else if (trainer?.classZoomLink) {
+      const m = trainer.classZoomLink.match(/\/j\/(\d+)/);
+      sess.zoomMeetingId = m ? m[1] : '';
+      sess.zoomPassword = decodeURIComponent((trainer.classZoomLink.match(/[?&]pwd=([^&]+)/) || [])[1] || '');
+      sess.zoomJoinUrl = trainer.classZoomLink;
+      sess.meetingSource = 'class_link';
+    } else {
+      return res.status(501).json({ error: 'Zoom is not set up: add the Zoom S2S keys in server/.env, or a Class Zoom Link on this trainer profile.' });
+    }
+    await sess.save();
+    res.json(trainerSessionView(sess));
+  } catch (e) {
+    res.status(e.status || 400).json({ error: e.message });
+  }
+});
+
+// Trainer joins their own session as HOST
+router.get('/trainer/live-class/:id/join', async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid session' });
+    const sess = await LiveClassSession.findById(req.params.id);
+    if (!sess || !isSessionLive(sess)) return res.status(404).json({ error: 'This class is not live any more' });
+    if (!sess.zoomMeetingId) return res.status(409).json({ error: 'No Zoom meeting for this class' });
+    let zak = '';
+    if (sess.meetingSource === 'zoom_api' && sess.zoomHostEmail) {
+      try {
+        let z = await zoomApi(`/users/${encodeURIComponent(sess.zoomHostEmail)}/token?type=zak`);
+        if (!z.ok && sess.zoomHostEmail !== 'me') {
+          z = await zoomApi(`/users/me/token?type=zak`);
+        }
+        if (z.ok) zak = z.data.token;
+      } catch (_) {}
+    }
+    const { signature, sdkKey } = signZoom(sess.zoomMeetingId, zak ? 1 : 0);
+    res.json({ signature, sdkKey, meetingNumber: sess.zoomMeetingId, password: sess.zoomPassword, zak, host: Boolean(zak) });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+// Session notes (shared with the batch after class)
+router.post('/trainer/live-class/:id/notes', async (req, res) => {
+  try {
+    const text = String(req.body?.text || '').trim();
+    if (!text) return res.status(400).json({ error: 'Note is empty' });
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid session' });
+    const sess = await LiveClassSession.findByIdAndUpdate(req.params.id, { $push: { notes: { text: text.slice(0, 2000), at: new Date() } } }, { new: true });
+    if (!sess) return res.status(404).json({ error: 'Session not found' });
+    res.json(trainerSessionView(sess));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// END the session — closes Zoom for everyone and returns the join log
+router.post('/trainer/live-class/end', async (req, res) => {
+  try {
+    const trainerId = sessionTrainerId(req);
+    const { batch, sessionId } = req.body || {};
+    if (!trainerId && !sessionId) return res.status(400).json({ error: 'trainerId is required' });
+    const query = sessionId && mongoose.isValidObjectId(sessionId) ? { _id: sessionId } : { trainerId, isLive: true, ...(batch ? { batch } : {}) };
+    const list = await LiveClassSession.find(query);
+    for (const s of list) {
+      if (s.meetingSource === 'zoom_api' && s.zoomMeetingId && s.isLive) await endZoomMeeting(s.zoomMeetingId);
+      s.isLive = false;
+      s.endedAt = s.endedAt || new Date();
+      await s.save();
+    }
+    res.json({ success: true, sessions: list.map(trainerSessionView) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Mark the session's attendance as saved (after the trainer confirms it)
+router.put('/trainer/live-class/:id/attendance-saved', async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid session' });
+    await LiveClassSession.findByIdAndUpdate(req.params.id, { $set: { attendanceSaved: true } });
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// STUDENT joins the live class of their own batch
+router.post('/student-portal/live-class/join', async (req, res) => {
+  try {
+    const st = await findPortalStudent({ studentId: req.user?.studentId || req.body?.studentId, email: req.user?.email });
+    if (!st) return res.status(404).json({ error: 'Student record not found' });
+    const batch = studentBatchOf(st);
+    const sessions = await LiveClassSession.find({ batch, isLive: true }).sort({ startedAt: -1 });
+    const sess = sessions.find((s) => s.trainerId === st.trainerId && isSessionLive(s)) || sessions.find(isSessionLive);
+    if (!sess) return res.status(409).json({ error: 'Your trainer has not started the class yet.' });
+    if (!sess.zoomMeetingId) return res.status(409).json({ error: 'The class has no meeting link yet. Please tell your trainer.' });
+
+    const now = new Date();
+    const existing = (sess.joins || []).find((j) => j.studentId === st.studentId);
+    if (existing) {
+      await LiveClassSession.updateOne({ _id: sess._id, 'joins.studentId': st.studentId }, { $set: { 'joins.$.lastJoinAt': now }, $inc: { 'joins.$.count': 1 } });
+    } else {
+      await LiveClassSession.updateOne({ _id: sess._id }, { $push: { joins: { studentId: st.studentId, name: st.name, joinedAt: now, lastJoinAt: now, count: 1 } } });
+    }
+
+    const { signature, sdkKey } = signZoom(sess.zoomMeetingId, 0);
+    res.json({ signature, sdkKey, meetingNumber: sess.zoomMeetingId, password: sess.zoomPassword, zak: '', topic: sess.topic, trainerName: sess.trainerName, joinUrl: sess.zoomJoinUrl });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
   }

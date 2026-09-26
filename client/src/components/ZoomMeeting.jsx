@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { RefreshCw, AlertCircle } from 'lucide-react';
 import ZoomMtgEmbedded from '@zoom/meetingsdk/embedded';
+import { authHeaders } from '../services/api';
 
 export function parseZoomLink(link = '') {
   if (!link) return { meetingNumber: '', password: '' };
@@ -30,8 +31,17 @@ export default function ZoomMeeting({
   studentEmail,
   userName = 'Trainer',
   height = 580,
-  isTrainerHost = true
+  isTrainerHost = true,
+  // Optional async () => { meetingNumber, password, signature, sdkKey, zak }
+  // used by live classes (server issues host / student credentials)
+  getJoinDetails,
+  onJoined
 }) {
+  const getJoinRef = useRef(getJoinDetails);
+  getJoinRef.current = getJoinDetails;
+  const onJoinedRef = useRef(onJoined);
+  onJoinedRef.current = onJoined;
+  const useLoader = Boolean(getJoinDetails);
   const containerRef = useRef(null);
   const runRef = useRef(0); // increments per attempt; stale attempts bail out
   const [status, setStatus] = useState('loading'); // 'loading' | 'joined' | 'error'
@@ -42,12 +52,22 @@ export default function ZoomMeeting({
 
   // Fresh join details from the server on EVERY attempt (server frees the trainer's Zoom user first)
   const fetchDetails = useCallback(async (reset = false) => {
+    if (useLoader) {
+      const data = await getJoinRef.current(reset);
+      return {
+        meetingNumber: String(data.meetingNumber || '').replace(/\D/g, ''),
+        password: data.password || '',
+        signature: data.signature,
+        sdkKey: data.sdkKey,
+        zak: data.zak || ''
+      };
+    }
     if (demoId) {
       const params = new URLSearchParams();
       if (studentEmail) { params.set('as', 'student'); params.set('email', studentEmail); }
       else if (reset) params.set('reset', '1');
       const q = params.toString() ? `?${params}` : '';
-      const res = await fetch(`${apiBase}/api/demos/${demoId}/zoom-join${q}`);
+      const res = await fetch(`${apiBase}/api/demos/${demoId}/zoom-join${q}`, { headers: authHeaders() });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Could not load Zoom meeting details');
       debugRef.current = data.debug || null;
@@ -64,13 +84,13 @@ export default function ZoomMeeting({
     if (!meetingNumber) throw new Error('No Zoom meeting configured for this class');
     const res = await fetch(`${apiBase}/api/zoom-signature`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ meetingNumber, role: 0 })
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || 'Zoom signature unavailable from server');
     return { meetingNumber, password: parsed.password, signature: data.signature, sdkKey: data.sdkKey || data.appKey, zak: '' };
-  }, [demoId, studentEmail, link]);
+  }, [demoId, studentEmail, link, useLoader]);
 
   const connect = useCallback(async (attempt = 1) => {
     const run = ++runRef.current;
@@ -101,10 +121,10 @@ export default function ZoomMeeting({
         userEmail: studentEmail || undefined,
         zak: d.zak || undefined
       });
-      if (run === runRef.current) setStatus('joined');
+      if (run === runRef.current) { setStatus('joined'); onJoinedRef.current?.(); }
     } catch (err) {
       if (run !== runRef.current) return;
-      const msg = err?.reason || err?.message || 'Failed to connect Zoom Meeting SDK';
+      const msg = err?.response?.data?.error || err?.reason || err?.message || 'Failed to connect Zoom Meeting SDK';
       // Host's previous meeting was still closing — server ends it on the next fetch, so retry automatically
       if (isBusyError(msg) && attempt < 3) {
         await resetSharedClient();

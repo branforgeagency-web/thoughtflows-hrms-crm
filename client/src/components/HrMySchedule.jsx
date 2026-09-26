@@ -22,7 +22,7 @@ export default function HrMySchedule({ isOnBreak, setIsOnBreak, currentUser }) {
   const [showLeaveModal, setShowLeaveModal] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
 
-  const userName = currentUser?.name || 'Kavitha N.';
+  const userName = currentUser?.name || '';
 
   // Local break state fallback if parent props not provided
   const [localBreak, setLocalBreak] = useState(false);

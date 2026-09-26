@@ -58,8 +58,8 @@ export default function HrLmsSection({ currentUser }) {
   const [isVideoPlaying, setIsVideoPlaying] = useState(false);
   const [activeLesson, setActiveLesson] = useState(null);
 
-  const userName = currentUser?.name || 'Kavitha N.';
-  const userFirstName = userName.split(' ')[0] || 'Kavitha';
+  const userName = currentUser?.name || '';
+  const userFirstName = userName.split(' ')[0] || 'there';
   const userInitial = userFirstName.charAt(0).toUpperCase() || 'K';
 
   const showToast = (msg) => {

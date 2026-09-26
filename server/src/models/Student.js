@@ -28,7 +28,7 @@ const studentSchema = new mongoose.Schema({
   },
   email: {
     type: String,
-    default: 'student@thoughtflows.in'
+    default: ''
   },
   course: {
     type: String,
@@ -41,31 +41,31 @@ const studentSchema = new mongoose.Schema({
   },
   batchDate: {
     type: String,
-    default: 'May 2026'
+    default: ''
   },
   batchTiming: {
     type: String,
-    default: '8-10 PM Weekdays'
+    default: ''
   },
   qualification: {
     type: String,
-    default: 'BSc Graduate'
+    default: ''
   },
   qualTag: {
     type: String,
-    default: 'Life Sci'
+    default: ''
   },
   collegeCompany: {
     type: String,
-    default: 'Coimbatore'
+    default: ''
   },
   location: {
     type: String,
-    default: 'Coimbatore'
+    default: ''
   },
   hrName: {
     type: String,
-    default: 'Kavitha N.'
+    default: ''
   },
   source: {
     type: String,
@@ -73,11 +73,11 @@ const studentSchema = new mongoose.Schema({
   },
   dob: {
     type: String,
-    default: '01-01-2001'
+    default: ''
   },
   enqDate: {
     type: String,
-    default: 'May'
+    default: ''
   },
   onboardStatus: {
     type: String,
@@ -105,19 +105,19 @@ const studentSchema = new mongoose.Schema({
   },
   feeStatus: {
     type: String,
-    default: 'Fully Paid'
+    default: 'Pending'
   },
   feeAmount: {
     type: String,
-    default: '₹25,000'
+    default: ''
   },
   courseFee: {
     type: Number,
-    default: 21000
+    default: 0
   },
   paidAmount: {
     type: Number,
-    default: 21000
+    default: 0
   },
   pendingBalance: {
     type: Number,
@@ -137,7 +137,7 @@ const studentSchema = new mongoose.Schema({
   },
   paymentMethod: {
     type: String,
-    default: 'UPI / GPay / PhonePe'
+    default: ''
   },
   statusGroup: {
     type: String,
@@ -191,7 +191,12 @@ const studentSchema = new mongoose.Schema({
   },
   skills: {
     type: [String],
-    default: ['Medical Coding Fundamentals', 'ICD-10 Basics']
+    default: []
+  },
+  // Cities the student is open to work in (set from the Student Portal)
+  preferredLocations: {
+    type: [String],
+    default: []
   },
   certificates: {
     type: [Object],
@@ -223,7 +228,7 @@ const studentSchema = new mongoose.Schema({
   },
   placementStage: {
     type: Number,
-    default: 5
+    default: 0
   }
 }, {
   timestamps: true

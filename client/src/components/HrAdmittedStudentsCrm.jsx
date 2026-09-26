@@ -22,10 +22,24 @@ import WalkinRegistrationModal from './WalkinRegistrationModal';
 import StudentProfileModal from './StudentProfileModal';
 import CompleteRegistrationModal from './CompleteRegistrationModal';
 
-import { getStudents, createStudent } from '../services/api';
+import { getStudents, createStudent, resetStudentLogin } from '../services/api';
 import { getCurrentMonthYear, getCurrentMonthName } from '../utils/dateUtils';
 
-export default function HrAdmittedStudentsCrm({ students: propStudents, onRefreshStudents, currentUser }) {
+export default function HrAdmittedStudentsCrm({ students: propStudents, onRefreshStudents, currentUser, onStudentLogin }) {
+  // Show new / reset portal credentials in the persistent card owned by the HR dashboard
+  const shareLogin = (st, login) => {
+    if (login?.password && onStudentLogin) onStudentLogin({ name: st.name, phone: st.phone, email: login.email, password: login.password });
+  };
+  const handleResetLogin = async (e, st) => {
+    e.stopPropagation();
+    try {
+      const login = await resetStudentLogin(st.studentId || st._id);
+      shareLogin(st, login);
+      if (!onStudentLogin) showToast(`Login for ${st.name}: ${login.email} / ${login.password}`);
+    } catch (err) {
+      showToast(err?.response?.data?.error || 'Could not reset the login');
+    }
+  };
   const [activeTabFilter, setActiveTabFilter] = useState('all'); // all, in_course, placed, on_hold
   const [searchQuery, setSearchQuery] = useState('');
   const [toastMessage, setToastMessage] = useState(null);
@@ -93,14 +107,14 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
       course: newWalkin.course,
       mode: newWalkin.mode.includes('Online') ? 'Online' : 'Classroom',
       batchDate: getCurrentMonthYear(),
-      hrName: currentUser?.name || 'Kavitha N.',
+      hrName: currentUser?.name || '',
       batchTiming: newWalkin.timing,
-      qualification: newWalkin.qualification || 'BSc Graduate',
-      qualTag: 'Life Sci',
-      collegeCompany: newWalkin.college || 'Coimbatore',
+      qualification: newWalkin.qualification || '',
+      qualTag: '',
+      collegeCompany: newWalkin.college || '',
       location: 'Saravanampatti',
-      email: newWalkin.email || `student.${Date.now().toString().slice(-4)}@thoughtflows.in`,
-      dob: '01-01-2002',
+      email: newWalkin.email || '',
+      dob: '',
       enqDate: getCurrentMonthName(),
       source: 'WALK-IN',
       onboardStatus: '7/7 ✓',
@@ -109,7 +123,7 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
       examStatus: 'Not Booked',
       certified: 'Non-certified',
       placementStatus: 'In course',
-      feeStatus: 'Fully Paid',
+      feeStatus: 'Pending',
       feeAmount: newWalkin.feePaid,
       statusGroup: 'in_course',
       handoverStatus: 'Ready'
@@ -121,10 +135,11 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
       setStudents(prev => [studentToAdd, ...prev]);
       if (onRefreshStudents) onRefreshStudents();
       showToast(`✓ Registered student ${studentToAdd.name} (${studentToAdd.studentId}) in live database!`);
+      shareLogin(studentToAdd, created?.studentLogin);
     } catch (err) {
       console.error('Error creating student in DB:', err);
-      setStudents(prev => [newStudent, ...prev]);
-      showToast(`✓ Registered student ${newStudent.name}`);
+      showToast(`⚠ Not saved: ${err?.response?.data?.error || err.message}`);
+      return;
     }
 
     setShowWalkinModal(false);
@@ -474,6 +489,7 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
                 <th className="py-3 px-3">Certified</th>
                 <th className="py-3 px-3">Placed</th>
                 <th className="py-3 px-3">Fee</th>
+                <th className="py-3 px-3">Portal login</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-[11px]">
@@ -622,6 +638,17 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
                     <div className="font-bold text-slate-900">{s.feeStatus}</div>
                     <div className="text-[10px] text-emerald-700 font-mono">{s.feeAmount}</div>
                   </td>
+
+                  {/* Portal login */}
+                  <td className="py-3 px-3 whitespace-nowrap">
+                    <button
+                      onClick={(e) => handleResetLogin(e, s)}
+                      className="text-[10px] font-bold px-2.5 py-1 rounded-lg border border-teal-200 text-teal-700 hover:bg-teal-50"
+                      title="Create or reset this student's dashboard password"
+                    >
+                      Send login
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -639,10 +666,11 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
             const created = await createStudent({
               ...newStudent,
               studentId: newStudent.id || newStudent.studentId,
-              hrName: newStudent.hrName || currentUser?.name || 'Kavitha N.'
+              hrName: newStudent.hrName || currentUser?.name || ''
             });
             setStudents(prev => [created, ...prev]);
             if (onRefreshStudents) onRefreshStudents();
+            shareLogin(created, created?.studentLogin);
             if (created?.studentLogin?.created) {
               showToast(`✓ Registered ${created.name}! Login Created — Email: ${created.studentLogin.email} | Pass: ${created.studentLogin.password}`);
             } else {
@@ -686,6 +714,7 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
             const savedStudent = created || studentRecord;
             setStudents(prev => [savedStudent, ...prev]);
             if (onRefreshStudents) onRefreshStudents();
+            shareLogin(savedStudent, created?.studentLogin);
             if (created?.studentLogin?.created) {
               showToast(`✓ Admitted ${savedStudent.name}! Login Created — Email: ${created.studentLogin.email} | Pass: ${created.studentLogin.password}`);
             } else {
@@ -693,8 +722,7 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
             }
           } catch (err) {
             console.error('Failed to create admitted student:', err);
-            showToast('Error saving admitted student to database');
-            setStudents(prev => [studentRecord, ...prev]);
+            showToast(`⚠ Not saved: ${err?.response?.data?.error || err.message}`);
           }
         }}
       />

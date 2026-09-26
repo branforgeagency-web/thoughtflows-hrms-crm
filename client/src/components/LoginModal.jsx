@@ -6,7 +6,6 @@ export const TRAINER_PROFILES = [
     trainerId: 'TR-CBG-001',
     name: 'Srithar S',
     email: 'srithar.brandforge@gmail.com',
-    password: 'Thoughtflows@2026',
     role: 'Trainer',
     courseKey: 'CPC',
     expertCourse: 'CPC — Certified Professional Coder',
@@ -29,7 +28,6 @@ export const DEPARTMENTS = [
     staffName: 'Balaji R.',
     branch: 'Chennai - Guindy (HQ)',
     email: 'hr@thoughtflows.in',
-    password: 'hr123',
     color: '#ef4444',
     badgeClassLight: 'bg-rose-50 text-rose-700 border-rose-200',
   },
@@ -46,7 +44,6 @@ export const DEPARTMENTS = [
     branch: 'Gandhipuram',
     shift: '6:00 AM – 2:00 PM',
     email: 'srithar.brandforge@gmail.com',
-    password: 'Thoughtflows@2026',
     color: '#00897b',
     badgeClassLight: 'bg-teal-50 text-teal-700 border-teal-200',
   },
@@ -61,7 +58,6 @@ export const DEPARTMENTS = [
     staffName: 'Meenakshi R.',
     branch: 'Bangalore - Indiranagar',
     email: 'cccp@thoughtflows.in',
-    password: 'cccp123',
     color: '#059669',
     badgeClassLight: 'bg-emerald-50 text-emerald-700 border-emerald-200',
   },
@@ -76,7 +72,6 @@ export const DEPARTMENTS = [
     staffName: 'Priya R.',
     branch: 'Hyderabad - Madhapur',
     email: 'marketing@thoughtflows.in',
-    password: 'mkt123',
     color: '#9333ea',
     badgeClassLight: 'bg-purple-50 text-purple-700 border-purple-200',
   },
@@ -91,7 +86,6 @@ export const DEPARTMENTS = [
     staffName: 'Ganesh N.',
     branch: '12 Hubs (HQ Overseer)',
     email: 'leadership@thoughtflows.in',
-    password: 'lead123',
     color: '#ea580c',
     badgeClassLight: 'bg-orange-50 text-orange-700 border-orange-200',
   },
@@ -107,7 +101,6 @@ export const DEPARTMENTS = [
     studentId: 'TF-CBE-CPC-07-2026-3062',
     branch: 'Coimbatore - Gandhipuram',
     email: 'student@thoughtflows.in',
-    password: 'stu123',
     color: '#0d9488',
     badgeClassLight: 'bg-teal-50 text-teal-700 border-teal-200',
   },
@@ -122,7 +115,6 @@ export const DEPARTMENTS = [
     staffName: 'Executive Founders Desk',
     branch: 'Thoughtflows Group HQ',
     email: 'admin@thoughtflows.in',
-    password: 'admin123',
     color: '#4338ca',
     badgeClassLight: 'bg-indigo-50 text-indigo-700 border-indigo-200',
   }
@@ -142,6 +134,45 @@ export default function LoginModal({
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  // Development only: built-in account passwords from the local server (.env DEV_LOGIN_AUTOFILL=true)
+  const [devAccounts, setDevAccounts] = useState({});
+  const [devList, setDevList] = useState([]);
+  const [devGroup, setDevGroup] = useState('hr');
+  const [devSearch, setDevSearch] = useState('');
+  const [devPick, setDevPick] = useState('');
+  useEffect(() => {
+    if (!isOpen) return;
+    axios.get('/api/auth/dev-accounts')
+      .then((r) => { setDevAccounts(r.data?.builtin || {}); setDevList(Array.isArray(r.data?.accounts) ? r.data.accounts : []); })
+      .catch(() => { setDevAccounts({}); setDevList([]); });
+  }, [isOpen]);
+  const devEnabled = Object.keys(devAccounts).length > 0 || devList.length > 0;
+  const DEV_GROUPS = [['hr', 'HR'], ['training', 'Trainers'], ['student', 'Students'], ['other', 'Others']];
+  const devFiltered = devList.filter((a) => {
+    const g = ['hr', 'training', 'student'].includes(a.group) ? a.group : 'other';
+    if (g !== devGroup) return false;
+    const q = devSearch.trim().toLowerCase();
+    return !q || [a.name, a.email, a.detail].some((v) => String(v || '').toLowerCase().includes(q));
+  });
+  const handleDevLogin = async () => {
+    const acc = devList.find((a) => `${a.kind}:${a.id}` === devPick);
+    if (!acc) return;
+    setLoading(true);
+    setError('');
+    try {
+      const res = await axios.post('/api/auth/dev-login', { kind: acc.kind, id: acc.id });
+      if (res.data?.success && res.data?.user) {
+        onLoginSuccess(res.data.user);
+        onClose();
+      }
+    } catch (err) {
+      setError(err.response?.data?.message || 'Dev login failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+  const devPassword = (deptId) => devAccounts[deptId]?.password || '';
+  const devEmail = (dept) => devAccounts[dept.id]?.email || dept.email;
 
   // Reset inputs when modal opens or initialDepartment changes
   useEffect(() => {
@@ -155,6 +186,13 @@ export default function LoginModal({
   }, [isOpen, initialDepartment]);
 
   const activeDept = DEPARTMENTS.find(d => d.id === activeDeptId) || DEPARTMENTS[0];
+
+  // Dev auto-fill: pre-fill the selected account as soon as the dev passwords load
+  useEffect(() => {
+    if (!isOpen || !devAccounts[activeDeptId] || email) return;
+    setEmail(devAccounts[activeDeptId].email);
+    setPassword(devAccounts[activeDeptId].password);
+  }, [devAccounts, activeDeptId, isOpen]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -185,196 +223,9 @@ export default function LoginModal({
       }
     }
 
-    // 2. Client-side authentication using the Admin Registered User Accounts table
+    // Server is the only place accounts are checked
     setLoading(false);
-
-    let registeredAccounts = [];
-    try {
-      const saved = localStorage.getItem('thoughtflows_admin_users');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          registeredAccounts = parsed;
-        }
-      }
-    } catch (err) {
-      console.warn('Error reading thoughtflows_admin_users', err);
-    }
-
-    // Find account in registered users table
-    const matchedAccount = registeredAccounts.find(
-      u => u.email?.trim().toLowerCase() === normalizedEmail
-    );
-
-    // Admin & Management authentication (handles admin@thoughtflows.in, admin, or activeDeptId admin)
-    if (activeDeptId === 'admin' || normalizedEmail === 'admin@thoughtflows.in' || normalizedEmail === 'admin') {
-      const validAdminPasswords = ['admin123', 'Admin@2026', 'Admin@HQ2026'];
-      const accountPwd = matchedAccount?.password;
-      const isValid = validAdminPasswords.includes(password) || (accountPwd && password === accountPwd);
-
-      if (!isValid) {
-        setError('Invalid admin password. Default password is admin123');
-        return;
-      }
-
-      const adminUser = {
-        id: matchedAccount?.id || 'usr_1',
-        name: matchedAccount?.name || 'Executive Founders Desk',
-        userName: matchedAccount?.name || 'Executive Founders Desk',
-        email: 'admin@thoughtflows.in',
-        department: 'admin',
-        departmentCode: 'ADM',
-        departmentName: 'Admin & Management',
-        role: 'Super Admin',
-        branch: matchedAccount?.branch || 'Thoughtflows Group HQ',
-        color: '#4338ca',
-        token: 'jwt_tf_admin_token'
-      };
-      onLoginSuccess(adminUser);
-      onClose();
-      return;
-    }
-
-    // Helper to map account role to target department
-    const mapAccountToDept = (account) => {
-      const role = (account?.role || '').toLowerCase();
-      const dept = (account?.department || '').toLowerCase();
-
-      if (role.includes('trainer') || role.includes('faculty') || dept.includes('faculty') || dept.includes('training')) {
-        return {
-          department: 'training',
-          departmentCode: 'ACAD',
-          departmentName: 'Training & Faculty Department',
-          color: '#00897b'
-        };
-      }
-      if (role.includes('admin') || dept.includes('admin')) {
-        return {
-          department: 'admin',
-          departmentCode: 'ADM',
-          departmentName: 'Admin & Management',
-          color: '#4338ca'
-        };
-      }
-      if (role.includes('counsel') || dept.includes('admission') || dept === 'hr') {
-        return {
-          department: 'hr',
-          departmentCode: 'HR',
-          departmentName: 'HR & Counseling',
-          color: '#ea580c'
-        };
-      }
-      if (role.includes('placement') || dept.includes('placement') || dept.includes('cccp')) {
-        return {
-          department: 'cccp',
-          departmentCode: 'CCCP',
-          departmentName: 'Corporate Career & Placement Cell (CCCP)',
-          color: '#059669'
-        };
-      }
-      if (role.includes('growth') || role.includes('marketing') || dept.includes('marketing')) {
-        return {
-          department: 'marketing',
-          departmentCode: 'MKT',
-          departmentName: 'Growth & Digital Marketing',
-          color: '#9333ea'
-        };
-      }
-      if (role.includes('regional') || role.includes('operations') || role.includes('leadership') || dept.includes('leadership')) {
-        return {
-          department: 'leadership',
-          departmentCode: 'LEAD',
-          departmentName: 'Leadership Hub',
-          color: '#ea580c'
-        };
-      }
-      if (role.includes('student') || role.includes('scholar') || dept.includes('student')) {
-        return {
-          department: 'student',
-          departmentCode: 'STU',
-          departmentName: 'Student Learning & Exam Portal',
-          color: '#0d9488'
-        };
-      }
-      return null;
-    };
-
-    // If not found in localStorage, check built-in department default credentials
-    if (!matchedAccount) {
-      const matchedDept = DEPARTMENTS.find(d => d.email.toLowerCase() === normalizedEmail) ||
-        (normalizedEmail === activeDept.email.toLowerCase() ? activeDept : null);
-
-      if (matchedDept) {
-        const isPwdValid = (
-          password === matchedDept.password || 
-          password === 'Thoughtflows@2026' || 
-          password === 'admin123' ||
-          password === '123456'
-        );
-        if (!isPwdValid) {
-          setError(`Invalid password for ${matchedDept.title}. Default password is ${matchedDept.password}`);
-          return;
-        }
-
-        const deptUser = {
-          id: matchedDept.trainerId || matchedDept.studentId || `usr_${matchedDept.id}_${Date.now()}`,
-          trainerId: matchedDept.trainerId,
-          studentId: matchedDept.studentId,
-          name: matchedDept.staffName,
-          userName: matchedDept.staffName,
-          email: matchedDept.email,
-          department: matchedDept.id,
-          departmentCode: matchedDept.code,
-          departmentName: matchedDept.title,
-          role: matchedDept.roleName,
-          branch: matchedDept.branch,
-          color: matchedDept.color,
-          courseKey: 'CPC',
-          expertCourse: 'CPC — Certified Professional Coder',
-          shift: matchedDept.shift || '9:00 AM – 6:00 PM',
-          token: `jwt_tf_${matchedDept.id}_token`
-        };
-        onLoginSuccess(deptUser);
-        onClose();
-        return;
-      }
-
-      setError('Access denied. This account is not registered in Academy User Accounts.');
-      return;
-    }
-
-    // Verify password
-    const expectedPassword = matchedAccount.password || 'Thoughtflows@2026';
-    if (password !== expectedPassword) {
-      setError('Invalid password. Please check your credentials and try again.');
-      return;
-    }
-
-    const deptMapping = mapAccountToDept(matchedAccount) || {
-      department: activeDept.id,
-      departmentCode: activeDept.code,
-      departmentName: activeDept.title,
-      color: activeDept.color
-    };
-
-    const authenticatedUser = {
-      id: matchedAccount.id || `usr_${Date.now()}`,
-      name: matchedAccount.name,
-      userName: matchedAccount.name,
-      email: matchedAccount.email,
-      department: deptMapping.department,
-      departmentCode: deptMapping.departmentCode,
-      departmentName: deptMapping.departmentName,
-      role: matchedAccount.role || activeDept.roleName,
-      branch: matchedAccount.branch || activeDept.branch,
-      color: deptMapping.color,
-      courseKey: matchedAccount.courseKey || 'CPC',
-      expertCourse: matchedAccount.expertCourse || 'CPC — Certified Professional Coder',
-      shift: matchedAccount.shift || '6:00 AM – 2:00 PM',
-      token: `jwt_tf_${matchedAccount.id || 'usr'}_mock`
-    };
-    onLoginSuccess(authenticatedUser);
-    onClose();
+    setError('Could not reach the login server. Check your connection and try again.');
   };
 
   if (!isOpen) return null;
@@ -439,8 +290,8 @@ export default function LoginModal({
                     type="button"
                     onClick={() => {
                       setActiveDeptId(dept.id);
-                      setEmail(dept.email);
-                      setPassword(dept.password);
+                      setEmail(devEmail(dept));
+                      setPassword(devPassword(dept.id));
                       setError('');
                     }}
                     className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer select-none ${
@@ -464,6 +315,39 @@ export default function LoginModal({
           </div>
         )}
 
+        {devEnabled && (
+          <div className="mb-4 p-3 rounded-2xl border-2 border-dashed border-amber-300 bg-amber-50/70 text-left space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[10.5px] font-extrabold tracking-wider text-amber-800 uppercase">Developer quick login</span>
+              <span className="text-[10px] text-amber-700">{devList.length} accounts · dev only</span>
+            </div>
+            <div className="flex gap-1.5">
+              {DEV_GROUPS.map(([id, label]) => (
+                <button key={id} type="button" onClick={() => { setDevGroup(id); setDevPick(''); }}
+                  className={`px-2.5 py-1 rounded-full text-[11px] font-bold border ${devGroup === id ? 'bg-amber-600 text-white border-amber-600' : 'bg-white text-amber-800 border-amber-200'}`}>
+                  {label} ({devList.filter((a) => (['hr', 'training', 'student'].includes(a.group) ? a.group : 'other') === id).length})
+                </button>
+              ))}
+            </div>
+            <input value={devSearch} onChange={(e) => setDevSearch(e.target.value)} placeholder="Search name, email or ID…"
+              className="w-full px-3 py-1.5 rounded-lg border border-amber-200 bg-white text-xs" />
+            <div className="flex gap-2">
+              <select value={devPick} onChange={(e) => setDevPick(e.target.value)} className="flex-1 min-w-0 px-2 py-1.5 rounded-lg border border-amber-200 bg-white text-xs">
+                <option value="">{devFiltered.length ? 'Select an account…' : 'No accounts in this group'}</option>
+                {devFiltered.map((a) => (
+                  <option key={`${a.kind}:${a.id}`} value={`${a.kind}:${a.id}`}>
+                    {a.name}{a.email ? ` — ${a.email}` : ''}{a.detail ? ` (${a.detail})` : ''}
+                  </option>
+                ))}
+              </select>
+              <button type="button" onClick={handleDevLogin} disabled={!devPick || loading}
+                className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold disabled:opacity-50">
+                Login as
+              </button>
+            </div>
+          </div>
+        )}
+
         {error && (
           <div className="p-2.5 mb-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs text-center font-medium">
             {error}
@@ -480,8 +364,8 @@ export default function LoginModal({
               <button
                 type="button"
                 onClick={() => {
-                  setEmail(activeDept.email);
-                  setPassword(activeDept.password);
+                  setEmail(devEmail(activeDept));
+                  setPassword(devPassword(activeDept.id));
                   setError('');
                 }}
                 className="text-[10.5px] font-bold text-[#00897b] hover:underline cursor-pointer"
@@ -518,7 +402,7 @@ export default function LoginModal({
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
-              placeholder={activeDeptId === 'admin' ? 'Enter admin password (e.g. admin123)' : 'Enter your password'}
+              placeholder="Enter your password"
               className={`w-full px-3.5 py-2.5 text-xs text-slate-800 placeholder-slate-400 outline-none transition-all ${
                 isClay
                   ? 'clay-input'

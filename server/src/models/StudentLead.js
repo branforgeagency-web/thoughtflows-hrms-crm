@@ -89,7 +89,7 @@ const studentLeadSchema = new mongoose.Schema({
   },
   counselorAssigned: {
     type: String,
-    default: 'Kavitha N.'
+    default: ''
   },
   followUpDate: {
     type: String,
@@ -148,6 +148,20 @@ const studentLeadSchema = new mongoose.Schema({
   notes: {
     type: String,
     default: ''
+  },
+  // Student referral: the enrolled student who referred this lead. When the
+  // lead is admitted the referrer is credited reward points once.
+  referredByStudentId: {
+    type: String,
+    default: ''
+  },
+  referredByName: {
+    type: String,
+    default: ''
+  },
+  referralRewarded: {
+    type: Boolean,
+    default: false
   },
   whatsappMessages: [{
     id: String,

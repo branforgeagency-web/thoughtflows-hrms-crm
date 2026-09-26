@@ -16,6 +16,63 @@ const api = axios.create({
   }
 });
 
+// ---------------------------------------------------------------------------
+// Login session: every API call carries the signed token from /auth/login
+// ---------------------------------------------------------------------------
+export const getAuthToken = () => {
+  try {
+    const u = JSON.parse(localStorage.getItem('thoughtflows_user') || 'null');
+    return u?.token || '';
+  } catch (_) {
+    return '';
+  }
+};
+
+export const authHeaders = () => {
+  const t = getAuthToken();
+  return t ? { Authorization: `Bearer ${t}` } : {};
+};
+
+// For links opened directly by the browser (file downloads)
+export const withAuthToken = (url) => {
+  const t = getAuthToken();
+  return t ? `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(t)}` : url;
+};
+
+// Call recordings saved on our server need the session token to play
+export const recordingUrl = (url) => (url && String(url).startsWith('/recordings') ? withAuthToken(url) : url);
+
+const attachToken = (config) => {
+  const t = getAuthToken();
+  if (t && !config.headers?.Authorization) {
+    config.headers = config.headers || {};
+    config.headers.Authorization = `Bearer ${t}`;
+  }
+  return config;
+};
+
+let sessionExpiredHandled = false;
+const handleAuthError = (error) => {
+  const code = error?.response?.data?.code;
+  // Only log out a user who was logged in (a visitor with no token just gets the error)
+  if (error?.response?.status === 401 && (code === 'AUTH_EXPIRED' || code === 'AUTH_REQUIRED') && getAuthToken() && !sessionExpiredHandled) {
+    sessionExpiredHandled = true;
+    try {
+      localStorage.removeItem('thoughtflows_user');
+      localStorage.removeItem('thoughtflows_dashboard');
+    } catch (_) {}
+    if (typeof window !== 'undefined') {
+      window.location.reload();
+    }
+  }
+  return Promise.reject(error);
+};
+
+api.interceptors.request.use(attachToken);
+api.interceptors.response.use((r) => r, handleAuthError);
+axios.interceptors.request.use(attachToken);
+axios.interceptors.response.use((r) => r, handleAuthError);
+
 // Real-Time Cross-Dashboard Sync Event Bus (in-tab + multi-tab)
 export const notifyDataUpdate = (entity) => {
   if (typeof window !== 'undefined') {
@@ -56,6 +113,12 @@ export const getStudents = async (params) => {
 export const createStudent = async (studentData) => {
   const res = await api.post('/students', studentData);
   notifyDataUpdate('students');
+  return res.data;
+};
+
+// Create / reset a student's portal login — returns { email, password } once
+export const resetStudentLogin = async (id) => {
+  const res = await api.post(`/students/${encodeURIComponent(id)}/reset-login`);
   return res.data;
 };
 
@@ -127,8 +190,8 @@ export const getCallConfigStatus = async () => {
   return res.data;
 };
 
-export const dialCall = async ({ leadPhone, agentPhone }) => {
-  const res = await api.post('/calls/dial', { leadPhone, agentPhone });
+export const dialCall = async ({ leadPhone, agentPhone, leadId, leadName }) => {
+  const res = await api.post('/calls/dial', { leadPhone, agentPhone, leadId, leadName });
   return res.data;
 };
 
@@ -396,7 +459,7 @@ export const uploadTrainingMaterial = async (data) => {
 };
 
 export const trainingMaterialFileUrl = (id, download = false) =>
-  `${API_BASE}/training/materials/${id}/file${download ? '?download=1' : ''}`;
+  withAuthToken(`${API_BASE}/training/materials/${id}/file${download ? '?download=1' : ''}`);
 
 export const pinTrainingMaterial = async (id, trainerId, pinned) => {
   const res = await api.put(`/training/materials/${id}/pin`, { trainerId, pinned });
@@ -703,3 +766,100 @@ export const getMarketingSources = async () => {
 
 export default api;
 
+
+// ==========================================
+// Student Portal ⇄ Trainer data flow
+// ==========================================
+export const getStudentPortal = async ({ studentId, email } = {}) => {
+  const res = await api.get('/student-portal/me', { params: { studentId, email } });
+  return res.data;
+};
+
+export const updateStudentPortalProfile = async (studentId, data) => {
+  const res = await api.put(`/student-portal/${encodeURIComponent(studentId)}/profile`, data);
+  notifyDataUpdate('students');
+  return res.data;
+};
+
+export const createStudentReferral = async (studentId, data) => {
+  const res = await api.post(`/student-portal/${encodeURIComponent(studentId)}/referrals`, data);
+  notifyDataUpdate('leads');
+  return res.data;
+};
+
+export const createStudentSubmission = async (studentId, data) => {
+  const res = await api.post(`/student-portal/${encodeURIComponent(studentId)}/submissions`, data);
+  notifyDataUpdate('student_submissions');
+  return res.data;
+};
+
+export const getStudentSubmissions = async (params) => {
+  const res = await api.get('/student-portal/submissions', { params });
+  return res.data;
+};
+
+export const studentSubmissionFileUrl = (id, download = false) =>
+  withAuthToken(`${API_BASE}/student-portal/submissions/${id}/file${download ? '?download=1' : ''}`);
+
+export const reviewStudentSubmission = async (id, data) => {
+  const res = await api.put(`/student-portal/submissions/${id}/review`, data);
+  notifyDataUpdate('student_submissions');
+  return res.data;
+};
+
+export const createStudentRequest = async (studentId, data) => {
+  const res = await api.post(`/student-portal/${encodeURIComponent(studentId)}/requests`, data);
+  notifyDataUpdate('student_requests');
+  return res.data;
+};
+
+export const getStudentRequests = async (params) => {
+  const res = await api.get('/student-portal/requests', { params });
+  return res.data;
+};
+
+export const respondStudentRequest = async (id, data) => {
+  const res = await api.put(`/student-portal/requests/${id}`, data);
+  notifyDataUpdate('student_requests');
+  return res.data;
+};
+
+export const getLiveClasses = async (params) => {
+  const res = await api.get('/trainer/live-class', { params });
+  return res.data;
+};
+
+// Starts the class: server creates the Zoom meeting on the trainer's Zoom user
+export const startLiveClass = async (data) => {
+  const res = await api.post('/trainer/live-class/start', data);
+  notifyDataUpdate('live_class');
+  return res.data;
+};
+
+// Host join details (signature + ZAK) for the trainer's own session
+export const getTrainerClassJoin = async (sessionId) => {
+  const res = await api.get(`/trainer/live-class/${sessionId}/join`);
+  return res.data;
+};
+
+export const addLiveClassNote = async (sessionId, text) => {
+  const res = await api.post(`/trainer/live-class/${sessionId}/notes`, { text });
+  return res.data;
+};
+
+export const endLiveClass = async (data) => {
+  const res = await api.post('/trainer/live-class/end', data);
+  notifyDataUpdate('live_class');
+  return res.data;
+};
+
+export const markLiveClassAttendanceSaved = async (sessionId) => {
+  const res = await api.put(`/trainer/live-class/${sessionId}/attendance-saved`);
+  return res.data;
+};
+
+// Student joins the live class of their batch (logged for attendance)
+export const joinStudentLiveClass = async () => {
+  const res = await api.post('/student-portal/live-class/join');
+  return res.data;
+};

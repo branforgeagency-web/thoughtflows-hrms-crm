@@ -64,8 +64,8 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     }
   };
 
-  const userName = currentUser?.name || 'Kavitha N.';
-  const userFirstName = userName.split(' ')[0] || 'Kavitha';
+  const userName = currentUser?.name || currentUser?.userName || '';
+  const userFirstName = userName.split(' ')[0] || 'there';
   const branchName = currentUser?.branch || 'Saravanampatti Branch (CBE)';
 
   // Current Day Date Key for Daily Reset (e.g. '2026-09-24')
@@ -194,7 +194,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         getLeads(shouldFilterOnServer ? { counselor: counselorFilter } : undefined),
         getDemos(),
         getRecordings(shouldFilterOnServer ? { counselor: counselorFilter } : undefined).catch(() => []),
-        getTodayClosure(counselorFilter || 'Kavitha N.', dKey).catch(() => null)
+        (counselorFilter ? getTodayClosure(counselorFilter, dKey) : Promise.resolve(null)).catch(() => null)
       ]);
       setStudents(Array.isArray(stRes) ? stRes : []);
       setLeads(ldRes?.leads || []);
@@ -218,7 +218,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       } else {
         // Check localStorage for today's submission
         try {
-          const localSaved = localStorage.getItem(`thoughtflows_closure_${dKey}_${counselorFilter || 'Kavitha N.'}`);
+          const localSaved = localStorage.getItem(`thoughtflows_closure_${dKey}_${counselorFilter || ''}`);
           if (localSaved) {
             const parsed = JSON.parse(localSaved);
             if (parsed.submitted) {
@@ -258,7 +258,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       const payload = {
         ...leadData,
         fullName: leadData.fullName || leadData.name,
-        counselorAssigned: currentUser?.name || 'Kavitha N.'
+        counselorAssigned: currentUser?.name || ''
       };
       const created = await createLead(payload);
       setLeads(prev => [created, ...prev]);
@@ -895,6 +895,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             students={scopedStudents} 
             onRefreshStudents={loadAllData} 
             currentUser={currentUser} 
+            onStudentLogin={setStudentLogin}
           />
         ) : activeTab === 'Call Recordings' ? (
           <HrCallRecordingsTable currentUser={currentUser} />

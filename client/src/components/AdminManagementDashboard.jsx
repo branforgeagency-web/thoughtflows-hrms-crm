@@ -142,15 +142,8 @@ const DEFAULT_SLABS = [
 ];
 
 // Initial user accounts
-const INITIAL_USERS = [
-  { id: 'usr_1', name: 'Executive Founders Desk', email: 'admin@thoughtflows.in', password: 'admin123', role: 'Super Admin', department: 'Admin & Management', branch: 'Thoughtflows Group HQ', status: 'Active', lastLogin: 'Just now', avatarBg: 'bg-indigo-600' },
-  { id: 'usr_2', name: 'Kavitha N.', email: 'hr@thoughtflows.in', password: 'Kavitha@HR2026', role: 'Counseling Lead', department: 'Admissions & Counseling', branch: 'Gandhipuram', status: 'Active', lastLogin: '10 mins ago', avatarBg: 'bg-rose-500' },
-  { id: 'usr_3', name: 'Srithar S', email: 'srithar.brandforge@gmail.com', password: 'Thoughtflows@2026', role: 'Trainer', department: 'Medical Coding Faculty', branch: 'Gandhipuram', status: 'Active', lastLogin: 'Never', avatarBg: 'bg-indigo-600' },
-  { id: 'usr_4', name: 'Meenakshi R.', email: 'cccp@thoughtflows.in', password: 'Placement@2026', role: 'Placement Head', department: 'Corporate Placements', branch: 'Hopes', status: 'Active', lastLogin: '1 hour ago', avatarBg: 'bg-emerald-600' },
-  { id: 'usr_5', name: 'Priya R.', email: 'marketing@thoughtflows.in', password: 'Growth#TF2026', role: 'Growth Lead', department: 'Growth & Marketing', branch: 'Dilsukhnagar', status: 'Active', lastLogin: '2 hours ago', avatarBg: 'bg-purple-600' },
-  { id: 'usr_6', name: 'Aswanth V K', email: 'aswanth@thoughtflows.in', password: 'Aswanth#Lead26', role: 'Regional head', department: 'Leadership & Operations', branch: '14 Hubs Overseer', status: 'Active', lastLogin: 'Yesterday', avatarBg: 'bg-orange-500' },
-  { id: 'usr_7', name: 'Keerthana R.', email: 'student@thoughtflows.in', password: 'Scholar#TF26', role: 'Student Scholar', department: 'Student Scholar', branch: 'Trichy', status: 'Active', lastLogin: '3 hours ago', avatarBg: 'bg-teal-600' }
-];
+// Accounts come only from the database (passwords are never sent to the browser)
+const INITIAL_USERS = [];
 
 // 14 Official Academy Branches matching User Reference (South India Zone + Pune, Kollapur, Theni)
 const ACADEMY_BRANCHES = [
@@ -552,27 +545,9 @@ export default function AdminManagementDashboard({
   }, []);
 
   const [users, setUsers] = useState(() => {
-    try {
-      const saved = localStorage.getItem('thoughtflows_admin_users');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.map(u => {
-            if (u.email === 'admin@thoughtflows.in' && (!u.password || u.password === 'Admin@HQ2026')) {
-              return { ...u, password: 'admin123' };
-            }
-            if (!u.password) {
-              const matched = INITIAL_USERS.find(iu => iu.email === u.email);
-              return { ...u, password: matched ? matched.password : 'Thoughtflows@2026' };
-            }
-            return u;
-          });
-        }
-      }
-      return INITIAL_USERS;
-    } catch {
-      return INITIAL_USERS;
-    }
+    // Older builds cached every account password in the browser — wipe it
+    try { localStorage.removeItem('thoughtflows_admin_users'); } catch (_) {}
+    return INITIAL_USERS;
   });
 
   // Password visibility controls
@@ -592,11 +567,6 @@ export default function AdminManagementDashboard({
       .then(res => {
         if (Array.isArray(res.data) && res.data.length > 0) {
           setUsers(res.data);
-          try {
-            localStorage.setItem('thoughtflows_admin_users', JSON.stringify(res.data));
-          } catch (e) {
-            console.warn('Failed to cache admin users', e);
-          }
         }
       })
       .catch(err => {
@@ -799,7 +769,7 @@ export default function AdminManagementDashboard({
       name: newUserForm.name,
       email: newUserForm.email.toLowerCase(),
       phone: newUserForm.phone || '',
-      password: newUserForm.password || 'Thoughtflows@2026',
+      password: newUserForm.password,
       role: newUserForm.role,
       department: newUserForm.department,
       branch: newUserForm.branch,
@@ -816,8 +786,10 @@ export default function AdminManagementDashboard({
         newUser._id = res.data._id || res.data.id;
       }
     } catch (err) {
-      console.warn('Backend user save notice', err.message);
+      showToast(`⚠ ${err?.response?.data?.error || 'Could not create the user'}`);
+      return;
     }
+    delete newUser.password;
 
     // Trainer accounts also need a Trainer roster record (Demo Booking
     // eligibility engine matches on course/language/branch/shift — none of
@@ -908,22 +880,15 @@ export default function AdminManagementDashboard({
   };
 
   // Edit / Reset User Login Password
-  const handleEditPassword = async (id, name, currentPwd, email) => {
-    const newPwd = prompt(`Enter new login password for ${name}:`, currentPwd || 'Thoughtflows@2026');
-    if (newPwd !== null && newPwd.trim() !== '') {
-      try {
-        await axios.put(`/api/admin/users/${id}`, { password: newPwd.trim(), email });
-      } catch (err) {
-        console.warn('Backend password update notice', err.message);
-      }
-      const next = users.map(u => (u.id === id || u._id === id) ? { ...u, password: newPwd.trim() } : u);
-      setUsers(next);
-      try {
-        localStorage.setItem('thoughtflows_admin_users', JSON.stringify(next));
-      } catch (e) {
-        console.warn('Failed to save updated password', e);
-      }
+  const handleEditPassword = async (id, name, _unused, email) => {
+    const newPwd = prompt(`Set a new login password for ${name} (min 8 characters):`, '');
+    if (newPwd === null) return;
+    if (newPwd.trim().length < 8) { showToast('⚠ Password must be at least 8 characters'); return; }
+    try {
+      await axios.put(`/api/admin/users/${id}`, { password: newPwd.trim(), email });
       showToast(`✓ Password updated for ${name}`);
+    } catch (err) {
+      showToast(`⚠ ${err?.response?.data?.error || 'Could not update the password'}`);
     }
   };
 
@@ -1710,22 +1675,6 @@ export default function AdminManagementDashboard({
                         <th className="p-4 w-[17%]">
                           <div className="flex items-center justify-between gap-2">
                             <span>Password</span>
-                            <button
-                              type="button"
-                              onClick={() => setShowAllPasswords(!showAllPasswords)}
-                              className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 normal-case flex items-center gap-1 cursor-pointer bg-white px-2 py-0.5 rounded-md border border-slate-200/80 shadow-2xs hover:bg-indigo-50 transition-colors"
-                              title={showAllPasswords ? 'Mask all passwords' : 'Show all passwords'}
-                            >
-                              {showAllPasswords ? (
-                                <>
-                                  <EyeOff className="w-3 h-3" /> Hide All
-                                </>
-                              ) : (
-                                <>
-                                  <Eye className="w-3 h-3" /> Show All
-                                </>
-                              )}
-                            </button>
                           </div>
                         </th>
                         <th className="p-4 w-[8%]">Status</th>
@@ -1789,64 +1738,16 @@ export default function AdminManagementDashboard({
                             <td className="p-4 text-slate-700 font-medium">{u.department}</td>
                             <td className="p-4 text-slate-500">{u.branch}</td>
 
-                            {/* Password Column with View/Hide Theme */}
+                            {/* Password: stored as a hash — can only be reset */}
                             <td className="p-4">
-                              {(() => {
-                                const isVisible = showAllPasswords || Boolean(visiblePasswords[u.id]);
-                                const pwd = u.password || 'Thoughtflows@2026';
-                                return (
-                                  <div className="inline-flex items-center gap-1.5 p-1 rounded-xl bg-slate-50 border border-slate-200/90 shadow-2xs">
-                                    <div className="px-2.5 py-1 rounded-lg bg-white border border-slate-100 font-mono text-xs text-slate-800 min-w-[95px] text-center flex items-center justify-center">
-                                      {isVisible ? (
-                                        <span className="font-bold text-indigo-950 select-all tracking-normal">
-                                          {pwd}
-                                        </span>
-                                      ) : (
-                                        <span className="text-slate-400 font-black tracking-widest text-sm select-none">
-                                          ••••••••
-                                        </span>
-                                      )}
-                                    </div>
-                                    <button
-                                      type="button"
-                                      onClick={() => togglePasswordVisibility(u.id)}
-                                      className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
-                                        isVisible
-                                          ? 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200'
-                                          : 'bg-white hover:bg-slate-100 text-slate-500 hover:text-slate-800 border border-slate-100'
-                                      }`}
-                                      title={isVisible ? 'Hide password' : 'View password'}
-                                    >
-                                      {isVisible ? (
-                                        <EyeOff className="w-3.5 h-3.5" />
-                                      ) : (
-                                        <Eye className="w-3.5 h-3.5" />
-                                      )}
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        if (navigator.clipboard) {
-                                          navigator.clipboard.writeText(pwd);
-                                          showToast(`✓ Copied password for ${u.name}`);
-                                        }
-                                      }}
-                                      className="p-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-400 hover:text-slate-700 border border-slate-100 transition-colors cursor-pointer"
-                                      title="Copy password to clipboard"
-                                    >
-                                      <Copy className="w-3.5 h-3.5" />
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleEditPassword(u.id || u._id, u.name, pwd, u.email)}
-                                      className="p-1.5 rounded-lg bg-white hover:bg-amber-50 text-slate-400 hover:text-amber-600 border border-slate-100 transition-colors cursor-pointer"
-                                      title="Edit / Reset password"
-                                    >
-                                      <Key className="w-3.5 h-3.5" />
-                                    </button>
-                                  </div>
-                                );
-                              })()}
+                              <button
+                                type="button"
+                                onClick={() => handleEditPassword(u.id || u._id, u.name, null, u.email)}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white hover:bg-amber-50 text-slate-600 hover:text-amber-700 border border-slate-200 text-[11px] font-bold transition-colors cursor-pointer"
+                                title="Set a new password"
+                              >
+                                <Key className="w-3.5 h-3.5" /> Reset password
+                              </button>
                             </td>
 
                             <td className="p-4">
@@ -2682,7 +2583,7 @@ export default function AdminManagementDashboard({
                 </div>
                 <input
                   type="text"
-                  placeholder="e.g., Thoughtflows@2026 (or auto-generate)"
+                  placeholder="Min 8 characters (or auto-generate)"
                   value={newUserForm.password}
                   onChange={(e) => setNewUserForm({ ...newUserForm, password: e.target.value })}
                   className="w-full px-4 py-2.5 rounded-xl border border-slate-200 hover:border-slate-300 focus:border-blue-500 bg-white text-slate-800 placeholder:text-slate-400 focus:outline-none text-sm shadow-2xs font-medium transition-all"

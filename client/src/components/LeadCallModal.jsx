@@ -28,7 +28,7 @@ import {
 } from 'lucide-react';
 
 import BookNewDemoModal from './BookNewDemoModal';
-import { createDemo, dialCall, getCallStatus, hangupCall, getRecordings, saveRecording } from '../services/api';
+import { createDemo, dialCall, getCallStatus, hangupCall, getRecordings, saveRecording, recordingUrl } from '../services/api';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 import { COURSE_CATEGORIES } from '../constants/courses';
 
@@ -103,7 +103,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
     status: 'NEW',
     fetchedBy: 'Google Ad ⚡',
     allocatedTo: 'Priyadharshini',
-    spokenBy: 'Kavitha · YOU',
+    spokenBy: 'YOU',
     age: '24',
     gender: 'Female',
     education: '',
@@ -224,7 +224,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
     if (leadData) {
       const p = leadData.phone || '';
       setLeadForm({
-        name: leadData.name || leadData.fullName || 'Priya Ramesh',
+        name: leadData.name || leadData.fullName || '',
         phone: p || '+919876500000',
         whatsappNumber: leadData.whatsappNumber || leadData.alternatePhone || '',
         source: leadData.sourceName || leadData.source || 'Google Calls',
@@ -234,7 +234,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
         status: leadData.stage ? leadData.stage.toUpperCase() : 'NEW',
         fetchedBy: leadData.fetchedBy || 'Google Ad ⚡',
         allocatedTo: leadData.allocatedTo || leadData.counselorAssigned || 'Priyadharshini',
-        spokenBy: currentUser?.name ? `${currentUser.name} · YOU` : 'Kavitha · YOU',
+        spokenBy: currentUser?.name ? `${currentUser.name} · YOU` : 'YOU',
         age: leadData.age || '24',
         gender: leadData.gender || 'Female',
         education: leadData.education || '',
@@ -313,7 +313,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
     setExotelRecordingUrl(null);
 
     try {
-      const res = await dialCall({ leadPhone: leadForm.phone, agentPhone: currentUser?.phone });
+      const res = await dialCall({ leadPhone: leadForm.phone, agentPhone: currentUser?.phone, leadId: leadData?._id || leadData?.id, leadName: leadForm.name || leadData?.fullName });
       setCallSid(res.callSid);
       setCallStatus(res.status || 'queued');
       // Start audio recording when dial succeeds
@@ -321,8 +321,8 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
       showToast(`Dialing ${leadForm.name} via Exotel…`);
       startPolling(res.callSid);
     } catch (err) {
-      const errorMsg = err?.response?.data?.error || err.message || 'Could not place Exotel call.';
-      console.error('Exotel dial error:', errorMsg);
+      const errorMsg = err?.response?.data?.error || err.message || 'Could not place the call.';
+      console.error('Dial error:', errorMsg);
       setCallStatus('failed');
       setCallError(errorMsg);
       stopAudioRecording();
@@ -405,7 +405,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
           leadId: leadData?._id || leadData?.id,
           leadName: leadForm.name || 'Unnamed Student',
           leadPhone: leadForm.phone,
-          counselorName: currentUser?.name || 'Kavitha N.',
+          counselorName: currentUser?.name || '',
           counselorPhone: currentUser?.phone || '',
           callSid: callSid || '',
           durationSeconds: callSeconds,
@@ -1059,7 +1059,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                         </td>
                         <td className="py-2.5 px-3">
                           {rec.audioUrl ? (
-                            <audio controls src={rec.audioUrl} className="h-7 w-56 max-w-full accent-[#0e6977]" />
+                            <audio controls src={recordingUrl(rec.audioUrl)} className="h-7 w-56 max-w-full accent-[#0e6977]" />
                           ) : (
                             <span className="text-slate-400 italic text-[10.5px]">No audio file</span>
                           )}
@@ -1067,7 +1067,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                         <td className="py-2.5 px-3 text-center whitespace-nowrap">
                           {rec.audioUrl && (
                             <a
-                              href={rec.audioUrl}
+                              href={recordingUrl(rec.audioUrl)}
                               download={`call_${rec.leadName}_${rec.leadPhone}.webm`}
                               target="_blank"
                               rel="noopener noreferrer"

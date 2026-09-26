@@ -15,7 +15,7 @@ const callRecordingSchema = new mongoose.Schema({
   },
   counselorName: {
     type: String,
-    default: 'Kavitha N.'
+    default: ''
   },
   counselorPhone: {
     type: String,

@@ -1,2336 +1,536 @@
-import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import ZoomMeeting from './ZoomMeeting';
-import { 
-  Home, 
-  CreditCard, 
-  TrendingUp, 
-  Calendar, 
-  BookOpen, 
-  Users, 
-  Briefcase, 
-  Award, 
-  FileText, 
-  HelpCircle, 
-  User, 
-  ChevronRight, 
-  ChevronLeft, 
-  Video, 
-  CheckCircle2, 
-  Clock, 
-  Upload, 
-  Download, 
-  Send, 
-  X, 
-  AlertCircle, 
-  DollarSign, 
-  ArrowRight, 
-  MapPin, 
-  Phone, 
-  Mail, 
-  ExternalLink, 
-  Search, 
-  Check, 
-  Sparkles, 
-  QrCode, 
-  ShieldCheck, 
-  Layers,
+import {
+  Home,
+  CreditCard,
+  TrendingUp,
+  Calendar,
+  BookOpen,
+  Users,
+  Briefcase,
+  Award,
+  FileText,
+  HelpCircle,
+  User,
+  ChevronRight,
+  Video,
+  CheckCircle2,
+  Upload,
+  Download,
+  Send,
+  X,
+  AlertCircle,
+  ArrowRight,
+  MapPin,
+  ExternalLink,
   LogOut,
-  Repeat 
+  RefreshCw,
+  MessageSquare
 } from 'lucide-react';
 import BookNewDemoModal from './BookNewDemoModal';
 import StudentDemoNotice from './StudentDemoNotice';
-import { 
-  createTrainerDoubt, 
-  getTrainerDoubts, 
-  getTrainerSettings,
-  createLead, 
-  createEscalation, 
-  onDataUpdate 
+import {
+  getStudentPortal,
+  updateStudentPortalProfile,
+  createStudentReferral,
+  createStudentSubmission,
+  studentSubmissionFileUrl,
+  createStudentRequest,
+  createTrainerDoubt,
+  createEscalation,
+  createDemo,
+  trainingMaterialFileUrl,
+  joinStudentLiveClass,
+  onDataUpdate
 } from '../services/api';
 import { COURSE_CATEGORIES } from '../constants/courses';
 
-export default function StudentPortalDashboard({ onClose, currentUser, onLogout, onSwitchDepartment }) {
-  // Navigation State
+// ----------------------------------------------------------------------------
+// Program rules (not student data)
+// ----------------------------------------------------------------------------
+const REFERRAL_REWARD = 1500;
+const READINESS_TARGET = 80;
+const ATTENDANCE_TARGET = 75;
+const TIERS = [
+  { name: 'Silver', min: 0 },
+  { name: 'Gold', min: 3 },
+  { name: 'Platinum', min: 6 }
+];
+// Same 7 stages HR / CCCP use on the student profile
+const PLACEMENT_STAGES = [
+  { id: 1, label: 'Talent Pool', desc: 'Profile vetted by the placement cell' },
+  { id: 2, label: 'Placement Ready', desc: 'Attendance, scores & mock cleared' },
+  { id: 3, label: 'Talentera Synced', desc: 'Resume & portfolio live' },
+  { id: 4, label: 'Company Mapped', desc: 'Mapped to a hiring partner' },
+  { id: 5, label: 'Interviews Attended', desc: 'Aptitude, technical & panel rounds' },
+  { id: 6, label: 'Offer Released', desc: 'HR & CTC discussion' },
+  { id: 7, label: 'Joined & Placed', desc: 'Onboarding complete' }
+];
+const LOCATION_OPTIONS = ['Coimbatore', 'Chennai', 'Bangalore', 'Hyderabad', 'Kochi', 'Madurai', 'Trichy', 'Remote / Work From Home'];
+const TICKET_CATEGORIES = ['Fees & Receipts', 'Certificate Release', 'Batch Timing or Classroom Change', 'LMS / Materials Access', 'Attendance Correction', 'Placement Team Inquiry', 'Other'];
+
+// ----------------------------------------------------------------------------
+// Helpers
+// ----------------------------------------------------------------------------
+const inr = (n) => `₹${Number(n || 0).toLocaleString('en-IN')}`;
+const fmtDate = (d) => {
+  if (!d) return '';
+  const dt = new Date(d);
+  if (Number.isNaN(dt.getTime())) return String(d);
+  return dt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+};
+const fmtSize = (b) => (!b ? '' : b > 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
+const fileToBase64 = (file) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(String(reader.result));
+  reader.onerror = reject;
+  reader.readAsDataURL(file);
+});
+const errMsg = (e, fallback) => e?.response?.data?.error || e?.message || fallback;
+const shortCourse = (c = '') => (c.match(/\b(CPC|CIC|COC|CPB|CPMA|CRC|CCS|RHIT|CCA)\b/) || [])[1] || c.split(/[\s—-]/)[0] || '—';
+
+const PILL = {
+  green: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  amber: 'bg-amber-50 text-amber-700 border-amber-200',
+  red: 'bg-rose-50 text-rose-700 border-rose-200',
+  indigo: 'bg-indigo-50 text-[#483ec7] border-indigo-200',
+  slate: 'bg-slate-50 text-slate-600 border-slate-200'
+};
+const statusTone = (s = '') => {
+  const v = String(s).toLowerCase();
+  if (/present|approved|resolved|replied|passed|completed|admitted|scheduled|ready/.test(v)) return 'green';
+  if (/late|submitted|open|new|pending|review|progress|contacted|demo/.test(v)) return 'amber';
+  if (/absent|revision|declined|overdue|failed|not ready|closed/.test(v)) return 'red';
+  return 'slate';
+};
+
+// ----------------------------------------------------------------------------
+// Small presentational pieces
+// ----------------------------------------------------------------------------
+const Card = ({ children, className = '' }) => (
+  <div className={`bg-white border border-slate-200/80 rounded-3xl p-6 sm:p-7 shadow-[0_2px_16px_rgba(0,0,0,0.03)] ${className}`}>{children}</div>
+);
+const CardTitle = ({ icon, title, right, sub }) => (
+  <div className="flex items-start justify-between gap-3 pb-4 border-b border-slate-100 mb-4">
+    <div>
+      <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">{icon && <span className="text-lg">{icon}</span>}{title}</h3>
+      {sub && <p className="text-xs text-slate-500 mt-0.5">{sub}</p>}
+    </div>
+    {right}
+  </div>
+);
+const Pill = ({ tone = 'slate', children }) => (
+  <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold border whitespace-nowrap ${PILL[tone]}`}>{children}</span>
+);
+const Row = ({ label, value, mono }) => (
+  <div className="py-3 flex items-center justify-between gap-4 text-xs sm:text-sm">
+    <span className="text-slate-500 font-medium">{label}</span>
+    <span className={`text-slate-900 font-semibold text-right ${mono ? 'font-mono' : ''}`}>{value || <span className="text-slate-400 font-medium">Not set</span>}</span>
+  </div>
+);
+const Empty = ({ icon = '📭', title, text }) => (
+  <div className="text-center py-8 px-4">
+    <div className="text-2xl mb-2">{icon}</div>
+    <div className="text-sm font-semibold text-slate-600">{title}</div>
+    {text && <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">{text}</p>}
+  </div>
+);
+const PageHeader = ({ title, sub, right }) => (
+  <div className="bg-gradient-to-r from-[#1e1b4b] via-[#312e81] to-[#1e1b4b] rounded-3xl p-6 sm:p-7 text-white flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-[0_8px_30px_rgba(30,27,75,0.2)]">
+    <div>
+      <h2 className="text-2xl sm:text-3xl font-black tracking-tight">{title}</h2>
+      {sub && <p className="text-xs sm:text-sm text-indigo-200/90 mt-1 max-w-2xl">{sub}</p>}
+    </div>
+    {right}
+  </div>
+);
+const HeaderStat = ({ label, value }) => (
+  <div className="bg-white/10 border border-white/15 rounded-2xl px-4 py-2.5 text-right">
+    <div className="text-[10px] uppercase font-bold text-indigo-200 tracking-wider">{label}</div>
+    <div className="text-lg font-black text-emerald-300">{value}</div>
+  </div>
+);
+const Btn = ({ children, onClick, tone = 'dark', type = 'button', disabled, className = '' }) => {
+  const tones = {
+    dark: 'bg-[#221f3f] hover:bg-slate-900 text-white',
+    teal: 'bg-[#0d9488] hover:bg-[#0f766e] text-white',
+    light: 'bg-white hover:bg-slate-50 border border-slate-200 text-slate-800',
+    indigo: 'bg-[#483ec7] hover:bg-[#3b32a8] text-white'
+  };
+  return (
+    <button type={type} onClick={onClick} disabled={disabled}
+      className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer flex items-center justify-center gap-2 ${tones[tone]} ${className}`}>
+      {children}
+    </button>
+  );
+};
+const Modal = ({ title, sub, onClose, children, wide }) => (
+  <div className="fixed inset-0 z-[60] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+    <div className={`bg-white rounded-3xl shadow-2xl w-full ${wide ? 'max-w-4xl' : 'max-w-md'} max-h-[90vh] overflow-y-auto p-6 relative`} onClick={(e) => e.stopPropagation()}>
+      <button onClick={onClose} className="absolute top-4 right-4 p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 cursor-pointer"><X className="w-5 h-5" /></button>
+      <h3 className="text-base font-bold text-slate-900 pr-8">{title}</h3>
+      {sub && <p className="text-xs text-slate-500 mt-0.5">{sub}</p>}
+      <div className="mt-5">{children}</div>
+    </div>
+  </div>
+);
+const Field = ({ label, children }) => (
+  <label className="block text-xs">
+    <span className="font-semibold text-slate-700 block mb-1">{label}</span>
+    {children}
+  </label>
+);
+const inputCls = 'w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-800 text-xs focus:outline-none focus:border-[#483ec7]';
+
+// ============================================================================
+export default function StudentPortalDashboard({ onClose, currentUser, onLogout }) {
   const [activeNav, setActiveNav] = useState('dashboard');
-  const [toastMessage, setToastMessage] = useState(null);
-  const [showStudentDemoModal, setShowStudentDemoModal] = useState(false);
-  const [dashMenuOpen, setDashMenuOpen] = useState(false);
+  const [portal, setPortal] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [toast, setToast] = useState(null);
+  const [modal, setModal] = useState(null); // { type, ...payload }
+  const [busy, setBusy] = useState(false);
+  const [showDemoModal, setShowDemoModal] = useState(false);
 
-  // Real Database Student Record
-  const [serverStudent, setServerStudent] = useState(null);
-  const [trainersList, setTrainersList] = useState([]);
-  const [studentDoubts, setStudentDoubts] = useState([]);
-
-  // Live Class Session state synced from trainer
-  const [liveClassSession, setLiveClassSession] = useState(() => {
-    try {
-      const stored = localStorage.getItem('TF_LIVE_CLASS_SESSION');
-      return stored ? JSON.parse(stored) : null;
-    } catch (_) {
-      return null;
-    }
-  });
-
-  useEffect(() => {
-    const handleUpdate = () => {
-      try {
-        const stored = localStorage.getItem('TF_LIVE_CLASS_SESSION');
-        setLiveClassSession(stored ? JSON.parse(stored) : null);
-      } catch (_) {}
-    };
-
-    window.addEventListener('storage', handleUpdate);
-    window.addEventListener('thoughtflows_data_updated', handleUpdate);
-    return () => {
-      window.removeEventListener('storage', handleUpdate);
-      window.removeEventListener('thoughtflows_data_updated', handleUpdate);
-    };
-  }, []);
-
-  // Modals state
-  const [activeModal, setActiveModal] = useState(null);
-  const [selectedTrainer, setSelectedTrainer] = useState(null);
-  const [doubtText, setDoubtText] = useState('');
-  const [selectedFile, setSelectedFile] = useState(null);
-  const [paymentSuccess, setPaymentSuccess] = useState(false);
-
-  // Real Persistent State: Membership & Referrals
-  const [rewardPoints, setRewardPoints] = useState(() => {
-    const saved = localStorage.getItem('tf_student_reward_points');
-    return saved !== null ? parseInt(saved, 10) : 0;
-  });
-  const [referrals, setReferrals] = useState(() => {
-    const saved = localStorage.getItem('tf_student_referrals');
-    return saved ? JSON.parse(saved) : [];
-  });
-  const [referralFriendName, setReferralFriendName] = useState('');
-  const [referralFriendPhone, setReferralFriendPhone] = useState('');
-  const [referralHrCounselor, setReferralHrCounselor] = useState('Kavitha N.');
-  const [referralCourse, setReferralCourse] = useState('CPC — Certified Professional Coder');
-  const [redeemOption, setRedeemOption] = useState('cash');
-
-  // Classes tab state ('upcoming' | 'past')
-  const [classesTab, setClassesTab] = useState('past');
-  const [selectedRecording, setSelectedRecording] = useState(null);
-
-  // Real Persistent State: Placement & Support
-  const [preferredLocations, setPreferredLocations] = useState(() => {
-    const saved = localStorage.getItem('tf_student_preferred_locations');
-    return saved ? JSON.parse(saved) : ['Coimbatore', 'Chennai'];
-  });
+  // form state shared by the modals
+  const [form, setForm] = useState({});
+  const setF = (k) => (e) => setForm((f) => ({ ...f, [k]: e?.target ? (e.target.type === 'file' ? e.target.files[0] : e.target.value) : e }));
   const [quickDoubt, setQuickDoubt] = useState('');
-  const [feeQueryText, setFeeQueryText] = useState('');
-  const [ticketSubject, setTicketSubject] = useState('');
-  const [ticketCategory, setTicketCategory] = useState('Fees & Receipts');
-  const [ticketDescription, setTicketDescription] = useState('');
+  const [newSkill, setNewSkill] = useState('');
 
-  // Real Persistent State: Profile Certificates & Skills
-  const [userCertificates, setUserCertificates] = useState(() => {
-    const saved = localStorage.getItem('tf_student_certificates');
-    return saved ? JSON.parse(saved) : [];
-  });
-  const [skillsList, setSkillsList] = useState(() => {
-    const saved = localStorage.getItem('tf_student_skills');
-    return saved ? JSON.parse(saved) : ['Medical Coding Fundamentals', 'ICD-10 Basics'];
-  });
-  const [newSkillInput, setNewSkillInput] = useState('');
-  const [newCertTitle, setNewCertTitle] = useState('');
-  const [newCertIssuer, setNewCertIssuer] = useState('');
-  const [newCertYear, setNewCertYear] = useState('2026');
-  const [editPhone, setEditPhone] = useState(currentUser?.phone || '');
-  const [editEmail, setEditEmail] = useState(currentUser?.email || '');
-  const [editReason, setEditReason] = useState('');
+  const showToast = (msg, ms = 3500) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), ms);
+  };
+  const openModal = (type, payload = {}, initialForm = {}) => {
+    setForm(initialForm);
+    setModal({ type, ...payload });
+  };
+  const closeModal = () => { setModal(null); setForm({}); };
 
-  // Real Persistent State: Payment Ledger & Fee Status
-  const [hasClearedBalance, setHasClearedBalance] = useState(() => {
-    return localStorage.getItem('tf_student_fee_cleared') === 'true';
-  });
-  const [paymentRecords, setPaymentRecords] = useState(() => {
-    const saved = localStorage.getItem('tf_student_receipts');
-    return saved ? JSON.parse(saved) : [];
-  });
-
-  // Sync state changes with localStorage for persistent real data
-  useEffect(() => {
-    localStorage.setItem('tf_student_reward_points', rewardPoints.toString());
-  }, [rewardPoints]);
+  // --------------------------------------------------------------------------
+  // Load everything for the signed-in student from the server
+  // --------------------------------------------------------------------------
+  const load = useCallback(async (silent = false) => {
+    if (!currentUser?.studentId && !currentUser?.email) {
+      setLoadError('This login is not linked to an admitted student record.');
+      setLoading(false);
+      return;
+    }
+    if (!silent) setLoading(true);
+    try {
+      const data = await getStudentPortal({ studentId: currentUser?.studentId, email: currentUser?.email });
+      setPortal(data);
+      setLoadError('');
+    } catch (e) {
+      setLoadError(errMsg(e, 'Could not load your student record.'));
+    } finally {
+      setLoading(false);
+    }
+  }, [currentUser?.studentId, currentUser?.email]);
 
   useEffect(() => {
-    localStorage.setItem('tf_student_referrals', JSON.stringify(referrals));
-  }, [referrals]);
-
-  useEffect(() => {
-    localStorage.setItem('tf_student_preferred_locations', JSON.stringify(preferredLocations));
-  }, [preferredLocations]);
-
-  useEffect(() => {
-    localStorage.setItem('tf_student_certificates', JSON.stringify(userCertificates));
-  }, [userCertificates]);
-
-  useEffect(() => {
-    localStorage.setItem('tf_student_skills', JSON.stringify(skillsList));
-  }, [skillsList]);
-
-  useEffect(() => {
-    localStorage.setItem('tf_student_receipts', JSON.stringify(paymentRecords));
-    localStorage.setItem('tf_student_fee_cleared', hasClearedBalance ? 'true' : 'false');
-  }, [paymentRecords, hasClearedBalance]);
-
-  // Fetch real student data from Backend MongoDB API
-  useEffect(() => {
-    let isMounted = true;
-    const fetchRealStudent = async () => {
-      const lookup = currentUser?.studentId || currentUser?.email;
-      let matchedStudent = null;
-      if (!lookup) {
-        try {
-          const listRes = await axios.get('/api/students');
-          if (isMounted && listRes.data && Array.isArray(listRes.data) && listRes.data.length > 0) {
-            matchedStudent = listRes.data[0];
-          }
-        } catch (e) {}
-      } else {
-        try {
-          const res = await axios.get(`/api/students/${encodeURIComponent(lookup)}`);
-          if (isMounted && res.data && res.data.name) {
-            matchedStudent = res.data;
-          }
-        } catch (err) {
-          try {
-            const listRes = await axios.get('/api/students');
-            if (isMounted && listRes.data && Array.isArray(listRes.data)) {
-              const found = listRes.data.find(s => 
-                (currentUser?.studentId && s.studentId === currentUser.studentId) || 
-                (currentUser?.email && s.email && s.email.toLowerCase() === currentUser.email.toLowerCase())
-              );
-              matchedStudent = found || listRes.data[0] || null;
-            }
-          } catch (e) {
-            console.warn('Real student fetch fallback:', e.message);
-          }
-        }
-      }
-
-      if (isMounted) {
-        setServerStudent(matchedStudent);
-        if (matchedStudent) {
-          if (Array.isArray(matchedStudent.skills) && matchedStudent.skills.length > 0) {
-            setSkillsList(matchedStudent.skills);
-          }
-          if (Array.isArray(matchedStudent.certificates) && matchedStudent.certificates.length > 0) {
-            setUserCertificates(matchedStudent.certificates);
-          }
-          if (typeof matchedStudent.rewardPoints === 'number') {
-            setRewardPoints(matchedStudent.rewardPoints);
-          }
-        }
-      }
-    };
-    fetchRealStudent();
-
+    load();
+    // live class / replies / reviews made by the trainer on other machines
+    const poll = setInterval(() => load(true), 30000);
     const unsub = onDataUpdate((entity) => {
-      if (entity === 'students') {
-        fetchRealStudent();
-      }
+      if (['students', 'doubts', 'trainer_doubts', 'live_class', 'assessments', 'trainer_attendance', 'materials', 'student_submissions', 'student_requests', 'leads'].includes(entity)) load(true);
     });
+    return () => { clearInterval(poll); unsub(); };
+  }, [load]);
 
-    return () => { 
-      isMounted = false; 
-      unsub();
+  // --------------------------------------------------------------------------
+  // Derived view of the real record
+  // --------------------------------------------------------------------------
+  const st = portal?.student || null;
+  const trainer = portal?.trainer || null;
+  const live = portal?.liveSession || null;
+  const attendance = portal?.attendance || [];
+  const assessments = portal?.assessments || [];
+  const materials = portal?.materials || [];
+  const doubts = portal?.doubts || [];
+  const submissions = portal?.submissions || [];
+  const requests = portal?.requests || [];
+  const referrals = portal?.referrals || [];
+  const placements = portal?.placements || [];
+  const tickets = portal?.tickets || [];
+  const classNotes = portal?.classNotes || [];
+  const partners = portal?.hiringPartners || [];
+
+  const d = useMemo(() => {
+    if (!st) return null;
+    const name = st.name || currentUser?.name || 'Student';
+    const attended = attendance.filter((a) => a.status === 'Present' || a.status === 'Late').length;
+    const absent = attendance.filter((a) => a.status === 'Absent').length;
+    const late = attendance.filter((a) => a.status === 'Late').length;
+    const attendancePct = typeof st.attendancePct === 'number' ? st.attendancePct : (attendance.length ? Math.round((attended / attendance.length) * 100) : null);
+    const scored = assessments.filter((t) => typeof t.pct === 'number');
+    const testAvg = typeof st.assessmentScore === 'number' ? st.assessmentScore : (scored.length ? Math.round(scored.reduce((a, t) => a + t.pct, 0) / scored.length) : null);
+    const readiness = typeof st.readinessScore === 'number' ? st.readinessScore : null;
+
+    // Fees — straight from the HR fee record
+    const courseFee = Number(st.courseFee || 0);
+    const paid = Number(st.paidAmount || 0);
+    const balance = typeof st.pendingBalance === 'number' && st.pendingBalance > 0 ? st.pendingBalance : Math.max(0, courseFee - paid);
+
+    // Modules covered = class topics the trainer logged, oldest first
+    const topics = [];
+    [...attendance].reverse().forEach((a) => { if (a.topic && !topics.includes(a.topic)) topics.push(a.topic); });
+
+    // Placement pipeline only starts once training hands the student to CCCP
+    const inPlacement = st.syllabusCompleted || st.trainerRecommendation === 'Ready' || /cccp|placed|talentera|interview|offer|joined|mapped/i.test(st.placementStatus || '') || (st.interviews || []).length > 0 || placements.length > 0;
+    const placementStage = inPlacement ? Math.min(7, Math.max(1, Number(st.placementStage) || 1)) : 0;
+
+    const joined = referrals.filter((r) => r.stage === 'admitted').length;
+    const tierIdx = TIERS.reduce((idx, t, i) => (joined >= t.min ? i : idx), 0);
+
+    const latestOf = (type) => submissions.find((s) => s.type === type) || null;
+
+    return {
+      name,
+      initials: name.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase() || 'S',
+      batch: portal?.batch || '',
+      attended, absent, late, attendancePct, testAvg, readiness,
+      courseFee, paid, balance,
+      topics,
+      placementStage,
+      joined,
+      tier: TIERS[tierIdx],
+      nextTier: TIERS[tierIdx + 1] || null,
+      resume: latestOf('resume'),
+      videoIntro: latestOf('video_intro'),
+      openMock: requests.find((r) => r.type === 'mock_interview' && ['Open', 'Scheduled'].includes(r.status)) || null,
+      pendingPoints: requests.filter((r) => r.type === 'redeem_points' && r.status === 'Open').reduce((a, r) => a + Number(r.details?.points || 0), 0)
     };
-  }, [currentUser]);
+  }, [st, portal?.batch, attendance, assessments, referrals, submissions, requests, placements, currentUser?.name]);
 
-  // Fetch Real Trainers Roster
-  useEffect(() => {
-    let isMounted = true;
-    const fetchTrainers = async () => {
-      try {
-        const res = await getTrainerSettings();
-        if (isMounted && Array.isArray(res) && res.length > 0) {
-          setTrainersList(res.map(t => ({
-            id: t.trainerId,
-            name: t.trainerName,
-            role: t.specialization || (t.expertCourse ? `${t.expertCourse} Faculty` : 'Medical Coding Faculty'),
-            course: t.expertCourse || 'Medical Coding',
-            schedule: t.shift || 'Weekdays (Morning & Evening)',
-            branch: t.branchName || 'Main Campus',
-            active: t.active !== false
-          })));
-          return;
-        }
-      } catch (e) {}
-
-      try {
-        const authRes = await axios.get('/api/auth/trainers');
-        if (isMounted && authRes.data && Array.isArray(authRes.data) && authRes.data.length > 0) {
-          setTrainersList(authRes.data.map(t => ({
-            id: t.id || t.trainerId,
-            name: t.name || t.userName,
-            role: t.role ? `${t.role} · ${t.specialization || t.course}` : 'Medical Coding Faculty',
-            course: t.course || 'CPC',
-            schedule: t.shift || '6:00 AM – 2:00 PM',
-            branch: t.branch || 'Gandhipuram',
-            active: true
-          })));
-        }
-      } catch (e) {}
-    };
-
-    fetchTrainers();
-    const unsub = onDataUpdate((entity) => {
-      if (entity === 'trainers' || entity === 'trainer_settings') {
-        fetchTrainers();
-      }
-    });
-    return () => { isMounted = false; unsub(); };
-  }, []);
-
-  // Fetch Real Doubts for this student
-  useEffect(() => {
-    let isMounted = true;
-    const fetchDoubts = async () => {
-      try {
-        const doubts = await getTrainerDoubts();
-        if (isMounted && Array.isArray(doubts)) {
-          const sid = serverStudent?.studentId || currentUser?.studentId;
-          const sname = currentUser?.name || currentUser?.userName || serverStudent?.name;
-          const filtered = doubts.filter(d => 
-            (sid && d.studentId === sid) ||
-            (sname && d.studentName && d.studentName.toLowerCase() === sname.toLowerCase())
-          );
-          setStudentDoubts(filtered);
-        }
-      } catch (e) {}
-    };
-
-    fetchDoubts();
-    const unsub = onDataUpdate((entity) => {
-      if (entity === 'doubts' || entity === 'trainer_doubts') {
-        fetchDoubts();
-      }
-    });
-    return () => { isMounted = false; unsub(); };
-  }, [serverStudent, currentUser]);
-
-  // Real Live Student Object
-  const displayName = currentUser?.name || currentUser?.userName || serverStudent?.name || 'Student';
-  const attendanceVal = typeof serverStudent?.attendancePct === 'number'
-    ? `${serverStudent.attendancePct}%`
-    : (serverStudent?.attendance || '0%');
-  const readinessVal = typeof serverStudent?.readinessScore === 'number'
-    ? serverStudent.readinessScore
-    : (serverStudent?.mockInterview === 'Completed' ? 85 : 0);
-  const stagePctVal = typeof serverStudent?.stagePercentage === 'number'
-    ? serverStudent.stagePercentage
-    : (typeof serverStudent?.attendancePct === 'number' ? serverStudent.attendancePct : 0);
-
-  const student = {
-    name: displayName,
-    initials: (displayName.trim()[0] || 'S').toUpperCase(),
-    studentId: serverStudent?.studentId || currentUser?.studentId || (currentUser?.id ? `TF-STU-${currentUser.id}` : 'TF-STU-NEW'),
-    leadId: serverStudent?.leadId || 'N/A',
-    batchCode: serverStudent?.batchCode || 'Batch Unassigned',
-    batchName: serverStudent?.batchName || (serverStudent?.course ? `${serverStudent.course} Batch` : 'Batch Allocation Pending'),
-    course: serverStudent?.course || currentUser?.course || 'CPC — Medical Coding',
-    startDate: serverStudent?.batchDate || 'To be scheduled',
-    schedule: serverStudent?.batchTiming || 'To be assigned',
-    location: serverStudent?.location ? (serverStudent.location.includes('Offline') || serverStudent.location.includes('Online') ? serverStudent.location : `${serverStudent.mode || 'Classroom'} · ${serverStudent.location}`) : (currentUser?.branch ? `${currentUser.branch} Campus` : 'Gandhipuram Campus'),
-    branchCity: serverStudent?.location || currentUser?.branch || 'Gandhipuram',
-    room: serverStudent?.room || 'Room 1',
-    currentStage: serverStudent?.syllabusModule || 'Orientation & Basics',
-    stagePercentage: stagePctVal,
-    stagesArchived: serverStudent?.stagesArchived ?? 0,
-    stagesTotal: serverStudent?.stagesTotal ?? 10,
-    stagesDone: serverStudent?.stagesDone || `${serverStudent?.stagesArchived ?? 0}/10`,
-    attendance: attendanceVal,
-    readinessScore: readinessVal,
-    testAvg: typeof serverStudent?.readinessScore === 'number' ? `${serverStudent.readinessScore}%` : (serverStudent?.testAvg || 'N/A'),
-    counselor: serverStudent?.hrName ? `${serverStudent.hrName} (Academic Advisor)` : 'Assigned upon enrollment',
-    emergencyContact: serverStudent?.phone || currentUser?.phone || 'Not Provided',
-    email: currentUser?.email || serverStudent?.email || '',
-    phone: serverStudent?.phone || currentUser?.phone || '',
-    mode: serverStudent?.mode || 'Offline',
-    feeStatus: hasClearedBalance ? 'Fully Paid' : (serverStudent?.feeStatus || 'No Dues Pending'),
-    courseFee: serverStudent?.courseFee || 0,
-    discount: serverStudent?.discount || 0,
-    finalPayable: serverStudent?.courseFee ? Math.max(0, (serverStudent.courseFee - (serverStudent.discount || 0))) : 0,
-    paidSoFar: hasClearedBalance ? (serverStudent?.courseFee || 0) : (serverStudent?.paidAmount || (serverStudent?.feeStatus === 'Fully Paid' ? (serverStudent?.courseFee || 0) : 0)),
-    balanceDue: hasClearedBalance ? 0 : (serverStudent ? Math.max(0, (serverStudent.courseFee || 0) - (serverStudent.paidAmount || (serverStudent.feeStatus === 'Fully Paid' ? (serverStudent.courseFee || 0) : 0))) : 0),
-    examStatus: serverStudent?.examStatus || 'Not Scheduled',
-    certified: serverStudent?.certified || 'In Preparation',
-    placementStatus: serverStudent?.placementStatus || 'In course'
+  // --------------------------------------------------------------------------
+  // Actions (all persisted to the server)
+  // --------------------------------------------------------------------------
+  const run = async (fn, okMsg) => {
+    setBusy(true);
+    try {
+      await fn();
+      closeModal();
+      if (okMsg) showToast(okMsg);
+      await load(true);
+    } catch (e) {
+      showToast(`⚠ ${errMsg(e, 'Something went wrong')}`, 5000);
+    } finally {
+      setBusy(false);
+    }
   };
 
-  const showToast = (msg) => {
-    setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 3500);
+  const submitDoubt = (question, topic) => run(
+    () => createTrainerDoubt({ studentId: st.studentId, studentName: st.name, topic: topic || st.syllabusModule || 'General', course: st.course, question }),
+    trainer ? `✓ Doubt sent to ${trainer.trainerName}` : '✓ Doubt logged — it will reach your trainer once one is allocated'
+  );
+
+  const submitWork = async () => {
+    const { type, title, note, link, file, materialId } = form;
+    if (!file && !link) { showToast('⚠ Attach a file or paste a link'); return; }
+    await run(async () => {
+      const payload = { type, title: title || file?.name || 'Submission', note, link, materialId };
+      if (file) {
+        if (file.size > 12 * 1024 * 1024) throw new Error('File is larger than 12 MB');
+        payload.fileName = file.name;
+        payload.mimeType = file.type;
+        payload.data = await fileToBase64(file);
+      }
+      await createStudentSubmission(st.studentId, payload);
+    }, trainer ? `✓ Sent to ${trainer.trainerName} for review` : '✓ Submitted');
   };
 
-  const openDoubtModal = (trainer) => {
-    setSelectedTrainer(trainer);
-    setActiveModal('doubt');
-  };
+  const submitRequest = (type, subject, extra = {}) => run(
+    () => createStudentRequest(st.studentId, { type, subject, message: form.message || '', preferredDate: form.preferredDate || '', ...extra }),
+    '✓ Request sent'
+  );
+
+  const saveProfile = (patch, okMsg) => run(() => updateStudentPortalProfile(st.studentId, patch), okMsg);
+
+  // --------------------------------------------------------------------------
+  // Loading / not-linked states
+  // --------------------------------------------------------------------------
+  if (loading && !portal) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#f4f6fb]">
+        <div className="text-center text-slate-500 text-sm"><RefreshCw className="w-6 h-6 animate-spin mx-auto mb-3 text-[#0d9488]" />Loading your student record…</div>
+      </div>
+    );
+  }
+  if (!st || !d) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#f4f6fb] p-6">
+        <div className="bg-white border border-slate-200 rounded-3xl p-8 max-w-md text-center shadow-sm">
+          <AlertCircle className="w-8 h-8 text-amber-500 mx-auto mb-3" />
+          <h2 className="text-lg font-bold text-slate-900">Student record not found</h2>
+          <p className="text-xs text-slate-500 mt-2">{loadError || 'Your login is not linked to an admitted student yet.'}</p>
+          <p className="text-xs text-slate-400 mt-1">Signed in as {currentUser?.email || currentUser?.name || 'unknown'}</p>
+          <div className="flex gap-2 justify-center mt-6">
+            <Btn tone="light" onClick={() => load()}><RefreshCw className="w-4 h-4" />Retry</Btn>
+            <Btn onClick={onLogout || onClose}><LogOut className="w-4 h-4" />Logout</Btn>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const navItems = [
-    {
-      category: 'OVERVIEW',
-      items: [
-        { id: 'dashboard', label: 'Dashboard', icon: Home },
-        { id: 'membership', label: 'Membership Card', icon: CreditCard },
-        { id: 'progress', label: 'My Progress', icon: TrendingUp },
-      ]
-    },
-    {
-      category: 'LEARNING',
-      items: [
-        { id: 'classes', label: 'Classes', icon: Calendar },
-        { id: 'lms', label: 'Learning Management', icon: BookOpen },
-        { id: 'trainers', label: 'My Trainers', icon: Users },
-      ]
-    },
-    {
-      category: 'CAREER',
-      items: [
-        { id: 'placement-prep', label: 'Placement Prep', icon: Briefcase },
-        { id: 'certification', label: 'Certificate & Placement', icon: Award },
-      ]
-    },
-    {
-      category: 'ACCOUNT',
-      items: [
-        { id: 'payments', label: 'Payments', icon: CreditCard },
-        { id: 'admission', label: 'Admission Details', icon: FileText },
-        { id: 'help', label: 'Help', icon: HelpCircle },
-        { id: 'profile', label: 'My Profile', icon: User },
-      ]
-    }
+    { category: 'OVERVIEW', items: [
+      { id: 'dashboard', label: 'Dashboard', icon: Home },
+      { id: 'membership', label: 'Membership & Referrals', icon: CreditCard },
+      { id: 'progress', label: 'My Progress', icon: TrendingUp }
+    ] },
+    { category: 'LEARNING', items: [
+      { id: 'classes', label: 'Classes', icon: Calendar },
+      { id: 'lms', label: 'Materials & Tests', icon: BookOpen },
+      { id: 'trainers', label: 'My Trainer', icon: Users }
+    ] },
+    { category: 'CAREER', items: [
+      { id: 'placement-prep', label: 'Placement Prep', icon: Briefcase },
+      { id: 'certification', label: 'Certificate & Placement', icon: Award }
+    ] },
+    { category: 'ACCOUNT', items: [
+      { id: 'payments', label: 'Payments', icon: CreditCard },
+      { id: 'admission', label: 'Admission Details', icon: FileText },
+      { id: 'help', label: 'Help', icon: HelpCircle },
+      { id: 'profile', label: 'My Profile', icon: User }
+    ] }
   ];
-
-  // ==========================================
-  // RENDER MAIN DASHBOARD (EXACT SCREENSHOT LAYOUT)
-  // ==========================================
-  const renderDashboardHome = () => (
-    <div className="w-full space-y-6 pb-12">
-      <StudentDemoNotice email={currentUser?.email} name={displayName} />
-
-      {/* Top Banner: Today's Live Class (Synced with Trainer Session) */}
-      <div className="bg-gradient-to-r from-[#07252a] via-[#0b3842] to-[#061e22] border border-teal-500/30 rounded-3xl p-5 sm:p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-[0_8px_30px_rgba(7,37,42,0.25)] relative overflow-hidden">
-        <div className="absolute -right-10 -top-10 w-48 h-48 bg-teal-500/10 rounded-full blur-2xl pointer-events-none" />
-        
-        <div className="flex items-center gap-4 relative z-10">
-          <div className="w-12 h-12 rounded-2xl bg-[#0e3b43] border border-teal-400/40 flex items-center justify-center text-teal-300 shadow-inner flex-shrink-0">
-            <Video className="w-6 h-6 text-teal-300" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2.5 flex-wrap">
-              {liveClassSession?.isLive ? (
-                <span className="text-[10px] font-black uppercase tracking-widest text-emerald-300 bg-emerald-500/20 border border-emerald-400/40 px-2.5 py-0.5 rounded-md shadow-xs flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
-                  LIVE NOW
-                </span>
-              ) : (
-                <span className="text-[10px] font-black uppercase tracking-widest text-amber-300 bg-amber-400/15 border border-amber-400/40 px-2.5 py-0.5 rounded-md shadow-xs">
-                  {serverStudent ? 'SCHEDULED CLASS' : 'WELCOME'}
-                </span>
-              )}
-              <span className="text-white font-black text-base sm:text-lg tracking-tight">
-                {liveClassSession?.isLive 
-                  ? `${liveClassSession.topic || 'Live Session'} — Trainer ${liveClassSession.trainerName || 'Faculty'} is Live!`
-                  : (serverStudent ? `${student.course} — ${student.currentStage}` : 'Student Onboarding & Curriculum Desk')}
-              </span>
-            </div>
-            <p className="text-xs text-slate-300 mt-1 flex items-center gap-2">
-              {liveClassSession?.isLive ? (
-                <span className="text-emerald-300 font-medium">
-                  Class session has been started by your trainer. Click below to enter the Zoom classroom!
-                </span>
-              ) : (
-                serverStudent ? (
-                  <>
-                    <span className="font-semibold text-white">{student.counselor}</span>
-                    <span className="text-slate-500">·</span>
-                    <span className="text-teal-300 font-medium">{student.schedule}</span>
-                    <span className="text-slate-500">·</span>
-                    <span className="text-slate-400">Waiting for trainer to start session</span>
-                  </>
-                ) : (
-                  <span className="text-slate-300">
-                    Welcome, {student.name}. Your active batch schedule and classroom links will appear here once allocated by faculty.
-                  </span>
-                )
-              )}
-            </p>
-          </div>
-        </div>
-
-        <button 
-          onClick={() => setActiveModal('liveClass')}
-          className={`w-full sm:w-auto px-7 py-3 rounded-2xl text-xs font-bold tracking-wide transition-all shadow-md flex items-center justify-center gap-2 active:scale-95 flex-shrink-0 cursor-pointer relative z-10 ${
-            liveClassSession?.isLive 
-              ? 'bg-[#009688] hover:bg-[#00897b] text-white shadow-emerald-900/30' 
-              : 'bg-slate-800 hover:bg-slate-700 text-teal-300 border border-slate-700'
-          }`}
-        >
-          <span>{liveClassSession?.isLive ? '▶ Join Virtual Classroom' : 'View Classroom Status'}</span>
-          <ArrowRight className="w-4 h-4" />
-        </button>
-      </div>
-
-      {/* 3 Metric Stat Cards in Full Width Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-6">
-        {/* Card 1: Stages Done */}
-        <div className="bg-white border border-slate-200/80 rounded-3xl p-6 text-center shadow-[0_2px_14px_rgba(0,0,0,0.03)] hover:shadow-md transition-all">
-          <div className="text-3xl sm:text-4xl font-black text-[#7c3aed] tracking-tight">
-            {student.stagesDone}
-          </div>
-          <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mt-2">
-            SYLLABUS STAGES DONE
-          </div>
-          <div className="w-24 h-1 bg-purple-100 rounded-full mx-auto mt-2.5 overflow-hidden">
-            <div 
-              className="h-full bg-[#7c3aed] rounded-full transition-all duration-500" 
-              style={{ width: `${Math.min(100, Math.max(0, student.stagePercentage))}%` }}
-            />
-          </div>
-        </div>
-
-        {/* Card 2: Attendance */}
-        <div className="bg-white border border-slate-200/80 rounded-3xl p-6 text-center shadow-[0_2px_14px_rgba(0,0,0,0.03)] hover:shadow-md transition-all">
-          <div className="text-3xl sm:text-4xl font-black text-[#0d9488] tracking-tight">
-            {student.attendance}
-          </div>
-          <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mt-2">
-            ATTENDANCE RECORD
-          </div>
-          <div className="w-24 h-1 bg-teal-100 rounded-full mx-auto mt-2.5 overflow-hidden">
-            <div 
-              className="h-full bg-[#0d9488] rounded-full transition-all duration-500" 
-              style={{ width: student.attendance.includes('%') ? student.attendance : `${student.attendance}%` }}
-            />
-          </div>
-        </div>
-
-        {/* Card 3: Test Avg */}
-        <div className="bg-white border border-slate-200/80 rounded-3xl p-6 text-center shadow-[0_2px_14px_rgba(0,0,0,0.03)] hover:shadow-md transition-all">
-          <div className="text-3xl sm:text-4xl font-black text-[#ea580c] tracking-tight">
-            {student.testAvg}
-          </div>
-          <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mt-2">
-            MOCK TEST AVERAGE
-          </div>
-          <div className="w-24 h-1 bg-amber-100 rounded-full mx-auto mt-2.5 overflow-hidden">
-            <div 
-              className="h-full bg-[#ea580c] rounded-full transition-all duration-500" 
-              style={{ width: student.testAvg.includes('%') ? student.testAvg : '0%' }}
-            />
-          </div>
-        </div>
-      </div>
-
-      {/* 2-Column Wide Grid for Dashboard Core Content */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Left Column (7 Cols): My Batch & Where You Are */}
-        <div className="lg:col-span-7 space-y-6">
-          {/* Card 1: 🎓 My Batch */}
-          <div className="bg-white border border-slate-200/80 rounded-3xl p-6 sm:p-7 shadow-[0_2px_16px_rgba(0,0,0,0.03)]">
-            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
-              <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
-                <span className="text-lg">🎓</span> Active Batch Details
-              </h3>
-              <button 
-                onClick={() => setActiveModal('batchDetails')}
-                className="text-xs font-bold text-[#483ec7] hover:underline cursor-pointer"
-              >
-                View Syllabus ›
-              </button>
-            </div>
-
-            <div className="divide-y divide-slate-100 text-xs sm:text-sm">
-              <div className="py-3 flex items-center justify-between">
-                <span className="text-slate-500 font-medium">Batch</span>
-                <span className="text-slate-900 font-bold">{student.batchName}</span>
-              </div>
-              <div className="py-3 flex items-center justify-between">
-                <span className="text-slate-500 font-medium">Course</span>
-                <span className="text-slate-900 font-semibold">{student.course}</span>
-              </div>
-              <div className="py-3 flex items-center justify-between">
-                <span className="text-slate-500 font-medium">Training started</span>
-                <span className="text-slate-900 font-semibold">{student.startDate}</span>
-              </div>
-              <div className="py-3 flex items-center justify-between">
-                <span className="text-slate-500 font-medium">Class days</span>
-                <span className="text-slate-900 font-semibold">{student.schedule}</span>
-              </div>
-              <div className="py-3 flex items-center justify-between">
-                <span className="text-slate-500 font-medium">Location</span>
-                <span className="text-slate-900 font-semibold">{student.location}</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Card 2: 📍 Where You Are */}
-          <div className="bg-white border border-slate-200/80 rounded-3xl p-6 sm:p-7 shadow-[0_2px_16px_rgba(0,0,0,0.03)]">
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
-                <span className="text-lg">📍</span> Stage Milestone Progress
-              </h3>
-              <button 
-                onClick={() => setActiveModal('roadmap')}
-                className="text-xs font-bold text-[#483ec7] hover:underline cursor-pointer"
-              >
-                Full Roadmap ›
-              </button>
-            </div>
-
-            <div className="mt-4">
-              <div className="text-xs font-medium text-slate-400">Current stage</div>
-              <div className="text-xl font-black text-slate-900 mt-0.5">{student.currentStage}</div>
-
-              {/* Progress Bar */}
-              <div className="w-full bg-slate-100 rounded-full h-3.5 mt-3 overflow-hidden p-0.5 border border-slate-200/50">
-                <div 
-                  className="bg-gradient-to-r from-[#2c2463] via-[#483ec7] to-[#7c3aed] h-full rounded-full transition-all duration-700 ease-out"
-                  style={{ width: `${student.stagePercentage}%` }}
-                />
-              </div>
-
-              <div className="text-xs text-slate-500 mt-2.5 font-medium flex items-center justify-between">
-                <span>{student.stagePercentage}% of current module completed</span>
-                <span>{student.stagesArchived} modules archived</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Right Column (5 Cols): Pending Actions & Trainers */}
-        <div className="lg:col-span-5 space-y-6">
-          {/* Card 3: ⚡ Pending Actions */}
-          <div className="bg-white border border-slate-200/80 rounded-3xl p-6 sm:p-7 shadow-[0_2px_16px_rgba(0,0,0,0.03)]">
-            <h3 className="text-base font-bold text-slate-900 flex items-center gap-2 mb-4">
-              <span className="text-lg">⚡</span> Priority Actions
-            </h3>
-
-            <div className="space-y-3">
-              {/* Action 1 */}
-              <div 
-                onClick={() => {
-                  if (serverStudent) {
-                    setActiveModal('assignment');
-                  } else {
-                    setActiveNav('lms');
-                  }
-                }}
-                className="group p-3.5 rounded-2xl border border-slate-200/70 hover:border-[#483ec7]/40 hover:bg-slate-50/70 transition-all cursor-pointer flex items-center justify-between gap-3"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-amber-100/70 border border-amber-200 flex items-center justify-center text-amber-700 flex-shrink-0">
-                    <FileText className="w-5 h-5 text-amber-600" />
-                  </div>
-                  <div>
-                    <div className="text-xs sm:text-sm font-bold text-slate-800 group-hover:text-[#483ec7] transition-colors">
-                      {serverStudent ? 'Submit Practice Set 4' : 'Explore Learning Modules'}
-                    </div>
-                    <div className="text-[11px] text-slate-400 font-medium">
-                      {serverStudent ? 'Due Friday · CPT Surgery Section' : 'Access core medical coding curriculum'}
-                    </div>
-                  </div>
-                </div>
-                <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-[#483ec7] group-hover:translate-x-0.5 transition-all" />
-              </div>
-
-              {/* Action 2 */}
-              <div 
-                onClick={() => {
-                  if (student.balanceDue > 0) {
-                    setActiveModal('payment');
-                  } else {
-                    setActiveNav('payments');
-                  }
-                }}
-                className="group p-3.5 rounded-2xl border border-slate-200/70 hover:border-[#483ec7]/40 hover:bg-slate-50/70 transition-all cursor-pointer flex items-center justify-between gap-3"
-              >
-                <div className="flex items-center gap-3">
-                  <div className={`w-10 h-10 rounded-xl ${student.balanceDue > 0 ? 'bg-rose-100/70 border border-rose-200 text-rose-700' : 'bg-emerald-100/70 border border-emerald-200 text-emerald-700'} flex items-center justify-center flex-shrink-0`}>
-                    <CreditCard className={`w-5 h-5 ${student.balanceDue > 0 ? 'text-rose-600' : 'text-emerald-600'}`} />
-                  </div>
-                  <div>
-                    <div className="text-xs sm:text-sm font-bold text-slate-800 group-hover:text-[#483ec7] transition-colors">
-                      {student.balanceDue > 0 ? `Pay ₹${student.balanceDue.toLocaleString()} instalment` : 'Tuition Fees Fully Cleared'}
-                    </div>
-                    <div className="text-[11px] text-slate-400 font-medium">
-                      {student.balanceDue > 0 ? 'Instalment pending clearance' : 'No pending dues on record'}
-                    </div>
-                  </div>
-                </div>
-                <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-[#483ec7] group-hover:translate-x-0.5 transition-all" />
-              </div>
-
-              {/* Action 3 */}
-              <div 
-                onClick={() => setActiveModal('resume')}
-                className="group p-3.5 rounded-2xl border border-slate-200/70 hover:border-[#483ec7]/40 hover:bg-slate-50/70 transition-all cursor-pointer flex items-center justify-between gap-3"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-indigo-100/70 border border-indigo-200 flex items-center justify-center text-indigo-700 flex-shrink-0">
-                    <Upload className="w-5 h-5 text-[#483ec7]" />
-                  </div>
-                  <div>
-                    <div className="text-xs sm:text-sm font-bold text-slate-800 group-hover:text-[#483ec7] transition-colors">
-                      Upload your resume
-                    </div>
-                    <div className="text-[11px] text-slate-400 font-medium">Needed for placement drive path</div>
-                  </div>
-                </div>
-                <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-[#483ec7] group-hover:translate-x-0.5 transition-all" />
-              </div>
-            </div>
-          </div>
-
-          {/* Card 4: 🧑‍🏫 My Trainers */}
-          <div className="bg-white border border-slate-200/80 rounded-3xl p-6 sm:p-7 shadow-[0_2px_16px_rgba(0,0,0,0.03)]">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
-                <span className="text-lg">🧑‍🏫</span> Faculty Mentors
-              </h3>
-              <button 
-                onClick={() => setActiveNav('trainers')}
-                className="text-xs font-bold text-[#483ec7] hover:underline cursor-pointer"
-              >
-                All Trainers ›
-              </button>
-            </div>
-
-            <div className="space-y-3">
-              {(trainersList.length > 0 ? trainersList.slice(0, 2) : [
-                {
-                  name: student.counselor ? student.counselor.replace(' (Academic Advisor)', '') : 'Faculty In-Charge',
-                  role: `${student.course} Faculty Mentor`,
-                  schedule: student.schedule
-                }
-              ]).map((tr, trIdx) => {
-                const trInitial = (tr.name?.trim()[0] || 'F').toUpperCase();
-                return (
-                  <div key={tr.id || trIdx} className="p-3.5 sm:p-4 rounded-2xl border border-slate-200/70 flex items-center justify-between gap-3 bg-[#f8fafc]">
-                    <div className="flex items-center gap-3">
-                      <div className={`w-10 h-10 rounded-full ${trIdx === 0 ? 'bg-[#4338ca]' : 'bg-[#8b5cf6]'} text-white font-bold text-sm flex items-center justify-center flex-shrink-0 shadow-sm`}>
-                        {trInitial}
-                      </div>
-                      <div>
-                        <div className="text-xs sm:text-sm font-bold text-slate-900">{tr.name}</div>
-                        <div className="text-[11px] text-slate-500">{tr.role} {tr.schedule ? `· ${tr.schedule}` : ''}</div>
-                      </div>
-                    </div>
-                    <button 
-                      onClick={() => openDoubtModal({ name: tr.name, role: tr.role })}
-                      className="px-4 py-1.5 rounded-xl bg-[#221f3f] hover:bg-slate-900 text-white text-xs font-semibold transition-all active:scale-95 shadow-sm cursor-pointer"
-                    >
-                      Ask doubt
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Card 5: 🎯 Book Free Course Demo (1-on-1 with Subject Matter Expert) */}
-          <div className="bg-gradient-to-br from-teal-900 via-[#0e3b43] to-slate-900 border border-teal-500/40 rounded-3xl p-5 sm:p-6 text-white shadow-md relative overflow-hidden space-y-3">
-            <div className="flex items-center gap-2">
-              <span className="text-xl">🎯</span>
-              <h3 className="font-extrabold text-white text-base">
-                Book a 1-on-1 Course Demo
-              </h3>
-            </div>
-            <p className="text-xs text-teal-100/90 leading-relaxed font-normal">
-              Interested in expanding to <strong>Inpatient Coding (CIC)</strong>, <strong>Medical Billing (CPB)</strong>, or <strong>Auditing (CPMA)</strong>? Book a personalized live demo session.
-            </p>
-            <div className="text-[11px] text-teal-200 font-medium flex items-center gap-1.5">
-              <span>⚡</span>
-              <span>Auto-routed directly to the designated course expert trainer first!</span>
-            </div>
-            <button
-              onClick={() => setShowStudentDemoModal(true)}
-              className="w-full py-2.5 px-4 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold text-xs transition-all shadow-md active:scale-95 flex items-center justify-center gap-2 cursor-pointer mt-1"
-            >
-              <Calendar className="w-4 h-4" />
-              <span>Book Course Demo with Expert</span>
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-
-  // ==========================================
-  // RENDER MEMBERSHIP CARD (EXACT SCREENSHOT LAYOUT)
-  // ==========================================
-  const renderMembershipCard = () => (
-    <div className="w-full space-y-6 pb-12">
-      {/* 1. Executive Top Hero: Digital Card (Left 7 cols) & VIP Tier Status (Right 5 cols) */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
-        {/* Left: Luxury Digital Membership Card (7 Cols) */}
-        <div className="lg:col-span-7 bg-gradient-to-br from-[#061e24] via-[#092b33] to-[#04151a] border border-[#0e5c6a]/40 rounded-3xl p-6 sm:p-8 shadow-[0_12px_40px_rgba(4,22,27,0.35)] text-white relative overflow-hidden flex flex-col justify-between">
-          {/* Subtle Ambient Sheen */}
-          <div className="absolute -right-16 -top-16 w-64 h-64 bg-teal-500/10 rounded-full blur-3xl pointer-events-none" />
-          <div className="absolute -left-16 -bottom-16 w-64 h-64 bg-amber-500/10 rounded-full blur-3xl pointer-events-none" />
-
-          {/* Top Header */}
-          <div className="flex items-center justify-between relative z-10">
-            <div className="text-[#2dd4bf] font-extrabold text-xs tracking-wider flex items-center gap-2.5 uppercase">
-              <img src="/thoughtflows-logo-white.png" alt="ThoughtFlows" className="h-5 sm:h-6 w-auto object-contain" />
-              <span className="text-white/80 font-mono text-[11px] tracking-widest hidden sm:inline">DIGITAL MEMBERSHIP</span>
-            </div>
-            <span className="bg-gradient-to-r from-slate-200 via-white to-slate-300 text-slate-900 px-4 py-1 rounded-full text-xs font-black tracking-wider uppercase shadow-md">
-              Silver Tier
-            </span>
-          </div>
-
-          {/* Golden SIM Chip & NFC Icon */}
-          <div className="flex items-center justify-between my-6 relative z-10">
-            <div className="w-14 h-10 rounded-xl bg-gradient-to-tr from-[#d97706] via-[#f59e0b] to-[#fde68a] shadow-lg border border-[#fef3c7]/50 flex items-center justify-center">
-              <div className="w-10 h-6 border border-amber-800/40 rounded-sm grid grid-cols-2 gap-0.5 opacity-60" />
-            </div>
-            <div className="flex items-center gap-1.5 text-teal-400/60 font-mono text-xs">
-              <span>NFC Enabled</span>
-              <span className="text-base">📶</span>
-            </div>
-          </div>
-
-          {/* Member Name */}
-          <div className="relative z-10">
-            <span className="text-[11px] text-[#71a5af] uppercase font-bold tracking-widest block">
-              ACCREDITED MEMBER
-            </span>
-            <h2 className="text-2xl sm:text-3xl lg:text-4xl font-black text-white tracking-wide uppercase mt-1">
-              {student.name}
-            </h2>
-          </div>
-
-          {/* 3 Column Meta */}
-          <div className="grid grid-cols-3 gap-4 mt-6 pt-5 border-t border-white/10 text-xs relative z-10">
-            <div>
-              <span className="text-[10px] text-[#71a5af] uppercase font-semibold tracking-wider block">
-                CARD NO
-              </span>
-              <span className="font-mono font-bold text-white text-xs sm:text-sm mt-0.5 block">
-                {`TF-MEM-${student.studentId ? student.studentId.slice(-4) : '8801'}`}
-              </span>
-            </div>
-            <div>
-              <span className="text-[10px] text-[#71a5af] uppercase font-semibold tracking-wider block">
-                MEMBER SINCE
-              </span>
-              <span className="font-bold text-white text-xs sm:text-sm mt-0.5 block">
-                {student.startDate || 'May 2026'}
-              </span>
-            </div>
-            <div>
-              <span className="text-[10px] text-[#71a5af] uppercase font-semibold tracking-wider block">
-                COURSE
-              </span>
-              <span className="font-bold text-white text-xs sm:text-sm mt-0.5 block">
-                {student.course.includes('CPC') ? 'CPC' : student.course.split(' ')[0]}
-              </span>
-            </div>
-          </div>
-
-          {/* Inset Reward Points & Convertible Bar */}
-          <div className="bg-[#04151a]/80 backdrop-blur-md border border-[#0d4551] rounded-2xl p-4 sm:p-5 flex items-center justify-between mt-6 relative z-10">
-            <div>
-              <div className="text-[10px] font-bold uppercase tracking-wider text-[#2dd4bf]">
-                REWARD POINTS BALANCE
-              </div>
-              <div className="text-2xl sm:text-3xl font-extrabold text-white mt-0.5">
-                {rewardPoints.toLocaleString()}
-              </div>
-            </div>
-            <div className="text-right">
-              <div className="text-[10px] font-bold uppercase tracking-wider text-[#2dd4bf]">
-                CONVERTIBLE CASH VALUE
-              </div>
-              <div className="text-2xl sm:text-3xl font-extrabold text-[#f59e0b] mt-0.5">
-                ₹{rewardPoints.toLocaleString()}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Right: VIP Tier Status & Actions (5 Cols) */}
-        <div className="lg:col-span-5 flex flex-col justify-between gap-5">
-          {/* Tier Unlock Card */}
-          <div className="bg-white border border-slate-200/80 rounded-3xl p-6 sm:p-7 shadow-[0_2px_16px_rgba(0,0,0,0.03)] flex-1 flex flex-col justify-between">
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Membership Tier</span>
-                <span className="text-xs font-extrabold text-amber-600 bg-amber-50 border border-amber-200 px-3 py-1 rounded-full">
-                  Level 1 · Silver
-                </span>
-              </div>
-              <h3 className="text-base sm:text-lg font-bold text-slate-900">
-                Unlock <span className="text-[#eab308]">Gold VIP Tier</span>
-              </h3>
-              <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                3 more verified referrals to unlock higher reward point multiples, priority interview placement scheduling, and fee rebates.
-              </p>
-
-              {/* Progress track */}
-              <div className="mt-5 space-y-2">
-                <div className="flex justify-between text-xs font-semibold">
-                  <span className="text-slate-600">Progress to Gold</span>
-                  <span className="text-amber-600 font-bold">
-                    {referrals.filter(r => r.status === 'Joined').length} / 3 Joined
-                  </span>
-                </div>
-                <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden p-0.5 border border-slate-200/60">
-                  <div 
-                    className="bg-gradient-to-r from-[#d97706] to-[#fbbf24] h-full rounded-full transition-all duration-700" 
-                    style={{ width: `${Math.min(100, Math.max(10, (referrals.filter(r => r.status === 'Joined').length / 3) * 100))}%` }} 
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* Quick Actions */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-6 mt-4 border-t border-slate-100">
-              <button
-                onClick={() => setActiveModal('referFriend')}
-                className="bg-[#182032] hover:bg-slate-900 text-white py-3.5 px-4 rounded-2xl font-bold text-xs flex items-center justify-center gap-2 shadow-sm transition-all active:scale-[0.98] cursor-pointer"
-              >
-                <span>+ Refer a Friend (₹1500)</span>
-              </button>
-
-              <button
-                onClick={() => setActiveModal('redeemPoints')}
-                className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 py-3.5 px-4 rounded-2xl font-bold text-xs flex items-center justify-center gap-2 shadow-sm transition-all active:scale-[0.98] cursor-pointer"
-              >
-                <span className="text-base">↻</span>
-                <span>Redeem Points</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* 2. 4 Stat Cards in Full Width Grid */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 sm:gap-6">
-        <div className="bg-white border border-slate-200/80 rounded-3xl p-5 sm:p-6 text-center shadow-[0_2px_14px_rgba(0,0,0,0.03)] hover:shadow-md transition-shadow">
-          <div className="text-3xl sm:text-4xl font-black text-slate-900">
-            {referrals.length}
-          </div>
-          <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mt-1.5">
-            Referrals Sent
-          </div>
-        </div>
-
-        <div className="bg-white border border-slate-200/80 rounded-3xl p-5 sm:p-6 text-center shadow-[0_2px_14px_rgba(0,0,0,0.03)] hover:shadow-md transition-shadow">
-          <div className="text-3xl sm:text-4xl font-black text-emerald-600">
-            {referrals.filter(r => r.status === 'Joined').length}
-          </div>
-          <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mt-1.5">
-            Successfully Joined
-          </div>
-        </div>
-
-        <div className="bg-white border border-slate-200/80 rounded-3xl p-5 sm:p-6 text-center shadow-[0_2px_14px_rgba(0,0,0,0.03)] hover:shadow-md transition-shadow">
-          <div className="text-3xl sm:text-4xl font-black text-slate-900">
-            {referrals.length > 0 
-              ? `${Math.round((referrals.filter(r => r.status === 'Joined').length / referrals.length) * 100)}%` 
-              : '0%'}
-          </div>
-          <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mt-1.5">
-            Conversion Rate
-          </div>
-        </div>
-
-        <div className="bg-white border border-slate-200/80 rounded-3xl p-5 sm:p-6 text-center shadow-[0_2px_14px_rgba(0,0,0,0.03)] hover:shadow-md transition-shadow">
-          <div className="text-3xl sm:text-4xl font-black text-[#d97706]">
-            ₹{rewardPoints.toLocaleString()}
-          </div>
-          <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mt-1.5">
-            Total Earned
-          </div>
-        </div>
-      </div>
-
-      {/* 3. 2-Column Wide Grid: Your Referrals & How It Works */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Your Referrals Card (7 Cols) */}
-        <div className="lg:col-span-7 bg-white border border-slate-200/80 rounded-3xl p-6 sm:p-8 shadow-[0_2px_16px_rgba(0,0,0,0.03)] flex flex-col justify-between">
-          <div>
-            <div className="flex items-center justify-between mb-5">
-              <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
-                <span className="text-base">📋</span> Your Referral Portfolio
-              </h3>
-              {referrals.length > 0 && (
-                <span className="text-xs text-[#483ec7] font-bold bg-indigo-50 border border-indigo-100 px-3 py-1 rounded-full">
-                  {referrals.length} registered
-                </span>
-              )}
-            </div>
-
-            {referrals.length === 0 ? (
-              <div className="py-12 text-center text-slate-400 text-xs">
-                <div className="w-12 h-12 rounded-2xl bg-slate-100 flex items-center justify-center mx-auto mb-3 text-slate-400">
-                  <Users className="w-6 h-6" />
-                </div>
-                <div className="font-semibold text-slate-600 text-sm">No referrals in your portfolio yet</div>
-                <p className="mt-1 text-slate-400 max-w-sm mx-auto">Refer aspiring medical coders to earn ₹1500 credited automatically upon enrolment.</p>
-              </div>
-            ) : (
-              <div className="divide-y divide-slate-100 text-xs">
-                {referrals.map((r, idx) => (
-                  <div key={idx} className="py-3.5 flex items-center justify-between">
-                    <div>
-                      <div className="font-bold text-slate-900 text-sm">{r.name}</div>
-                      <div className="text-[11px] text-slate-400 mt-0.5">{r.phone} · Course: {r.course} · Advisor: {r.hr}</div>
-                    </div>
-                    <span className="px-3 py-1 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
-                      {r.status || 'Contacted / Demo Booked'}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* How It Works Card (5 Cols) */}
-        <div className="lg:col-span-5 bg-gradient-to-br from-[#effbf8] to-[#e6f7f3] border border-teal-200/80 rounded-3xl p-6 sm:p-8 shadow-[0_2px_16px_rgba(0,0,0,0.03)] flex flex-col justify-between">
-          <div>
-            <div className="text-[#0d9488] font-bold text-base flex items-center gap-2 mb-4">
-              <span className="text-xl">⚡</span>
-              <span>How ThoughtFlows Referral Works</span>
-            </div>
-            <ol className="space-y-3 text-xs text-slate-700 list-none leading-relaxed">
-              <li className="flex items-start gap-2.5">
-                <span className="w-5 h-5 rounded-full bg-teal-600 text-white font-bold text-[10px] flex items-center justify-center flex-shrink-0 mt-0.5">1</span>
-                <span>Refer a friend who wants to learn medical coding — enter their name, mobile, and preferred counselor.</span>
-              </li>
-              <li className="flex items-start gap-2.5">
-                <span className="w-5 h-5 rounded-full bg-teal-600 text-white font-bold text-[10px] flex items-center justify-center flex-shrink-0 mt-0.5">2</span>
-                <span>The branch advisor connects within 24 hours to schedule a free demo and syllabus walkthrough.</span>
-              </li>
-              <li className="flex items-start gap-2.5">
-                <span className="w-5 h-5 rounded-full bg-teal-600 text-white font-bold text-[10px] flex items-center justify-center flex-shrink-0 mt-0.5">3</span>
-                <span>When your friend pays their fee and enrols, <strong className="text-slate-900">₹1500 reward points</strong> are immediately credited to your account.</span>
-              </li>
-              <li className="flex items-start gap-2.5">
-                <span className="w-5 h-5 rounded-full bg-teal-600 text-white font-bold text-[10px] flex items-center justify-center flex-shrink-0 mt-0.5">4</span>
-                <span>Convert points to <strong className="text-slate-900">direct cash</strong> via UPI or redeem as <strong className="text-slate-900">tuition fee credit</strong>.</span>
-              </li>
-              <li className="flex items-start gap-2.5">
-                <span className="w-5 h-5 rounded-full bg-teal-600 text-white font-bold text-[10px] flex items-center justify-center flex-shrink-0 mt-0.5">5</span>
-                <span>Unlock <span className="text-amber-600 font-bold">Gold</span> & <span className="text-purple-600 font-bold">Platinum</span> tiers for higher referral bonuses.</span>
-              </li>
-            </ol>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-
-  // ==========================================
-  // RENDER MY PROGRESS (EXACT SCREENSHOT LAYOUT)
-  // ==========================================
-  const renderProgress = () => (
-    <div className="w-full space-y-6 pb-12">
-      {/* Header */}
-      <div>
-        <h2 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">My Progress</h2>
-        <p className="text-xs text-slate-500 mt-1">End-to-end curriculum roadmap, placement preparedness &amp; attendance records</p>
-      </div>
-
-      {/* 2-Column Wide Grid for Progress & Analytics */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Left Column (7 Cols): Course Stage Tracker */}
-        <div className="lg:col-span-7 bg-white border border-slate-200/80 rounded-3xl p-6 sm:p-8 shadow-[0_2px_16px_rgba(0,0,0,0.03)]">
-          <div className="flex items-center justify-between pb-4 border-b border-slate-100 mb-6">
-            <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
-              <span className="text-lg">📊</span> Course Stage Roadmap Tracker
-            </h3>
-            <button 
-              onClick={() => setActiveModal('roadmap')}
-              className="text-xs font-bold text-[#483ec7] hover:underline cursor-pointer"
-            >
-              Interactive Roadmap ›
-            </button>
-          </div>
-
-          {/* Vertical Timeline */}
-          <div className="relative pl-1 space-y-7">
-            {/* Vertical Connecting Line */}
-            <div className="absolute left-[20px] top-4 bottom-4 w-0.5 bg-slate-100 -z-0" />
-
-            {/* Stage 1: ICD-10-CM Coding (Done) */}
-            <div className="relative z-10 flex items-start gap-4">
-              <div className="w-9 h-9 rounded-full bg-emerald-500 text-white flex items-center justify-center flex-shrink-0 shadow-md ring-4 ring-white">
-                <Check className="w-4 h-4 stroke-[3]" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="font-bold text-sm sm:text-base text-slate-900">ICD-10-CM Coding</span>
-                  <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-bold px-2.5 py-0.5 rounded-full">
-                    Done ✓
-                  </span>
-                </div>
-                <p className="text-xs text-slate-500 mt-0.5">All diagnosis guideline modules &amp; test sets completed</p>
-                <button 
-                  onClick={() => showToast('Accessing archived ICD-10 notes & tests')}
-                  className="text-xs font-bold text-[#483ec7] hover:underline mt-1.5 inline-block cursor-pointer"
-                >
-                  View archived lecture materials ›
-                </button>
-              </div>
-            </div>
-
-            {/* Stage 2: CPT Coding (Active) */}
-            <div className="relative z-10 flex items-start gap-4">
-              <div className="w-9 h-9 rounded-full bg-[#241c52] border-2 border-indigo-300 text-white flex items-center justify-center flex-shrink-0 shadow-md ring-4 ring-white">
-                <div className="w-2.5 h-2.5 rounded-full bg-teal-400 animate-ping" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="font-bold text-sm sm:text-base text-slate-900">{student.currentStage}</span>
-                  <span className="bg-indigo-50 text-[#483ec7] border border-indigo-200 text-[10px] font-bold px-2.5 py-0.5 rounded-full">
-                    Active Stage
-                  </span>
-                </div>
-                <p className="text-xs text-slate-500 mt-0.5">In progress · Active curriculum module</p>
-                {/* Stage Progress Bar */}
-                <div className="w-full bg-slate-100 rounded-full h-3 mt-3 overflow-hidden p-0.5 border border-slate-200/50">
-                  <div 
-                    className="bg-gradient-to-r from-[#241c52] via-[#483ec7] to-[#7c3aed] h-full rounded-full transition-all duration-700" 
-                    style={{ width: `${student.stagePercentage}%` }}
-                  />
-                </div>
-                <div className="text-[11px] text-slate-400 mt-1.5 font-medium">
-                  {student.stagePercentage}% complete · Active module
-                </div>
-              </div>
-            </div>
-
-            {/* Stage 3: HCPCS + Modifiers + E/M (Upcoming) */}
-            <div className="relative z-10 flex items-start gap-4">
-              <div className="w-9 h-9 rounded-full bg-slate-50 border border-slate-200 text-slate-400 flex items-center justify-center flex-shrink-0 ring-4 ring-white">
-                <span className="text-xs font-mono font-bold">&lt;&gt;</span>
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="font-semibold text-sm sm:text-base text-slate-700">Advanced Coding &amp; Modifiers</span>
-                  <span className="bg-slate-100 text-slate-500 text-[10px] font-medium px-2.5 py-0.5 rounded-full">
-                    Upcoming
-                  </span>
-                </div>
-                <p className="text-xs text-slate-400 mt-0.5">Unlocks automatically upon module test completion</p>
-              </div>
-            </div>
-
-            {/* Stage 4: Specialty / Advanced (Locked) */}
-            <div className="relative z-10 flex items-start gap-4">
-              <div className="w-9 h-9 rounded-full bg-amber-50 border border-amber-200 text-amber-500 flex items-center justify-center flex-shrink-0 ring-4 ring-white">
-                <span className="text-xs">🔒</span>
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="font-semibold text-sm sm:text-base text-slate-700">Specialty Coding &amp; Mock Drills</span>
-                  <span className="bg-slate-100 text-slate-400 text-[10px] font-medium px-2.5 py-0.5 rounded-full">
-                    Locked
-                  </span>
-                </div>
-                <p className="text-xs text-slate-400 mt-0.5">Final prep phase before national board exam booking</p>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Right Column (5 Cols): Placement Readiness & Quick Dashboards */}
-        <div className="lg:col-span-5 space-y-6">
-          {/* 1. Placement Readiness */}
-          <div className="bg-white border border-slate-200/80 rounded-3xl p-6 sm:p-8 shadow-[0_2px_16px_rgba(0,0,0,0.03)] text-center">
-            <h3 className="text-base font-bold text-slate-900 flex items-center justify-center gap-2 mb-4">
-              <span className="text-lg">🎯</span> Placement Readiness Index
-            </h3>
-
-            <div className="py-2">
-              <div className={`text-5xl sm:text-6xl font-black tracking-tight ${student.readinessScore >= 80 ? 'text-emerald-600' : student.readinessScore >= 60 ? 'text-[#d97706]' : 'text-slate-700'}`}>
-                {student.readinessScore}
-              </div>
-              <div className="text-xs font-bold uppercase tracking-wider text-slate-400 mt-1">
-                OUT OF 100
-              </div>
-              <span className={`inline-block mt-2 border text-xs font-bold px-3 py-1 rounded-full ${
-                student.readinessScore >= 80
-                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                  : student.readinessScore >= 60
-                  ? 'bg-amber-50 text-amber-700 border-amber-200'
-                  : 'bg-slate-50 text-slate-700 border-slate-200'
-              }`}>
-                {student.readinessScore >= 80
-                  ? 'Placement Ready (Target Met)'
-                  : student.readinessScore >= 60
-                  ? 'Needs Improvement (Target 80+)'
-                  : 'In Preparation (Target 80+)'}
-              </span>
-
-              {/* Progress bar */}
-              <div className="w-full bg-slate-100 rounded-full h-3 mt-5 overflow-hidden p-0.5 border border-slate-200/60">
-                <div 
-                  className={`h-full rounded-full transition-all duration-700 bg-gradient-to-r ${
-                    student.readinessScore >= 80
-                      ? 'from-emerald-500 to-teal-600'
-                      : student.readinessScore >= 60
-                      ? 'from-amber-500 to-amber-600'
-                      : 'from-slate-400 to-indigo-500'
-                  }`} 
-                  style={{ width: `${Math.min(100, Math.max(0, student.readinessScore))}%` }}
-                />
-              </div>
-
-              <p className="text-xs text-slate-500 mt-4 text-left leading-relaxed">
-                Calculated automatically from your module tests, attendance ({student.attendance}), mock interview status ({serverStudent?.mockInterview || 'Pending'}), and profile review. Reach 80+ to unlock direct export to corporate hiring drives.
-              </p>
-            </div>
-          </div>
-
-          {/* 2. Dashboards (Quick Navigation List) */}
-          <div className="bg-white border border-slate-200/80 rounded-3xl p-6 sm:p-7 shadow-[0_2px_16px_rgba(0,0,0,0.03)]">
-            <h3 className="text-base font-bold text-slate-900 flex items-center gap-2 mb-4">
-              <span className="text-lg">⚡</span> Academic Tracking Links
-            </h3>
-
-            <div className="space-y-3">
-              {/* Row 1: Course Stage Roadmap */}
-              <div 
-                onClick={() => setActiveModal('roadmap')}
-                className="group p-3.5 rounded-2xl border border-slate-200/70 hover:border-[#483ec7]/40 hover:bg-slate-50/70 transition-all cursor-pointer flex items-center justify-between gap-3"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-indigo-100/70 border border-indigo-200 flex items-center justify-center text-[#483ec7] flex-shrink-0">
-                    <Layers className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <div className="text-xs sm:text-sm font-bold text-slate-800 group-hover:text-[#483ec7] transition-colors">
-                      Course Stage Roadmap
-                    </div>
-                    <div className="text-[11px] text-slate-400 font-medium">{student.stagesDone} stages complete</div>
-                  </div>
-                </div>
-                <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-[#483ec7] group-hover:translate-x-0.5 transition-all" />
-              </div>
-
-              {/* Row 2: Attendance */}
-              <div 
-                onClick={() => showToast(`Attendance status: ${student.attendance}`)}
-                className="group p-3.5 rounded-2xl border border-slate-200/70 hover:border-[#483ec7]/40 hover:bg-slate-50/70 transition-all cursor-pointer flex items-center justify-between gap-3"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-sky-100/70 border border-sky-200 flex items-center justify-center text-sky-600 flex-shrink-0">
-                    <Calendar className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <div className="text-xs sm:text-sm font-bold text-slate-800 group-hover:text-[#483ec7] transition-colors">
-                      Attendance Breakdown
-                    </div>
-                    <div className="text-[11px] text-slate-400 font-medium">{student.attendance} attendance logged</div>
-                  </div>
-                </div>
-                <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-[#483ec7] group-hover:translate-x-0.5 transition-all" />
-              </div>
-
-              {/* Row 3: Exam & Interview Paths */}
-              <div 
-                onClick={() => showToast(`AAPC Mock & Corporate Interview Readiness: ${student.readinessScore}/100`)}
-                className="group p-3.5 rounded-2xl border border-slate-200/70 hover:border-[#483ec7]/40 hover:bg-slate-50/70 transition-all cursor-pointer flex items-center justify-between gap-3"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-amber-100/70 border border-amber-200 flex items-center justify-center text-amber-600 flex-shrink-0">
-                    <Award className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <div className="text-xs sm:text-sm font-bold text-slate-800 group-hover:text-[#483ec7] transition-colors">
-                      Exam &amp; Interview Paths
-                    </div>
-                    <div className="text-[11px] text-slate-400 font-medium">Readiness {student.readinessScore}/100 · {serverStudent?.mockInterview === 'Completed' ? 'Mock Completed' : 'Book Mock Test'}</div>
-                  </div>
-                </div>
-                <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-[#483ec7] group-hover:translate-x-0.5 transition-all" />
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-
-  // ==========================================
-  // RENDER MY CLASSES (EXACT SCREENSHOT LAYOUT)
-  // ==========================================
-  const renderClasses = () => (
-    <div className="w-full space-y-6 pb-12">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h2 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">Class Lectures &amp; Live Archives</h2>
-          <p className="text-xs text-slate-500 mt-1">{student.batchName} · {student.schedule} · Room 2 Offline + Online Sync</p>
-        </div>
-
-        {/* Tabs: Upcoming vs Past · with logs */}
-        <div className="bg-[#eef2f8] p-1.5 rounded-2xl flex items-center gap-1 w-full sm:w-80 shadow-2xs">
-          <button
-            onClick={() => setClassesTab('upcoming')}
-            className={`flex-1 py-2.5 px-4 rounded-xl text-xs sm:text-sm font-bold transition-all text-center cursor-pointer ${
-              classesTab === 'upcoming'
-                ? 'bg-white text-slate-900 shadow-sm'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            Upcoming (4)
-          </button>
-          <button
-            onClick={() => setClassesTab('past')}
-            className={`flex-1 py-2.5 px-4 rounded-xl text-xs sm:text-sm font-bold transition-all text-center cursor-pointer ${
-              classesTab === 'past'
-                ? 'bg-white text-[#483ec7] shadow-sm'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            Past Archives
-          </button>
-        </div>
-      </div>
-
-      {/* When Past Tab is Active (Full Width Luxury 2-Col Grid) */}
-      {classesTab === 'past' ? (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Card 1: Live Class Archive */}
-          <div className="bg-white border border-slate-200/80 rounded-3xl p-6 sm:p-7 shadow-[0_2px_16px_rgba(0,0,0,0.03)] space-y-4 flex flex-col justify-between">
-            <div className="space-y-3">
-              {/* Top row */}
-              <div className="flex items-start justify-between">
-                <div>
-                  <h3 className="text-base sm:text-lg font-bold text-slate-900">
-                    {student.course} — Core Class
-                  </h3>
-                  <p className="text-xs text-slate-400 mt-0.5 font-medium">Recent Class · Trainer: {trainersList[0]?.name || 'Faculty Mentor'}</p>
-                </div>
-                <span className="bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-bold px-3 py-1 rounded-full">
-                  Present ✓
-                </span>
-              </div>
-
-              {/* Content list */}
-              <div className="pt-3 border-t border-slate-100 text-xs space-y-2 leading-relaxed">
-                <div className="flex justify-between">
-                  <span className="font-bold text-slate-700">Scheduled Session:</span>
-                  <span className="text-slate-900 font-semibold">{student.schedule}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="font-bold text-slate-700">Active Topic:</span>
-                  <span className="text-slate-900 font-semibold">{student.currentStage}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="font-bold text-slate-700">Your Attendance:</span>
-                  <span className="text-emerald-600 font-bold">{student.attendance} Attendance Recorded</span>
-                </div>
-                <div className="p-3 rounded-xl bg-slate-50 border border-slate-200/60 mt-2">
-                  <span className="font-bold text-slate-800 block mb-0.5">Trainer Feedback Note:</span>
-                  <span className="text-slate-600">Lecture recordings, case studies, and practical exercise guidelines available for {student.currentStage}.</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Bottom Watch Recording Link */}
-            <div className="pt-3 border-t border-slate-100 flex items-center justify-between">
-              <span className="text-xs text-slate-400 font-medium">Full HD Recording + Slides</span>
-              <button 
-                onClick={() => {
-                  setSelectedRecording({
-                    title: `${student.course} — ${student.currentStage}`,
-                    trainer: trainersList[0]?.name || 'Faculty Mentor',
-                    date: 'Archived Session · HD 1080p'
-                  });
-                  setActiveModal('recording');
-                }}
-                className="px-4 py-2 rounded-xl bg-[#483ec7] hover:bg-[#372ea6] text-white font-bold text-xs shadow-sm transition-all flex items-center gap-1.5 cursor-pointer"
-              >
-                <span>► Watch Recording</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Card 2: Foundational Concepts */}
-          <div className="bg-white border border-slate-200/80 rounded-3xl p-6 sm:p-7 shadow-[0_2px_16px_rgba(0,0,0,0.03)] space-y-4 flex flex-col justify-between">
-            <div className="space-y-3">
-              <div className="flex items-start justify-between">
-                <div>
-                  <h3 className="text-base sm:text-lg font-bold text-slate-900">
-                    {student.course} — Clinical Foundation
-                  </h3>
-                  <p className="text-xs text-slate-400 mt-0.5 font-medium">Previous Class · Trainer: {trainersList[1]?.name || trainersList[0]?.name || 'Faculty Mentor'}</p>
-                </div>
-                <span className="bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-bold px-3 py-1 rounded-full">
-                  Attended ✓
-                </span>
-              </div>
-
-              <div className="pt-3 border-t border-slate-100 text-xs space-y-2 leading-relaxed">
-                <div className="flex justify-between">
-                  <span className="font-bold text-slate-700">Scheduled Session:</span>
-                  <span className="text-slate-900 font-semibold">{student.schedule}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="font-bold text-slate-700">Topic Covered:</span>
-                  <span className="text-slate-900 font-semibold">Regulatory Guidelines &amp; Clinical Validation</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="font-bold text-slate-700">Your Attendance:</span>
-                  <span className="text-emerald-600 font-bold">Logged &amp; Verified</span>
-                </div>
-                <div className="p-3 rounded-xl bg-slate-50 border border-slate-200/60 mt-2">
-                  <span className="font-bold text-slate-800 block mb-0.5">Trainer Feedback Note:</span>
-                  <span className="text-slate-600">Review guidelines, exercise sets, and self-assessment questions before the next session.</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="pt-3 border-t border-slate-100 flex items-center justify-between">
-              <span className="text-xs text-slate-400 font-medium">Full HD Recording + Slides</span>
-              <button 
-                onClick={() => {
-                  setSelectedRecording({
-                    title: `${student.course} — Clinical Foundation & Guidelines`,
-                    trainer: trainersList[1]?.name || trainersList[0]?.name || 'Faculty Mentor',
-                    date: 'Archived Session · HD 1080p'
-                  });
-                  setActiveModal('recording');
-                }}
-                className="px-4 py-2 rounded-xl bg-[#483ec7] hover:bg-[#372ea6] text-white font-bold text-xs shadow-sm transition-all flex items-center gap-1.5 cursor-pointer"
-              >
-                <span>► Watch Recording</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : (
-        /* Upcoming Classes Tab */
-        <div className="bg-white border border-slate-200/80 rounded-3xl p-6 sm:p-8 shadow-[0_2px_16px_rgba(0,0,0,0.03)] space-y-4">
-          <h3 className="text-base font-bold text-slate-900">Upcoming Live Virtual Classroom Schedule</h3>
-          <div className="space-y-3">
-            {(() => {
-              const leadTrainer = trainersList[0]?.name || 'Faculty Lead';
-              const softSkillsTrainer = trainersList.find(t => t.role?.toLowerCase().includes('soft') || t.specialization?.toLowerCase().includes('soft'))?.name || trainersList[1]?.name || 'Placement Faculty';
-              return [
-                { date: `Today · ${student.schedule}`, topic: `${student.course} — ${student.currentStage} Live Interactive Session`, trainer: leadTrainer, isLive: true },
-                { date: `Next Session · ${student.schedule}`, topic: `${student.course} — Practical Case Scenarios & Coding Guidelines`, trainer: leadTrainer, isLive: false },
-                { date: 'Weekly Milestone Clinic', topic: 'Professional Mock Interview & Corporate Communication Practice', trainer: softSkillsTrainer, isLive: false },
-                { date: 'Assessment & Review Desk', topic: `${student.course} — Module Mastery & Assessment Review`, trainer: leadTrainer, isLive: false },
-              ];
-            })().map((c, idx) => (
-              <div key={idx} className="p-4 sm:p-5 rounded-2xl border border-slate-200/70 hover:border-[#483ec7]/40 bg-[#f8fafc] flex items-center justify-between gap-4 transition-all">
-                <div className="flex items-center gap-3.5">
-                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-bold text-xs ${c.isLive ? 'bg-amber-100 text-amber-700 border border-amber-300' : 'bg-white text-slate-700 border border-slate-200 shadow-2xs'}`}>
-                    {c.isLive ? 'LIVE' : `D+${idx}`}
-                  </div>
-                  <div>
-                    <div className="text-xs sm:text-sm font-bold text-slate-900">{c.topic}</div>
-                    <div className="text-[11px] text-slate-500 mt-0.5">{c.date} · Faculty: {c.trainer}</div>
-                  </div>
-                </div>
-                {c.isLive ? (
-                  <button 
-                    onClick={() => setActiveModal('liveClass')}
-                    className="px-5 py-2.5 rounded-xl bg-[#0d9488] hover:bg-[#0f766e] text-white text-xs font-bold shadow-sm transition-all active:scale-95 cursor-pointer flex items-center gap-1.5"
-                  >
-                    <span>Join Class</span>
-                    <ArrowRight className="w-3.5 h-3.5" />
-                  </button>
-                ) : (
-                  <span className="text-xs text-slate-400 font-semibold px-3 py-1 bg-white rounded-lg border border-slate-200 hidden sm:inline-block">Scheduled</span>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-
-  // ==========================================
-  // RENDER LEARNING MANAGEMENT SYSTEM (EXACT SCREENSHOT LAYOUT)
-  // ==========================================
-  // RENDER LEARNING MANAGEMENT SYSTEM (LUXURY FULL-WIDTH THEME)
-  // ==========================================
-  const renderLms = () => (
-    <div className="w-full space-y-6 pb-12">
-      {/* Executive Header Banner */}
-      <div className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-[#1e1b4b] via-[#242144] to-[#312e81] p-6 sm:p-8 text-white shadow-xl">
-        <div className="absolute -top-16 -right-16 w-56 h-56 rounded-full bg-indigo-500/20 blur-3xl pointer-events-none" />
-        <div className="absolute -bottom-16 right-32 w-56 h-56 rounded-full bg-emerald-500/15 blur-3xl pointer-events-none" />
-        
-        <div className="relative z-10 flex flex-col md:flex-row md:items-center md:justify-between gap-5">
-          <div className="space-y-2">
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 backdrop-blur-md border border-white/15 text-indigo-200 text-xs font-semibold">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <span>Active Curriculum · {student.currentStage}</span>
-            </div>
-            <h2 className="text-2xl sm:text-3xl font-black tracking-tight text-white">
-              Learning Management System
-            </h2>
-            <p className="text-xs sm:text-sm text-indigo-200/90 max-w-xl font-medium">
-              High-yield medical coding lecture archives, interactive practice sets, clinical quizzes, and authoritative coding guidelines.
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="px-4 py-3 rounded-2xl bg-white/10 backdrop-blur-md border border-white/10 text-center">
-              <div className="text-[10px] uppercase font-bold text-indigo-200 tracking-wider">Module Progress</div>
-              <div className="text-lg font-black text-white">{student.stagePercentage}%</div>
-            </div>
-            <div className="px-4 py-3 rounded-2xl bg-white/10 backdrop-blur-md border border-white/10 text-center">
-              <div className="text-[10px] uppercase font-bold text-indigo-200 tracking-wider">Total Assets</div>
-              <div className="text-lg font-black text-emerald-300">42 Files</div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Main 2-Column Wide Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left Column: Current Active Materials (7 cols) */}
-        <div className="lg:col-span-7 space-y-6">
-          <div className="bg-white rounded-3xl p-6 sm:p-7 border border-slate-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.03)] space-y-4">
-            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
-              <div className="flex items-center gap-2.5">
-                <div className="w-10 h-10 rounded-2xl bg-indigo-50 border border-indigo-100 flex items-center justify-center text-[#483ec7]">
-                  <BookOpen className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="text-base font-bold text-slate-900">Current Materials</h3>
-                  <p className="text-xs text-slate-500 font-medium">{student.course} · {student.currentStage}</p>
-                </div>
-              </div>
-              <span className="bg-emerald-50 text-emerald-700 font-bold text-xs px-3 py-1 rounded-full border border-emerald-200 flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
-                Active Module
-              </span>
-            </div>
-
-            <div className="space-y-3 pt-1">
-              {/* Item 1: Course Lecture Video */}
-              <div 
-                onClick={() => {
-                  setSelectedRecording({
-                    title: `${student.course} — Masterclass Lecture`,
-                    trainer: `${trainersList[0]?.name || 'Faculty Lead'}`,
-                    date: 'Video · Full HD 1080p'
-                  });
-                  setActiveModal('recording');
-                }}
-                className="group p-4 rounded-2xl border border-slate-200/80 hover:border-[#483ec7]/50 hover:bg-gradient-to-r hover:from-indigo-50/50 hover:to-white transition-all cursor-pointer flex items-center justify-between gap-4 shadow-sm"
-              >
-                <div className="flex items-center gap-3.5 min-w-0">
-                  <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-indigo-500 to-[#483ec7] text-white flex items-center justify-center flex-shrink-0 shadow-md group-hover:scale-105 transition-transform">
-                    <Video className="w-5 h-5" />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs sm:text-sm font-bold text-slate-900 group-hover:text-[#483ec7] transition-colors truncate">
-                        {student.course} — Masterclass Lecture
-                      </span>
-                      <span className="bg-indigo-100 text-[#483ec7] font-extrabold text-[10px] px-2 py-0.5 rounded-full">
-                        NEW
-                      </span>
-                    </div>
-                    <div className="text-xs text-slate-500 font-medium mt-0.5">Faculty: {trainersList[0]?.name || 'Faculty Lead'} · High Yield Curriculum</div>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  <button className="px-3.5 py-1.5 rounded-xl bg-[#483ec7] text-white text-xs font-bold shadow-sm group-hover:bg-[#3b32a8] transition-colors">
-                    Watch
-                  </button>
-                </div>
-              </div>
-
-              {/* Item 2: CPT Modifiers Cheat Sheet */}
-              <div 
-                onClick={() => showToast('Opening CPT Modifiers Cheat Sheet (PDF · 6 pages)...')}
-                className="group p-4 rounded-2xl border border-slate-200/80 hover:border-[#483ec7]/50 hover:bg-slate-50/60 transition-all cursor-pointer flex items-center justify-between gap-4 shadow-sm"
-              >
-                <div className="flex items-center gap-3.5 min-w-0">
-                  <div className="w-11 h-11 rounded-2xl bg-amber-50 border border-amber-200/60 text-amber-700 flex items-center justify-center flex-shrink-0">
-                    <FileText className="w-5 h-5 text-amber-600" />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="text-xs sm:text-sm font-bold text-slate-900 group-hover:text-[#483ec7] transition-colors truncate">
-                      CPT Modifiers & Pricing Rules Cheat Sheet
-                    </div>
-                    <div className="text-xs text-slate-500 font-medium mt-0.5">Official 6-Page Clinical Quick Reference · PDF (2.4 MB)</div>
-                  </div>
-                </div>
-                <div className="flex items-center gap-1 text-slate-400 group-hover:text-[#483ec7] text-xs font-semibold">
-                  <span>Open</span>
-                  <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-                </div>
-              </div>
-
-              {/* Item 3: Surgery Coding Practice Set 4 */}
-              <div 
-                onClick={() => setActiveModal('assignment')}
-                className="group p-4 rounded-2xl border border-slate-200/80 hover:border-amber-400/60 hover:bg-amber-50/20 transition-all cursor-pointer flex items-center justify-between gap-4 shadow-sm"
-              >
-                <div className="flex items-center gap-3.5 min-w-0">
-                  <div className="w-11 h-11 rounded-2xl bg-orange-50 border border-orange-200/60 text-orange-600 flex items-center justify-center flex-shrink-0">
-                    <FileText className="w-5 h-5 text-orange-600" />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs sm:text-sm font-bold text-slate-900 group-hover:text-amber-800 transition-colors truncate">
-                        Surgery Coding Practice Set 4 (Clinical Cases)
-                      </span>
-                      <span className="bg-amber-100 text-amber-800 font-bold text-[10px] px-2.5 py-0.5 rounded-full">
-                        Due Fri
-                      </span>
-                    </div>
-                    <div className="text-xs text-slate-500 font-medium mt-0.5">15 Practical Case Vignettes · Required for Stage Review</div>
-                  </div>
-                </div>
-                <button className="px-3.5 py-1.5 rounded-xl bg-slate-900 text-white text-xs font-bold hover:bg-black transition-colors">
-                  Submit
-                </button>
-              </div>
-
-              {/* Item 4: CPT Section Quiz 3 */}
-              <div 
-                onClick={() => setActiveModal('quiz')}
-                className="group p-4 rounded-2xl border border-slate-200/80 hover:border-emerald-400/60 hover:bg-emerald-50/20 transition-all cursor-pointer flex items-center justify-between gap-4 shadow-sm"
-              >
-                <div className="flex items-center gap-3.5 min-w-0">
-                  <div className="w-11 h-11 rounded-2xl bg-emerald-50 border border-emerald-200/60 text-emerald-600 flex items-center justify-center flex-shrink-0">
-                    <CheckCircle2 className="w-5 h-5 text-emerald-600" />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="text-xs sm:text-sm font-bold text-slate-900 group-hover:text-emerald-800 transition-colors truncate">
-                      CPT Section Assessment Quiz 3
-                    </div>
-                    <div className="text-xs text-slate-500 font-medium mt-0.5">Timed Test · 20 Questions · Minimum 80% passing</div>
-                  </div>
-                </div>
-                <button className="px-3.5 py-1.5 rounded-xl bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-700 transition-colors">
-                  Start Quiz
-                </button>
-              </div>
-
-              {/* Item 5: E/M Coding Guidelines */}
-              <div 
-                onClick={() => showToast('Opening Evaluation & Management (E/M) Guidelines 2026 (PDF)...')}
-                className="group p-4 rounded-2xl border border-slate-200/80 hover:border-[#483ec7]/50 hover:bg-slate-50/60 transition-all cursor-pointer flex items-center justify-between gap-4 shadow-sm"
-              >
-                <div className="flex items-center gap-3.5 min-w-0">
-                  <div className="w-11 h-11 rounded-2xl bg-indigo-50 border border-indigo-100 text-[#483ec7] flex items-center justify-center flex-shrink-0">
-                    <BookOpen className="w-5 h-5" />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="text-xs sm:text-sm font-bold text-slate-900 group-hover:text-[#483ec7] transition-colors truncate">
-                      Evaluation & Management (E/M) 2026 Rulebook
-                    </div>
-                    <div className="text-xs text-slate-500 font-medium mt-0.5">AMA Official Guideline Revisions · Reference Notes</div>
-                  </div>
-                </div>
-                <div className="flex items-center gap-1 text-slate-400 group-hover:text-[#483ec7] text-xs font-semibold">
-                  <span>Open</span>
-                  <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Right Column: Archived Modules & Reference Library (5 cols) */}
-        <div className="lg:col-span-5 space-y-6">
-          {/* Archived Modules Card */}
-          <div className="bg-white rounded-3xl p-6 sm:p-7 border border-slate-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.03)] space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <div className="flex items-center gap-2">
-                <span className="text-lg">📁</span>
-                <h3 className="text-base font-bold text-slate-900">Archived Stages</h3>
-              </div>
-              <button 
-                onClick={() => showToast('Displaying all 14 archived foundational modules')}
-                className="text-xs font-bold text-[#483ec7] hover:underline"
-              >
-                View all (14)
-              </button>
-            </div>
-            <p className="text-xs text-slate-500 font-medium">Completed curriculum remains permanently accessible for lifetime review.</p>
-
-            <div className="space-y-3 pt-1">
-              <div 
-                onClick={() => showToast('Opening Anatomy Foundation module notes & references')}
-                className="group p-3.5 rounded-2xl border border-slate-200/70 hover:border-[#483ec7]/40 hover:bg-slate-50 transition-all cursor-pointer flex items-center justify-between gap-3"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-700 flex-shrink-0">
-                    <BookOpen className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <div className="text-xs sm:text-sm font-bold text-slate-800 group-hover:text-[#483ec7] transition-colors">
-                      Anatomy & Physiology Foundation
-                    </div>
-                    <div className="text-[11px] text-slate-400 font-medium">Stage 1 Completed · Full Notes</div>
-                  </div>
-                </div>
-                <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-[#483ec7] group-hover:translate-x-0.5 transition-all" />
-              </div>
-
-              <div 
-                onClick={() => showToast('Opening Medical Terminology archives (24 PDFs)')}
-                className="group p-3.5 rounded-2xl border border-slate-200/70 hover:border-[#483ec7]/40 hover:bg-slate-50 transition-all cursor-pointer flex items-center justify-between gap-3"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-700 flex-shrink-0">
-                    <BookOpen className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <div className="text-xs sm:text-sm font-bold text-slate-800 group-hover:text-[#483ec7] transition-colors">
-                      Medical Terminology & Root Words
-                    </div>
-                    <div className="text-[11px] text-slate-400 font-medium">24 Reference Worksheets & Glossaries</div>
-                  </div>
-                </div>
-                <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-[#483ec7] group-hover:translate-x-0.5 transition-all" />
-              </div>
-            </div>
-          </div>
-
-          {/* Standards & Codebooks Library */}
-          <div className="bg-gradient-to-br from-slate-900 to-[#1e1b4b] rounded-3xl p-6 sm:p-7 text-white shadow-xl space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="text-lg">⚖</span>
-                <h3 className="text-base font-bold text-white">Reference Standards</h3>
-              </div>
-              <span className="text-[10px] uppercase tracking-wider font-bold text-indigo-300 bg-white/10 px-2.5 py-0.5 rounded-full">Official</span>
-            </div>
-            <p className="text-xs text-slate-300 font-medium">Official coding compliance rulebooks for AAPC / CPC certification.</p>
-
-            <div className="space-y-2.5 pt-1">
-              <div 
-                onClick={() => showToast('Opening ICD-10-CM Official Coding & Reporting Guidelines')}
-                className="p-3 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 transition-all cursor-pointer flex items-center justify-between"
-              >
-                <div className="text-xs font-semibold text-white">ICD-10-CM Official Guidelines (CMS)</div>
-                <Download className="w-3.5 h-3.5 text-indigo-300" />
-              </div>
-
-              <div 
-                onClick={() => showToast('Opening HIPAA Compliance & Patient Privacy Rules')}
-                className="p-3 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 transition-all cursor-pointer flex items-center justify-between"
-              >
-                <div className="text-xs font-semibold text-white">HIPAA & Privacy Standards Guide</div>
-                <Download className="w-3.5 h-3.5 text-indigo-300" />
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-
-  // ==========================================
-  // RENDER MY TRAINERS (LUXURY FULL-WIDTH THEME)
-  // ==========================================
-  const renderTrainers = () => (
-    <div className="w-full space-y-6 pb-12">
-      {/* Executive Header Banner */}
-      <div className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-[#1e1b4b] via-[#242144] to-[#312e81] p-6 sm:p-8 text-white shadow-xl">
-        <div className="absolute -top-16 -right-16 w-56 h-56 rounded-full bg-indigo-500/20 blur-3xl pointer-events-none" />
-        
-        <div className="relative z-10 flex flex-col md:flex-row md:items-center md:justify-between gap-5">
-          <div className="space-y-2">
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 backdrop-blur-md border border-white/15 text-indigo-200 text-xs font-semibold">
-              <span className="w-2 h-2 rounded-full bg-emerald-400" />
-              <span>ThoughtFlows Faculty Directorate</span>
-            </div>
-            <h2 className="text-2xl sm:text-3xl font-black tracking-tight text-white">
-              My Trainers & Mentors
-            </h2>
-            <p className="text-xs sm:text-sm text-indigo-200/90 max-w-xl font-medium">
-              Expert CPC & AAPC certified instructors assigned to mentor your batch throughout training, mock interviews, and corporate placement.
-            </p>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <div className="px-4 py-3 rounded-2xl bg-white/10 backdrop-blur-md border border-white/10 text-center">
-              <div className="text-[10px] uppercase font-bold text-indigo-200 tracking-wider">Support SLA</div>
-              <div className="text-sm font-bold text-emerald-300">&lt; 4 Hours Reply</div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Trainers Multi-Column Responsive Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {(trainersList.length > 0 ? trainersList : [
-          {
-            id: 'tr-assigned-1',
-            name: student.counselor ? student.counselor.replace(' (Academic Advisor)', '') : 'Faculty Lead',
-            role: `${student.course} Faculty Mentor`,
-            course: student.course,
-            schedule: student.schedule,
-            branch: student.branchCity,
-            active: true
-          }
-        ]).map((tr, idx) => {
-          const initials = (tr.name?.trim()[0] || 'F').toUpperCase();
-          const gradientColors = idx % 3 === 0 
-            ? 'from-[#4338ca] to-[#312e81]' 
-            : idx % 3 === 1 
-            ? 'from-[#8b5cf6] to-[#6d28d9]' 
-            : 'from-teal-600 to-[#0e3b43]';
-          return (
-            <div key={tr.id || idx} className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.03)] hover:shadow-lg transition-all flex flex-col justify-between space-y-6">
-              <div className="space-y-4">
-                <div className="flex items-start justify-between">
-                  <div className="relative">
-                    <div className={`w-16 h-16 rounded-2xl bg-gradient-to-br ${gradientColors} text-white font-black text-2xl flex items-center justify-center shadow-md`}>
-                      {initials}
-                    </div>
-                    <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-emerald-500 border-2 border-white ring-2 ring-emerald-100" title="Active Faculty" />
-                  </div>
-                  <span className="bg-indigo-50 text-[#483ec7] font-bold text-xs px-3 py-1 rounded-full border border-indigo-100">
-                    {idx === 0 ? 'Lead Faculty' : 'Faculty Mentor'}
-                  </span>
-                </div>
-
-                <div>
-                  <h3 className="text-lg font-black text-slate-900">{tr.name}</h3>
-                  <p className="text-xs font-semibold text-[#483ec7] mt-0.5">{tr.role}</p>
-                  <p className="text-xs text-slate-500 mt-2 leading-relaxed">
-                    Dedicated faculty instructor for {tr.course || student.course}. Provides personalized lecture reviews, doubt clarification, and interview preparation.
-                  </p>
-                </div>
-
-                <div className="space-y-2 pt-2 border-t border-slate-100 text-xs">
-                  <div className="flex items-center justify-between text-slate-600">
-                    <span className="font-medium">Batch Schedule</span>
-                    <span className="font-bold text-slate-900">{tr.schedule || student.schedule}</span>
-                  </div>
-                  <div className="flex items-center justify-between text-slate-600">
-                    <span className="font-medium">Campus</span>
-                    <span className="font-bold text-slate-900">{tr.branch || student.branchCity}</span>
-                  </div>
-                  <div className="flex items-center justify-between text-slate-600">
-                    <span className="font-medium">Office Hours</span>
-                    <span className="font-bold text-emerald-600">Today 3:00 – 5:00 PM</span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="pt-4 border-t border-slate-100 flex gap-2.5">
-                <button 
-                  onClick={() => openDoubtModal({ name: tr.name, role: tr.role })}
-                  className="flex-1 py-3 px-4 rounded-xl bg-[#242144] hover:bg-slate-900 text-white font-bold text-xs shadow-sm transition-all active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer"
-                >
-                  <span>Ask Doubt</span>
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </button>
-                <button 
-                  onClick={() => showToast(`Consultation request sent to ${tr.name}`)}
-                  className="p-3 rounded-xl border border-slate-200 text-slate-700 hover:bg-slate-50 text-xs font-semibold transition-colors cursor-pointer"
-                  title="Book Office Hours"
-                >
-                  📅
-                </button>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Advisory Banner */}
-      <div className="bg-gradient-to-r from-indigo-50/80 to-purple-50/80 border border-indigo-100 p-4 sm:p-5 rounded-2xl flex items-center gap-3.5 shadow-sm">
-        <span className="text-2xl">💭</span>
-        <div className="text-xs text-slate-700 leading-relaxed font-medium">
-          <strong className="text-slate-900 font-bold">ThoughtFlows Academic SLA: </strong>
-          All doubts posted through the in-dashboard Doubt Box are logged into the central faculty ticketing queue and guaranteed to receive a comprehensive response within 4 hours. No lost messages, no unofficial WhatsApp groups.
-        </div>
-      </div>
-    </div>
-  );
-
-  // ==========================================
-  // RENDER PLACEMENT PREP / MOCK INTERVIEW (LUXURY FULL-WIDTH THEME)
-  // ==========================================
-  const renderPlacementPrep = () => (
-    <div className="w-full space-y-6 pb-12">
-      {/* Executive Header Banner */}
-      <div className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-[#1e1b4b] via-[#242144] to-[#312e81] p-6 sm:p-8 text-white shadow-xl">
-        <div className="absolute -top-16 -right-16 w-56 h-56 rounded-full bg-indigo-500/20 blur-3xl pointer-events-none" />
-        
-        <div className="relative z-10 flex flex-col md:flex-row md:items-center md:justify-between gap-5">
-          <div className="space-y-2">
-            <button
-              onClick={() => setActiveNav('progress')}
-              className="inline-flex items-center gap-1.5 text-xs font-bold text-indigo-200 hover:text-white transition-colors cursor-pointer mb-1"
-            >
-              <span>‹</span>
-              <span>Back to Progress Roadmap</span>
-            </button>
-            <h2 className="text-2xl sm:text-3xl font-black tracking-tight text-white">
-              Mock Interview & Placement Prep
-            </h2>
-            <p className="text-xs sm:text-sm text-indigo-200/90 max-w-xl font-medium">
-              Real-time corporate interview simulations, technical coding evaluation, and personalized faculty appraisal before enterprise placement.
-            </p>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <div className="px-5 py-3.5 rounded-2xl bg-white/10 backdrop-blur-md border border-white/10 text-center">
-              <div className="text-[10px] uppercase font-bold text-indigo-200 tracking-wider">Latest Mock Score</div>
-              <div className="text-2xl font-black text-amber-300">
-                {student.readinessScore > 0 ? `${student.readinessScore} / 100` : (serverStudent?.mockInterview || 'Pending')}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Main 2-Column Wide Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left Column: Assessment Results & Feedback (7 cols) */}
-        <div className="lg:col-span-7 space-y-6">
-          {/* Card 1: Latest Mock Summary */}
-          <div className="bg-white rounded-3xl p-6 sm:p-7 border border-slate-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.03)] space-y-5">
-            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
-              <div className="flex items-center gap-2.5">
-                <span className="text-xl">🎤</span>
-                <div>
-                  <h3 className="text-base font-bold text-slate-900">Latest Mock Evaluation</h3>
-                  <p className="text-xs text-slate-500 font-medium">Conducted by Corporate Placement Directorate</p>
-                </div>
-              </div>
-              <span className={`font-bold text-xs px-3 py-1 rounded-full border ${serverStudent?.mockInterview === 'Completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
-                {serverStudent?.mockInterview === 'Completed' ? 'Completed' : (serverStudent?.mockInterview || 'In Progress')}
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="p-4 rounded-2xl bg-slate-50 border border-slate-100">
-                <div className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">Evaluation Date</div>
-                <div className="text-sm font-bold text-slate-900 mt-1">
-                  {serverStudent?.updatedAt ? new Date(serverStudent.updatedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Scheduled'}
-                </div>
-                <div className="text-[11px] text-slate-500 mt-0.5">Session Assessment</div>
-              </div>
-
-              <div className="p-4 rounded-2xl bg-slate-50 border border-slate-100">
-                <div className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">Interviewer</div>
-                <div className="text-sm font-bold text-slate-900 mt-1">
-                  {trainersList.find(t => t.role?.toLowerCase().includes('soft'))?.name || trainersList[0]?.name || 'Placement Lead'}
-                </div>
-                <div className="text-[11px] text-purple-700 font-semibold mt-0.5">Soft Skills Lead</div>
-              </div>
-
-              <div className="p-4 rounded-2xl bg-indigo-50/70 border border-indigo-100">
-                <div className="text-[11px] text-[#483ec7] font-bold uppercase tracking-wider">Readiness Status</div>
-                <div className="text-sm font-bold text-indigo-900 mt-1">
-                  {student.readinessScore >= 80 ? 'Placement Ready' : student.readinessScore >= 60 ? 'Nearly Ready' : 'In Preparation'}
-                </div>
-                <div className="text-[11px] text-indigo-600 mt-0.5">Target: 80 / 100</div>
-              </div>
-            </div>
-          </div>
-
-          {/* Card 2: Competency Score Breakdown */}
-          <div className="bg-white rounded-3xl p-6 sm:p-7 border border-slate-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.03)] space-y-4">
-            <div className="flex items-center justify-between pb-2">
-              <div className="flex items-center gap-2">
-                <span className="text-lg">📊</span>
-                <h3 className="text-base font-bold text-slate-900">Score Breakdown by Competency</h3>
-              </div>
-              <span className="text-xs text-slate-400 font-medium">Weighted Scale</span>
-            </div>
-
-            <div className="space-y-4 pt-1">
-              {(() => {
-                const base = student.readinessScore || 70;
-                const c1 = Math.min(100, Math.round(base * 1.05));
-                const c2 = Math.min(100, Math.round(base * 0.98));
-                const c3 = Math.min(100, Math.round(base * 0.95));
-                const c4 = Math.min(100, Math.round(base * 0.90));
-                return [
-                  { skill: 'Medical Coding Accuracy & Logic', score: `${c1}%`, width: `${c1}%`, color: 'from-emerald-500 to-teal-600', badge: c1 >= 80 ? 'Excellent' : 'Competent' },
-                  { skill: 'CPT / ICD Technical Guidelines', score: `${c2}%`, width: `${c2}%`, color: 'from-amber-500 to-amber-600', badge: c2 >= 75 ? 'Competent' : 'Good' },
-                  { skill: 'Professional Confidence & Demeanor', score: `${c3}%`, width: `${c3}%`, color: 'from-amber-500 to-amber-600', badge: c3 >= 70 ? 'Good' : 'Needs Focus' },
-                  { skill: 'Spoken Communication & Articulation', score: `${c4}%`, width: `${c4}%`, color: 'from-orange-500 to-amber-600', badge: c4 >= 70 ? 'Good' : 'Needs Focus' },
-                ];
-              })().map((item, idx) => (
-                <div key={idx} className="p-3.5 rounded-2xl bg-slate-50 border border-slate-100 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs sm:text-sm font-bold text-slate-800">{item.skill}</span>
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-white border border-slate-200 text-slate-700">{item.badge}</span>
-                      <span className="font-mono font-bold text-xs text-slate-900">{item.score}</span>
-                    </div>
-                  </div>
-                  <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
-                    <div className={`h-full bg-gradient-to-r ${item.color} rounded-full`} style={{ width: item.width }} />
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Card 3: Trainer Feedback & Improvement Roadmap */}
-          <div className="bg-white rounded-3xl p-6 sm:p-7 border border-slate-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.03)] space-y-5">
-            <div>
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-lg">💭</span>
-                <h3 className="text-base font-bold text-slate-900">Trainer Feedback</h3>
-              </div>
-              <div className="p-4 rounded-2xl bg-indigo-50/50 border border-indigo-100 text-xs text-slate-700 leading-relaxed font-medium">
-                "Strong foundational grasp on coding accuracy and CPT sequencing. You handled surgical scenario questions with clear logic. The primary gap is pacing: when answering behavioral and clinical scenario questions, take a 2-second pause, organize answers using the STAR format, and enunciate medical terminology clearly."
-              </div>
-            </div>
-
-            <div className="pt-4 border-t border-slate-100">
-              <div className="flex items-center gap-2 mb-3">
-                <span className="text-lg">🎯</span>
-                <h3 className="text-base font-bold text-slate-900">Actionable Improvement Areas</h3>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200/70 text-xs">
-                  <div className="font-bold text-slate-900 mb-1">1. STAR Format</div>
-                  <div className="text-slate-500 text-[11px] leading-snug">Practice Situation, Task, Action, Result for HR questions.</div>
-                </div>
-                <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200/70 text-xs">
-                  <div className="font-bold text-slate-900 mb-1">2. 60-Sec Elevator Pitch</div>
-                  <div className="text-slate-500 text-[11px] leading-snug">Record clear self-introduction highlighting life sciences bg.</div>
-                </div>
-                <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200/70 text-xs">
-                  <div className="font-bold text-slate-900 mb-1">3. E/M & Modifiers</div>
-                  <div className="text-slate-500 text-[11px] leading-snug">Revise 25, 59, 91 modifier rationales for rapid answer.</div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Right Column: Actions & Placement Unlock Status (5 cols) */}
-        <div className="lg:col-span-5 space-y-6">
-          {/* Executive Actions Card */}
-          <div className="bg-white rounded-3xl p-6 sm:p-7 border border-slate-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.03)] space-y-4">
-            <div className="flex items-center gap-2 pb-2">
-              <span className="text-lg">⚡</span>
-              <h3 className="text-base font-bold text-slate-900">Placement Actions</h3>
-            </div>
-
-            <div className="space-y-3">
-              <button
-                onClick={() => setActiveModal('bookMock')}
-                className="w-full py-4 px-4 rounded-2xl bg-[#242144] hover:bg-slate-900 text-white font-bold text-xs sm:text-sm text-center shadow-sm transition-all active:scale-[0.98] cursor-pointer flex items-center justify-center gap-2"
-              >
-                <span>🎤</span>
-                <span>Book Re-Assessment Mock</span>
-              </button>
-
-              <button
-                onClick={() => setActiveModal('uploadVideoIntro')}
-                className="w-full py-3.5 px-4 rounded-2xl bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 font-bold text-xs sm:text-sm text-center shadow-sm transition-all active:scale-[0.98] cursor-pointer flex items-center justify-center gap-2"
-              >
-                <span>📹</span>
-                <span>Upload 60-Sec Video Introduction</span>
-              </button>
-
-              <button
-                onClick={() => setActiveModal('improvementTask')}
-                className="w-full py-3.5 px-4 rounded-2xl bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 font-bold text-xs sm:text-sm text-center shadow-sm transition-all active:scale-[0.98] cursor-pointer flex items-center justify-center gap-2"
-              >
-                <span>📝</span>
-                <span>Complete Improvement Task</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Placement Eligibility Progress Gauge */}
-          <div className="bg-gradient-to-br from-slate-900 to-[#1e1b4b] rounded-3xl p-6 sm:p-7 text-white shadow-xl space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-bold text-white">Placement Clearance Gate</h3>
-              <span className="text-xs font-bold text-amber-300 bg-white/10 px-3 py-1 rounded-full">
-                {student.readinessScore >= 80 ? 'Target Met ✓' : `Gap: ${Math.max(0, 80 - student.readinessScore)} Pts`}
-              </span>
-            </div>
-            <p className="text-xs text-indigo-200 font-medium leading-relaxed">
-              Achieve 80 / 100 on your next mock round to unlock direct profile submission to Talentera enterprise placement pool.
-            </p>
-
-            <div className="p-4 rounded-2xl bg-white/10 border border-white/10 space-y-2">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-indigo-200">Current Score: {student.readinessScore}</span>
-                <span className="text-emerald-300 font-bold">Target: 80+</span>
-              </div>
-              <div className="w-full bg-white/20 h-2.5 rounded-full overflow-hidden">
-                <div 
-                  className="bg-gradient-to-r from-amber-400 to-emerald-400 h-full rounded-full transition-all duration-700" 
-                  style={{ width: `${Math.min(100, Math.round((student.readinessScore / 80) * 100))}%` }} 
-                />
-              </div>
-            </div>
-
-            <div className="text-[11px] text-slate-400 pt-1">
-              ✓ Technical Coding Verified · Video Intro Pending · Resume v2 Approved
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-
-  // ==========================================
-  // RENDER CERTIFICATE & PLACEMENT (LUXURY FULL-WIDTH THEME)
-  // ==========================================
-  const renderCertification = () => {
-    const getPlacementStageIndex = (status) => {
-      if (!status) return 2;
-      const s = status.toLowerCase();
-      if (s.includes('placed') || s.includes('interview')) return 7;
-      if (s.includes('talentera')) return 6;
-      if (s.includes('placement team') || s.includes('shared')) return 5;
-      if (s.includes('ready') && !s.includes('not')) return 4;
-      if (s.includes('trainer') || s.includes('review')) return 3;
-      if (s.includes('prep') || s.includes('course') || s.includes('training')) return 2;
-      return 1;
-    };
-
-    const currentStageIdx = getPlacementStageIndex(student.placementStatus);
-
-    const baseStages = [
-      { id: 1, label: 'Not Ready', desc: 'Enrolment & Onboarding' },
-      { id: 2, label: 'In Preparation', desc: 'Curriculum & Core Training' },
-      { id: 3, label: 'Trainer Review', desc: 'Practical Assessment & Drills' },
-      { id: 4, label: 'Placement Ready', desc: 'Mock Clear & Dossier Finalized' },
-      { id: 5, label: 'Shared with Placement Team', desc: 'Internal Corporate Review' },
-      { id: 6, label: 'Shared with Talentera', desc: 'Enterprise Recruiter Network' },
-      { id: 7, label: 'Interview Scheduled', desc: 'Direct Corporate Drive' },
-    ];
-
-    const placementStages = baseStages.map(stage => ({
-      ...stage,
-      status: stage.id < currentStageIdx ? 'completed' : stage.id === currentStageIdx ? 'current' : 'pending'
-    }));
-
-    const currentStageObj = placementStages.find(s => s.id === currentStageIdx) || placementStages[1];
+  const navTitle = navItems.flatMap((g) => g.items).find((i) => i.id === activeNav)?.label || 'Dashboard';
+
+  const pct = (v) => (typeof v === 'number' ? `${v}%` : '—');
+  const bar = (v) => `${Math.min(100, Math.max(0, Number(v) || 0))}%`;
+  const newReplies = doubts.filter((x) => x.status === 'Replied');
+
+  // ==========================================================================
+  // DASHBOARD
+  // ==========================================================================
+  const renderDashboard = () => {
+    const actions = [];
+    if (d.balance > 0) actions.push({ icon: CreditCard, tone: 'rose', title: `Fee balance ${inr(d.balance)}`, sub: st.nextDueDate ? `Next due ${st.nextDueDate}` : 'Pending with accounts', go: () => setActiveNav('payments') });
+    const failed = assessments.filter((t) => t.passed === false);
+    if (failed.length) actions.push({ icon: AlertCircle, tone: 'amber', title: `Revise: ${failed[0].name}`, sub: `Scored ${failed[0].myScore}/${failed[0].totalMarks} · pass mark ${failed[0].passMark}`, go: () => setActiveNav('lms') });
+    const revision = submissions.find((s) => s.status === 'Needs Revision');
+    if (revision) actions.push({ icon: Upload, tone: 'amber', title: `Resubmit: ${revision.title}`, sub: revision.feedback || 'Trainer asked for a revision', go: () => setActiveNav('lms') });
+    if (!d.resume) actions.push({ icon: Upload, tone: 'indigo', title: 'Upload your resume', sub: 'Needed before placement drives', go: () => openModal('submit', {}, { type: 'resume', title: 'Resume' }) });
+    if (newReplies.length) actions.push({ icon: MessageSquare, tone: 'green', title: `${newReplies.length} doubt${newReplies.length > 1 ? 's' : ''} answered`, sub: newReplies[0].topic, go: () => setActiveNav('trainers') });
+    if (materials[0]) actions.push({ icon: BookOpen, tone: 'indigo', title: `New material: ${materials[0].title}`, sub: materials[0].module || materials[0].category, go: () => setActiveNav('lms') });
+    const toneCls = { rose: 'bg-rose-50 text-rose-600 border-rose-200', amber: 'bg-amber-50 text-amber-600 border-amber-200', indigo: 'bg-indigo-50 text-[#483ec7] border-indigo-200', green: 'bg-emerald-50 text-emerald-600 border-emerald-200' };
 
     return (
       <div className="w-full space-y-6 pb-12">
-        {/* Executive Header Banner */}
-        <div className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-[#1e1b4b] via-[#242144] to-[#312e81] p-6 sm:p-8 text-white shadow-xl">
-          <div className="absolute -top-16 -right-16 w-56 h-56 rounded-full bg-indigo-500/20 blur-3xl pointer-events-none" />
-          <div className="absolute -bottom-16 right-32 w-56 h-56 rounded-full bg-emerald-500/15 blur-3xl pointer-events-none" />
-          
-          <div className="relative z-10 flex flex-col md:flex-row md:items-center md:justify-between gap-5">
-            <div className="space-y-2">
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 backdrop-blur-md border border-white/15 text-indigo-200 text-xs font-semibold">
-                <span className="w-2 h-2 rounded-full bg-indigo-400" />
-                <span>Enterprise Career Pipeline</span>
+        <StudentDemoNotice email={st.email || currentUser?.email} name={d.name} />
+
+        {/* Live class banner — started by the trainer from the Class Session Room */}
+        <div className="bg-gradient-to-r from-[#07252a] via-[#0b3842] to-[#061e22] border border-teal-500/30 rounded-3xl p-5 sm:p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-[0_8px_30px_rgba(7,37,42,0.25)]">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 rounded-2xl bg-[#0e3b43] border border-teal-400/40 flex items-center justify-center flex-shrink-0"><Video className="w-6 h-6 text-teal-300" /></div>
+            <div>
+              <div className="flex items-center gap-2.5 flex-wrap">
+                {live ? (
+                  <span className="text-[10px] font-black uppercase tracking-widest text-emerald-300 bg-emerald-500/20 border border-emerald-400/40 px-2.5 py-0.5 rounded-md flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />LIVE NOW</span>
+                ) : (
+                  <span className="text-[10px] font-black uppercase tracking-widest text-amber-300 bg-amber-400/15 border border-amber-400/40 px-2.5 py-0.5 rounded-md">{trainer ? 'NO LIVE CLASS' : 'AWAITING ALLOCATION'}</span>
+                )}
+                <span className="text-white font-black text-base sm:text-lg tracking-tight">
+                  {live ? `${live.topic || d.batch} — ${live.trainerName} is live` : `${st.course}${st.syllabusModule ? ` — ${st.syllabusModule}` : ''}`}
+                </span>
               </div>
-              <h2 className="text-2xl sm:text-3xl font-black tracking-tight text-white">
-                Certificate & Placement Pipeline
-              </h2>
-              <p className="text-xs sm:text-sm text-indigo-200/90 max-w-xl font-medium">
-                Track your corporate hiring status across all 7 institutional phases, manage recruitment credentials, and prepare for tier-1 healthcare drives.
+              <p className="text-xs text-slate-300 mt-1">
+                {live
+                  ? `Started ${new Date(live.startedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })} · join from here`
+                  : trainer
+                    ? `${trainer.trainerName}${st.batchTiming ? ` · ${st.batchTiming}` : ''} · this banner turns live when your trainer starts class`
+                    : 'Your HR counsellor will allocate a trainer and batch. Class links will appear here.'}
               </p>
             </div>
-
-            <div className="flex items-center gap-3">
-              <div className="px-5 py-3.5 rounded-2xl bg-white/10 backdrop-blur-md border border-white/10 text-center">
-                <div className="text-[10px] uppercase font-bold text-indigo-200 tracking-wider">Current Phase</div>
-                <div className="text-lg font-black text-emerald-300">Phase {currentStageIdx}: {currentStageObj.label}</div>
-              </div>
-            </div>
           </div>
+          <button onClick={() => openModal('liveClass')}
+            className={`w-full sm:w-auto px-7 py-3 rounded-2xl text-xs font-bold flex items-center justify-center gap-2 cursor-pointer flex-shrink-0 ${live ? 'bg-[#009688] hover:bg-[#00897b] text-white' : 'bg-slate-800 hover:bg-slate-700 text-teal-300 border border-slate-700'}`}>
+            {live ? '▶ Join Class' : 'Classroom Status'}<ArrowRight className="w-4 h-4" />
+          </button>
         </div>
 
-        {/* Main 2-Column Wide Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {/* Left Column: 7-Stage Placement Roadmap (7 cols) */}
+        {/* Stats */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-6">
+          {[
+            { label: 'Attendance', value: pct(d.attendancePct), sub: `${d.attended}/${attendance.length} classes`, color: '#0d9488', w: d.attendancePct },
+            { label: 'Test Average', value: pct(d.testAvg), sub: `${assessments.filter((t) => t.myScore !== null).length} tests scored`, color: '#ea580c', w: d.testAvg },
+            { label: 'Readiness Score', value: d.readiness !== null ? `${d.readiness}/100` : '—', sub: `Target ${READINESS_TARGET}+`, color: '#7c3aed', w: d.readiness }
+          ].map((c) => (
+            <div key={c.label} className="bg-white border border-slate-200/80 rounded-3xl p-6 text-center shadow-[0_2px_14px_rgba(0,0,0,0.03)]">
+              <div className="text-3xl sm:text-4xl font-black tracking-tight" style={{ color: c.color }}>{c.value}</div>
+              <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mt-2">{c.label}</div>
+              <div className="text-[11px] text-slate-400 mt-0.5">{c.sub}</div>
+              <div className="w-24 h-1 bg-slate-100 rounded-full mx-auto mt-2.5 overflow-hidden"><div className="h-full rounded-full" style={{ width: bar(c.w), background: c.color }} /></div>
+            </div>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
           <div className="lg:col-span-7 space-y-6">
-            <div className="bg-white rounded-3xl p-6 sm:p-8 border border-slate-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.03)]">
-              <div className="flex items-center justify-between pb-5 border-b border-slate-100 mb-6">
-                <div className="flex items-center gap-2.5">
-                  <span className="text-xl">📍</span>
-                  <div>
-                    <h3 className="text-base font-bold text-slate-900">Placement Lifecycle Roadmap</h3>
-                    <p className="text-xs text-slate-500 font-medium">Official verification sequence leading to job offer</p>
-                  </div>
+            <Card>
+              <CardTitle icon="🎓" title="My Batch" right={<button onClick={() => setActiveNav('classes')} className="text-xs font-bold text-[#483ec7] hover:underline cursor-pointer">Classes ›</button>} />
+              <div className="divide-y divide-slate-100">
+                <Row label="Batch" value={st.batchName} />
+                <Row label="Course" value={st.course} />
+                <Row label="Batch start" value={st.batchDate} />
+                <Row label="Timing" value={st.batchTiming} />
+                <Row label="Mode · Branch" value={[st.mode, st.location].filter(Boolean).join(' · ')} />
+                <Row label="Current module" value={st.syllabusModule} />
+              </div>
+            </Card>
+            <Card>
+              <CardTitle icon="📍" title="Modules Covered in Class" sub="Logged by your trainer with each attendance" right={<button onClick={() => setActiveNav('progress')} className="text-xs font-bold text-[#483ec7] hover:underline cursor-pointer">Progress ›</button>} />
+              {d.topics.length === 0 ? <Empty icon="🗂" title="No classes logged yet" text="Topics appear here as your trainer records each class." /> : (
+                <div className="flex flex-wrap gap-2">
+                  {d.topics.map((t, i) => <span key={t} className={`px-3 py-1.5 rounded-xl text-xs font-semibold border ${i === d.topics.length - 1 ? 'bg-indigo-50 border-indigo-200 text-[#483ec7]' : 'bg-emerald-50 border-emerald-200 text-emerald-800'}`}>{i === d.topics.length - 1 ? '● ' : '✓ '}{t}</span>)}
                 </div>
-                <span className="text-xs font-bold text-emerald-700 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200">
-                  Phase {currentStageIdx} of 7
-                </span>
-              </div>
-
-              <div className="relative pl-2">
-                {placementStages.map((stage, index) => {
-                  const isLast = index === placementStages.length - 1;
-                  const isCompleted = stage.status === 'completed';
-                  const isCurrent = stage.status === 'current';
-
-                  return (
-                    <div key={stage.id} className="relative flex items-start gap-4 pb-8 last:pb-0">
-                      {/* Connecting Line */}
-                      {!isLast && (
-                        <div 
-                          className={`absolute left-[11px] top-[24px] w-[2px] h-[calc(100%-8px)] ${
-                            isCompleted ? 'bg-emerald-500' : 'bg-slate-200'
-                          }`} 
-                        />
-                      )}
-
-                      {/* Indicator Dot */}
-                      <div className="relative z-10 flex items-center justify-center pt-0.5 flex-shrink-0">
-                        {isCompleted && (
-                          <div className="w-6 h-6 rounded-full bg-emerald-600 text-white flex items-center justify-center ring-4 ring-emerald-50 shadow-sm text-xs font-bold">
-                            ✓
-                          </div>
-                        )}
-                        {isCurrent && (
-                          <div className="w-6 h-6 rounded-full bg-[#483ec7] text-white flex items-center justify-center ring-4 ring-indigo-100 shadow-md">
-                            <span className="w-2 h-2 rounded-full bg-white animate-ping" />
-                          </div>
-                        )}
-                        {!isCompleted && !isCurrent && (
-                          <div className="w-6 h-6 rounded-full bg-slate-100 text-slate-400 border border-slate-200 flex items-center justify-center text-xs font-bold">
-                            {stage.id}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Stage Label & Details */}
-                      <div className="flex-1 min-w-0 pt-0.5">
-                        <div className="flex flex-wrap items-center gap-2.5">
-                          <span 
-                            className={`text-sm ${
-                              isCurrent 
-                                ? 'font-black text-slate-900' 
-                                : isCompleted 
-                                ? 'font-bold text-slate-800' 
-                                : 'font-medium text-slate-400'
-                            }`}
-                          >
-                            {stage.label}
-                          </span>
-
-                          {isCurrent && (
-                            <span className="bg-indigo-50 text-[#483ec7] text-[10px] font-extrabold px-2.5 py-0.5 rounded-full border border-indigo-200">
-                              YOU ARE HERE
-                            </span>
-                          )}
-                          {isCompleted && (
-                            <span className="bg-emerald-50 text-emerald-700 text-[10px] font-bold px-2 py-0.5 rounded-full">
-                              Completed
-                            </span>
-                          )}
-                        </div>
-                        <p className="text-xs text-slate-500 font-medium mt-0.5">{stage.desc}</p>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Official Credential Preview Card */}
-            <div className="bg-white rounded-3xl p-6 sm:p-7 border border-slate-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.03)] space-y-4">
-              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-                <div className="flex items-center gap-2">
-                  <span className="text-xl">📜</span>
-                  <div>
-                    <h3 className="text-base font-bold text-slate-900">Institutional Certification</h3>
-                    <p className="text-xs text-slate-500 font-medium">ThoughtFlows Certified Medical Coder (TCMC)</p>
-                  </div>
-                </div>
-                <span className="text-xs font-bold text-amber-700 bg-amber-50 px-3 py-1 rounded-full border border-amber-200">
-                  Unlocks at Stage 4
-                </span>
-              </div>
-              <p className="text-xs text-slate-600 leading-relaxed font-medium">
-                Your verifiable certificate of completion will be digitally issued upon passing Stage 4 (Trainer Review + Full Mock Clearance) and zero fee dues. Includes QR code verification for employer credentialing.
-              </p>
-            </div>
+              )}
+              {st.syllabusCompleted && <div className="mt-4 text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl p-3">✓ Full syllabus completed {st.syllabusCompletedAt ? `on ${fmtDate(st.syllabusCompletedAt)}` : ''}</div>}
+            </Card>
           </div>
 
-          {/* Right Column: Actions & Partner Network (5 cols) */}
           <div className="lg:col-span-5 space-y-6">
-            {/* Actions Card */}
-            <div className="bg-white rounded-3xl p-6 sm:p-7 border border-slate-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.03)] space-y-4">
-              <div className="flex items-center gap-2 pb-2">
-                <span className="text-lg">⚡</span>
-                <h3 className="text-base font-bold text-slate-900">Placement Actions</h3>
-              </div>
+            <Card>
+              <CardTitle icon="⚡" title="What needs your attention" />
+              {actions.length === 0 ? <Empty icon="✅" title="You're all caught up" /> : (
+                <div className="space-y-3">
+                  {actions.slice(0, 5).map((a, i) => {
+                    const Icon = a.icon;
+                    return (
+                      <div key={i} onClick={a.go} className="group p-3.5 rounded-2xl border border-slate-200/70 hover:border-[#483ec7]/40 hover:bg-slate-50/70 cursor-pointer flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className={`w-10 h-10 rounded-xl border flex items-center justify-center flex-shrink-0 ${toneCls[a.tone]}`}><Icon className="w-5 h-5" /></div>
+                          <div className="min-w-0"><div className="text-xs sm:text-sm font-bold text-slate-900 truncate">{a.title}</div><div className="text-[11px] text-slate-400 truncate">{a.sub}</div></div>
+                        </div>
+                        <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-[#483ec7] flex-shrink-0" />
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </Card>
 
-              <div className="space-y-3">
-                <button
-                  onClick={() => setActiveModal('resume')}
-                  className="w-full py-3.5 px-4 rounded-2xl bg-[#242144] hover:bg-slate-900 text-white font-bold text-xs sm:text-sm text-center shadow-sm transition-all active:scale-[0.99] cursor-pointer flex items-center justify-center gap-2"
-                >
-                  <span>📄</span>
-                  <span>Upload / Update Resume</span>
-                </button>
-
-                <button
-                  onClick={() => setActiveModal('uploadVideoIntro')}
-                  className="w-full py-3.5 px-4 rounded-2xl bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 font-bold text-xs sm:text-sm text-center shadow-sm transition-all active:scale-[0.99] cursor-pointer flex items-center justify-center gap-2"
-                >
-                  <span>📹</span>
-                  <span>Record Video Introduction</span>
-                </button>
-
-                <button
-                  onClick={() => setActiveModal('updateLocation')}
-                  className="w-full py-3.5 px-4 rounded-2xl bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 font-bold text-xs sm:text-sm text-center shadow-sm transition-all active:scale-[0.99] cursor-pointer flex items-center justify-center gap-2"
-                >
-                  <span>📍</span>
-                  <span>Update Preferred Location</span>
-                </button>
-
-                <button
-                  onClick={() => setActiveModal('placementTips')}
-                  className="w-full py-3.5 px-4 rounded-2xl bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 font-bold text-xs sm:text-sm text-center shadow-sm transition-all active:scale-[0.99] cursor-pointer flex items-center justify-center gap-2"
-                >
-                  <span>💡</span>
-                  <span>View Corporate Placement Tips</span>
-                </button>
-              </div>
-
-              <p className="text-xs text-slate-500 font-medium leading-relaxed pt-2">
-                Profiles with an approved resume, verified video introduction, and &gt;80 mock score get priority slots in weekly recruitment drives.
-              </p>
-            </div>
-
-            {/* Corporate Hiring Partners Network */}
-            <div className="bg-gradient-to-br from-slate-900 to-[#1e1b4b] rounded-3xl p-6 sm:p-7 text-white shadow-xl space-y-4">
-              <div className="flex items-center justify-between">
-                <h3 className="text-base font-bold text-white">Talentera Corporate Partners</h3>
-                <span className="text-xs font-bold text-emerald-400 bg-white/10 px-2.5 py-0.5 rounded-full">Actively Hiring</span>
-              </div>
-              <p className="text-xs text-indigo-200 font-medium leading-relaxed">
-                Our graduates are placed across top MNC healthcare providers and RCM service leaders:
-              </p>
-
-              <div className="grid grid-cols-2 gap-2.5 pt-1">
-                {[
-                  { name: 'Omega Healthcare', roles: 'CPC Coders' },
-                  { name: 'Episource', roles: 'Risk Adjustment' },
-                  { name: 'Access Healthcare', roles: 'Inpatient Coders' },
-                  { name: 'AGS Health', roles: 'Surgical Coders' },
-                ].map((partner, idx) => (
-                  <div key={idx} className="p-3 rounded-xl bg-white/10 border border-white/10">
-                    <div className="text-xs font-bold text-white">{partner.name}</div>
-                    <div className="text-[10px] text-indigo-300 font-medium mt-0.5">{partner.roles}</div>
+            <Card>
+              <CardTitle icon="🧑‍🏫" title="My Trainer" right={<button onClick={() => setActiveNav('trainers')} className="text-xs font-bold text-[#483ec7] hover:underline cursor-pointer">Details ›</button>} />
+              {trainer ? (
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-[#4338ca] to-[#312e81] text-white font-black flex items-center justify-center">{trainer.trainerName[0]}</div>
+                    <div className="min-w-0"><div className="text-sm font-bold text-slate-900 truncate">{trainer.trainerName}</div><div className="text-[11px] text-slate-500 truncate">{trainer.specialization || trainer.expertCourse || trainer.role}</div></div>
                   </div>
-                ))}
-              </div>
+                  <Btn onClick={() => openModal('doubt')}>Ask doubt</Btn>
+                </div>
+              ) : <Empty icon="⏳" title="Trainer not allocated yet" text={`${st.hrName || 'Your HR counsellor'} will allocate your trainer at handover.`} />}
+            </Card>
+
+            <div className="bg-gradient-to-br from-[#0f3b40] to-[#0a2a2e] rounded-3xl p-6 text-white space-y-3">
+              <h3 className="font-extrabold text-base">🎯 Book a 1-on-1 Course Demo</h3>
+              <p className="text-xs text-teal-100/90">Want to add another certification? Book a live demo with a course expert.</p>
+              <button onClick={() => setShowDemoModal(true)} className="w-full py-2.5 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer"><Calendar className="w-4 h-4" />Book Course Demo</button>
             </div>
           </div>
         </div>
@@ -2338,871 +538,964 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
     );
   };
 
-  // ==========================================
-  // RENDER FEES & RECEIPTS (EXACT SCREENSHOT LAYOUT)
-  // ==========================================
-  // ==========================================
-  // RENDER FEES & RECEIPTS (LUXURY FULL-WIDTH THEME)
-  // ==========================================
-  const renderPayments = () => (
-    <div className="w-full space-y-6 pb-12">
-      {/* Executive Header Banner */}
-      <div className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-[#1e1b4b] via-[#242144] to-[#312e81] p-6 sm:p-8 text-white shadow-xl">
-        <div className="absolute -top-16 -right-16 w-56 h-56 rounded-full bg-indigo-500/20 blur-3xl pointer-events-none" />
-        <div className="absolute -bottom-16 right-32 w-56 h-56 rounded-full bg-emerald-500/15 blur-3xl pointer-events-none" />
-        
-        <div className="relative z-10 flex flex-col md:flex-row md:items-center md:justify-between gap-5">
-          <div className="space-y-2">
-            <button 
-              onClick={() => setActiveNav('dashboard')}
-              className="inline-flex items-center gap-1.5 text-xs font-bold text-indigo-200 hover:text-white transition-colors cursor-pointer mb-1"
-            >
-              <span>‹</span>
-              <span>Back to Home</span>
-            </button>
-            <h2 className="text-2xl sm:text-3xl font-black tracking-tight text-white">
-              Fees Ledger & Tax Receipts
-            </h2>
-            <p className="text-xs sm:text-sm text-indigo-200/90 max-w-xl font-medium">
-              Transparent institutional tuition ledger, verified GST receipts, instalment schedule, and direct financial desk query channel.
-            </p>
+  // ==========================================================================
+  // MEMBERSHIP & REFERRALS
+  // ==========================================================================
+  const renderMembership = () => {
+    const points = Number(st.rewardPoints || 0);
+    const toNext = d.nextTier ? d.nextTier.min - d.joined : 0;
+    return (
+      <div className="space-y-6 pb-12">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          <div className="lg:col-span-7 bg-gradient-to-br from-[#0b3842] via-[#0e4a55] to-[#062126] rounded-3xl p-6 sm:p-8 text-white shadow-xl relative overflow-hidden">
+            <div className="flex items-center justify-between">
+              <img src="/thoughtflows-logo-white.png" alt="ThoughtFlows" className="h-6 w-auto object-contain" />
+              <span className="bg-white text-slate-900 px-4 py-1 rounded-full text-xs font-black uppercase">{d.tier.name} Tier</span>
+            </div>
+            <div className="mt-8 text-[11px] text-[#71a5af] uppercase font-bold tracking-widest">Member</div>
+            <h2 className="text-2xl sm:text-3xl font-black uppercase mt-1">{d.name}</h2>
+            <div className="grid grid-cols-3 gap-4 mt-6 text-xs">
+              <div><div className="text-[10px] text-[#71a5af] uppercase font-semibold">Student ID</div><div className="font-mono font-bold mt-0.5">{st.studentId}</div></div>
+              <div><div className="text-[10px] text-[#71a5af] uppercase font-semibold">Member since</div><div className="font-bold mt-0.5">{fmtDate(st.createdAt) || st.batchDate}</div></div>
+              <div><div className="text-[10px] text-[#71a5af] uppercase font-semibold">Course</div><div className="font-bold mt-0.5">{shortCourse(st.course)}</div></div>
+            </div>
+            <div className="mt-6 bg-black/20 border border-white/10 rounded-2xl p-4 flex justify-between">
+              <div><div className="text-[10px] text-[#71a5af] uppercase font-bold">Reward points</div><div className="text-2xl font-black">{points.toLocaleString('en-IN')}</div></div>
+              <div className="text-right"><div className="text-[10px] text-[#71a5af] uppercase font-bold">Cash value</div><div className="text-2xl font-black text-amber-300">{inr(points)}</div></div>
+            </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="px-5 py-3.5 rounded-2xl bg-white/10 backdrop-blur-md border border-white/10 text-center">
-              <div className="text-[10px] uppercase font-bold text-indigo-200 tracking-wider">Fee Clearance</div>
-              <div className={`text-xl font-black ${student.balanceDue === 0 ? 'text-emerald-300' : 'text-amber-300'}`}>
-                {student.balanceDue === 0 ? '100% Cleared' : `₹${student.balanceDue.toLocaleString()} Due`}
-              </div>
+          <div className="lg:col-span-5 space-y-4">
+            <Card>
+              <div className="flex items-center justify-between"><span className="text-xs font-bold uppercase tracking-wider text-slate-400">Membership tier</span><Pill tone="amber">{d.tier.name}</Pill></div>
+              {d.nextTier ? (
+                <>
+                  <h3 className="text-base font-bold text-slate-900 mt-3">Unlock <span className="text-amber-600">{d.nextTier.name}</span></h3>
+                  <p className="text-xs text-slate-500 mt-1">{toNext} more admitted referral{toNext === 1 ? '' : 's'} to reach {d.nextTier.name}.</p>
+                  <div className="w-full bg-slate-100 rounded-full h-2.5 mt-3 overflow-hidden"><div className="bg-gradient-to-r from-[#d97706] to-[#fbbf24] h-full rounded-full" style={{ width: bar((d.joined / d.nextTier.min) * 100) }} /></div>
+                  <div className="text-[11px] text-slate-500 mt-1.5">{d.joined} / {d.nextTier.min} joined</div>
+                </>
+              ) : <p className="text-xs text-slate-500 mt-3">You're at the highest tier.</p>}
+            </Card>
+            <div className="grid grid-cols-2 gap-3">
+              <Btn onClick={() => openModal('referral', {}, { course: st.course })} className="py-3.5">+ Refer a Friend</Btn>
+              <Btn tone="light" onClick={() => openModal('redeem', {}, { points: points - d.pendingPoints, option: 'cash' })} disabled={points - d.pendingPoints <= 0} className="py-3.5">↻ Redeem Points</Btn>
             </div>
+            {d.pendingPoints > 0 && <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">{d.pendingPoints} points in a pending redemption request with HR.</p>}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          {[
+            ['Referrals sent', referrals.length],
+            ['Admitted', d.joined],
+            ['Conversion', referrals.length ? `${Math.round((d.joined / referrals.length) * 100)}%` : '—'],
+            ['Points earned', inr(referrals.filter((r) => r.referralRewarded).length * REFERRAL_REWARD)]
+          ].map(([l, v]) => (
+            <div key={l} className="bg-white border border-slate-200/80 rounded-3xl p-5 text-center"><div className="text-2xl font-black text-slate-900">{v}</div><div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mt-1">{l}</div></div>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          <Card className="lg:col-span-7">
+            <CardTitle icon="📋" title="My Referrals" sub="Live status from the admissions team" />
+            {referrals.length === 0 ? <Empty icon="👥" title="No referrals yet" text={`Refer a friend — you earn ${REFERRAL_REWARD.toLocaleString('en-IN')} points when they get admitted.`} /> : (
+              <div className="divide-y divide-slate-100">
+                {referrals.map((r) => (
+                  <div key={r._id} className="py-3 flex items-center justify-between gap-3">
+                    <div className="min-w-0"><div className="font-bold text-slate-900 text-sm truncate">{r.fullName}</div><div className="text-[11px] text-slate-400">{r.phone} · {r.course} · {fmtDate(r.createdAt)}</div></div>
+                    <div className="flex flex-col items-end gap-1">
+                      <Pill tone={statusTone(r.stage)}>{String(r.stage || 'new').replace(/_/g, ' ')}</Pill>
+                      {r.referralRewarded && <span className="text-[10px] font-bold text-emerald-600">+{REFERRAL_REWARD} pts</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+          <Card className="lg:col-span-5">
+            <CardTitle icon="⚡" title="How referrals work" />
+            <ol className="space-y-3 text-xs text-slate-700">
+              {[
+                'Refer a friend with their name and mobile number.',
+                `${st.hrName || 'Your HR counsellor'} contacts them and books a free demo.`,
+                `When they are admitted, ${REFERRAL_REWARD.toLocaleString('en-IN')} points are credited to you automatically.`,
+                'Redeem points as cash (UPI) or as fee credit — HR approves each request.',
+                `Reach ${TIERS[1].min} admitted referrals for Gold and ${TIERS[2].min} for Platinum.`
+              ].map((t, i) => (
+                <li key={i} className="flex items-start gap-2.5"><span className="w-5 h-5 rounded-full bg-teal-600 text-white font-bold text-[10px] flex items-center justify-center flex-shrink-0">{i + 1}</span><span>{t}</span></li>
+              ))}
+            </ol>
+          </Card>
+        </div>
+      </div>
+    );
+  };
+
+  // ==========================================================================
+  // PROGRESS
+  // ==========================================================================
+  const renderProgress = () => (
+    <div className="space-y-6 pb-12">
+      <PageHeader title="My Progress" sub="Attendance, test scores and readiness — as recorded by your trainer" right={<HeaderStat label="Readiness" value={d.readiness !== null ? `${d.readiness}/100` : 'Not scored'} />} />
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        <div className="lg:col-span-7 space-y-6">
+          <Card>
+            <CardTitle icon="📊" title="Test Results" sub={`${assessments.length} test${assessments.length === 1 ? '' : 's'} for your batch`} />
+            {assessments.length === 0 ? <Empty icon="📝" title="No tests yet" text="Tests your trainer creates for your batch appear here with your score." /> : (
+              <div className="divide-y divide-slate-100">
+                {assessments.map((t) => (
+                  <div key={t.id} className="py-3 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-sm font-bold text-slate-900 truncate">{t.name}</div>
+                      <div className="text-[11px] text-slate-400">{[t.type, t.topic, t.date && fmtDate(t.date)].filter(Boolean).join(' · ')}</div>
+                      {t.rationale && <div className="text-[11px] text-slate-600 mt-1 bg-slate-50 rounded-lg px-2 py-1">💬 {t.rationale}</div>}
+                    </div>
+                    <div className="text-right flex-shrink-0">
+                      {t.myScore !== null ? (
+                        <><div className="font-mono font-bold text-sm text-slate-900">{t.myScore}/{t.totalMarks}</div><Pill tone={t.passed ? 'green' : 'red'}>{t.passed ? 'Passed' : 'Below pass mark'}</Pill></>
+                      ) : <Pill tone="slate">Not scored</Pill>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+          <Card>
+            <CardTitle icon="📅" title="Attendance Log" sub={`${d.attended} attended · ${d.late} late · ${d.absent} absent`} right={<Pill tone={d.attendancePct === null ? 'slate' : d.attendancePct >= ATTENDANCE_TARGET ? 'green' : 'red'}>{pct(d.attendancePct)}</Pill>} />
+            {attendance.length === 0 ? <Empty icon="📅" title="No attendance recorded yet" /> : (
+              <div className="divide-y divide-slate-100 max-h-80 overflow-y-auto">
+                {attendance.map((a) => (
+                  <div key={a.id} className="py-2.5 flex items-center justify-between gap-3 text-xs">
+                    <div className="min-w-0"><div className="font-semibold text-slate-800">{fmtDate(a.date)}</div><div className="text-[11px] text-slate-400 truncate">{[a.topic, a.trainerName].filter(Boolean).join(' · ')}</div></div>
+                    <Pill tone={statusTone(a.status)}>{a.status}</Pill>
+                  </div>
+                ))}
+              </div>
+            )}
+            {d.attendancePct !== null && d.attendancePct < ATTENDANCE_TARGET && <p className="text-[11px] text-rose-700 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2 mt-3">Attendance is below {ATTENDANCE_TARGET}%. This is flagged to your HR counsellor.</p>}
+          </Card>
+        </div>
+        <div className="lg:col-span-5 space-y-6">
+          <Card className="text-center">
+            <h3 className="text-base font-bold text-slate-900">🎯 Placement Readiness</h3>
+            <div className={`text-5xl font-black mt-4 ${d.readiness >= READINESS_TARGET ? 'text-emerald-600' : d.readiness >= 60 ? 'text-amber-600' : 'text-slate-700'}`}>{d.readiness ?? '—'}</div>
+            <div className="text-xs text-slate-400 font-bold">OUT OF 100</div>
+            <div className="w-full bg-slate-100 rounded-full h-3 mt-4 overflow-hidden"><div className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-emerald-500" style={{ width: bar(d.readiness) }} /></div>
+            <div className="grid grid-cols-3 gap-2 mt-5 text-xs">
+              {[['Tests', st.assessmentScore], ['Mock', st.mockScore], ['Technical', st.technicalScore]].map(([l, v]) => (
+                <div key={l} className="bg-slate-50 border border-slate-200 rounded-xl p-2.5"><div className="font-black text-slate-900">{typeof v === 'number' ? v : '—'}</div><div className="text-[10px] text-slate-500 font-semibold">{l}</div></div>
+              ))}
+            </div>
+            <p className="text-[11px] text-slate-500 mt-4 text-left">Average of your test score and the mock & technical scores your trainer enters. Reach {READINESS_TARGET}+ to be referred to placement.</p>
+          </Card>
+          <Card>
+            <CardTitle icon="🧭" title="Trainer Recommendation" />
+            {st.trainerRecommendation ? (
+              <div className="flex items-center justify-between"><Pill tone={statusTone(st.trainerRecommendation)}>{st.trainerRecommendation}</Pill><span className="text-[11px] text-slate-400">{fmtDate(st.trainerRecommendationAt)}</span></div>
+            ) : <Empty icon="⏳" title="Not given yet" text="Your trainer marks you Ready / Needs Revision after assessments." />}
+            {(st.remedialActions || []).filter((r) => r.action !== 'escalate').length > 0 && (
+              <div className="mt-4 space-y-2">
+                <div className="text-[11px] font-bold text-slate-500 uppercase">Improvement plan</div>
+                {(st.remedialActions || []).filter((r) => r.action !== 'escalate').map((r, i) => (
+                  <div key={i} className="text-xs bg-amber-50 border border-amber-200 rounded-xl px-3 py-2"><b className="capitalize">{String(r.action).replace(/_/g, ' ')}</b>{r.note ? ` — ${r.note}` : ''}<div className="text-[10px] text-slate-400">{r.by} · {fmtDate(r.at)}</div></div>
+                ))}
+              </div>
+            )}
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+
+  // ==========================================================================
+  // CLASSES
+  // ==========================================================================
+  const renderClasses = () => (
+    <div className="space-y-6 pb-12">
+      <PageHeader title="Classes" sub={[d.batch, st.batchTiming, st.mode].filter(Boolean).join(' · ') || 'Batch not allocated yet'} right={<HeaderStat label="Classes held" value={attendance.length} />} />
+      <Card>
+        <CardTitle icon="🔴" title="Live Class" />
+        {live ? (
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div><div className="text-sm font-bold text-slate-900">{live.topic || d.batch}</div><div className="text-xs text-slate-500">{live.trainerName} · started {new Date(live.startedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</div></div>
+            <Btn tone="teal" onClick={() => openModal('liveClass')}><Video className="w-4 h-4" />Join Now</Btn>
+          </div>
+        ) : (
+          <div className="text-xs text-slate-600 space-y-1">
+            <div>No class is live right now.</div>
+            {(st.batchTiming || trainer?.workingDays) && <div className="text-slate-500">Regular schedule: <b>{[trainer?.workingDays, st.batchTiming].filter(Boolean).join(' · ')}</b></div>}
+          </div>
+        )}
+      </Card>
+      <Card>
+        <CardTitle icon="🗂" title="Past Classes" sub="Every class your trainer recorded attendance for" />
+        {attendance.length === 0 ? <Empty icon="🗓" title="No classes recorded yet" /> : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {attendance.map((a) => (
+              <div key={a.id} className="border border-slate-200 rounded-2xl p-4 flex items-start justify-between gap-3">
+                <div className="min-w-0"><div className="text-sm font-bold text-slate-900 truncate">{a.topic || 'Class session'}</div><div className="text-[11px] text-slate-400 mt-0.5">{fmtDate(a.date)}{a.trainerName ? ` · ${a.trainerName}` : ''}</div></div>
+                <Pill tone={statusTone(a.status)}>{a.status}</Pill>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+      <Card>
+        <CardTitle icon="📝" title="Class Notes" sub="Key points your trainer shared during live classes" />
+        {classNotes.length === 0 ? <Empty icon="📝" title="No class notes yet" /> : (
+          <div className="space-y-4">
+            {classNotes.map((c) => (
+              <div key={c.id} className="border border-slate-200 rounded-2xl p-4">
+                <div className="flex items-center justify-between gap-2"><span className="text-sm font-bold text-slate-900">{c.topic || 'Class'}</span><span className="text-[11px] text-slate-400">{fmtDate(c.date)}{c.trainerName ? ` · ${c.trainerName}` : ''}</span></div>
+                <ul className="mt-2 space-y-1 text-xs text-slate-700 list-disc pl-4">{c.notes.map((n, i) => <li key={i}>{n.text}</li>)}</ul>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+
+  // ==========================================================================
+  // MATERIALS, TESTS & SUBMISSIONS
+  // ==========================================================================
+  const renderLms = () => {
+    const byModule = materials.reduce((acc, m) => { const k = m.module || m.category || 'General'; (acc[k] = acc[k] || []).push(m); return acc; }, {});
+    const workSubs = submissions.filter((s) => s.type === 'assignment' || s.type === 'improvement_task');
+    return (
+      <div className="space-y-6 pb-12">
+        <PageHeader title="Materials & Tests" sub="Files your trainer assigned to your batch, and the work you've sent back" right={<HeaderStat label="Materials" value={materials.length} />} />
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          <Card className="lg:col-span-7">
+            <CardTitle icon="📚" title="Assigned Materials" sub={d.batch} />
+            {materials.length === 0 ? <Empty icon="📂" title="Nothing assigned yet" text="Your trainer assigns notes, guidelines and practice sets from the library." /> : (
+              <div className="space-y-5">
+                {Object.entries(byModule).map(([mod, list]) => (
+                  <div key={mod}>
+                    <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">{mod}</div>
+                    <div className="space-y-2">
+                      {list.map((m) => {
+                        const sub = submissions.find((s) => s.materialId === m.id);
+                        return (
+                          <div key={m.id} className="p-3.5 rounded-2xl border border-slate-200/70 flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="text-sm font-bold text-slate-900 truncate">{m.title}</div>
+                              <div className="text-[11px] text-slate-400 truncate">{[m.fileFormat, fmtSize(m.fileSize), m.assignedBy || m.uploadedBy, fmtDate(m.assignedAt)].filter(Boolean).join(' · ')}</div>
+                              {m.note && <div className="text-[11px] text-slate-600 mt-1">📌 {m.note}</div>}
+                            </div>
+                            <div className="flex items-center gap-2 flex-shrink-0">
+                              {sub && <Pill tone={statusTone(sub.status)}>{sub.status}</Pill>}
+                              <a href={trainingMaterialFileUrl(m.id)} target="_blank" rel="noreferrer" className="px-3 py-1.5 rounded-xl bg-[#483ec7] text-white text-xs font-bold flex items-center gap-1"><ExternalLink className="w-3 h-3" />Open</a>
+                              <button onClick={() => openModal('submit', {}, { type: 'assignment', title: `Answers — ${m.title}`, materialId: m.id })} className="px-3 py-1.5 rounded-xl bg-slate-900 text-white text-xs font-bold cursor-pointer">{sub ? 'Resubmit' : 'Submit'}</button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+          <div className="lg:col-span-5 space-y-6">
+            <Card>
+              <CardTitle icon="📤" title="My Submissions" right={<Btn tone="light" onClick={() => openModal('submit', {}, { type: 'assignment' })}><Upload className="w-3.5 h-3.5" />New</Btn>} />
+              {workSubs.length === 0 ? <Empty icon="📤" title="No submissions yet" /> : (
+                <div className="space-y-2">
+                  {workSubs.map((s) => (
+                    <div key={s._id} className="border border-slate-200 rounded-2xl p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-xs font-bold text-slate-900 truncate">{s.title}</div>
+                        <Pill tone={statusTone(s.status)}>{s.status}{typeof s.score === 'number' ? ` · ${s.score}` : ''}</Pill>
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">{fmtDate(s.createdAt)}{s.fileName ? ` · ${s.fileName}` : ''}</div>
+                      {s.feedback && <div className="text-[11px] text-slate-700 bg-slate-50 rounded-lg px-2 py-1.5 mt-2">💬 {s.reviewedBy ? `${s.reviewedBy}: ` : ''}{s.feedback}</div>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+            <Card>
+              <CardTitle icon="📝" title="Upcoming / Unscored Tests" />
+              {assessments.filter((t) => t.myScore === null).length === 0 ? <Empty icon="✅" title="No pending tests" /> : (
+                <div className="space-y-2">
+                  {assessments.filter((t) => t.myScore === null).map((t) => (
+                    <div key={t.id} className="text-xs border border-slate-200 rounded-xl p-3"><div className="font-bold text-slate-900">{t.name}</div><div className="text-[11px] text-slate-500">{[t.type, t.topic, t.date && fmtDate(t.date), t.timeLimit, `${t.totalMarks} marks · pass ${t.passMark}`].filter(Boolean).join(' · ')}</div></div>
+                  ))}
+                </div>
+              )}
+            </Card>
           </div>
         </div>
       </div>
+    );
+  };
 
-      {/* Main 2-Column Wide Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left Column: Tuition Summary & Pay Action (7 cols) */}
-        <div className="lg:col-span-7 space-y-6">
-          <div className="bg-white rounded-3xl p-6 sm:p-8 border border-slate-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.03)] space-y-6">
-            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
-              <div className="flex items-center gap-2.5">
-                <span className="text-xl">💳</span>
-                <div>
-                  <h3 className="text-base font-bold text-slate-900">Institutional Tuition Ledger</h3>
-                  <p className="text-xs text-slate-500 font-medium">{student.course}</p>
+  // ==========================================================================
+  // TRAINER & DOUBTS
+  // ==========================================================================
+  const renderTrainers = () => {
+    const consults = requests.filter((r) => r.type === 'consultation');
+    return (
+      <div className="space-y-6 pb-12">
+        <PageHeader title="My Trainer" sub="Your allocated trainer, doubts and 1-on-1 requests" right={<HeaderStat label="Doubts answered" value={`${newReplies.length}/${doubts.length}`} />} />
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          <div className="lg:col-span-5 space-y-6">
+            <Card>
+              {trainer ? (
+                <>
+                  <div className="flex items-center gap-4">
+                    <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#4338ca] to-[#312e81] text-white text-xl font-black flex items-center justify-center">{trainer.trainerName[0]}</div>
+                    <div><h3 className="text-lg font-black text-slate-900">{trainer.trainerName}</h3><p className="text-xs font-semibold text-[#483ec7]">{trainer.specialization || trainer.expertCourse || trainer.role || 'Trainer'}</p></div>
+                  </div>
+                  <div className="divide-y divide-slate-100 mt-4">
+                    <Row label="Course" value={trainer.expertCourse} />
+                    <Row label="Branch" value={trainer.branchName} />
+                    <Row label="Working days" value={trainer.workingDays} />
+                    <Row label="Shift" value={trainer.shift} />
+                    <Row label="Languages" value={(trainer.languages || []).join(', ')} />
+                    {(trainer.certifications || []).length > 0 && <Row label="Certifications" value={trainer.certifications.join(', ')} />}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 mt-5">
+                    <Btn onClick={() => openModal('doubt')}><MessageSquare className="w-4 h-4" />Ask Doubt</Btn>
+                    <Btn tone="light" onClick={() => openModal('request', { reqType: 'consultation', title: `Request 1-on-1 with ${trainer.trainerName}` })}>📅 Request 1-on-1</Btn>
+                  </div>
+                </>
+              ) : <Empty icon="⏳" title="Trainer not allocated yet" text={`${st.hrName || 'Your HR counsellor'} allocates your trainer at handover. Doubts you post now will be routed once allocated.`} />}
+            </Card>
+            {consults.length > 0 && (
+              <Card>
+                <CardTitle icon="📅" title="1-on-1 Requests" />
+                <div className="space-y-2">{consults.map((r) => <RequestRow key={r._id} r={r} />)}</div>
+              </Card>
+            )}
+          </div>
+          <Card className="lg:col-span-7">
+            <CardTitle icon="💭" title="My Doubts" sub="24-hour reply SLA" right={<Btn tone="light" onClick={() => openModal('doubt')}>+ New</Btn>} />
+            {doubts.length === 0 ? <Empty icon="💭" title="No doubts posted yet" /> : (
+              <div className="space-y-3">
+                {doubts.map((q) => (
+                  <div key={q.id} className="border border-slate-200 rounded-2xl p-4">
+                    <div className="flex items-center justify-between gap-2"><span className="text-[11px] font-bold text-slate-500">{q.topic} · {q.timeText}</span><Pill tone={statusTone(q.status)}>{q.status}</Pill></div>
+                    <p className="text-sm text-slate-900 mt-1.5">{q.question}</p>
+                    {q.reply && <div className="mt-3 text-xs bg-emerald-50 border border-emerald-200 rounded-xl p-3"><b className="text-emerald-800">{q.trainerName || 'Trainer'}:</b> <span className="text-slate-700">{q.reply}</span></div>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+        </div>
+      </div>
+    );
+  };
+
+  const RequestRow = ({ r }) => (
+    <div className="border border-slate-200 rounded-xl p-3 text-xs">
+      <div className="flex items-center justify-between gap-2"><span className="font-bold text-slate-900 truncate">{r.subject || r.type.replace(/_/g, ' ')}</span><Pill tone={statusTone(r.status)}>{r.status}</Pill></div>
+      <div className="text-[10px] text-slate-400 mt-0.5">Raised {fmtDate(r.createdAt)}{r.preferredDate ? ` · preferred ${r.preferredDate}` : ''}{r.scheduledFor ? ` · scheduled ${r.scheduledFor}` : ''}</div>
+      {r.response && <div className="mt-2 bg-slate-50 rounded-lg px-2 py-1.5 text-slate-700">💬 {r.respondedBy ? `${r.respondedBy}: ` : ''}{r.response}</div>}
+    </div>
+  );
+
+  // ==========================================================================
+  // PLACEMENT PREP
+  // ==========================================================================
+  const renderPlacementPrep = () => {
+    const mocks = requests.filter((r) => r.type === 'mock_interview');
+    const SubStatus = ({ label, sub, type }) => (
+      <div className="border border-slate-200 rounded-2xl p-4">
+        <div className="flex items-center justify-between gap-2"><span className="text-sm font-bold text-slate-900">{label}</span>{sub ? <Pill tone={statusTone(sub.status)}>{sub.status}</Pill> : <Pill tone="slate">Not submitted</Pill>}</div>
+        {sub?.feedback && <div className="text-[11px] text-slate-700 bg-slate-50 rounded-lg px-2 py-1.5 mt-2">💬 {sub.feedback}</div>}
+        <div className="flex gap-2 mt-3">
+          {sub?.fileName && <a href={studentSubmissionFileUrl(sub._id)} target="_blank" rel="noreferrer" className="text-xs font-bold text-[#483ec7] hover:underline">View</a>}
+          {sub?.link && <a href={sub.link} target="_blank" rel="noreferrer" className="text-xs font-bold text-[#483ec7] hover:underline">Open link</a>}
+          <button onClick={() => openModal('submit', {}, { type, title: label })} className="text-xs font-bold text-slate-700 hover:underline cursor-pointer ml-auto">{sub ? 'Upload new version' : 'Upload'} ›</button>
+        </div>
+      </div>
+    );
+    return (
+      <div className="space-y-6 pb-12">
+        <PageHeader title="Placement Prep" sub="Mock interviews, resume and video introduction — reviewed by your trainer" right={<HeaderStat label="Mock interview" value={st.mockInterview || 'Pending'} />} />
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          <div className="lg:col-span-7 space-y-6">
+            <Card>
+              <CardTitle icon="🎤" title="Mock Interviews" right={<Btn onClick={() => openModal('request', { reqType: 'mock_interview', title: 'Book a mock interview' })} disabled={!trainer || Boolean(d.openMock)}>{d.openMock ? 'Request open' : 'Book mock'}</Btn>} />
+              {mocks.length === 0 ? <Empty icon="🎤" title="No mock interview booked" text={trainer ? 'Request one — your trainer schedules it and enters your mock score.' : 'Available once a trainer is allocated.'} /> : <div className="space-y-2">{mocks.map((r) => <RequestRow key={r._id} r={r} />)}</div>}
+              <div className="grid grid-cols-2 gap-3 mt-4 text-xs">
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3"><div className="text-[10px] font-bold text-slate-500 uppercase">Mock score</div><div className="text-lg font-black">{typeof st.mockScore === 'number' ? st.mockScore : '—'}</div></div>
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3"><div className="text-[10px] font-bold text-slate-500 uppercase">Technical score</div><div className="text-lg font-black">{typeof st.technicalScore === 'number' ? st.technicalScore : '—'}</div></div>
+              </div>
+            </Card>
+            <Card>
+              <CardTitle icon="📄" title="Placement Documents" />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <SubStatus label="Resume" sub={d.resume} type="resume" />
+                <SubStatus label="60-sec Video Intro" sub={d.videoIntro} type="video_intro" />
+              </div>
+            </Card>
+          </div>
+          <div className="lg:col-span-5 space-y-6">
+            <div className="bg-[#1e1b4b] rounded-3xl p-6 text-white space-y-3">
+              <div className="flex items-center justify-between"><h3 className="text-base font-bold">Placement gate</h3><span className="text-xs font-bold text-amber-300 bg-white/10 px-3 py-1 rounded-full">{d.readiness >= READINESS_TARGET ? 'Target met ✓' : d.readiness === null ? 'Not scored' : `Gap ${READINESS_TARGET - d.readiness} pts`}</span></div>
+              <div className="w-full bg-white/10 rounded-full h-2.5 overflow-hidden"><div className="h-full bg-gradient-to-r from-emerald-400 to-teal-300" style={{ width: bar(((d.readiness || 0) / READINESS_TARGET) * 100) }} /></div>
+              <ul className="text-xs space-y-1.5 text-indigo-100">
+                <li>{d.readiness >= READINESS_TARGET ? '✓' : '○'} Readiness {READINESS_TARGET}+ (now {d.readiness ?? '—'})</li>
+                <li>{(d.attendancePct || 0) >= ATTENDANCE_TARGET ? '✓' : '○'} Attendance {ATTENDANCE_TARGET}%+ (now {pct(d.attendancePct)})</li>
+                <li>{d.resume?.status === 'Approved' ? '✓' : '○'} Resume approved</li>
+                <li>{d.videoIntro?.status === 'Approved' ? '✓' : '○'} Video intro approved</li>
+                <li>{st.trainerRecommendation === 'Ready' ? '✓' : '○'} Trainer recommendation: {st.trainerRecommendation || 'pending'}</li>
+                <li>{d.balance === 0 ? '✓' : '○'} No fee dues</li>
+              </ul>
+            </div>
+            <Card>
+              <CardTitle icon="📝" title="Improvement Tasks" right={<Btn tone="light" onClick={() => openModal('submit', {}, { type: 'improvement_task', title: 'Improvement task' })}>Submit</Btn>} />
+              {submissions.filter((s) => s.type === 'improvement_task').length === 0 ? <Empty icon="📝" title="Nothing submitted" text="Send work your trainer asked for in your improvement plan." /> : (
+                <div className="space-y-2">{submissions.filter((s) => s.type === 'improvement_task').map((s) => (
+                  <div key={s._id} className="text-xs border border-slate-200 rounded-xl p-3"><div className="flex justify-between gap-2"><b>{s.title}</b><Pill tone={statusTone(s.status)}>{s.status}</Pill></div>{s.feedback && <div className="text-slate-600 mt-1">💬 {s.feedback}</div>}</div>
+                ))}</div>
+              )}
+            </Card>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // ==========================================================================
+  // CERTIFICATE & PLACEMENT
+  // ==========================================================================
+  const renderCertification = () => {
+    const interviews = st.interviews || [];
+    const certReady = st.syllabusCompleted && d.balance === 0;
+    return (
+      <div className="space-y-6 pb-12">
+        <PageHeader title="Certificate & Placement" sub="Updated by HR and the placement cell (CCCP)" right={<HeaderStat label="Current phase" value={d.placementStage ? `${d.placementStage}. ${PLACEMENT_STAGES[d.placementStage - 1].label}` : 'In training'} />} />
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          <div className="lg:col-span-7 space-y-6">
+            <Card>
+              <CardTitle icon="📍" title="Placement Pipeline" right={<Pill tone={d.placementStage ? 'indigo' : 'slate'}>{d.placementStage ? `Phase ${d.placementStage} of 7` : 'Starts after training'}</Pill>} />
+              {!d.placementStage && <p className="text-xs text-slate-500 mb-4">Your placement journey starts once your trainer completes your syllabus or marks you Ready. Current status: <b>{st.placementStatus || 'In course'}</b>.</p>}
+              <div className="space-y-0">
+                {PLACEMENT_STAGES.map((s, i) => {
+                  const done = s.id < d.placementStage;
+                  const cur = s.id === d.placementStage;
+                  return (
+                    <div key={s.id} className="flex gap-4 relative pb-5 last:pb-0">
+                      {i < PLACEMENT_STAGES.length - 1 && <div className={`absolute left-[13px] top-7 bottom-0 w-0.5 ${done ? 'bg-emerald-500' : 'bg-slate-200'}`} />}
+                      <div className={`w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold flex-shrink-0 z-10 ${done ? 'bg-emerald-500 text-white' : cur ? 'bg-[#483ec7] text-white ring-4 ring-indigo-100' : 'bg-slate-100 text-slate-400'}`}>{done ? '✓' : s.id}</div>
+                      <div><div className={`text-sm ${cur ? 'font-black text-slate-900' : done ? 'font-bold text-slate-800' : 'text-slate-400'}`}>{s.label}{cur && <span className="ml-2"><Pill tone="indigo">YOU ARE HERE</Pill></span>}</div><div className="text-[11px] text-slate-500">{s.desc}</div></div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+            {(interviews.length > 0 || placements.length > 0) && (
+              <Card>
+                <CardTitle icon="🏢" title="Interviews & Company Mapping" />
+                <div className="space-y-2">
+                  {placements.map((p) => (
+                    <div key={p._id} className="text-xs border border-slate-200 rounded-xl p-3 flex justify-between gap-2"><div><b>{p.company}</b> · {p.role}<div className="text-[10px] text-slate-400">{p.interviewDate ? `Interview ${fmtDate(p.interviewDate)}` : p.interview || ''}</div></div><Pill tone={statusTone(p.status)}>{p.status}</Pill></div>
+                  ))}
+                  {interviews.map((iv, i) => (
+                    <div key={iv.id || i} className="text-xs border border-slate-200 rounded-xl p-3">
+                      <div className="flex justify-between gap-2"><b>{iv.company || 'Company'}</b>{iv.status && <Pill tone={statusTone(iv.status)}>{iv.status}</Pill>}</div>
+                      {(iv.rounds || []).map((r, j) => <div key={j} className="text-[11px] text-slate-600 mt-1">• {r.name} — {r.status}{r.date ? ` (${r.date})` : ''}</div>)}
+                    </div>
+                  ))}
                 </div>
+                {st.placementCompany && <div className="mt-3 text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl p-3">🎉 {st.placementCompany}{st.placementRole ? ` · ${st.placementRole}` : ''}{st.placementPackage ? ` · ${st.placementPackage}` : ''}</div>}
+              </Card>
+            )}
+          </div>
+          <div className="lg:col-span-5 space-y-6">
+            <Card>
+              <CardTitle icon="📜" title="Certification" />
+              <div className="divide-y divide-slate-100">
+                <Row label="Syllabus" value={st.syllabusCompleted ? `Completed ${fmtDate(st.syllabusCompletedAt)}` : 'In progress'} />
+                <Row label="Exam status" value={st.examStatus} />
+                <Row label="Certification" value={st.certified} />
+                <Row label="Fee clearance" value={d.balance === 0 ? 'Cleared' : `${inr(d.balance)} pending`} />
               </div>
-              <span className={`text-xs font-bold px-3 py-1 rounded-full border ${student.balanceDue === 0 ? 'text-emerald-700 bg-emerald-50 border-emerald-200' : 'text-amber-700 bg-amber-50 border-amber-200'}`}>
-                {student.feeStatus}
-              </span>
-            </div>
-
-            {/* Big Balance Display Card */}
-            <div className="p-6 rounded-2xl bg-gradient-to-br from-slate-50 to-indigo-50/30 border border-slate-200/70 text-center space-y-1">
-              <div className="text-xs font-bold text-slate-500 uppercase tracking-wider">Outstanding Balance Due</div>
-              <div className={`text-4xl sm:text-5xl font-black tracking-tight ${student.balanceDue === 0 ? 'text-emerald-600' : 'text-slate-900'}`}>
-                ₹{student.balanceDue.toLocaleString()}
-              </div>
-              <div className="text-xs text-slate-500 font-medium pt-1">
-                {student.balanceDue === 0 ? 'All tuition fees fully settled · Zero outstanding balance' : 'Pending balance to be cleared'}
-              </div>
-            </div>
-
-            {/* Breakdown List */}
-            <div className="divide-y divide-slate-100 text-xs sm:text-sm">
-              <div className="py-3.5 flex justify-between items-center">
-                <span className="text-slate-600 font-medium">Standard Tuition Fee</span>
-                <span className="font-bold text-slate-900">₹{student.courseFee.toLocaleString()}</span>
-              </div>
-              <div className="py-3.5 flex justify-between items-center">
-                <span className="text-slate-600 font-medium">Merit Scholarship / Discount</span>
-                <span className="font-bold text-[#483ec7]">- ₹{student.discount.toLocaleString()}</span>
-              </div>
-              <div className="py-3.5 flex justify-between items-center">
-                <span className="text-slate-600 font-medium">Final Net Payable</span>
-                <span className="font-bold text-slate-900">₹{student.finalPayable.toLocaleString()}</span>
-              </div>
-              <div className="py-3.5 flex justify-between items-center">
-                <span className="text-slate-600 font-medium">Amount Paid to Date</span>
-                <span className="font-bold text-emerald-600">₹{student.paidSoFar.toLocaleString()}</span>
-              </div>
-              <div className="py-3.5 flex justify-between items-center">
-                <span className="text-slate-600 font-medium">Instalment Plan Status</span>
-                <span className="font-bold text-slate-800">
-                  {student.balanceDue === 0 ? 'All Tuition Instalments Cleared' : 'Pending balance · Clearance required before certification'}
-                </span>
-              </div>
-            </div>
-
-            {/* Pay Button / Cleared Badge */}
-            {student.balanceDue > 0 ? (
-              <button
-                onClick={() => setActiveModal('payment')}
-                className="w-full py-4 px-4 rounded-2xl bg-[#242144] hover:bg-slate-900 text-white font-bold text-xs sm:text-sm text-center shadow-md transition-all active:scale-[0.99] cursor-pointer"
-              >
-                Pay ₹{student.balanceDue.toLocaleString()} via Razorpay / UPI
-              </button>
-            ) : (
-              <div className="w-full py-4 px-4 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-800 font-bold text-xs sm:text-sm text-center flex items-center justify-center gap-2">
-                <CheckCircle2 className="w-5 h-5 text-emerald-600" />
-                <span>Tuition Dues Fully Cleared — Certificate Clearance Approved</span>
+              <p className={`text-[11px] mt-3 rounded-xl px-3 py-2 border ${certReady ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-slate-50 border-slate-200 text-slate-600'}`}>{certReady ? 'Eligible for course certificate — contact your branch for release.' : 'Course certificate is released after syllabus completion and zero fee dues.'}</p>
+            </Card>
+            <Card>
+              <CardTitle icon="📍" title="Preferred Work Locations" right={<Btn tone="light" onClick={() => openModal('locations', {}, { locations: st.preferredLocations || [] })}>Edit</Btn>} />
+              {(st.preferredLocations || []).length ? <div className="flex flex-wrap gap-2">{st.preferredLocations.map((l) => <span key={l} className="px-3 py-1 rounded-full bg-teal-50 border border-teal-200 text-teal-800 text-xs font-semibold">{l}</span>)}</div> : <Empty icon="📍" title="Not set" text="Tell the placement cell where you'd like to work." />}
+            </Card>
+            {partners.length > 0 && (
+              <div className="bg-[#1e1b4b] rounded-3xl p-6 text-white">
+                <h3 className="text-base font-bold mb-3">Hiring Partners</h3>
+                <div className="grid grid-cols-2 gap-2">
+                  {partners.map((p) => <div key={p._id} className="bg-white/5 border border-white/10 rounded-xl p-3"><div className="text-xs font-bold">{p.name}</div><div className="text-[10px] text-indigo-300">{[p.city, p.activeVacancies ? `${p.activeVacancies} openings` : ''].filter(Boolean).join(' · ')}</div></div>)}
+                </div>
               </div>
             )}
           </div>
+        </div>
+      </div>
+    );
+  };
 
-          {/* Compliance Notice */}
-          <div className="bg-indigo-50/70 border border-indigo-100 p-4 sm:p-5 rounded-2xl flex items-center gap-3 shadow-sm">
-            <span className="text-xl">🧾</span>
-            <p className="text-xs text-indigo-950 font-medium leading-relaxed">
-              Official GST invoices are generated by ThoughtFlows Corporate Accounts. All transactions are digitally signed and eligible for educational fee tax compliance.
-            </p>
+  // ==========================================================================
+  // PAYMENTS
+  // ==========================================================================
+  const renderPayments = () => {
+    const receipts = st.receipts || [];
+    const feeReqs = requests.filter((r) => r.type === 'fee_query' || r.type === 'payment_link');
+    const discount = Math.max(0, Number(st.discount || 0));
+    return (
+      <div className="space-y-6 pb-12">
+        <PageHeader title="Payments" sub="Your fee record as maintained by the accounts / HR team" right={<HeaderStat label="Balance" value={d.balance === 0 ? 'Cleared' : inr(d.balance)} />} />
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          <Card className="lg:col-span-7">
+            <CardTitle icon="💳" title="Fee Ledger" sub={st.course} right={<Pill tone={d.balance === 0 ? 'green' : 'amber'}>{st.feeStatus || (d.balance === 0 ? 'Paid' : 'Pending')}</Pill>} />
+            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 text-center mb-4">
+              <div className="text-xs font-bold text-slate-500 uppercase">Outstanding balance</div>
+              <div className={`text-4xl font-black mt-1 ${d.balance === 0 ? 'text-emerald-600' : 'text-slate-900'}`}>{inr(d.balance)}</div>
+              {st.nextDueDate && d.balance > 0 && <div className="text-xs text-slate-500 mt-1">Next due {st.nextDueDate}</div>}
+            </div>
+            <div className="divide-y divide-slate-100">
+              <Row label="Course fee" value={d.courseFee ? inr(d.courseFee) : ''} />
+              {discount > 0 && <Row label="Discount" value={`- ${inr(discount)}`} />}
+              <Row label="Paid so far" value={inr(d.paid)} />
+              <Row label="Payment plan" value={st.paymentPlan} />
+              <Row label="Payment method" value={st.paymentMethod} />
+              {Number(st.examFee) > 0 && <Row label="Exam fee" value={inr(st.examFee)} />}
+            </div>
+            {d.balance > 0 && (
+              <Btn tone="indigo" className="w-full mt-5 py-3.5" onClick={() => openModal('request', { reqType: 'payment_link', title: 'Request payment link', subject: `Payment link for ${inr(d.balance)}` }, { message: `Please send me a payment link for my pending balance of ${inr(d.balance)}.` })}>Request payment link for {inr(d.balance)}</Btn>
+            )}
+          </Card>
+          <div className="lg:col-span-5 space-y-6">
+            <Card>
+              <CardTitle icon="🧾" title="Receipts" right={<Pill tone="indigo">{receipts.length}</Pill>} />
+              {receipts.length === 0 ? <Empty icon="🧾" title="No receipts on record" text="Receipts added by the accounts team appear here." /> : (
+                <div className="space-y-2">
+                  {receipts.map((r, i) => (
+                    <div key={r.id || i} className="p-3 rounded-xl border border-slate-200 flex items-center justify-between gap-2 text-xs">
+                      <div className="min-w-0"><div className="font-bold text-slate-900 truncate">{r.label || r.title || r.name || `Receipt ${i + 1}`}</div><div className="text-[10px] text-slate-400">{[r.id || r.receiptNo, r.date && fmtDate(r.date), r.mode].filter(Boolean).join(' · ')}</div></div>
+                      <div className="flex items-center gap-2">
+                        {r.amount && <span className="font-bold text-emerald-600">{typeof r.amount === 'number' ? inr(r.amount) : r.amount}</span>}
+                        {(r.url || r.fileUrl) && <a href={r.url || r.fileUrl} target="_blank" rel="noreferrer" className="p-1.5 rounded-lg bg-slate-100"><Download className="w-3.5 h-3.5" /></a>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+            <Card>
+              <CardTitle icon="❓" title="Fee Queries" right={<Btn tone="light" onClick={() => openModal('request', { reqType: 'fee_query', title: 'Raise a fee query', subjects: ['Instalment extension', 'Receipt not received', 'Discount / scholarship', 'Payment verification', 'Other'] }, { subject: 'Instalment extension' })}>+ Query</Btn>} />
+              {feeReqs.length === 0 ? <Empty icon="💬" title="No queries raised" /> : <div className="space-y-2">{feeReqs.map((r) => <RequestRow key={r._id} r={r} />)}</div>}
+            </Card>
           </div>
         </div>
+      </div>
+    );
+  };
 
-        {/* Right Column: Digital Receipts & Fee Query (5 cols) */}
-        <div className="lg:col-span-5 space-y-6">
-          {/* Receipts Card */}
-          <div className="bg-white rounded-3xl p-6 sm:p-7 border border-slate-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.03)] space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <div className="flex items-center gap-2">
-                <span className="text-xl">🧾</span>
-                <h3 className="text-base font-bold text-slate-900">Tax Invoices & Receipts</h3>
-              </div>
-              <span className="px-2.5 py-0.5 rounded-full bg-[#f3f0ff] text-[#483ec7] text-xs font-bold">
-                {paymentRecords.length} Invoices
-              </span>
+  // ==========================================================================
+  // ADMISSION
+  // ==========================================================================
+  const renderAdmission = () => {
+    const checklist = st.checklist || {};
+    const labels = { course: 'Course confirmed', branch: 'Branch confirmed', batchMode: 'Batch & mode', paymentStatus: 'Payment status', studentId: 'Student ID issued', language: 'Language preference', education: 'Education details', careerGoal: 'Career goal', trainerNote: 'Trainer handover note', documents: 'Documents submitted' };
+    const keys = Object.keys(labels);
+    const done = keys.filter((k) => checklist[k]).length;
+    return (
+      <div className="space-y-6 pb-12">
+        <PageHeader title="Admission Details" sub="Your enrolment record held by HR" right={<HeaderStat label="Onboarding" value={`${done}/${keys.length}`} />} />
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          <Card className="lg:col-span-7">
+            <CardTitle icon="🎓" title="Enrolment Record" right={<Pill tone="green">Admitted</Pill>} />
+            <div className="divide-y divide-slate-100">
+              <Row label="Student ID" value={st.studentId} mono />
+              <Row label="Course" value={st.course} />
+              <Row label="Mode" value={st.mode} />
+              <Row label="Branch" value={st.location} />
+              <Row label="Batch" value={st.batchName} />
+              <Row label="Batch start" value={st.batchDate} />
+              <Row label="Admitted on" value={fmtDate(st.createdAt)} />
+              <Row label="HR counsellor" value={st.hrName} />
+              <Row label="Source" value={st.source} />
+              <Row label="Qualification" value={[st.qualification, st.qualTag].filter(Boolean).join(' · ')} />
+              <Row label="College / Company" value={st.collegeCompany} />
             </div>
+          </Card>
+          <div className="lg:col-span-5 space-y-6">
+            <Card>
+              <CardTitle icon="📁" title="Onboarding Checklist" right={<Pill tone={done === keys.length ? 'green' : 'amber'}>{done}/{keys.length}</Pill>} />
+              <div className="divide-y divide-slate-100">
+                {keys.map((k) => <div key={k} className="py-2.5 flex justify-between text-xs"><span className="text-slate-600">{labels[k]}</span><span className={`font-bold ${checklist[k] ? 'text-emerald-600' : 'text-slate-400'}`}>{checklist[k] ? '✓ Done' : 'Pending'}</span></div>)}
+              </div>
+            </Card>
+            <div className="bg-slate-900 rounded-3xl p-6 text-white space-y-2 text-xs">
+              <div className="flex justify-between"><h3 className="text-base font-bold">Fee snapshot</h3><button onClick={() => setActiveNav('payments')} className="font-bold text-teal-300 hover:underline cursor-pointer">Ledger ›</button></div>
+              <div className="flex justify-between"><span className="text-slate-300">Course fee</span><b>{d.courseFee ? inr(d.courseFee) : '—'}</b></div>
+              <div className="flex justify-between"><span className="text-slate-300">Paid</span><b className="text-emerald-400">{inr(d.paid)}</b></div>
+              <div className="flex justify-between"><span className="text-slate-300">Pending</span><b className={d.balance ? 'text-amber-300' : 'text-emerald-400'}>{inr(d.balance)}</b></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
-            <div className="divide-y divide-slate-100 text-xs">
-              {paymentRecords.map((rcp) => (
-                <div key={rcp.id} className="py-3.5 flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="font-bold text-slate-900 text-xs sm:text-sm truncate">{rcp.title}</div>
-                    <div className="text-[11px] text-slate-400 mt-0.5">{rcp.id} · {rcp.date}</div>
-                  </div>
-                  <div className="flex items-center gap-3 flex-shrink-0">
-                    <span className="font-bold text-emerald-600 text-xs sm:text-sm">{rcp.amount}</span>
-                    <button 
-                      onClick={() => showToast(`Receipt ${rcp.id} downloaded as PDF!`)}
-                      className="w-8 h-8 rounded-xl border border-slate-200 text-slate-500 hover:text-slate-900 hover:bg-slate-100 flex items-center justify-center transition-colors cursor-pointer"
-                      title="Download PDF Receipt"
-                    >
-                      <Download className="w-4 h-4" />
-                    </button>
-                  </div>
+  // ==========================================================================
+  // HELP
+  // ==========================================================================
+  const renderHelp = () => (
+    <div className="space-y-6 pb-12">
+      <PageHeader title="Help & Support" sub="Academic doubts go to your trainer; everything else to the branch team" right={<HeaderStat label="Open tickets" value={tickets.filter((t) => !['resolved', 'closed'].includes(t.status)).length} />} />
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        <Card className="lg:col-span-6">
+          <CardTitle icon="💭" title="Ask your trainer" sub={trainer ? `Goes to ${trainer.trainerName} · 24h SLA` : 'Routed once a trainer is allocated'} />
+          <form onSubmit={(e) => { e.preventDefault(); if (quickDoubt.trim()) submitDoubt(quickDoubt.trim()).then(() => setQuickDoubt('')); }} className="space-y-3">
+            <textarea rows={4} value={quickDoubt} onChange={(e) => setQuickDoubt(e.target.value)} placeholder="Explain your doubt — include code numbers or the case snippet…" className={inputCls} />
+            <Btn type="submit" disabled={busy || !quickDoubt.trim()} className="w-full"><Send className="w-4 h-4" />Send doubt</Btn>
+          </form>
+          <div className="text-xs text-slate-500 mt-3">{newReplies.length} answered · {doubts.length - newReplies.length} awaiting reply · <button onClick={() => setActiveNav('trainers')} className="text-[#483ec7] font-bold cursor-pointer">view all</button></div>
+        </Card>
+        <Card className="lg:col-span-6">
+          <CardTitle icon="🏢" title="Branch support tickets" sub={[st.location, st.hrName && `HR: ${st.hrName}`].filter(Boolean).join(' · ')} right={<Btn onClick={() => openModal('ticket', {}, { category: TICKET_CATEGORIES[0] })}>+ Ticket</Btn>} />
+          {tickets.length === 0 ? <Empty icon="🎫" title="No tickets raised" /> : (
+            <div className="space-y-2">
+              {tickets.map((t) => (
+                <div key={t._id} className="border border-slate-200 rounded-xl p-3 text-xs">
+                  <div className="flex justify-between gap-2"><b className="truncate">{t.title}</b><Pill tone={statusTone(t.status === 'open' ? 'open' : t.status)}>{t.status}</Pill></div>
+                  <div className="text-[10px] text-slate-400 mt-0.5">#{String(t._id).slice(-6).toUpperCase()} · {t.type} · {fmtDate(t.createdAt)}</div>
                 </div>
               ))}
             </div>
-          </div>
-
-          {/* Fee Query Desk Card */}
-          <div className="bg-gradient-to-br from-slate-900 to-[#1e1b4b] rounded-3xl p-6 sm:p-7 text-white shadow-xl space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="text-lg">❓</span>
-                <h3 className="text-base font-bold text-white">Finance Helpdesk</h3>
-              </div>
-              <span className="text-[10px] uppercase font-bold text-indigo-300 bg-white/10 px-2.5 py-0.5 rounded-full">SLA: 24h</span>
-            </div>
-            <p className="text-xs text-indigo-200 font-medium leading-relaxed">
-              Have a question regarding receipt generation, payment plan schedule, or corporate sponsorship? Raise a query directly to our campus accounts team.
-            </p>
-            <button
-              onClick={() => setActiveModal('feeQuery')}
-              className="w-full py-3.5 px-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-bold text-xs text-center shadow-md transition-all active:scale-[0.98] cursor-pointer"
-            >
-              Raise a Fee Query
-            </button>
-          </div>
-        </div>
+          )}
+        </Card>
       </div>
     </div>
   );
 
-  // ==========================================
-  // RENDER ADMISSION DETAILS (LUXURY FULL-WIDTH THEME)
-  // ==========================================
-  const renderAdmissionDetails = () => (
-    <div className="w-full space-y-6 pb-12">
-      {/* Executive Header Banner */}
-      <div className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-[#1e1b4b] via-[#242144] to-[#312e81] p-6 sm:p-8 text-white shadow-xl">
-        <div className="absolute -top-16 -right-16 w-56 h-56 rounded-full bg-indigo-500/20 blur-3xl pointer-events-none" />
-        
-        <div className="relative z-10 flex flex-col md:flex-row md:items-center md:justify-between gap-5">
-          <div className="space-y-2">
-            <button 
-              onClick={() => setActiveNav('dashboard')}
-              className="inline-flex items-center gap-1.5 text-xs font-bold text-indigo-200 hover:text-white transition-colors cursor-pointer mb-1"
-            >
-              <span>‹</span>
-              <span>Back to Home</span>
-            </button>
-            <h2 className="text-2xl sm:text-3xl font-black tracking-tight text-white">
-              Admission Details & Institutional Record
-            </h2>
-            <p className="text-xs sm:text-sm text-indigo-200/90 max-w-xl font-medium">
-              Permanent student enrolment dossier, verified KYC documents, institutional identifiers, and campus registration parameters.
-            </p>
+  // ==========================================================================
+  // PROFILE
+  // ==========================================================================
+  const renderProfile = () => {
+    const skills = st.skills || [];
+    const certs = st.certificates || [];
+    const edits = requests.filter((r) => r.type === 'profile_edit');
+    const mask = (v, re, rep) => (v ? String(v).replace(re, rep) : '');
+    return (
+      <div className="space-y-6 pb-12">
+        <div className="bg-gradient-to-r from-[#1e1b4b] via-[#312e81] to-[#1e1b4b] rounded-3xl p-6 sm:p-7 text-white flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <div className="w-16 h-16 rounded-2xl bg-white/10 border border-white/20 text-2xl font-black flex items-center justify-center">{d.initials}</div>
+            <div><h2 className="text-2xl font-black">{d.name}</h2><p className="text-xs text-indigo-200">{st.course}</p><div className="flex gap-2 mt-2 text-xs"><span className="px-3 py-1 rounded-lg bg-white/10 font-mono font-bold">{st.studentId}</span>{st.location && <span className="px-3 py-1 rounded-lg bg-white/10 text-indigo-200">{st.location}</span>}</div></div>
           </div>
-
-          <div className="flex items-center gap-3">
-            <div className="px-5 py-3.5 rounded-2xl bg-white/10 backdrop-blur-md border border-white/10 text-center">
-              <div className="text-[10px] uppercase font-bold text-indigo-200 tracking-wider">Record Status</div>
-              <div className="text-lg font-black text-emerald-300">Verified & Active</div>
-            </div>
-          </div>
+          <Btn tone="light" onClick={() => openModal('request', { reqType: 'profile_edit', title: 'Request a contact update', subject: 'Contact details update' })}>Request profile edit</Btn>
         </div>
-      </div>
-
-      {/* Main 2-Column Wide Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left Column: Core Enrolment Dossier (7 cols) */}
-        <div className="lg:col-span-7 space-y-6">
-          <div className="bg-white rounded-3xl p-6 sm:p-8 border border-slate-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.03)] space-y-5">
-            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
-              <div className="flex items-center gap-2.5">
-                <span className="text-xl">🎓</span>
-                <div>
-                  <h3 className="text-base font-bold text-slate-900">Enrolment Dossier</h3>
-                  <p className="text-xs text-slate-500 font-medium">Verified by Central Registrar</p>
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          <div className="lg:col-span-7 space-y-6">
+            <Card>
+              <CardTitle title="Contact record" sub="Changes are verified by your HR counsellor" />
+              <div className="divide-y divide-slate-100">
+                <Row label="Phone" value={mask(st.phone, /(\d{2})\d{6}(\d{2})$/, '$1••••••$2')} mono />
+                <Row label="WhatsApp" value={mask(st.whatsappNumber, /(\d{2})\d{6}(\d{2})$/, '$1••••••$2')} mono />
+                <Row label="Email" value={mask(st.email, /^(.{3}).*(@.*)$/, '$1••••$2')} />
+                <Row label="Date of birth" value={st.dob} />
+              </div>
+              {edits.length > 0 && <div className="mt-4 space-y-2">{edits.map((r) => <RequestRow key={r._id} r={r} />)}</div>}
+            </Card>
+            <Card>
+              <CardTitle title="Academic & batch" />
+              <div className="divide-y divide-slate-100">
+                <Row label="Batch" value={st.batchName} />
+                <Row label="Timing" value={st.batchTiming} />
+                <Row label="Mode" value={st.mode} />
+                <Row label="Trainer" value={st.trainerName} />
+              </div>
+            </Card>
+          </div>
+          <div className="lg:col-span-5 space-y-6">
+            <Card>
+              <CardTitle icon="📜" title="Other Certificates" right={<Btn tone="light" onClick={() => openModal('certificate', {}, { year: String(new Date().getFullYear()) })}>+ Add</Btn>} />
+              {certs.length === 0 ? <Empty icon="📜" title="None added" text="Degrees, internships or other certifications." /> : (
+                <div className="space-y-2">
+                  {certs.map((c) => (
+                    <div key={c.id || c.name} className="p-3 rounded-xl border border-slate-200 flex items-center justify-between gap-2">
+                      <div className="min-w-0"><div className="text-xs font-bold text-slate-900 truncate">{c.name}</div><div className="text-[10px] text-slate-400">{[c.issuer, c.year].filter(Boolean).join(' · ')}</div></div>
+                      <button onClick={() => saveProfile({ certificates: certs.filter((x) => x !== c) }, `Removed ${c.name}`)} className="p-1 rounded-lg text-slate-400 hover:bg-rose-50 hover:text-rose-600 cursor-pointer"><X className="w-3.5 h-3.5" /></button>
+                    </div>
+                  ))}
                 </div>
+              )}
+            </Card>
+            <Card>
+              <CardTitle icon="🌟" title="Skills" right={<Pill tone="green">{skills.length}</Pill>} />
+              <div className="flex flex-wrap gap-2 mb-4">
+                {skills.length === 0 && <span className="text-xs text-slate-400">No skills added yet.</span>}
+                {skills.map((s) => (
+                  <span key={s} className="px-3 py-1.5 rounded-xl bg-teal-50 border border-teal-200 text-teal-800 text-xs font-semibold flex items-center gap-1.5">{s}<button onClick={() => saveProfile({ skills: skills.filter((x) => x !== s) })} className="text-teal-500 hover:text-rose-600 cursor-pointer">✕</button></span>
+                ))}
               </div>
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#e6f4ea] text-[#137333] font-bold text-xs border border-emerald-200">
-                <span className="w-1.5 h-1.5 rounded-full bg-[#137333]" />
-                Admitted & Active
-              </span>
-            </div>
-
-            <div className="divide-y divide-slate-100 text-xs sm:text-sm">
-              <div className="py-3.5 flex justify-between items-center">
-                <span className="text-slate-500 font-medium">Permanent Student ID</span>
-                <span className="font-mono font-bold text-slate-900 bg-slate-100 px-2.5 py-1 rounded-lg">{student.studentId}</span>
-              </div>
-              <div className="py-3.5 flex justify-between items-center">
-                <span className="text-slate-500 font-medium">Admissions Lead ID</span>
-                <span className="font-mono font-bold text-slate-900">{student.leadId}</span>
-              </div>
-              <div className="py-3.5 flex justify-between items-center">
-                <span className="text-slate-500 font-medium">Program of Study</span>
-                <span className="font-bold text-slate-900">{student.course}</span>
-              </div>
-              <div className="py-3.5 flex justify-between items-center">
-                <span className="text-slate-500 font-medium">Assigned Campus</span>
-                <span className="font-bold text-slate-900">{student.branchCity}</span>
-              </div>
-              <div className="py-3.5 flex justify-between items-center">
-                <span className="text-slate-500 font-medium">Delivery Mode</span>
-                <span className="font-bold text-slate-900">{student.mode}</span>
-              </div>
-              <div className="py-3.5 flex justify-between items-center">
-                <span className="text-slate-500 font-medium">Batch Code</span>
-                <span className="font-bold text-slate-900">{student.batchName}</span>
-              </div>
-              <div className="py-3.5 flex justify-between items-center">
-                <span className="text-slate-500 font-medium">Official Admission Date</span>
-                <span className="font-bold text-slate-900">{student.startDate}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Right Column: Verified Documents & Fee Overview (5 cols) */}
-        <div className="lg:col-span-5 space-y-6">
-          {/* Verified Documents Checklist */}
-          <div className="bg-white rounded-3xl p-6 sm:p-7 border border-slate-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.03)] space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <div className="flex items-center gap-2">
-                <span className="text-xl">📁</span>
-                <h3 className="text-base font-bold text-slate-900">Verified KYC Documents</h3>
-              </div>
-              <span className="text-xs font-bold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full">4 / 4 Complete</span>
-            </div>
-
-            <div className="divide-y divide-slate-100 text-xs sm:text-sm">
-              <div className="py-3 flex justify-between items-center">
-                <span className="text-slate-600 font-medium">Government ID Proof</span>
-                <span className="font-bold text-emerald-600 flex items-center gap-1">✓ Verified</span>
-              </div>
-              <div className="py-3 flex justify-between items-center">
-                <span className="text-slate-600 font-medium">Degree / Academic Certificate</span>
-                <span className="font-bold text-emerald-600 flex items-center gap-1">✓ Verified</span>
-              </div>
-              <div className="py-3 flex justify-between items-center">
-                <span className="text-slate-600 font-medium">Passport Photograph</span>
-                <span className="font-bold text-emerald-600 flex items-center gap-1">✓ Verified</span>
-              </div>
-              <div className="py-3 flex justify-between items-center">
-                <span className="text-slate-600 font-medium">Institutional Fee Agreement</span>
-                <span className="font-bold text-emerald-600 flex items-center gap-1">✓ Verified</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Quick Fee Snapshot */}
-          <div className="bg-gradient-to-br from-slate-900 to-[#1e1b4b] rounded-3xl p-6 sm:p-7 text-white shadow-xl space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-bold text-white">Fee Summary Snapshot</h3>
-              <button 
-                onClick={() => setActiveNav('payments')}
-                className="text-xs font-bold text-indigo-300 hover:text-white underline"
-              >
-                View Full Ledger ›
-              </button>
-            </div>
-
-            <div className="space-y-2.5 text-xs">
-              <div className="flex justify-between items-center">
-                <span className="text-slate-300">Total Course Fee:</span>
-                <span className="font-bold text-white">₹{student.courseFee.toLocaleString()}</span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-slate-300">Paid So Far:</span>
-                <span className="font-bold text-emerald-400">₹{student.paidSoFar.toLocaleString()}</span>
-              </div>
-              <div className="flex justify-between items-center pt-2 border-t border-white/10">
-                <span className="text-slate-300 font-medium">Pending Dues:</span>
-                <span className="font-bold text-emerald-400">
-                  {student.balanceDue === 0 ? '₹0 (All Cleared)' : `₹${student.balanceDue.toLocaleString()}`}
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-
-  // ==========================================
-  // RENDER HELP & SUPPORT (LUXURY FULL-WIDTH THEME)
-  // ==========================================
-  const renderHelpSupport = () => (
-    <div className="w-full space-y-6 pb-12">
-      {/* Executive Header Banner */}
-      <div className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-[#1e1b4b] via-[#242144] to-[#312e81] p-6 sm:p-8 text-white shadow-xl">
-        <div className="absolute -top-16 -right-16 w-56 h-56 rounded-full bg-indigo-500/20 blur-3xl pointer-events-none" />
-        
-        <div className="relative z-10 flex flex-col md:flex-row md:items-center md:justify-between gap-5">
-          <div className="space-y-2">
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 backdrop-blur-md border border-white/15 text-indigo-200 text-xs font-semibold">
-              <span className="w-2 h-2 rounded-full bg-emerald-400" />
-              <span>ThoughtFlows Resolution Desk</span>
-            </div>
-            <h2 className="text-2xl sm:text-3xl font-black tracking-tight text-white">
-              Student Help &amp; Grievance Support
-            </h2>
-            <p className="text-xs sm:text-sm text-indigo-200/90 max-w-xl font-medium">
-              SLA-governed support channels. Reach faculty directly for academic coding doubts or connect with campus administration for logistics and fee matters.
-            </p>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <div className="px-5 py-3.5 rounded-2xl bg-white/10 backdrop-blur-md border border-white/10 text-center">
-              <div className="text-[10px] uppercase font-bold text-indigo-200 tracking-wider">Active Channels</div>
-              <div className="text-lg font-black text-emerald-300">2 Desks Active</div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Main 2-Column Wide Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left Column: Academic Doubt Box (6 cols) */}
-        <div className="lg:col-span-6 space-y-6">
-          <div className="bg-white rounded-3xl p-6 sm:p-8 border border-slate-200/80 border-t-4 border-t-[#0e5c63] shadow-[0_4px_20px_rgba(0,0,0,0.03)] space-y-5 flex flex-col justify-between h-full">
-            <div className="space-y-3">
-              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-                <div className="flex items-center gap-2.5">
-                  <span className="text-2xl">💭</span>
-                  <div>
-                    <h3 className="text-base font-bold text-slate-900">Academic Doubt Box</h3>
-                    <p className="text-xs text-slate-500 font-medium">Direct to Faculty Lead · SLA &lt; 4h</p>
-                  </div>
-                </div>
-                <span className="bg-teal-50 text-[#0e5c63] font-bold text-xs px-3 py-1 rounded-full border border-teal-200">
-                  Coding & Syllabus
-                </span>
-              </div>
-
-              <p className="text-xs text-slate-600 font-medium leading-relaxed">
-                Stuck on a tricky CPT modifier, surgical excision sequencing, or anatomy concept? Post your query directly to your assigned trainer.
-              </p>
-
-              <form 
-                onSubmit={async (e) => {
-                  e.preventDefault();
-                  if (!quickDoubt.trim()) return;
-                  try {
-                    await createTrainerDoubt({
-                      studentId: student.studentId,
-                      studentName: student.name,
-                      trainer: trainersList[0]?.name || 'Course Faculty',
-                      subject: student.course,
-                      chapter: student.currentStage || 'General',
-                      question: quickDoubt,
-                      urgency: 'Medium',
-                      status: 'New'
-                    });
-                  } catch (err) {
-                    console.warn('Quick doubt submit error', err);
-                  }
-                  showToast('Doubt posted! Your trainer will respond within 4 hours (SLA-tracked).');
-                  setQuickDoubt('');
-                }}
-                className="space-y-3 pt-2"
-              >
-                <textarea
-                  rows="3"
-                  placeholder="Explain your doubt in detail (include code numbers or case snippet if relevant)..."
-                  value={quickDoubt}
-                  onChange={(e) => setQuickDoubt(e.target.value)}
-                  className="w-full px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-[#0e5c63] transition-colors resize-none"
-                />
-                <button
-                  type="submit"
-                  className="w-full py-3.5 px-6 rounded-2xl bg-[#0e5c63] hover:bg-[#093f44] text-white font-bold text-xs sm:text-sm shadow-md transition-all active:scale-[0.98] cursor-pointer"
-                >
-                  Submit Academic Doubt
-                </button>
+              <form onSubmit={(e) => { e.preventDefault(); const v = newSkill.trim(); if (!v) return; if (skills.some((s) => s.toLowerCase() === v.toLowerCase())) { showToast('Already in your list'); return; } saveProfile({ skills: [...skills, v] }, `Added ${v}`).then(() => setNewSkill('')); }} className="flex gap-2">
+                <input value={newSkill} onChange={(e) => setNewSkill(e.target.value)} placeholder="Add a skill (e.g. MS Excel)" className={inputCls} />
+                <Btn type="submit" disabled={busy}>+ Add</Btn>
               </form>
-            </div>
-
-            <div className="pt-4 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
-              <span>Recent activity:</span>
-              <div className="flex gap-2">
-                <span className="text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-md">
-                  {studentDoubts.filter(d => d.status === 'Resolved' || d.reply).length} Answered
-                </span>
-                <span className="text-amber-700 font-bold bg-amber-50 px-2 py-0.5 rounded-md">
-                  {studentDoubts.filter(d => d.status !== 'Resolved' && !d.reply).length} In Review
-                </span>
-              </div>
-            </div>
+            </Card>
           </div>
         </div>
+      </div>
+    );
+  };
 
-        {/* Right Column: Administrative & Branch Support (6 cols) */}
-        <div className="lg:col-span-6 space-y-6">
-          <div className="bg-white rounded-3xl p-6 sm:p-8 border border-slate-200/80 border-t-4 border-t-[#ea580c] shadow-[0_4px_20px_rgba(0,0,0,0.03)] space-y-5 flex flex-col justify-between h-full">
+  // ==========================================================================
+  // MODALS
+  // ==========================================================================
+  const renderModal = () => {
+    if (!modal) return null;
+    const footer = (label, onClick, disabled) => (
+      <div className="flex justify-end gap-2 mt-5">
+        <Btn tone="light" onClick={closeModal}>Cancel</Btn>
+        <Btn onClick={onClick} disabled={busy || disabled}>{busy ? 'Saving…' : label}</Btn>
+      </div>
+    );
+
+    switch (modal.type) {
+      case 'doubt':
+        return (
+          <Modal title={trainer ? `Ask ${trainer.trainerName}` : 'Ask a doubt'} sub={trainer ? 'Replies appear under My Trainer' : 'Will be routed once a trainer is allocated'} onClose={closeModal}>
             <div className="space-y-3">
-              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-                <div className="flex items-center gap-2.5">
-                  <span className="text-2xl">💮</span>
-                  <div>
-                    <h3 className="text-base font-bold text-slate-900">Campus Administrative Desk</h3>
-                    <p className="text-xs text-slate-500 font-medium">Branch Operations · SLA 1 Working Day</p>
-                  </div>
-                </div>
-                <span className="bg-orange-50 text-[#ea580c] font-bold text-xs px-3 py-1 rounded-full border border-orange-200">
-                  Fees & Operations
-                </span>
-              </div>
-
-              <p className="text-xs text-slate-600 font-medium leading-relaxed">
-                Need help with fee schedules, batch timing changes, classroom amenities, or official attendance documentation? Raise a formal ticket or contact branch directly.
-              </p>
-
-              <div className="p-4 rounded-2xl bg-orange-50/50 border border-orange-100 space-y-2 text-xs">
-                <div className="font-bold text-slate-900">Campus Coordinator: {student.branchCity}</div>
-                <div className="text-slate-600">Hours: Monday – Saturday (9:00 AM to 6:30 PM)</div>
-              </div>
-
-              <div className="flex flex-col sm:flex-row items-center gap-3 pt-2">
-                <button
-                  onClick={() => setActiveModal('newTicket')}
-                  className="w-full sm:flex-1 py-3.5 px-4 rounded-2xl bg-[#ea580c] hover:bg-[#c2410c] text-white font-bold text-xs sm:text-sm shadow-md transition-all active:scale-[0.98] cursor-pointer text-center"
-                >
-                  + Raise Support Ticket
-                </button>
-                <button
-                  onClick={() => setActiveModal('callBranch')}
-                  className="w-full sm:flex-1 py-3.5 px-4 rounded-2xl bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-800 font-bold text-xs sm:text-sm transition-all active:scale-[0.98] cursor-pointer flex items-center justify-center gap-2"
-                >
-                  <Phone className="w-4 h-4 text-emerald-600" />
-                  <span>Call Branch Desk</span>
-                </button>
-              </div>
+              <Field label="Topic"><input value={form.topic ?? st.syllabusModule ?? ''} onChange={setF('topic')} placeholder="e.g. CPT modifiers" className={inputCls} /></Field>
+              <Field label="Your question"><textarea rows={4} value={form.question || ''} onChange={setF('question')} placeholder="Describe your doubt or paste the question…" className={inputCls} /></Field>
             </div>
+            {footer('Send doubt', () => submitDoubt(form.question.trim(), form.topic ?? st.syllabusModule), !form.question?.trim())}
+          </Modal>
+        );
 
-            <div className="pt-4 border-t border-slate-100 text-xs text-slate-400">
-              All support tickets are audited weekly by the ThoughtFlows Student Success Directorate.
+      case 'submit': {
+        const typeLabel = { assignment: 'Assignment', resume: 'Resume', video_intro: 'Video introduction', improvement_task: 'Improvement task' }[form.type] || 'Work';
+        return (
+          <Modal title={`Submit ${typeLabel.toLowerCase()}`} sub={trainer ? `Sent to ${trainer.trainerName} for review` : 'Saved to your record'} onClose={closeModal}>
+            <div className="space-y-3">
+              <Field label="Title"><input value={form.title || ''} onChange={setF('title')} className={inputCls} /></Field>
+              {form.type === 'assignment' && !form.materialId && materials.length > 0 && (
+                <Field label="For material (optional)">
+                  <select value={form.materialId || ''} onChange={setF('materialId')} className={inputCls}>
+                    <option value="">— none —</option>
+                    {materials.map((m) => <option key={m.id} value={m.id}>{m.title}</option>)}
+                  </select>
+                </Field>
+              )}
+              {form.type === 'video_intro'
+                ? <Field label="Video link (Google Drive / YouTube unlisted)"><input value={form.link || ''} onChange={setF('link')} placeholder="https://" className={inputCls} /></Field>
+                : null}
+              <Field label={form.type === 'video_intro' ? 'Or upload the video (max 12 MB)' : 'File (PDF, DOCX, XLSX, image — max 12 MB)'}>
+                <input type="file" onChange={setF('file')} accept={form.type === 'video_intro' ? 'video/*' : undefined} className="block w-full text-xs text-slate-600 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-indigo-50 file:text-[#483ec7] file:font-bold" />
+              </Field>
+              <Field label="Note to trainer (optional)"><textarea rows={2} value={form.note || ''} onChange={setF('note')} className={inputCls} /></Field>
             </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+            {footer('Submit', submitWork, !form.file && !form.link)}
+          </Modal>
+        );
+      }
 
-  // ==========================================
-  // RENDER MY PROFILE (LUXURY FULL-WIDTH THEME)
-  // ==========================================
-  const renderMyProfile = () => (
-    <div className="w-full space-y-6 pb-12">
-      {/* Executive Hero Banner */}
-      <div className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-[#1e1b4b] via-[#242144] to-[#312e81] p-6 sm:p-8 text-white shadow-xl">
-        <div className="absolute -top-16 -right-16 w-56 h-56 rounded-full bg-indigo-500/20 blur-3xl pointer-events-none" />
-        
-        <div className="relative z-10 flex flex-col md:flex-row md:items-center md:justify-between gap-6">
-          <div className="flex items-center gap-5">
-            <div className="w-20 h-20 rounded-3xl bg-gradient-to-br from-indigo-400 to-[#483ec7] text-white font-black text-3xl flex items-center justify-center shadow-lg ring-4 ring-white/10 flex-shrink-0">
-              {student.initials}
+      case 'request': {
+        const needsDate = modal.reqType === 'mock_interview' || modal.reqType === 'consultation';
+        return (
+          <Modal title={modal.title} sub={needsDate ? `Goes to ${trainer?.trainerName || 'your trainer'}` : `Goes to ${st.hrName || 'your HR counsellor'}`} onClose={closeModal}>
+            <div className="space-y-3">
+              {modal.subjects && (
+                <Field label="Subject"><select value={form.subject || ''} onChange={setF('subject')} className={inputCls}>{modal.subjects.map((s) => <option key={s}>{s}</option>)}</select></Field>
+              )}
+              {needsDate && <Field label="Preferred date & time"><input type="datetime-local" value={form.preferredDate || ''} onChange={setF('preferredDate')} className={inputCls} /></Field>}
+              <Field label={modal.reqType === 'profile_edit' ? 'What should be changed? (new phone / email / reason)' : 'Message'}><textarea rows={4} value={form.message || ''} onChange={setF('message')} className={inputCls} /></Field>
             </div>
-            <div className="space-y-1">
-              <div className="flex items-center gap-2.5">
-                <h2 className="text-2xl sm:text-3xl font-black text-white">{student.name}</h2>
-                <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold text-[10px] px-2.5 py-0.5 rounded-full">
-                  Active Scholar
-                </span>
-              </div>
-              <p className="text-xs sm:text-sm text-indigo-200 font-medium">{student.course}</p>
-              <div className="flex flex-wrap items-center gap-2 pt-1 text-xs">
-                <span className="px-3 py-1 rounded-lg bg-white/10 font-mono font-bold text-white border border-white/10">
-                  {student.studentId}
-                </span>
-                <span className="px-3 py-1 rounded-lg bg-white/10 text-indigo-200 border border-white/10">
-                  {student.branchCity} Campus
-                </span>
-              </div>
+            {footer('Send request', () => submitRequest(modal.reqType, form.subject || modal.subject || modal.title), !form.message?.trim() && !form.preferredDate)}
+          </Modal>
+        );
+      }
+
+      case 'referral':
+        return (
+          <Modal title="Refer a friend" sub={`Earn ${REFERRAL_REWARD.toLocaleString('en-IN')} points when they're admitted`} onClose={closeModal}>
+            <div className="space-y-3">
+              <Field label="Friend's full name *"><input value={form.name || ''} onChange={setF('name')} className={inputCls} /></Field>
+              <Field label="Mobile / WhatsApp *"><input type="tel" value={form.phone || ''} onChange={setF('phone')} placeholder="10-digit mobile" className={inputCls} /></Field>
+              <Field label="Interested course">
+                <select value={form.course || ''} onChange={setF('course')} className={inputCls}>
+                  <option value={st.course}>{st.course}</option>
+                  {COURSE_CATEGORIES.map((cat) => (
+                    <optgroup key={cat.category} label={cat.title}>
+                      {cat.courses.map((c) => <option key={c.code} value={`${c.code} — ${c.name}`}>{c.code} — {c.name}</option>)}
+                    </optgroup>
+                  ))}
+                </select>
+              </Field>
+              <p className="text-[11px] text-slate-500">{st.hrName ? `${st.hrName} will contact them.` : 'The admissions team will contact them.'}</p>
             </div>
-          </div>
+            {footer('Submit referral', () => run(() => createStudentReferral(st.studentId, { name: form.name, phone: form.phone, course: form.course }), `✓ Referral sent for ${form.name}`), !form.name?.trim() || !form.phone?.trim())}
+          </Modal>
+        );
 
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => setActiveModal('requestEdit')}
-              className="px-5 py-3 rounded-2xl bg-white text-slate-900 hover:bg-slate-100 font-bold text-xs shadow-md transition-all active:scale-95 cursor-pointer"
-            >
-              Request Profile Edit
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Main 2-Column Wide Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left Column: Academic Specs & Contact Record (7 cols) */}
-        <div className="lg:col-span-7 space-y-6">
-          {/* Academic Specifications Card */}
-          <div className="bg-white rounded-3xl p-6 sm:p-8 border border-slate-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.03)] space-y-4">
-            <h3 className="text-base font-bold text-slate-900 pb-3 border-b border-slate-100">
-              Academic &amp; Batch Specifications
-            </h3>
-
-            <div className="divide-y divide-slate-100 text-xs sm:text-sm">
-              <div className="py-3 flex justify-between items-center">
-                <span className="text-slate-600 font-medium">Enrolled Campus</span>
-                <span className="font-bold text-slate-900">{student.branchCity}</span>
-              </div>
-              <div className="py-3 flex justify-between items-center">
-                <span className="text-slate-600 font-medium">Study Mode</span>
-                <span className="font-bold text-slate-900">{student.mode}</span>
-              </div>
-              <div className="py-3 flex justify-between items-center">
-                <span className="text-slate-600 font-medium">Assigned Batch</span>
-                <span className="font-bold text-slate-900">{student.batchName}</span>
-              </div>
-              <div className="py-3 flex justify-between items-center">
-                <span className="text-slate-600 font-medium">Weekly Schedule</span>
-                <span className="font-bold text-slate-900">{student.schedule}</span>
-              </div>
-              <div className="py-3 flex justify-between items-center">
-                <span className="text-slate-600 font-medium">Classroom / Lab Facility</span>
-                <span className="font-bold text-slate-900">{student.location}</span>
-              </div>
-              <div className="py-3 flex justify-between items-center">
-                <span className="text-slate-600 font-medium">Program Commencement</span>
-                <span className="font-bold text-slate-900">{student.startDate}</span>
-              </div>
+      case 'redeem': {
+        const available = Number(st.rewardPoints || 0) - d.pendingPoints;
+        const pts = Number(form.points || 0);
+        return (
+          <Modal title="Redeem reward points" sub="HR approves and processes each redemption" onClose={closeModal}>
+            <div className="bg-gradient-to-br from-[#0b3842] to-[#062126] text-white rounded-2xl p-4 flex justify-between"><div><div className="text-[11px] text-teal-300">Available</div><div className="text-2xl font-bold">{available}</div></div><div className="text-right"><div className="text-[11px] text-teal-300">Cash value</div><div className="text-2xl font-bold text-amber-400">{inr(available)}</div></div></div>
+            <div className="space-y-3 mt-4">
+              <Field label="Points to redeem"><input type="number" min={1} max={available} value={form.points || ''} onChange={setF('points')} className={inputCls} /></Field>
+              <Field label="Redeem as">
+                <select value={form.option || 'cash'} onChange={setF('option')} className={inputCls}>
+                  <option value="cash">Cash transfer (UPI / bank)</option>
+                  {d.balance > 0 && <option value="fee">Fee credit against {inr(d.balance)} balance</option>}
+                </select>
+              </Field>
+              {form.option !== 'fee' && <Field label="UPI ID"><input value={form.upi || ''} onChange={setF('upi')} placeholder="name@bank" className={inputCls} /></Field>}
             </div>
-          </div>
+            {footer('Submit request', () => run(() => createStudentRequest(st.studentId, { type: 'redeem_points', subject: `Redeem ${pts} points as ${form.option === 'fee' ? 'fee credit' : 'cash'}`, message: form.option === 'fee' ? 'Apply as fee credit' : `UPI: ${form.upi || ''}`, details: { points: pts, option: form.option || 'cash', upi: form.upi || '' } }), '✓ Redemption request sent to HR'), !pts || pts > available || (form.option !== 'fee' && !form.upi?.trim()))}
+          </Modal>
+        );
+      }
 
-          {/* Contact Information Card */}
-          <div className="bg-white rounded-3xl p-6 sm:p-8 border border-slate-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.03)] space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <h3 className="text-base font-bold text-slate-900">
-                Official Contact Record
-              </h3>
-              <span className="text-[11px] text-[#483ec7] font-semibold">HR Verified</span>
+      case 'ticket':
+        return (
+          <Modal title="Raise a support ticket" sub={`${st.location || 'Branch'} operations desk`} onClose={closeModal}>
+            <div className="space-y-3">
+              <Field label="Category"><select value={form.category || TICKET_CATEGORIES[0]} onChange={setF('category')} className={inputCls}>{TICKET_CATEGORIES.map((c) => <option key={c}>{c}</option>)}</select></Field>
+              <Field label="Subject"><input value={form.subject || ''} onChange={setF('subject')} className={inputCls} /></Field>
+              <Field label="Details"><textarea rows={4} value={form.description || ''} onChange={setF('description')} className={inputCls} /></Field>
             </div>
+            {footer('Submit ticket', () => run(() => createEscalation({
+              title: form.subject || `${form.category} — ${st.name}`,
+              description: form.description || '',
+              type: form.category,
+              priority: 'normal',
+              departmentCode: /fee/i.test(form.category) ? 'FIN' : /class|batch|attendance|lms/i.test(form.category) ? 'ACAD' : 'ADM',
+              branchName: st.location || '',
+              raisedBy: `${st.name} (${st.studentId})`
+            }), '✓ Ticket raised'), !form.subject?.trim())}
+          </Modal>
+        );
 
-              <div className="divide-y divide-slate-100 text-xs sm:text-sm">
-                <div className="py-3.5 flex justify-between items-center">
-                  <span className="text-slate-600 font-medium">Verified Phone</span>
-                  <span className="font-bold text-slate-900 font-mono">
-                    {student.phone ? student.phone.replace(/(\+91\s?)(\d{2})(\d{6})(\d{2})/, '$1$2••••••$4') : 'Not Provided'}
-                  </span>
-                </div>
-                <div className="py-3.5 flex justify-between items-center">
-                  <span className="text-slate-600 font-medium">Verified Email</span>
-                  <span className="font-bold text-slate-900">
-                    {student.email ? student.email.replace(/(.{3})(.*)(@.*)/, '$1••••$3') : 'Not Provided'}
-                  </span>
-                </div>
-              </div>
-
-            <p className="text-xs text-slate-400 font-medium leading-relaxed pt-2">
-              For regulatory compliance and certificate security, changes to student contact records must be authenticated through your campus HR desk.
-            </p>
-          </div>
-        </div>
-
-        {/* Right Column: Certifications & Skills Cloud (5 cols) */}
-        <div className="lg:col-span-5 space-y-6">
-          {/* External Certifications Portfolio */}
-          <div className="bg-white rounded-3xl p-6 sm:p-7 border border-slate-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.03)] space-y-4">
-            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-              <div className="flex items-center gap-2">
-                <span className="text-lg">📜</span>
-                <h3 className="text-base font-bold text-slate-900">Prior Credentials</h3>
-              </div>
-              <span className="text-xs font-bold text-amber-700 bg-amber-50 px-2.5 py-0.5 rounded-full">
-                {userCertificates.length} Files
-              </span>
+      case 'certificate':
+        return (
+          <Modal title="Add a certificate" onClose={closeModal}>
+            <div className="space-y-3">
+              <Field label="Certificate name *"><input value={form.name || ''} onChange={setF('name')} className={inputCls} /></Field>
+              <Field label="Issued by"><input value={form.issuer || ''} onChange={setF('issuer')} className={inputCls} /></Field>
+              <Field label="Year"><input value={form.year || ''} onChange={setF('year')} className={inputCls} /></Field>
             </div>
+            {footer('Add', () => saveProfile({ certificates: [...(st.certificates || []), { name: form.name, issuer: form.issuer, year: form.year }] }, `✓ Added ${form.name}`), !form.name?.trim())}
+          </Modal>
+        );
 
-            {/* Add Certificate Box */}
-            <div 
-              onClick={() => setActiveModal('addCertificate')}
-              className="border-2 border-dashed border-teal-300 bg-teal-50/50 rounded-2xl p-5 text-center hover:bg-teal-100/40 transition-colors cursor-pointer"
-            >
-              <div className="text-xl mb-1">📎</div>
-              <div className="text-xs font-bold text-teal-800">+ Upload External Certificate</div>
-              <div className="text-[10px] text-slate-400 mt-0.5">Degrees, internships, or language diplomas</div>
-            </div>
-
-            {/* List */}
-            <div className="space-y-2.5">
-              {userCertificates.map((cert) => (
-                <div 
-                  key={cert.id}
-                  className="p-3 rounded-2xl border border-slate-100 bg-slate-50 flex items-center justify-between gap-3 hover:border-slate-200 transition-colors"
-                >
-                  <div className="min-w-0">
-                    <div className="text-xs font-bold text-slate-900 truncate">{cert.name}</div>
-                    <div className="text-[10px] text-slate-400 mt-0.5 truncate">{cert.issuer} · {cert.year}</div>
-                  </div>
-
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    <button
-                      onClick={() => showToast(`Viewing ${cert.name} document...`)}
-                      className="px-2.5 py-1 rounded-lg bg-[#0e5c63] text-white font-bold text-[10px] hover:bg-[#093f44] cursor-pointer"
-                    >
-                      View
-                    </button>
-                    <button
-                      onClick={() => {
-                        setUserCertificates(prev => prev.filter(c => c.id !== cert.id));
-                        showToast(`Removed certificate: ${cert.name}`);
-                      }}
-                      className="w-6 h-6 rounded-lg border border-slate-200 text-slate-400 hover:text-rose-600 flex items-center justify-center cursor-pointer"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Placement Skills Cloud */}
-          <div className="bg-white rounded-3xl p-6 sm:p-7 border border-slate-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.03)] space-y-4">
-            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-              <div className="flex items-center gap-2">
-                <span className="text-lg">🌟</span>
-                <h3 className="text-base font-bold text-slate-900">Placement Skills</h3>
-              </div>
-              <span className="text-xs font-bold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full">
-                {skillsList.length} Skills
-              </span>
-            </div>
-
-            {/* Tags Cloud */}
+      case 'locations': {
+        const sel = form.locations || [];
+        const toggle = (l) => setForm((f) => ({ ...f, locations: sel.includes(l) ? sel.filter((x) => x !== l) : [...sel, l] }));
+        return (
+          <Modal title="Preferred work locations" sub="Shared with the placement cell" onClose={closeModal}>
             <div className="flex flex-wrap gap-2">
-              {skillsList.map((skill) => (
-                <span 
-                  key={skill}
-                  className="bg-emerald-50 text-emerald-800 border border-emerald-200/70 font-bold text-xs px-3 py-1 rounded-xl inline-flex items-center gap-2 shadow-2xs"
-                >
-                  <span>{skill}</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSkillsList(prev => prev.filter(s => s !== skill));
-                      showToast(`Removed skill: ${skill}`);
-                    }}
-                    className="text-emerald-600 hover:text-rose-600 cursor-pointer"
-                  >
-                    ✕
-                  </button>
-                </span>
+              {[...new Set([...LOCATION_OPTIONS, ...sel])].map((l) => (
+                <button key={l} onClick={() => toggle(l)} className={`px-3 py-1.5 rounded-xl text-xs font-semibold border cursor-pointer ${sel.includes(l) ? 'bg-teal-600 text-white border-teal-600' : 'bg-white text-slate-700 border-slate-200'}`}>{sel.includes(l) ? '✓ ' : ''}{l}</button>
               ))}
             </div>
+            {footer('Save', () => saveProfile({ preferredLocations: sel }, '✓ Locations updated'))}
+          </Modal>
+        );
+      }
 
-            {/* Add Skill Form */}
-            <form 
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (!newSkillInput.trim()) return;
-                if (skillsList.includes(newSkillInput.trim())) {
-                  showToast('Skill already in your list!');
-                  return;
-                }
-                setSkillsList(prev => [...prev, newSkillInput.trim()]);
-                showToast(`Added skill: ${newSkillInput.trim()}`);
-                setNewSkillInput('');
-              }}
-              className="flex items-center gap-2 pt-2"
-            >
-              <input
-                type="text"
-                placeholder="Add skill (e.g. MS Excel, STAR)..."
-                value={newSkillInput}
-                onChange={(e) => setNewSkillInput(e.target.value)}
-                className="flex-1 px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-[#0e5c63]"
-              />
-              <button
-                type="submit"
-                className="px-4 py-2.5 rounded-xl bg-[#0e5c63] text-white font-bold text-xs hover:bg-[#093f44] cursor-pointer shadow-sm"
-              >
-                + Add
-              </button>
-            </form>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+      case 'liveClass':
+        return (
+          <Modal wide={Boolean(live)} title={live ? (live.topic || d.batch) : 'Classroom status'} sub={live ? `Live with ${live.trainerName}` : undefined} onClose={closeModal}>
+            {live ? (
+              <>
+                <ZoomMeeting
+                  key={live.sessionId}
+                  getJoinDetails={joinStudentLiveClass}
+                  studentEmail={st.email || undefined}
+                  userName={d.name}
+                  isTrainerHost={false}
+                  height={560}
+                />
+                <p className="text-[11px] text-slate-500 mt-3">Your attendance is recorded when you join. If the video doesn't load, use Retry, or ask your trainer for the Zoom link.</p>
+              </>
+            ) : (
+              <div className="text-center">
+                <Pill tone="amber">NOT STARTED</Pill>
+                <h3 className="text-base font-extrabold text-slate-900 mt-3">Waiting for your trainer</h3>
+                <p className="text-xs text-slate-500 mt-1">You can join as soon as {trainer?.trainerName || 'your trainer'} starts the class. This page checks every 30 seconds.</p>
+                <div className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-xl p-3 mt-4 text-left space-y-1">
+                  <div>• Course: <b>{st.course}</b></div>
+                  <div>• Batch: <b>{d.batch || 'Not allocated'}</b></div>
+                  <div>• Timing: <b>{st.batchTiming || 'Not set'}</b></div>
+                </div>
+                <Btn tone="light" className="mx-auto mt-4" onClick={() => load(true)}><RefreshCw className="w-4 h-4" />Check again</Btn>
+              </div>
+            )}
+          </Modal>
+        );
 
+      default:
+        return null;
+    }
+  };
+
+  // ==========================================================================
+  // LAYOUT
+  // ==========================================================================
   return (
-    <div className="fixed inset-0 z-50 flex bg-[#f4f6fb] overflow-hidden text-slate-800 font-sans select-none animate-fadeIn">
-      {/* ========================================================= */}
-      {/* LEFT SIDEBAR (EXACT DEEP PURPLE COLOR & DESIGN IN SCREENSHOT) */}
-      {/* ========================================================= */}
+    <div className="fixed inset-0 z-50 flex bg-[#f4f6fb] overflow-hidden text-slate-800 font-sans animate-fadeIn">
       <aside className="w-64 sm:w-72 bg-[#0d9488] text-white flex flex-col justify-between p-4 sm:p-5 flex-shrink-0 h-full overflow-y-auto shadow-xl">
         <div className="space-y-6">
-          {/* Logo & Brand */}
           <div className="flex items-center gap-3 px-1 pt-1">
-            <div className="h-10 px-2.5 py-1 rounded-xl bg-white flex items-center justify-center shadow-sm flex-shrink-0">
-              <img src="/thoughtflows-logo.png" alt="ThoughtFlows" className="h-7 w-auto object-contain" />
-            </div>
-            <div>
-              <div className="font-extrabold text-base tracking-tight text-white leading-tight">
-                ThoughtFlows
-              </div>
-              <div className="text-[10px] text-teal-100 font-medium tracking-wide">
-                Student 360°
-              </div>
-            </div>
+            <div className="h-10 px-2.5 py-1 rounded-xl bg-white flex items-center justify-center shadow-sm flex-shrink-0"><img src="/thoughtflows-logo.png" alt="ThoughtFlows" className="h-7 w-auto object-contain" /></div>
+            <div><div className="text-sm font-black tracking-tight">ThoughtFlows</div><div className="text-[10px] text-teal-100 font-semibold uppercase tracking-wider">Student 360°</div></div>
           </div>
-
-          {/* Student Profile Card in Sidebar */}
-          <div className="bg-[#0a7067] border border-white/15 rounded-2xl p-3 flex items-center gap-3 shadow-inner">
-            <div className="w-10 h-10 rounded-full bg-[#f59e0b] text-white font-bold text-sm flex items-center justify-center flex-shrink-0 shadow-sm">
-              {student.initials}
-            </div>
-            <div className="min-w-0">
-              <div className="text-xs sm:text-sm font-bold text-white truncate">{student.name}</div>
-              <div className="text-[10px] font-mono text-teal-100 truncate tracking-tight">{student.studentId}</div>
-            </div>
+          <div className="bg-white/10 border border-white/15 rounded-2xl p-3 flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-white text-[#0d9488] font-black flex items-center justify-center flex-shrink-0">{d.initials}</div>
+            <div className="min-w-0"><div className="text-sm font-bold truncate">{d.name}</div><div className="text-[10px] font-mono text-teal-100 truncate">{st.studentId}</div></div>
           </div>
-
-          {/* Navigation Links Grouped by Category */}
           <nav className="space-y-5">
             {navItems.map((group) => (
-              <div key={group.category} className="space-y-1">
-                <div className="text-[10px] font-bold tracking-wider text-teal-100/75 uppercase px-3 py-0.5">
-                  {group.category}
+              <div key={group.category}>
+                <div className="px-3 pb-1.5 text-[10px] font-bold tracking-wider text-teal-100/80">{group.category}</div>
+                <div className="space-y-1">
+                  {group.items.map((item) => {
+                    const Icon = item.icon;
+                    const active = activeNav === item.id;
+                    return (
+                      <button key={item.id} onClick={() => setActiveNav(item.id)}
+                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs sm:text-sm transition-all cursor-pointer ${active ? 'bg-white text-[#0d9488] shadow-sm font-bold' : 'text-white/90 hover:text-white hover:bg-white/10 font-medium'}`}>
+                        <Icon className="w-4 h-4 flex-shrink-0" /><span className="truncate">{item.label}</span>
+                        {item.id === 'trainers' && newReplies.length > 0 && !active && <span className="ml-auto text-[10px] font-bold bg-white text-[#0d9488] rounded-full px-1.5">{newReplies.length}</span>}
+                        {item.id === 'classes' && live && !active && <span className="ml-auto w-2 h-2 rounded-full bg-emerald-300 animate-ping" />}
+                      </button>
+                    );
+                  })}
                 </div>
-                {group.items.map((item) => {
-                  const Icon = item.icon;
-                  const isActive = activeNav === item.id;
-                  return (
-                    <button
-                      key={item.id}
-                      onClick={() => setActiveNav(item.id)}
-                      className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all text-left ${
-                        isActive
-                          ? 'bg-white text-[#0d9488] shadow-sm font-bold'
-                          : 'text-white/90 hover:text-white hover:bg-white/10'
-                      }`}
-                    >
-                      <Icon className={`w-4 h-4 flex-shrink-0 ${isActive ? 'text-[#0d9488]' : 'text-teal-100'}`} />
-                      <span className="truncate">{item.label}</span>
-                    </button>
-                  );
-                })}
               </div>
             ))}
           </nav>
         </div>
-
-        {/* Bottom Actions: Logout */}
-        <div className="pt-6 border-t border-white/10 mt-6">
-          <button
-            onClick={onLogout || onClose}
-            className="w-full rounded-xl py-2.5 px-3 text-xs font-bold text-rose-300 hover:text-white bg-rose-950/40 hover:bg-rose-900/60 border border-rose-800/50 transition-all flex items-center justify-center gap-2 cursor-pointer shadow-xs"
-            title="Logout"
-          >
-            <LogOut className="w-4 h-4" />
-            <span>Logout</span>
-          </button>
-        </div>
+        <button onClick={onLogout || onClose} className="mt-6 w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-bold cursor-pointer"><LogOut className="w-4 h-4" /><span>Logout</span></button>
       </aside>
 
-      {/* ========================================================= */}
-      {/* MAIN CONTENT AREA */}
-      {/* ========================================================= */}
-      <main className="flex-1 flex flex-col h-full overflow-hidden bg-[#f4f6fb]">
-        {/* Top Header bar - Premium Glassmorphism Design without Logo */}
-        <header className="h-16 px-4 sm:px-7 bg-white/80 backdrop-blur-xl border-b border-slate-200/80 flex items-center justify-between flex-shrink-0 shadow-[0_1px_10px_rgba(0,0,0,0.03)] sticky top-0 z-30 transition-all">
-          {/* Left: Breadcrumbs & Active Module Title */}
+      <main className="flex-1 flex flex-col h-full overflow-hidden">
+        <header className="h-16 px-4 sm:px-7 bg-white/80 backdrop-blur-xl border-b border-slate-200/80 flex items-center justify-between flex-shrink-0">
           <div className="flex items-center gap-3 min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]" />
-              <h2 className="text-sm sm:text-base font-extrabold text-slate-900 capitalize tracking-tight truncate">
-                {activeNav === 'dashboard' ? 'Student Dashboard' : activeNav.replace('-', ' ')}
-              </h2>
-            </div>
-
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="text-[10px] font-bold text-[#0d9488] bg-teal-50 border border-teal-200/80 px-2.5 py-0.5 rounded-full shadow-2xs">
-                {student.batchCode}
-              </span>
-              <span className="hidden md:inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200/60">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                Active
-              </span>
-            </div>
+            <span className="w-2 h-2 rounded-full bg-emerald-500" />
+            <h2 className="text-sm sm:text-base font-extrabold text-slate-900 truncate">{navTitle}</h2>
+            {d.batch && <span className="hidden sm:inline text-[10px] font-bold text-[#0d9488] bg-teal-50 border border-teal-200/80 px-2.5 py-0.5 rounded-full truncate max-w-[220px]">{d.batch}</span>}
           </div>
-
-          {/* Right: Campus Pill & Logout */}
-          <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
-            {/* Campus Tag with Pin */}
-            <div className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100/80 border border-slate-200/80 text-slate-700 text-xs font-semibold shadow-2xs">
-              <MapPin className="w-3.5 h-3.5 text-[#0d9488]" />
-              <span>{student.branchCity} Campus</span>
-            </div>
-
-            {/* Logout Button */}
-            <button
-              onClick={() => {
-                if (onLogout) {
-                  onLogout();
-                } else if (onClose) {
-                  onClose();
-                }
-              }}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-rose-600 hover:text-rose-700 bg-rose-50/80 hover:bg-rose-100/80 border border-rose-200/70 shadow-2xs transition-all active:scale-95 cursor-pointer"
-              title="Logout"
-            >
-              <LogOut className="w-3.5 h-3.5" />
-              <span className="hidden xs:inline">Logout</span>
-            </button>
+          <div className="flex items-center gap-2">
+            {st.location && <span className="hidden md:flex items-center gap-1 text-xs font-semibold text-slate-600"><MapPin className="w-3.5 h-3.5" />{st.location}</span>}
+            <button onClick={() => load(true)} title="Refresh" className="p-2 rounded-xl text-slate-500 hover:bg-slate-100 cursor-pointer"><RefreshCw className="w-4 h-4" /></button>
+            <button onClick={onLogout || onClose} className="px-3 py-2 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-100 flex items-center gap-1.5 cursor-pointer"><LogOut className="w-4 h-4" /><span className="hidden sm:inline">Logout</span></button>
           </div>
         </header>
 
-        {/* Body content with scroll - Full Width Luxury Canvas */}
-        <div className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 w-full bg-[#f8fafc]">
-          {activeNav === 'dashboard' && renderDashboardHome()}
-          {activeNav === 'membership' && renderMembershipCard()}
+        <div className="flex-1 overflow-y-auto p-4 sm:p-7">
+          {loadError && <div className="mb-4 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5">⚠ {loadError} — showing the last loaded data.</div>}
+          {activeNav === 'dashboard' && renderDashboard()}
+          {activeNav === 'membership' && renderMembership()}
           {activeNav === 'progress' && renderProgress()}
           {activeNav === 'classes' && renderClasses()}
           {activeNav === 'lms' && renderLms()}
@@ -3210,1498 +1503,30 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout,
           {activeNav === 'placement-prep' && renderPlacementPrep()}
           {activeNav === 'certification' && renderCertification()}
           {activeNav === 'payments' && renderPayments()}
-          {activeNav === 'admission' && renderAdmissionDetails()}
-          {activeNav === 'help' && renderHelpSupport()}
-          {activeNav === 'profile' && renderMyProfile()}
+          {activeNav === 'admission' && renderAdmission()}
+          {activeNav === 'help' && renderHelp()}
+          {activeNav === 'profile' && renderProfile()}
         </div>
       </main>
 
-      {/* ========================================================= */}
-      {/* TOAST NOTIFICATION */}
-      {/* ========================================================= */}
-      {toastMessage && (
-        <div className="fixed bottom-6 right-6 z-50 bg-slate-900 text-white text-xs px-4 py-3 rounded-xl shadow-2xl flex items-center gap-2 border border-slate-700 animate-fadeIn">
-          <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />
-          <span>{toastMessage}</span>
+      {toast && (
+        <div className="fixed bottom-6 right-6 z-[70] bg-slate-900 text-white px-4 py-3 rounded-2xl shadow-2xl text-xs font-semibold flex items-center gap-2 max-w-sm">
+          <CheckCircle2 className="w-4 h-4 text-teal-400 flex-shrink-0" /><span>{toast}</span>
         </div>
       )}
 
-      {/* ========================================================= */}
-      {/* MODALS */}
-      {/* ========================================================= */}
+      {renderModal()}
 
-      {/* 1. ASK DOUBT MODAL */}
-      {activeModal === 'doubt' && selectedTrainer && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-white w-full max-w-lg rounded-2xl p-6 shadow-2xl border border-slate-100 relative">
-            <button 
-              onClick={() => setActiveModal(null)}
-              className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-slate-800 rounded-lg hover:bg-slate-100"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-full bg-[#483ec7] text-white font-bold flex items-center justify-center text-sm">
-                {selectedTrainer.name[0]}
-              </div>
-              <div>
-                <h3 className="text-sm font-bold text-slate-900">Ask a Doubt to {selectedTrainer.name}</h3>
-                <p className="text-xs text-slate-400">{selectedTrainer.role}</p>
-              </div>
-            </div>
-
-            <div className="space-y-3 text-xs">
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Select Module / Topic</label>
-                <select className="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-800 focus:outline-none focus:border-[#483ec7]">
-                  <option>CPT Surgery Coding (Musculoskeletal)</option>
-                  <option>CPT Modifiers (-59, -51, -25)</option>
-                  <option>ICD-10 Chapter Specific Guidelines</option>
-                  <option>General Career / Mock Test Question</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Your Question or Case Study Doubt</label>
-                <textarea 
-                  rows={4}
-                  value={doubtText}
-                  onChange={(e) => setDoubtText(e.target.value)}
-                  placeholder="Describe your doubt or paste the question text here..."
-                  className="w-full p-3 rounded-xl border border-slate-200 text-slate-800 focus:outline-none focus:border-[#483ec7]"
-                />
-              </div>
-            </div>
-
-            <div className="mt-5 flex items-center justify-end gap-2">
-              <button
-                onClick={() => setActiveModal(null)}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={async () => {
-                  if (!doubtText.trim()) return;
-                  try {
-                    await createTrainerDoubt({
-                      studentId: student.studentId,
-                      studentName: student.name,
-                      trainer: selectedTrainer?.name || (trainersList[0]?.name || 'Course Faculty'),
-                      subject: student.course,
-                      chapter: student.currentStage || 'Module 1',
-                      question: doubtText,
-                      urgency: 'Medium',
-                      status: 'New'
-                    });
-                  } catch (err) {
-                    console.warn('Doubt creation error', err);
-                  }
-                  setActiveModal(null);
-                  setDoubtText('');
-                  showToast(`✓ Doubt submitted to ${selectedTrainer?.name || 'Trainer'}! Auto-routed to faculty desk.`);
-                }}
-                className="px-5 py-2 rounded-xl text-xs font-bold bg-[#483ec7] hover:bg-[#372ea6] text-white transition-colors cursor-pointer"
-              >
-                Send Doubt
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 2. SUBMIT PRACTICE SET MODAL */}
-      {activeModal === 'assignment' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-white w-full max-w-lg rounded-2xl p-6 shadow-2xl border border-slate-100 relative">
-            <button 
-              onClick={() => setActiveModal(null)}
-              className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-slate-800 rounded-lg hover:bg-slate-100"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <h3 className="text-sm font-bold text-slate-900">Submit Practice Set 4</h3>
-            <p className="text-xs text-slate-400 mt-0.5">Surgery Coding Case Studies · Due Friday</p>
-
-            <div className="mt-5 border-2 border-dashed border-slate-200 rounded-2xl p-6 text-center hover:border-[#483ec7] transition-colors cursor-pointer bg-slate-50/50">
-              <Upload className="w-8 h-8 text-[#483ec7] mx-auto mb-2" />
-              <div className="text-xs font-bold text-slate-800">Drag & drop your answer sheet PDF</div>
-              <div className="text-[10px] text-slate-400 mt-1">Accepted formats: PDF, DOCX up to 15MB</div>
-              <input 
-                type="file" 
-                className="hidden" 
-                id="file-upload" 
-                onChange={(e) => setSelectedFile(e.target.files[0])}
-              />
-              <label 
-                htmlFor="file-upload" 
-                className="inline-block mt-3 px-3.5 py-1.5 rounded-lg bg-white border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer"
-              >
-                {selectedFile ? selectedFile.name : 'Browse Files'}
-              </label>
-            </div>
-
-            <div className="mt-5 flex items-center justify-end gap-2">
-              <button
-                onClick={() => setActiveModal(null)}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => {
-                  setActiveModal(null);
-                  setSelectedFile(null);
-                  showToast('Practice Set 4 uploaded and sent for evaluation!');
-                }}
-                className="px-5 py-2 rounded-xl text-xs font-bold bg-[#483ec7] hover:bg-[#372ea6] text-white transition-colors"
-              >
-                Confirm Submission
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 3. PAY INSTALMENT MODAL */}
-      {activeModal === 'payment' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl border border-slate-100 relative">
-            <button 
-              onClick={() => setActiveModal(null)}
-              className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-slate-800 rounded-lg hover:bg-slate-100"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <h3 className="text-sm font-bold text-slate-900">Pay Tuition Instalment</h3>
-            <p className="text-xs text-slate-400 mt-0.5">Secure payment gateway for ThoughtFlows Academy</p>
-
-            <div className="mt-4 p-4 rounded-xl bg-indigo-50/70 border border-indigo-100 text-xs flex justify-between items-center">
-              <div>
-                <span className="text-slate-500 block text-[11px]">Due Amount</span>
-                <span className="text-lg font-bold text-[#483ec7]">₹{student.balanceDue.toLocaleString()}</span>
-              </div>
-              <span className="text-[10px] bg-rose-100 text-rose-700 font-bold px-2 py-0.5 rounded">
-                PENDING DUES
-              </span>
-            </div>
-
-            <div className="mt-4 space-y-2 text-xs">
-              <div className="p-3 rounded-xl border border-slate-200 flex items-center gap-3 cursor-pointer hover:border-[#483ec7]">
-                <QrCode className="w-5 h-5 text-slate-600" />
-                <div className="flex-1 font-semibold text-slate-800">Instant UPI (GPay / PhonePe / Paytm)</div>
-                <span className="text-[10px] text-emerald-600 font-bold">Zero Fee</span>
-              </div>
-              <div className="p-3 rounded-xl border border-slate-200 flex items-center gap-3 cursor-pointer hover:border-[#483ec7]">
-                <CreditCard className="w-5 h-5 text-slate-600" />
-                <div className="flex-1 font-semibold text-slate-800">Debit / Credit Card / NetBanking</div>
-              </div>
-            </div>
-
-            <div className="mt-6 flex items-center justify-end gap-2">
-              <button
-                onClick={() => setActiveModal(null)}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => {
-                  const rcpNum = 1042 + paymentRecords.length + 1;
-                  const newReceipt = {
-                    id: `RCP-${rcpNum}`,
-                    title: `Instalment ${paymentRecords.length}`,
-                    date: `${new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })} · UPI`,
-                    amount: `₹${student.balanceDue.toLocaleString()}`
-                  };
-                  setPaymentRecords(prev => [...prev, newReceipt]);
-                  setHasClearedBalance(true);
-                  setActiveModal(null);
-                  showToast(`Payment of ₹${student.balanceDue.toLocaleString()} verified & confirmed! Receipt ${newReceipt.id} issued.`);
-                }}
-                className="px-5 py-2 rounded-xl text-xs font-bold bg-[#483ec7] hover:bg-[#372ea6] text-white transition-colors cursor-pointer"
-              >
-                Proceed to Pay ₹{student.balanceDue.toLocaleString()}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 4. UPLOAD RESUME MODAL */}
-      {activeModal === 'resume' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl border border-slate-100 relative">
-            <button 
-              onClick={() => setActiveModal(null)}
-              className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-slate-800 rounded-lg hover:bg-slate-100"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <h3 className="text-sm font-bold text-slate-900">Upload Your Resume</h3>
-            <p className="text-xs text-slate-400 mt-0.5">Needed for placement path & corporate campus drives</p>
-
-            <div className="mt-4 border-2 border-dashed border-slate-200 rounded-2xl p-6 text-center hover:border-[#483ec7] transition-colors cursor-pointer bg-slate-50/50">
-              <Briefcase className="w-8 h-8 text-[#483ec7] mx-auto mb-2" />
-              <div className="text-xs font-bold text-slate-800">Upload ATS Resume (.pdf)</div>
-              <div className="text-[10px] text-slate-400 mt-1">Our placement cell will review format & certification tags</div>
-            </div>
-
-            <div className="mt-5 flex items-center justify-end gap-2">
-              <button
-                onClick={() => setActiveModal(null)}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => {
-                  setActiveModal(null);
-                  showToast('Resume submitted for placement verification!');
-                }}
-                className="px-5 py-2 rounded-xl text-xs font-bold bg-[#483ec7] hover:bg-[#372ea6] text-white transition-colors"
-              >
-                Submit Resume
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 5. LIVE CLASS JOIN MODAL */}
-      {activeModal === 'liveClass' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-900/80 backdrop-blur-xs animate-fadeIn overflow-y-auto">
-          <div className={`bg-[#0f212d] w-full ${liveClassSession?.isLive ? 'max-w-6xl p-4 sm:p-5 space-y-3' : 'max-w-md p-6 text-center'} rounded-2xl shadow-2xl border border-slate-700 relative text-left`}>
-            <button 
-              onClick={() => setActiveModal(null)}
-              className="absolute top-4 right-4 z-20 p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 cursor-pointer"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            {liveClassSession?.isLive ? (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between gap-3 text-white pr-8">
-                  <div>
-                    <div className="text-sm sm:text-base font-extrabold">{liveClassSession.topic || student.course || 'Live Virtual Classroom'}</div>
-                    <div className="text-xs text-teal-300">Faculty: {liveClassSession.trainerName || 'Trainer'}</div>
-                  </div>
-                  <span className="px-3 py-1 rounded-full text-xs font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
-                    ● LIVE NOW
-                  </span>
-                </div>
-                <ZoomMeeting 
-                  link={liveClassSession.zoomLink || `https://zoom.us/j/${liveClassSession.meetingNumber}?pwd=${liveClassSession.password}`}
-                  studentEmail={student.email}
-                  userName={student.name || 'Student'}
-                  topic={liveClassSession.topic || student.course}
-                  batchName={student.course}
-                  isTrainerHost={false}
-                  height={560}
-                />
-              </div>
-            ) : (
-              <div className="space-y-4">
-                <div className="w-14 h-14 rounded-2xl bg-amber-100 border border-amber-300 text-amber-700 flex items-center justify-center mx-auto">
-                  <Clock className="w-7 h-7" />
-                </div>
-
-                <div>
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
-                    <span className="w-2 h-2 rounded-full bg-amber-500"></span>
-                    MEETING NOT STARTED
-                  </span>
-                  <h3 className="text-base font-extrabold text-slate-900 mt-1.5">
-                    Waiting for Trainer to Start
-                  </h3>
-                  <p className="text-xs text-slate-500 mt-1 max-w-xs mx-auto">
-                    Your trainer has not started this meeting yet. You will be able to join as soon as your trainer launches the session.
-                  </p>
-                </div>
-
-                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-600 text-left space-y-1">
-                  <div>• Program: <b>{student.course}</b></div>
-                  <div>• Mode: <b>{student.mode || 'Online'}</b></div>
-                  <div>• Timing: <b>{student.schedule}</b></div>
-                </div>
-
-                <div className="flex gap-2 justify-center pt-1">
-                  <button
-                    onClick={() => setActiveModal(null)}
-                    className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100"
-                  >
-                    Close
-                  </button>
-                  <button
-                    disabled
-                    className="px-5 py-2 rounded-xl text-xs font-bold bg-slate-200 text-slate-400 cursor-not-allowed"
-                  >
-                    Waiting for Trainer…
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* 6. BATCH DETAILS MODAL */}
-      {activeModal === 'batchDetails' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-white w-full max-w-lg rounded-2xl p-6 shadow-2xl border border-slate-100 relative">
-            <button 
-              onClick={() => setActiveModal(null)}
-              className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-slate-800 rounded-lg hover:bg-slate-100"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <h3 className="text-base font-bold text-slate-900">Batch Details</h3>
-            <p className="text-xs text-slate-400 mt-0.5">{student.batchName}</p>
-
-            <div className="mt-4 divide-y divide-slate-100 text-xs">
-              <div className="py-2.5 flex justify-between"><span className="text-slate-500">Center</span><span className="font-semibold">{student.location}</span></div>
-              <div className="py-2.5 flex justify-between"><span className="text-slate-500">Program</span><span className="font-semibold">{student.course}</span></div>
-              <div className="py-2.5 flex justify-between"><span className="text-slate-500">Faculty In-Charge</span><span className="font-semibold">{trainersList.length > 0 ? trainersList.map(t => t.name).slice(0, 2).join(' & ') : 'Course Faculty'}</span></div>
-              <div className="py-2.5 flex justify-between"><span className="text-slate-500">Target Exam Status</span><span className="font-semibold">{student.examStatus}</span></div>
-            </div>
-
-            <div className="mt-5 text-right">
-              <button
-                onClick={() => setActiveModal(null)}
-                className="px-5 py-2 rounded-xl text-xs font-bold bg-slate-900 text-white"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 7. ROADMAP MODAL */}
-      {activeModal === 'roadmap' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-white w-full max-w-xl rounded-2xl p-6 shadow-2xl border border-slate-100 relative max-h-[85vh] overflow-y-auto">
-            <button 
-              onClick={() => setActiveModal(null)}
-              className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-slate-800 rounded-lg hover:bg-slate-100"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <h3 className="text-base font-bold text-slate-900">10-Stage Learning Roadmap</h3>
-            <p className="text-xs text-slate-400 mt-0.5">Where You Are: CPT Coding (Stage 5 of 10)</p>
-
-            <div className="mt-5 space-y-3">
-              {[
-                { name: 'Stage 1: Medical Terminology Basics', done: true },
-                { name: 'Stage 2: Anatomy & Organ Systems', done: true },
-                { name: 'Stage 3: ICD-10-CM Coding Conventions', done: true },
-                { name: 'Stage 4: ICD-10 Specialty Guidelines', done: true },
-                { name: 'Stage 5: CPT-4 Surgery & Procedural Coding (CURRENT)', current: true },
-                { name: 'Stage 6: CPT E/M, Anesthesia & Radiology', upcoming: true },
-                { name: 'Stage 7: HCPCS Level II & Modifiers Mastery', upcoming: true },
-                { name: 'Stage 8: AAPC 100-Question Mock Drills', upcoming: true },
-                { name: 'Stage 9: CPC Examination Slot & Certification', upcoming: true },
-                { name: 'Stage 10: RCM Corporate Placement Interviews', upcoming: true },
-              ].map((s, idx) => (
-                <div key={idx} className={`p-3 rounded-xl border flex items-center justify-between text-xs ${
-                  s.current 
-                    ? 'border-[#483ec7] bg-indigo-50/70 font-bold text-[#483ec7]' 
-                    : s.done 
-                    ? 'border-emerald-200 bg-emerald-50/50 text-emerald-800' 
-                    : 'border-slate-100 bg-slate-50 text-slate-500'
-                }`}>
-                  <span>{s.name}</span>
-                  <span>{s.done ? '✓ Completed' : s.current ? '● In Progress' : 'Pending'}</span>
-                </div>
-              ))}
-            </div>
-
-            <div className="mt-5 text-right">
-              <button
-                onClick={() => setActiveModal(null)}
-                className="px-5 py-2 rounded-xl text-xs font-bold bg-[#483ec7] text-white"
-              >
-                Close Roadmap
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 8. REFER A FRIEND MODAL */}
-      {activeModal === 'referFriend' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl border border-slate-100 relative">
-            <button 
-              onClick={() => setActiveModal(null)}
-              className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-slate-800 rounded-lg hover:bg-slate-100"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <div className="flex items-center gap-3 mb-3">
-              <div className="w-10 h-10 rounded-xl bg-teal-100 text-teal-800 flex items-center justify-center font-bold">
-                ₹
-              </div>
-              <div>
-                <h3 className="text-sm font-bold text-slate-900">Refer a Friend · Earn ₹1,500</h3>
-                <p className="text-xs text-slate-400">Add reward points directly to your Scholar card</p>
-              </div>
-            </div>
-
-            <form
-              onSubmit={async (e) => {
-                e.preventDefault();
-                if (!referralFriendName || !referralFriendPhone) {
-                  showToast('Please provide your friend\'s name and mobile number.');
-                  return;
-                }
-                const newRef = {
-                  name: referralFriendName,
-                  phone: referralFriendPhone,
-                  course: referralCourse,
-                  hr: referralHrCounselor,
-                  status: 'Demo Scheduled',
-                  date: 'Today'
-                };
-
-                try {
-                  await createLead({
-                    fullName: referralFriendName,
-                    name: referralFriendName,
-                    phone: referralFriendPhone,
-                    course: referralCourse,
-                    counselorAssigned: referralHrCounselor,
-                    source: `Student Referral (${student.name})`,
-                    sourceName: `Student Referral (${student.name})`,
-                    branch: student.branchCity || 'Coimbatore',
-                    stage: 'new'
-                  });
-                } catch (leadErr) {
-                  console.warn('Student referral lead creation notice:', leadErr.message);
-                }
-
-                setReferrals(prev => [newRef, ...prev]);
-                setReferralFriendName('');
-                setReferralFriendPhone('');
-                setActiveModal(null);
-                showToast(`✓ Referral sent for ${newRef.name}! HR ${newRef.hr} will contact them within 24 hours.`);
-              }}
-              className="space-y-3 text-xs mt-4"
-            >
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Friend's Full Name *</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Deepika M."
-                  value={referralFriendName}
-                  onChange={(e) => setReferralFriendName(e.target.value)}
-                  className="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-900 focus:outline-none focus:border-[#483ec7]"
-                />
-              </div>
-
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Mobile / WhatsApp Number *</label>
-                <input
-                  type="tel"
-                  required
-                  placeholder="e.g. 98765 43210"
-                  value={referralFriendPhone}
-                  onChange={(e) => setReferralFriendPhone(e.target.value)}
-                  className="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-900 focus:outline-none focus:border-[#483ec7]"
-                />
-              </div>
-
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Interested Medical Coding Course</label>
-                <select
-                  value={referralCourse}
-                  onChange={(e) => setReferralCourse(e.target.value)}
-                  className="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-900 focus:outline-none focus:border-[#483ec7]"
-                >
-                  {COURSE_CATEGORIES.map((cat) => (
-                    <optgroup key={cat.category} label={cat.title}>
-                      {cat.courses.map((c) => (
-                        <option key={c.code} value={`${c.code} — ${c.name}`}>
-                          {c.code} — {c.name}
-                        </option>
-                      ))}
-                    </optgroup>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Assigned HR Academic Counselor</label>
-                <select
-                  value={referralHrCounselor}
-                  onChange={(e) => setReferralHrCounselor(e.target.value)}
-                  className="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-900 focus:outline-none focus:border-[#483ec7]"
-                >
-                  <option>Kavitha N. (Coimbatore Gandhipuram Hub)</option>
-                  <option>Balaji R. (Chennai Guindy HQ)</option>
-                  <option>Reshma S. (Coimbatore Campus)</option>
-                  <option>Meenakshi R. (Bangalore Indiranagar)</option>
-                </select>
-              </div>
-
-              <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-[11px] text-amber-800">
-                ⭐ You will automatically earn <strong>1500 points (₹1,500)</strong> as soon as your friend completes admission!
-              </div>
-
-              <div className="mt-5 flex items-center justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setActiveModal(null)}
-                  className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-5 py-2.5 rounded-xl text-xs font-bold bg-[#182032] hover:bg-slate-900 text-white transition-all shadow-sm"
-                >
-                  Submit Referral
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* 9. REDEEM POINTS MODAL */}
-      {activeModal === 'redeemPoints' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl border border-slate-100 relative">
-            <button 
-              onClick={() => setActiveModal(null)}
-              className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-slate-800 rounded-lg hover:bg-slate-100"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <h3 className="text-sm font-bold text-slate-900">Redeem Reward Points</h3>
-            <p className="text-xs text-slate-400 mt-0.5">Convert your earned referral rewards</p>
-
-            <div className="mt-4 p-4 rounded-xl bg-[#07252a] text-white flex justify-between items-center border border-teal-500/30">
-              <div>
-                <span className="text-teal-300 block text-[11px] font-medium">Available Balance</span>
-                <span className="text-2xl font-bold text-white mt-0.5">{rewardPoints} Points</span>
-              </div>
-              <div className="text-right">
-                <span className="text-teal-300 block text-[11px] font-medium">Cash Value</span>
-                <span className="text-2xl font-bold text-amber-400 mt-0.5">₹{rewardPoints}</span>
-              </div>
-            </div>
-
-            <div className="mt-4 space-y-2.5 text-xs">
-              <label className="font-semibold text-slate-700 block">Choose Redemption Option</label>
-              
-              <div 
-                onClick={() => setRedeemOption('cash')}
-                className={`p-3 rounded-xl border flex items-center justify-between cursor-pointer transition-all ${
-                  redeemOption === 'cash' ? 'border-[#483ec7] bg-indigo-50/60' : 'border-slate-200 hover:bg-slate-50'
-                }`}
-              >
-                <div>
-                  <div className="font-bold text-slate-900">Direct Cash Transfer (UPI / Bank)</div>
-                  <div className="text-[11px] text-slate-500">Credited to your account by Gandhipuram branch</div>
-                </div>
-                <div className={`w-4 h-4 rounded-full border flex items-center justify-center ${redeemOption === 'cash' ? 'border-[#483ec7] bg-[#483ec7]' : 'border-slate-300'}`}>
-                  {redeemOption === 'cash' && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
-                </div>
-              </div>
-
-              <div 
-                onClick={() => setRedeemOption('fee')}
-                className={`p-3 rounded-xl border flex items-center justify-between cursor-pointer transition-all ${
-                  redeemOption === 'fee' ? 'border-[#483ec7] bg-indigo-50/60' : 'border-slate-200 hover:bg-slate-50'
-                }`}
-              >
-                <div>
-                  <div className="font-bold text-slate-900">Apply as Course Fee Credit</div>
-                  <div className="text-[11px] text-slate-500">Deduct directly from pending ₹15,000 instalment</div>
-                </div>
-                <div className={`w-4 h-4 rounded-full border flex items-center justify-center ${redeemOption === 'fee' ? 'border-[#483ec7] bg-[#483ec7]' : 'border-slate-300'}`}>
-                  {redeemOption === 'fee' && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-6 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setActiveModal(null)}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (rewardPoints === 0) {
-                    showToast('You currently have 0 points. Refer a friend to earn ₹1,500 per admission!');
-                    setActiveModal(null);
-                    return;
-                  }
-                  showToast(`Redemption request of ₹${rewardPoints} submitted successfully!`);
-                  setActiveModal(null);
-                }}
-                className="px-5 py-2.5 rounded-xl text-xs font-bold bg-[#483ec7] hover:bg-[#372ea6] text-white transition-colors"
-              >
-                Confirm Redemption
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 10. WATCH RECORDING VIDEO MODAL */}
-      {activeModal === 'recording' && selectedRecording && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-fadeIn">
-          <div className="bg-slate-900 w-full max-w-2xl rounded-3xl overflow-hidden shadow-2xl border border-slate-700 relative text-white">
-            <div className="p-4 sm:p-5 flex items-center justify-between border-b border-slate-800">
-              <div>
-                <h3 className="text-sm sm:text-base font-bold text-white">{selectedRecording.title}</h3>
-                <p className="text-xs text-slate-400 mt-0.5">Trainer: {selectedRecording.trainer} · {selectedRecording.date}</p>
-              </div>
-              <button
-                onClick={() => setActiveModal(null)}
-                className="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Video Player Preview Area */}
-            <div className="relative aspect-video bg-black flex flex-col items-center justify-center p-6 text-center">
-              <div className="w-16 h-16 rounded-full bg-white/10 border border-white/20 flex items-center justify-center text-white mb-3 cursor-pointer hover:scale-110 hover:bg-white/20 transition-all shadow-lg">
-                <div className="w-0 h-0 border-y-8 border-y-transparent border-l-12 border-l-white ml-1" />
-              </div>
-              <div className="text-sm font-semibold text-slate-200">High-Definition Class Archive Stream</div>
-              <div className="text-xs text-slate-400 mt-1">1080p · AAC Audio · ThoughtFlows LMS Protected Stream</div>
-
-              <div className="absolute bottom-4 left-4 right-4 bg-black/60 backdrop-blur-md p-2.5 rounded-xl border border-white/10 flex items-center justify-between text-xs">
-                <span className="text-emerald-400 font-mono">00:14:22 / 01:52:10</span>
-                <span className="text-slate-300">Playback Speed: 1.0x</span>
-              </div>
-            </div>
-
-            <div className="p-4 bg-slate-950 flex items-center justify-between text-xs border-t border-slate-800">
-              <span className="text-slate-400">Available to active students through Dec 2026</span>
-              <button
-                onClick={() => {
-                  setActiveModal(null);
-                  showToast('Downloaded session transcript and code references!');
-                }}
-                className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white font-semibold transition-colors flex items-center gap-1.5"
-              >
-                <Download className="w-3.5 h-3.5" />
-                <span>Download Notes</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 11. CPT SECTION QUIZ 3 MODAL */}
-      {activeModal === 'quiz' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-white w-full max-w-lg rounded-2xl p-6 shadow-2xl border border-slate-100 relative">
-            <button 
-              onClick={() => setActiveModal(null)}
-              className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-slate-800 rounded-lg hover:bg-slate-100"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-800 flex items-center justify-center font-bold">
-                <CheckCircle2 className="w-5 h-5" />
-              </div>
-              <div>
-                <h3 className="text-base font-bold text-slate-900">CPT Section Quiz 3</h3>
-                <p className="text-xs text-slate-400">20 Questions · Time limit: 30 minutes · Pass: 70%</p>
-              </div>
-            </div>
-
-            <div className="space-y-3.5 text-xs">
-              <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/70">
-                <p className="font-bold text-slate-800 mb-2">Q1. Which CPT modifier is appended when a distinct procedural service is performed on the same day?</p>
-                <div className="space-y-1.5">
-                  <label className="flex items-center gap-2 p-2 rounded-lg bg-white border border-slate-200 cursor-pointer hover:border-[#483ec7]">
-                    <input type="radio" name="q1" defaultChecked />
-                    <span>Modifier -59 (Distinct Procedural Service)</span>
-                  </label>
-                  <label className="flex items-center gap-2 p-2 rounded-lg bg-white border border-slate-200 cursor-pointer hover:border-[#483ec7]">
-                    <input type="radio" name="q1" />
-                    <span>Modifier -25 (Significant, Separately Identifiable E/M)</span>
-                  </label>
-                  <label className="flex items-center gap-2 p-2 rounded-lg bg-white border border-slate-200 cursor-pointer hover:border-[#483ec7]">
-                    <input type="radio" name="q1" />
-                    <span>Modifier -51 (Multiple Procedures)</span>
-                  </label>
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-5 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setActiveModal(null)}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100"
-              >
-                Exit Quiz
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setActiveModal(null);
-                  showToast('Quiz submitted! Score: 19/20 (95%) — Logged to your Test Average.');
-                }}
-                className="px-5 py-2.5 rounded-xl text-xs font-bold bg-[#483ec7] hover:bg-[#372ea6] text-white transition-colors"
-              >
-                Submit Answers
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 12. BOOK ANOTHER MOCK MODAL */}
-      {activeModal === 'bookMock' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl border border-slate-100 relative">
-            <button 
-              onClick={() => setActiveModal(null)}
-              className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-slate-800 rounded-lg hover:bg-slate-100"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <h3 className="text-base font-bold text-slate-900">Book Next Mock Interview</h3>
-            <p className="text-xs text-slate-400 mt-0.5">1-on-1 interview practice session with certification faculty</p>
-
-            <div className="mt-4 space-y-3 text-xs">
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Interviewer</label>
-                <select className="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-900">
-                  {trainersList.length > 0 ? (
-                    trainersList.map((t, idx) => (
-                      <option key={t.id || idx}>{t.name} ({t.role || t.course})</option>
-                    ))
-                  ) : (
-                    <>
-                      <option>{student.counselor ? student.counselor.replace(' (Academic Advisor)', '') : 'Faculty Lead'} ({student.course} Faculty)</option>
-                      <option>Corporate Placement Directorate</option>
-                    </>
-                  )}
-                </select>
-              </div>
-
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Interview Type</label>
-                <select className="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-900">
-                  <option>HR & Behavioral (STAR Methodology)</option>
-                  <option>Coding Technical & Case Scenarios</option>
-                  <option>Comprehensive US Healthcare RCM Corporate Simulation</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Preferred Date & Time</label>
-                <select className="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-900">
-                  <option>Upcoming Slot · 11:30 AM – 12:15 PM</option>
-                  <option>Upcoming Slot · 4:00 PM – 4:45 PM</option>
-                  <option>Upcoming Slot · 10:00 AM – 10:45 AM</option>
-                </select>
-              </div>
-            </div>
-
-            <div className="mt-6 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setActiveModal(null)}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setActiveModal(null);
-                  showToast('Mock Interview booked! Calendar invitation sent to your email.');
-                }}
-                className="px-5 py-2.5 rounded-xl text-xs font-bold bg-[#242144] hover:bg-slate-900 text-white transition-colors"
-              >
-                Confirm Booking
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 13. UPLOAD VIDEO INTRODUCTION MODAL */}
-      {activeModal === 'uploadVideoIntro' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl border border-slate-100 relative">
-            <button 
-              onClick={() => setActiveModal(null)}
-              className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-slate-800 rounded-lg hover:bg-slate-100"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <h3 className="text-base font-bold text-slate-900">Record 60-Sec Self-Intro</h3>
-            <p className="text-xs text-slate-400 mt-0.5">Used by corporate healthcare recruiters</p>
-
-            <div className="mt-4 border-2 border-dashed border-slate-200 rounded-2xl p-6 text-center hover:border-[#483ec7] transition-colors cursor-pointer bg-slate-50/50">
-              <Video className="w-8 h-8 text-[#483ec7] mx-auto mb-2" />
-              <div className="text-xs font-bold text-slate-800">Upload 60-second MP4 / MOV video</div>
-              <div className="text-[10px] text-slate-400 mt-1">Make sure lighting is bright and audio is clear</div>
-            </div>
-
-            <div className="mt-5 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setActiveModal(null)}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setActiveModal(null);
-                  showToast('Self-introduction video uploaded and submitted for trainer review!');
-                }}
-                className="px-5 py-2.5 rounded-xl text-xs font-bold bg-[#483ec7] hover:bg-[#372ea6] text-white transition-colors"
-              >
-                Save Video
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 14. COMPLETE IMPROVEMENT TASK MODAL */}
-      {activeModal === 'improvementTask' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl border border-slate-100 relative">
-            <button 
-              onClick={() => setActiveModal(null)}
-              className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-slate-800 rounded-lg hover:bg-slate-100"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <h3 className="text-base font-bold text-slate-900">Interview Improvement Checklist</h3>
-            <p className="text-xs text-slate-400 mt-0.5">Tasks assigned by Course Faculty</p>
-
-            <div className="mt-4 space-y-2.5 text-xs">
-              <label className="flex items-center gap-2.5 p-3 rounded-xl border border-slate-200 bg-slate-50 cursor-pointer">
-                <input type="checkbox" defaultChecked className="rounded text-[#483ec7]" />
-                <span className="text-slate-800">Practice the STAR format for HR questions</span>
-              </label>
-              <label className="flex items-center gap-2.5 p-3 rounded-xl border border-slate-200 bg-slate-50 cursor-pointer">
-                <input type="checkbox" className="rounded text-[#483ec7]" />
-                <span className="text-slate-800">Record a 60-sec self-intro</span>
-              </label>
-              <label className="flex items-center gap-2.5 p-3 rounded-xl border border-slate-200 bg-slate-50 cursor-pointer">
-                <input type="checkbox" defaultChecked className="rounded text-[#483ec7]" />
-                <span className="text-slate-800">Revise E/M & modifier talking points</span>
-              </label>
-            </div>
-
-            <div className="mt-6 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setActiveModal(null)}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100"
-              >
-                Close
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setActiveModal(null);
-                  showToast('Improvement tasks updated! Readiness score refreshed.');
-                }}
-                className="px-5 py-2.5 rounded-xl text-xs font-bold bg-[#483ec7] hover:bg-[#372ea6] text-white transition-colors"
-              >
-                Save Progress
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 15. UPDATE PREFERRED LOCATION MODAL */}
-      {activeModal === 'updateLocation' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl border border-slate-100 relative">
-            <button 
-              onClick={() => setActiveModal(null)}
-              className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-slate-800 rounded-lg hover:bg-slate-100"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <h3 className="text-base font-bold text-slate-900">Update Preferred Placement Location</h3>
-            <p className="text-xs text-slate-400 mt-0.5">Where would you like to interview with corporate recruiters?</p>
-
-            <div className="mt-4 space-y-2.5 text-xs">
-              {['Coimbatore', 'Chennai', 'Bangalore', 'Hyderabad', 'Remote / Work From Home'].map((loc) => {
-                const isChecked = preferredLocations.includes(loc);
-                return (
-                  <label 
-                    key={loc} 
-                    className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition-colors ${
-                      isChecked ? 'border-[#483ec7] bg-indigo-50/50 text-slate-900 font-semibold' : 'border-slate-200 hover:bg-slate-50 text-slate-700'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <MapPin className="w-4 h-4 text-[#483ec7]" />
-                      <span>{loc}</span>
-                    </div>
-                    <input 
-                      type="checkbox" 
-                      checked={isChecked}
-                      onChange={() => {
-                        if (isChecked) {
-                          setPreferredLocations(preferredLocations.filter(l => l !== loc));
-                        } else {
-                          setPreferredLocations([...preferredLocations, loc]);
-                        }
-                      }}
-                      className="rounded text-[#483ec7]" 
-                    />
-                  </label>
-                );
-              })}
-            </div>
-
-            <div className="mt-6 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setActiveModal(null)}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setActiveModal(null);
-                  showToast(`Preferred locations updated to: ${preferredLocations.join(', ') || 'All Locations'}`);
-                }}
-                className="px-5 py-2.5 rounded-xl text-xs font-bold bg-[#242144] hover:bg-slate-900 text-white transition-colors"
-              >
-                Save Preferences
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 16. VIEW PLACEMENT TIPS MODAL */}
-      {activeModal === 'placementTips' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-white w-full max-w-lg rounded-2xl p-6 shadow-2xl border border-slate-100 relative max-h-[85vh] overflow-y-auto">
-            <button 
-              onClick={() => setActiveModal(null)}
-              className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-slate-800 rounded-lg hover:bg-slate-100"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-xl">⚡</span>
-              <h3 className="text-base font-bold text-slate-900">Corporate Placement Tips</h3>
-            </div>
-            <p className="text-xs text-slate-400 mb-4">Guidelines from ThoughtFlows Placement Cell &amp; Corporate Partners</p>
-
-            <div className="space-y-3.5 text-xs">
-              <div className="p-3.5 rounded-xl bg-indigo-50/70 border border-indigo-100">
-                <h4 className="font-bold text-[#483ec7] mb-1">1. ATS Resume Checklist</h4>
-                <p className="text-slate-600">Ensure your AAPC student ID, CPC certification target date, and key competencies (CPT surgery, ICD-10-CM guidelines, HCPCS Level II) are prominently displayed on the top 1/3 of page one.</p>
-              </div>
-
-              <div className="p-3.5 rounded-xl bg-teal-50/70 border border-teal-100">
-                <h4 className="font-bold text-teal-800 mb-1">2. 60-Second Video Pitch</h4>
-                <p className="text-slate-600">State your name, educational qualification, passion for medical coding, and recent mock exam scores. Keep eye contact and maintain professional attire.</p>
-              </div>
-
-              <div className="p-3.5 rounded-xl bg-amber-50/70 border border-amber-100">
-                <h4 className="font-bold text-amber-800 mb-1">3. Recruiter Interview Expectations</h4>
-                <p className="text-slate-600">Top recruiters like Omega Healthcare, CorroHealth, and Episource test modifier logic (e.g. -25 vs -59) and sequencing rules. Revise case scenarios before the interview call.</p>
-              </div>
-
-              <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
-                <h4 className="font-bold text-slate-800 mb-1">4. Target 80+ Readiness Score</h4>
-                <p className="text-slate-600">Completing trainer review, mock interview, and video intro automatically unlocks direct export to the Talentera hiring network.</p>
-              </div>
-            </div>
-
-            <div className="mt-6 text-right">
-              <button
-                onClick={() => setActiveModal(null)}
-                className="px-5 py-2.5 rounded-xl text-xs font-bold bg-[#242144] text-white hover:bg-slate-900 transition-colors"
-              >
-                Got It, Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 17. RAISE A FEE QUERY MODAL */}
-      {activeModal === 'feeQuery' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl border border-slate-100 relative">
-            <button 
-              onClick={() => setActiveModal(null)}
-              className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-slate-800 rounded-lg hover:bg-slate-100"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-xl">❓</span>
-              <h3 className="text-base font-bold text-slate-900">Raise a Fee Query</h3>
-            </div>
-            <p className="text-xs text-slate-400 mb-4">Direct message to Coimbatore Gandhipuram Finance Desk</p>
-
-            <form 
-              onSubmit={(e) => {
-                e.preventDefault();
-                setActiveModal(null);
-                setFeeQueryText('');
-                showToast('Fee query submitted to Finance. You will receive an update within 24 hours.');
-              }}
-              className="space-y-3.5 text-xs"
-            >
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Select Query Topic</label>
-                <select className="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-900">
-                  <option>Instalment Extension Request</option>
-                  <option>Payment Receipt Download Assistance</option>
-                  <option>Scholarship / Discount Adjustment</option>
-                  <option>Payment Verification (UPI / NetBanking)</option>
-                  <option>Other Fee Clarification</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Details of Query *</label>
-                <textarea 
-                  rows={4}
-                  required
-                  value={feeQueryText}
-                  onChange={(e) => setFeeQueryText(e.target.value)}
-                  placeholder="Describe your query or provide transaction reference ID..."
-                  className="w-full p-3 rounded-xl border border-slate-200 text-slate-800 focus:outline-none focus:border-[#483ec7]"
-                />
-              </div>
-
-              <div className="mt-5 flex items-center justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setActiveModal(null)}
-                  className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-5 py-2.5 rounded-xl text-xs font-bold bg-[#242144] hover:bg-slate-900 text-white transition-colors"
-                >
-                  Submit Query
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* 18. SUPPORT NEW TICKET MODAL */}
-      {activeModal === 'newTicket' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl border border-slate-100 relative">
-            <button 
-              onClick={() => setActiveModal(null)}
-              className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-slate-800 rounded-lg hover:bg-slate-100"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-xl">💮</span>
-              <h3 className="text-base font-bold text-slate-900">Raise Administrative Ticket</h3>
-            </div>
-            <p className="text-xs text-slate-400 mb-4">Branch operations team responds within 1 working day</p>
-
-            <form 
-              onSubmit={async (e) => {
-                e.preventDefault();
-                const ticketNum = Math.floor(1000 + Math.random() * 9000);
-                try {
-                  await createEscalation({
-                    title: ticketSubject || `${ticketCategory} Request from ${student.name}`,
-                    description: ticketDescription || `${ticketCategory} support ticket raised via Student Portal`,
-                    type: ticketCategory,
-                    priority: 'normal',
-                    departmentCode: ticketCategory.includes('Fee') ? 'FIN' : ticketCategory.includes('Class') ? 'ACAD' : 'ADM',
-                    branchName: student.branchCity || 'Coimbatore',
-                    raisedBy: `${student.name} (${student.studentId})`
-                  });
-                } catch (escErr) {
-                  console.warn('Escalation creation error:', escErr.message);
-                }
-
-                setActiveModal(null);
-                setTicketSubject('');
-                setTicketDescription('');
-                showToast(`✓ Ticket #${ticketNum} submitted to Leadership Ops Desk for ${ticketCategory}!`);
-              }}
-              className="space-y-3.5 text-xs"
-            >
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Issue Category</label>
-                <select 
-                  value={ticketCategory}
-                  onChange={(e) => setTicketCategory(e.target.value)}
-                  className="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-900"
-                >
-                  <option>Fees &amp; Receipts</option>
-                  <option>Certificate Release</option>
-                  <option>Batch Timing or Classroom Change</option>
-                  <option>LMS Portal / Video Playback Access</option>
-                  <option>Attendance Correction</option>
-                  <option>Placement Team Inquiry</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Subject / Summary *</label>
-                <input 
-                  type="text"
-                  required
-                  placeholder="e.g. Need certificate clearance pre-requisite check"
-                  value={ticketSubject}
-                  onChange={(e) => setTicketSubject(e.target.value)}
-                  className="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-900 focus:outline-none focus:border-[#483ec7]"
-                />
-              </div>
-
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Description *</label>
-                <textarea 
-                  rows={3}
-                  required
-                  value={ticketDescription}
-                  onChange={(e) => setTicketDescription(e.target.value)}
-                  placeholder="Explain the issue in detail..."
-                  className="w-full p-2.5 rounded-xl border border-slate-200 text-slate-900 focus:outline-none focus:border-[#483ec7]"
-                />
-              </div>
-
-              <div className="mt-5 flex items-center justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setActiveModal(null)}
-                  className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-5 py-2.5 rounded-xl text-xs font-bold bg-[#483ec7] hover:bg-[#372ea6] text-white transition-colors"
-                >
-                  Submit Ticket
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* 19. CALL BRANCH DIRECTORY MODAL */}
-      {activeModal === 'callBranch' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl border border-slate-100 relative">
-            <button 
-              onClick={() => setActiveModal(null)}
-              className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-slate-800 rounded-lg hover:bg-slate-100"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <div className="flex items-center gap-2 mb-2">
-              <Phone className="w-5 h-5 text-emerald-600" />
-              <h3 className="text-base font-bold text-slate-900">Branch Contact Directory</h3>
-            </div>
-            <p className="text-xs text-slate-400 mb-4">Direct helplines for Coimbatore &amp; Academic Advisors</p>
-
-            <div className="space-y-3 text-xs">
-              <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-between">
-                <div>
-                  <div className="font-bold text-slate-900">Gandhipuram Hub Front Desk</div>
-                  <div className="text-[11px] text-slate-500">Mon - Sat · 9:00 AM – 7:30 PM</div>
-                </div>
-                <a 
-                  href="tel:+919842165432" 
-                  className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white font-bold text-xs hover:bg-emerald-700"
-                >
-                  +91 98421 65432
-                </a>
-              </div>
-
-              <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-between">
-                <div>
-                  <div className="font-bold text-slate-900">Kavitha N. (Academic Counselor)</div>
-                  <div className="text-[11px] text-slate-500">Admissions &amp; Documentation Desk</div>
-                </div>
-                <a 
-                  href="tel:+919443219870" 
-                  className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white font-bold text-xs hover:bg-emerald-700"
-                >
-                  +91 94432 19870
-                </a>
-              </div>
-
-              <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-between">
-                <div>
-                  <div className="font-bold text-slate-900">Chennai Guindy HQ Support</div>
-                  <div className="text-[11px] text-slate-500">Central Academic Operations</div>
-                </div>
-                <a 
-                  href="tel:+919842111223" 
-                  className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white font-bold text-xs hover:bg-emerald-700"
-                >
-                  +91 98421 11223
-                </a>
-              </div>
-            </div>
-
-            <div className="mt-6 text-right">
-              <button
-                onClick={() => setActiveModal(null)}
-                className="px-5 py-2 rounded-xl text-xs font-bold bg-slate-900 text-white cursor-pointer"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 20. ADD CERTIFICATE MODAL */}
-      {activeModal === 'addCertificate' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl border border-slate-100 relative">
-            <button 
-              onClick={() => setActiveModal(null)}
-              className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-slate-800 rounded-lg hover:bg-slate-100"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-xl">📜</span>
-              <h3 className="text-base font-bold text-slate-900">Add a Certificate</h3>
-            </div>
-            <p className="text-xs text-slate-400 mb-4">Showcase prior degrees, online courses or internships</p>
-
-            <form 
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (!newCertTitle.trim()) return;
-                const newCert = {
-                  id: Date.now(),
-                  name: newCertTitle.trim(),
-                  issuer: newCertIssuer.trim() || 'Accredited Institution',
-                  year: newCertYear || '2026',
-                  size: '1.4 MB'
-                };
-                setUserCertificates(prev => [newCert, ...prev]);
-                setNewCertTitle('');
-                setNewCertIssuer('');
-                setActiveModal(null);
-                showToast(`Certificate "${newCert.name}" added to your profile!`);
-              }}
-              className="space-y-3.5 text-xs"
-            >
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Certificate / Course Title *</label>
-                <input 
-                  type="text"
-                  required
-                  placeholder="e.g. Diploma in Medical Laboratory Tech"
-                  value={newCertTitle}
-                  onChange={(e) => setNewCertTitle(e.target.value)}
-                  className="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-900 focus:outline-none focus:border-[#483ec7]"
-                />
-              </div>
-
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Issuing University / Platform</label>
-                <input 
-                  type="text"
-                  placeholder="e.g. Apollo Medskills / Coursera"
-                  value={newCertIssuer}
-                  onChange={(e) => setNewCertIssuer(e.target.value)}
-                  className="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-900 focus:outline-none focus:border-[#483ec7]"
-                />
-              </div>
-
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Year of Completion</label>
-                <input 
-                  type="text"
-                  placeholder="2025"
-                  value={newCertYear}
-                  onChange={(e) => setNewCertYear(e.target.value)}
-                  className="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-900 focus:outline-none focus:border-[#483ec7]"
-                />
-              </div>
-
-              <div className="border-2 border-dashed border-slate-200 rounded-xl p-4 text-center bg-slate-50">
-                <Upload className="w-5 h-5 text-slate-400 mx-auto mb-1" />
-                <div className="text-xs font-semibold text-slate-700">Upload PDF, JPG or PNG (max 5MB)</div>
-                <div className="text-[10px] text-slate-400 mt-0.5">Scanned copies accepted for placement audit</div>
-              </div>
-
-              <div className="mt-5 flex items-center justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setActiveModal(null)}
-                  className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-5 py-2.5 rounded-xl text-xs font-bold bg-[#0e5c63] hover:bg-[#093f44] text-white transition-colors"
-                >
-                  Save Certificate
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* 21. REQUEST CONTACT EDIT MODAL */}
-      {activeModal === 'requestEdit' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl border border-slate-100 relative">
-            <button 
-              onClick={() => setActiveModal(null)}
-              className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-slate-800 rounded-lg hover:bg-slate-100"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-xl">✍️</span>
-              <h3 className="text-base font-bold text-slate-900">Request Contact Info Edit</h3>
-            </div>
-            <p className="text-xs text-slate-400 mb-4">Official changes are verified by Branch HR Counselor Kavitha N.</p>
-
-            <form 
-              onSubmit={(e) => {
-                e.preventDefault();
-                setActiveModal(null);
-                setEditReason('');
-                showToast('Contact edit request sent to Branch HR! Verified updates apply within 24 hours.');
-              }}
-              className="space-y-3.5 text-xs"
-            >
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">New Mobile / WhatsApp Number</label>
-                <input 
-                  type="tel"
-                  required
-                  value={editPhone}
-                  onChange={(e) => setEditPhone(e.target.value)}
-                  className="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-900 focus:outline-none focus:border-[#483ec7]"
-                />
-              </div>
-
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">New Email Address</label>
-                <input 
-                  type="email"
-                  required
-                  value={editEmail}
-                  onChange={(e) => setEditEmail(e.target.value)}
-                  className="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-900 focus:outline-none focus:border-[#483ec7]"
-                />
-              </div>
-
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Reason for Update *</label>
-                <textarea 
-                  rows={3}
-                  required
-                  placeholder="e.g. Changed primary SIM / WhatsApp number..."
-                  value={editReason}
-                  onChange={(e) => setEditReason(e.target.value)}
-                  className="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-900 focus:outline-none focus:border-[#483ec7]"
-                />
-              </div>
-
-              <div className="p-3 rounded-xl bg-indigo-50 border border-indigo-100 text-[11px] text-indigo-900">
-                🔒 Keeps your AAPC examination registration and placement drive records synchronized.
-              </div>
-
-              <div className="mt-5 flex items-center justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setActiveModal(null)}
-                  className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-5 py-2.5 rounded-xl text-xs font-bold bg-[#242144] hover:bg-slate-900 text-white transition-colors"
-                >
-                  Submit Request
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Student Demo Booking Modal */}
       <BookNewDemoModal
-        isOpen={showStudentDemoModal}
-        onClose={() => setShowStudentDemoModal(false)}
-        initialData={{
-          studentName: student.name,
-          mobile: student.phone,
-          course: 'CIC',
-          mode: 'Online'
-        }}
+        isOpen={showDemoModal}
+        onClose={() => setShowDemoModal(false)}
+        initialData={{ studentName: d.name, mobile: st.phone, email: st.email }}
         onConfirm={async (demoData) => {
           try {
-            await axios.post('/api/demos', demoData);
-            setToastMessage(`✓ Demo booked for ${demoData.course}! Auto-routed to expert trainer.`);
-            setTimeout(() => setToastMessage(null), 4000);
+            await createDemo(demoData);
+            showToast(`✓ Demo booked for ${demoData.course}`);
           } catch (e) {
-            console.warn(e);
-            setToastMessage('✓ Demo booked successfully!');
-            setTimeout(() => setToastMessage(null), 3000);
+            showToast(`⚠ ${errMsg(e, 'Could not book the demo')}`, 5000);
           }
         }}
       />

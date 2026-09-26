@@ -15,7 +15,7 @@ import {
   Volume2,
   AlertCircle
 } from 'lucide-react';
-import { getRecordings, deleteRecording, onDataUpdate } from '../services/api';
+import { getRecordings, deleteRecording, onDataUpdate, recordingUrl } from '../services/api';
 
 export default function HrCallRecordingsTable({ currentUser }) {
   const [recordings, setRecordings] = useState([]);
@@ -212,7 +212,7 @@ export default function HrCallRecordingsTable({ currentUser }) {
             ACTIVE COUNSELLORS
           </div>
           <div className="text-2xl sm:text-3xl font-black text-emerald-800 my-1 font-mono">
-            {currentUser?.name || 'Kavitha N.'}
+            {currentUser?.name || ''}
           </div>
           <div className="text-xs text-emerald-600 font-mono font-medium">
             auto-recording on dial & call now
@@ -343,7 +343,7 @@ export default function HrCallRecordingsTable({ currentUser }) {
                         <div className="flex items-center gap-2">
                           <audio
                             controls
-                            src={rec.audioUrl}
+                            src={recordingUrl(rec.audioUrl)}
                             preload="metadata"
                             className="h-8 w-64 max-w-full accent-[#0e6977]"
                           />
@@ -358,7 +358,7 @@ export default function HrCallRecordingsTable({ currentUser }) {
                       <div className="flex items-center justify-center gap-1.5">
                         {rec.audioUrl && (
                           <a
-                            href={rec.audioUrl}
+                            href={recordingUrl(rec.audioUrl)}
                             download={`call_${rec.leadName}_${rec.leadPhone}.webm`}
                             target="_blank"
                             rel="noopener noreferrer"

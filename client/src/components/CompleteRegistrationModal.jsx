@@ -84,7 +84,7 @@ export default function CompleteRegistrationModal({
     }
 
     setSubmitting(true);
-    const counselorName = currentUser?.name || 'Kavitha N.';
+    const counselorName = currentUser?.name || '';
 
     const studentRecord = {
       studentId: studentId.trim(),
@@ -178,7 +178,7 @@ export default function CompleteRegistrationModal({
             Complete Your Registration
           </h2>
           <p className="text-center text-xs text-teal-100 font-medium mt-1 font-mono">
-            Sent by {currentUser?.name?.split(' ')[0] || 'Kavitha'} · Auto-saves to CRM on submit
+            Sent by {currentUser?.name?.split(' ')[0] || 'HR'} · Auto-saves to CRM on submit
           </p>
         </div>
 

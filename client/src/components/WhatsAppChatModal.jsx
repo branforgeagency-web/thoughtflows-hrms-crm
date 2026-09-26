@@ -17,6 +17,7 @@ import {
   Search
 } from 'lucide-react';
 import { getLeadWhatsAppMessages, sendLeadWhatsAppMessage } from '../services/api';
+import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 
 export default function WhatsAppChatModal({ student, onClose }) {
   if (!student) return null;
@@ -29,7 +30,7 @@ export default function WhatsAppChatModal({ student, onClose }) {
   const formattedPhone = cleanPhone.length === 10 ? `+91 ${cleanPhone.slice(0, 5)} ${cleanPhone.slice(5)}` : (rawPhone || 'Not available');
   const course = rawLead.course || student.course || 'Medical Coding (CPC)';
   const education = rawLead.education || student.education || rawLead.category || 'Graduate';
-  const counselor = rawLead.counselorAssigned || 'Kavitha N.';
+  const counselor = rawLead.counselorAssigned || 'Counsellor';
 
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
@@ -67,26 +68,7 @@ export default function WhatsAppChatModal({ student, onClose }) {
           }
         })
         .catch((err) => {
-          console.warn('Using local fallback for WhatsApp chat:', err);
-          // Fallback to local storage if API call fails
-          const saved = localStorage.getItem(`tf_wa_chat_${cleanPhone}`);
-          if (saved) {
-            try {
-              setMessages(JSON.parse(saved));
-            } catch (_) {}
-          } else {
-            const initialMsgs = [
-              {
-                id: `wa-init-${Date.now()}`,
-                sender: 'student',
-                senderName: studentName,
-                text: `Hi ThoughtFlows Academy, I am interested in joining the ${course} course. Can you please share the syllabus, fees, and next batch timings?`,
-                time: new Date(Date.now() - 1800000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                status: 'read'
-              }
-            ];
-            setMessages(initialMsgs);
-          }
+          console.warn('Could not load the WhatsApp log:', err);
         })
         .finally(() => {
           if (isMounted) setIsLoading(false);
@@ -112,7 +94,7 @@ export default function WhatsAppChatModal({ student, onClose }) {
     },
     {
       label: '💰 Fee & EMI Options',
-      text: `Hi ${studentName}, the fee for the ${course} program is ₹25,000. We offer zero-interest EMI and 2-part installment options. Would you like me to share payment details?`
+      text: `Hi ${studentName}, shall I share the fee and instalment options for the ${course} program?`
     },
     {
       label: '📄 Document Checklist',
@@ -148,25 +130,16 @@ export default function WhatsAppChatModal({ student, onClose }) {
       createdAt: now
     };
 
-    // Optimistic UI update
+    // This panel is a log — the message itself is sent from WhatsApp
     setMessages((prev) => [...prev, clientMsg]);
     setInputText('');
     setShowEmojiPicker(false);
     setShowAttachMenu(false);
 
-    // Turn single tick to double tick after 500ms
-    setTimeout(() => {
-      setMessages((prev) =>
-        prev.map((m) => (m.id === clientMsg.id ? { ...m, status: 'delivered' } : m))
-      );
-    }, 600);
+    if (text && cleanPhone) redirectToWhatsAppWeb(cleanPhone, text);
 
-    // Send to backend MongoDB
     try {
       if (leadId) {
-        // Trigger student typing indicator after 1.2s
-        setTimeout(() => setIsTyping(true), 1200);
-
         const res = await sendLeadWhatsAppMessage(leadId, {
           text: clientMsg.text,
           mediaUrl: clientMsg.mediaUrl,
@@ -175,43 +148,10 @@ export default function WhatsAppChatModal({ student, onClose }) {
           sender: 'counselor',
           senderName: counselor
         });
-
-        // After student "finishes typing" (2.4s)
-        setTimeout(() => {
-          setIsTyping(false);
-          if (res && res.messages) {
-            setMessages(res.messages);
-          } else if (res && res.replyMessage) {
-            setMessages((prev) => [
-              ...prev.map((m) => (m.id === clientMsg.id ? { ...m, status: 'read' } : m)),
-              res.replyMessage
-            ]);
-          }
-        }, 2400);
+        if (res && res.messages) setMessages(res.messages);
       }
     } catch (err) {
-      console.warn('Backend message save note:', err);
-      // Fallback local interaction
-      setTimeout(() => setIsTyping(true), 1200);
-      setTimeout(() => {
-        setIsTyping(false);
-        const replyTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        const localReply = {
-          id: `wa-rep-${Date.now()}`,
-          sender: 'student',
-          senderName: studentName,
-          text: `Thank you ${counselor} ma'am! I received the information. When can we schedule the next step?`,
-          time: replyTime,
-          status: 'read'
-        };
-        setMessages((prev) => [
-          ...prev.map((m) => (m.id === clientMsg.id ? { ...m, status: 'read' } : m)),
-          localReply
-        ]);
-        try {
-          localStorage.setItem(`tf_wa_chat_${cleanPhone}`, JSON.stringify([...messages, clientMsg, localReply]));
-        } catch (_) {}
-      }, 2500);
+      console.warn('Could not save the WhatsApp log:', err);
     }
   };
 
@@ -275,9 +215,6 @@ export default function WhatsAppChatModal({ student, onClose }) {
                   </span>
                 ) : (
                   <>
-                    <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block"></span>
-                    <span className="font-medium">online</span>
-                    <span>•</span>
                     <span className="font-mono text-emerald-200">{formattedPhone}</span>
                   </>
                 )}
@@ -333,7 +270,7 @@ export default function WhatsAppChatModal({ student, onClose }) {
           <div className="flex justify-center">
             <div className="bg-[#ffeecd] text-[#54656f] text-[10.5px] px-3.5 py-1.5 rounded-lg shadow-2xs max-w-sm text-center flex items-center gap-1.5 font-medium border border-[#fae2b1] leading-relaxed">
               <ShieldCheck className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-              <span>Messages and calls are end-to-end encrypted. No one outside of this chat can read them.</span>
+              <span>Send opens WhatsApp with your message. Replies arrive in WhatsApp, not here — this panel is your message log.</span>
             </div>
           </div>
 

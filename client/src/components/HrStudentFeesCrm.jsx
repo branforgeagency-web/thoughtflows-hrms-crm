@@ -81,7 +81,7 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
     id: '',
     name: '',
     course: 'CPC',
-    counsellor: currentUser?.name || 'Kavitha N.',
+    counsellor: currentUser?.name || '',
     courseFee: 21000
   });
 
@@ -138,7 +138,7 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
         id: matched.studentId || matched.id || trimmedId,
         name: (matched.name || '').toUpperCase(),
         course: normalizedCourse,
-        counsellor: matched.hrName || currentUser?.name || 'Kavitha N.',
+        counsellor: matched.hrName || currentUser?.name || '',
         courseFee: fee
       }));
     } else {
@@ -205,26 +205,16 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
           hrName: newRecord.counsellor
         });
       } else if (!matched) {
-        await createStudent({
-          studentId: finalStudentId,
-          name: newRecord.name.toUpperCase(),
-          course: newRecord.course,
-          courseFee: feeNum,
-          hrName: newRecord.counsellor,
-          phone: '98401 00000',
-          mode: 'Online',
-          batchDate: getCurrentMonthYear(),
-          statusGroup: 'in_course'
-        });
+        showToast('⚠ No admitted student with this ID. Register the student under Admitted Students first.');
+        return;
       }
 
       await refreshStudents();
       if (onRefreshStudents) onRefreshStudents();
       showToast(`✓ Fee record saved for ${newRecord.name}`);
     } catch (err) {
-      console.warn('Fallback local state update:', err);
-      setStudents(prev => [created, ...prev.filter(s => (s.studentId || s.id) !== finalStudentId)]);
-      showToast(`✓ Added fee record for ${created.name}`);
+      showToast(`⚠ Not saved: ${err?.response?.data?.error || err.message}`);
+      return;
     }
 
     setShowAddModal(false);
@@ -232,7 +222,7 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
       id: '',
       name: '',
       course: 'CPC',
-      counsellor: currentUser?.name || 'Kavitha N.',
+      counsellor: currentUser?.name || '',
       courseFee: 21000
     });
   };
