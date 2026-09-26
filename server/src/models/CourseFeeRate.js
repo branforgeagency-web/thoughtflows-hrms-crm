@@ -10,29 +10,45 @@ const courseFeeRateSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  category: {
+    type: String,
+    default: 'Other Training Programmes'
+  },
   duration: {
     type: String,
     default: '3 Months'
   },
+  oldFee: {
+    type: Number,
+    default: 0
+  },
+  newFeeNoDiscount: {
+    type: Number,
+    default: 0
+  },
+  examFeeText: {
+    type: String,
+    default: 'NO EXAM'
+  },
   registrationFee: {
     type: Number,
-    default: 2000
+    default: 0
   },
   trainingFee: {
     type: Number,
-    default: 45000
+    default: 0
   },
   studyMaterialFee: {
     type: Number,
-    default: 3000
+    default: 0
   },
   membershipFee: {
     type: Number,
-    default: 5000
+    default: 0
   },
   examFee: {
     type: Number,
-    default: 22000
+    default: 0
   },
   gstPercent: {
     type: Number,
@@ -40,11 +56,11 @@ const courseFeeRateSchema = new mongoose.Schema({
   },
   maxDiscount: {
     type: Number,
-    default: 5000
+    default: 0
   },
   installments: {
     type: String,
-    default: 'Full payment only'
+    default: 'Full / Installment options available'
   },
   currency: {
     type: String,
@@ -60,11 +76,11 @@ const courseFeeRateSchema = new mongoose.Schema({
   },
   courseFee: {
     type: Number,
-    default: 21000
+    default: 0
   },
   totalPayable: {
     type: Number,
-    default: 90860
+    default: 0
   }
 }, {
   timestamps: true

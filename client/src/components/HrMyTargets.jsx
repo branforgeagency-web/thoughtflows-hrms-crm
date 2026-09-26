@@ -143,7 +143,7 @@ export default function HrMyTargets({ students: propStudents, currentUser }) {
           </div>
           <div>
             <div className="text-[10px] font-extrabold font-mono tracking-widest uppercase text-amber-900/90">
-              CURRENT SLAB &middot; {activeSlab?.slab || 'SLAB 2'}
+              CURRENT SLAB &middot; {activeSlab?.slab || 'No slab yet'}
             </div>
             <h3 className="text-sm sm:text-base font-extrabold text-slate-900 mt-0.5">
               ₹{(activeSlab?.rateNum || 700).toLocaleString('en-IN')} per admission &middot; earnings update as you close admissions

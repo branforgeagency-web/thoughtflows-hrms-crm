@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { localDateKey } from '../utils/dateUtils';
 import ZoomMeeting, { parseZoomLink } from './ZoomMeeting';
 import { 
   Home, 
@@ -48,6 +49,7 @@ import TrainingPlacementPrep from './TrainingPlacementPrep';
 import TrainingMyProfile from './TrainingMyProfile';
 import TrainingSkillsCourses from './TrainingSkillsCourses';
 import TrainingShiftAvailability from './TrainingShiftAvailability';
+import TrainerQualityBoard from './TrainerQualityBoard';
 import TrainerStudentDesk from './TrainerStudentDesk';
 import ClassSessionRoom from './ClassSessionRoom';
 import {
@@ -59,7 +61,6 @@ import {
   createDemoMeeting,
   endDemoMeeting,
   sendDemoLinkEmail,
-  getLeads,
   getTrainerDoubts,
   replyTrainerDoubt,
   createTrainerDoubt,
@@ -115,7 +116,7 @@ export default function TrainingDepartmentDashboard({
     return c.includes(trainerCourseKey);
   }, [trainerCourseKey]);
 
-  const todayKey = new Date().toISOString().split('T')[0];
+  const todayKey = localDateKey();
   const monthKey = todayKey.slice(0, 7);
   const monthStartKey = `${monthKey}-01`;
   const monthLabel = new Date().toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
@@ -179,7 +180,7 @@ export default function TrainingDepartmentDashboard({
     course: '',
     batch: '',
     topic: '',
-    date: new Date().toISOString().split('T')[0],
+    date: localDateKey(),
     timeLimit: '45 min',
     totalMarks: 50,
     passMark: 35
@@ -206,7 +207,7 @@ export default function TrainingDepartmentDashboard({
       const [stRes, dmRes, ldRes, dbtRes, asmRes, attRes, rosterRes, matRes] = await Promise.all([
         getStudents().catch(() => []),
         getDemos().catch(() => []),
-        getLeads().catch(() => ({ leads: [] })),
+        Promise.resolve([]), // leads belong to HR — not loaded for trainers
         getTrainerDoubts().catch(() => []),
         getTrainerAssessments().catch(() => []),
         trainerId ? getTrainerAttendance({ trainerId, from: monthStartKey }).catch(() => []) : Promise.resolve([]),
@@ -3129,7 +3130,10 @@ export default function TrainingDepartmentDashboard({
 
           {/* ================= TAB 11: MY PROFILE ================= */}
           {activeNav === 'profile' && (
-            <TrainingMyProfile trainer={trainerProfile} currentUser={currentUser} profileError={profileError} />
+            <div className="space-y-6">
+              <TrainingMyProfile trainer={trainerProfile} currentUser={currentUser} profileError={profileError} />
+              {trainerProfile?.trainerId && <TrainerQualityBoard trainerId={trainerProfile.trainerId} title="My student ratings" />}
+            </div>
           )}
 
           {/* ================= TAB 12: SKILLS & COURSES ================= */}
@@ -3143,6 +3147,7 @@ export default function TrainingDepartmentDashboard({
               trainer={trainerProfile}
               demos={myExpertDemos}
               batches={batches}
+              onTrainerUpdated={(t) => t && setTrainerProfile((prev) => ({ ...(prev || {}), ...t }))}
             />
           )}
 

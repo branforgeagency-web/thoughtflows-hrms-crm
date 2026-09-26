@@ -33,10 +33,41 @@ export const authHeaders = () => {
   return t ? { Authorization: `Bearer ${t}` } : {};
 };
 
-// For links opened directly by the browser (file downloads)
+// For links opened directly by the browser (downloads, <audio>, <iframe>):
+// a short-lived *file* token from /auth/file-token — never the session token.
+// It is fetched in the background with the first API call and refreshed
+// every 10 minutes (it lives 15).
+let fileToken = { value: '', at: 0, session: '' };
+let fileTokenPromise = null;
+const FILE_TOKEN_REFRESH_MS = 10 * 60 * 1000;
+export const ensureFileToken = () => {
+  const session = getAuthToken();
+  if (!session) return Promise.resolve('');
+  const fresh = fileToken.value && fileToken.session === session && Date.now() - fileToken.at < FILE_TOKEN_REFRESH_MS;
+  if (fresh) return Promise.resolve(fileToken.value);
+  if (!fileTokenPromise) {
+    fileTokenPromise = axios.post(`${API_BASE}/auth/file-token`, {}, { headers: { Authorization: `Bearer ${session}` } })
+      .then((r) => {
+        fileToken = { value: r.data?.token || '', at: Date.now(), session };
+        if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('thoughtflows_file_token'));
+        return fileToken.value;
+      })
+      .catch(() => '')
+      .finally(() => { fileTokenPromise = null; });
+  }
+  return fileTokenPromise;
+};
 export const withAuthToken = (url) => {
-  const t = getAuthToken();
+  const t = fileToken.session === getAuthToken() ? fileToken.value : '';
+  if (!t) ensureFileToken();
   return t ? `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(t)}` : url;
+};
+// Open a protected file in a new tab, making sure the file token is fresh first
+export const openProtectedFile = async (url) => {
+  const win = typeof window !== 'undefined' ? window.open('', '_blank') : null;
+  await ensureFileToken();
+  const target = withAuthToken(url);
+  if (win) win.location.href = target; else if (typeof window !== 'undefined') window.location.href = target;
 };
 
 // Call recordings saved on our server need the session token to play
@@ -48,6 +79,8 @@ const attachToken = (config) => {
     config.headers = config.headers || {};
     config.headers.Authorization = `Bearer ${t}`;
   }
+  // Keep the short-lived file-link token warm while the user is active
+  if (t && !String(config.url || '').includes('/auth/file-token')) setTimeout(() => ensureFileToken(), 0);
   return config;
 };
 
@@ -140,14 +173,24 @@ export const getLeads = async (params) => {
   return res.data;
 };
 
+// Server attaches lmsWarning when a lead goes to a counsellor who hasn't finished
+// LMS certification; dashboards show it as a toast.
+const surfaceLmsWarning = (data) => {
+  if (data?.lmsWarning && typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('thoughtflows_lms_warning', { detail: { message: data.lmsWarning } }));
+  }
+};
+
 export const createLead = async (leadData) => {
   const res = await api.post('/leads', leadData);
+  surfaceLmsWarning(res.data);
   notifyDataUpdate('leads');
   return res.data;
 };
 
 export const updateLead = async (id, leadData) => {
   const res = await api.put(`/leads/${id}`, leadData);
+  surfaceLmsWarning(res.data);
   notifyDataUpdate('leads');
   return res.data;
 };
@@ -861,5 +904,96 @@ export const markLiveClassAttendanceSaved = async (sessionId) => {
 // Student joins the live class of their batch (logged for attendance)
 export const joinStudentLiveClass = async () => {
   const res = await api.post('/student-portal/live-class/join');
+  return res.data;
+};
+
+// ============================================
+// CROSS-DASHBOARD CONNECTIONS (HR ⇄ Trainer ⇄ Student ⇄ CCCP)
+// ============================================
+
+// Student support tickets (Escalation rows raised from the Student Portal)
+export const getStudentTickets = async (params = {}) => {
+  const res = await api.get('/leadership/escalations', { params: { studentsOnly: 1, ...params } });
+  return res.data;
+};
+
+export const respondStudentTicket = async (id, { action, response }) => {
+  const res = await api.patch(`/leadership/escalations/${id}/status`, { action, response });
+  notifyDataUpdate('escalations');
+  return res.data;
+};
+
+// Trainer leave / unavailable days
+export const addTrainerLeave = async (trainerId, data) => {
+  const res = await api.post(`/trainer/settings/${encodeURIComponent(trainerId)}/leaves`, data);
+  notifyDataUpdate('trainers');
+  return res.data;
+};
+
+export const deleteTrainerLeave = async (trainerId, leaveId) => {
+  const res = await api.delete(`/trainer/settings/${encodeURIComponent(trainerId)}/leaves/${leaveId}`);
+  notifyDataUpdate('trainers');
+  return res.data;
+};
+
+// Student feedback on classes / trainer
+export const submitStudentFeedback = async (studentId, data) => {
+  const res = await api.post(`/student-portal/${encodeURIComponent(studentId)}/feedback`, data);
+  notifyDataUpdate('feedback');
+  return res.data;
+};
+
+export const getFeedbackSummary = async (params) => {
+  const res = await api.get('/feedback/summary', { params });
+  return res.data;
+};
+
+// One timeline per student (HR profile)
+export const getStudentTimeline = async (id) => {
+  const res = await api.get(`/students/${encodeURIComponent(id)}/timeline`);
+  return res.data;
+};
+
+// Self attendance (clock-in / break / end of day) for staff dashboards
+export const getMyAttendance = async (branchName) => {
+  const res = await api.get('/attendance/me', { params: branchName ? { branchName } : {} });
+  return res.data;
+};
+
+export const setMyAttendance = async (action, branchName) => {
+  const res = await api.post('/attendance/me', { action, ...(branchName ? { branchName } : {}) });
+  return res.data;
+};
+
+// HR LMS (lesson progress, graded assessments, certification)
+export const getLmsProgress = async (params) => {
+  const res = await api.get('/hr/lms/progress', { params });
+  return res.data;
+};
+export const markLmsItem = async (moduleKey, itemId, done = true) => {
+  const res = await api.put('/hr/lms/progress/item', { moduleKey, itemId, done });
+  return res.data;
+};
+export const getLmsAssessment = async (moduleKey) => {
+  const res = await api.get(`/hr/lms/assessment/${encodeURIComponent(moduleKey)}`);
+  return res.data;
+};
+export const submitLmsAssessment = async (moduleKey, answers) => {
+  const res = await api.post(`/hr/lms/assessment/${encodeURIComponent(moduleKey)}`, { answers });
+  notifyDataUpdate('lms');
+  return res.data;
+};
+export const getLmsCertifications = async () => {
+  const res = await api.get('/hr/lms/certifications');
+  return res.data;
+};
+
+// Counsellor call log (server-side daily call count)
+export const logCall = async (data) => {
+  const res = await api.post('/calls/log', data);
+  return res.data;
+};
+export const getTodayCallLog = async (params) => {
+  const res = await api.get('/calls/log', { params });
   return res.data;
 };

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { localDateKey } from '../utils/dateUtils';
 import { 
   Plus, 
   Video, 
@@ -122,7 +123,7 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
   // Metrics
   // Status is normalised to lowercase (older records may be "Attended" / "Missed")
   const st = (d) => String(d.status || '').toLowerCase();
-  const todayKey = new Date().toISOString().split('T')[0];
+  const todayKey = localDateKey();
   const demosToday = demos.filter(d => d.preferredDate === todayKey || String(d.time || '').toLowerCase().includes('today')).length;
   const attendedCount = demos.filter(d => st(d) === 'attended').length;
   const movedToFeeCount = demos.filter(d => st(d) === 'fee').length;

@@ -10,6 +10,11 @@ const escalationSchema = new mongoose.Schema(
     departmentCode: { type: String, required: true },
     branchName: String,
     raisedBy: String,
+    // Student tickets: routed to the student's HR counsellor as well as Leadership
+    studentId: { type: String, default: '' },
+    hrName: { type: String, default: '' },
+    response: { type: String, default: '' },
+    respondedBy: { type: String, default: '' },
     resolvedAt: Date
   },
   { timestamps: true }

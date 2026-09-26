@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import useFileToken from '../hooks/useFileToken';
 import { FileText, Video, ExternalLink, X, RefreshCw } from 'lucide-react';
 import {
   getStudentSubmissions,
@@ -28,6 +29,7 @@ const fmtSize = (b) => (!b ? '' : b > 1048576 ? `${(b / 1048576).toFixed(1)} MB`
 const inputCls = 'w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-800 text-xs focus:outline-none focus:border-[#00897b]';
 
 export default function TrainerStudentDesk({ trainerId, trainerName }) {
+  useFileToken(); // keeps file links (downloads / audio) signed with a fresh short-lived token
   const [tab, setTab] = useState('submissions');
   const [filter, setFilter] = useState('pending');
   const [subs, setSubs] = useState([]);

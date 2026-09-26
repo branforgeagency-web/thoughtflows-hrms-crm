@@ -1,4 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { localDateKey } from '../utils/dateUtils';
+import { getLmsProgress, markLmsItem, getLmsAssessment, submitLmsAssessment, getLeads, getTeam, getHrTargets } from '../services/api';
 import {
   Home,
   User,
@@ -60,7 +62,34 @@ export default function HrLmsSection({ currentUser }) {
 
   const userName = currentUser?.name || '';
   const userFirstName = userName.split(' ')[0] || 'there';
-  const userInitial = userFirstName.charAt(0).toUpperCase() || 'K';
+  const userInitial = userFirstName.charAt(0).toUpperCase() || '?';
+
+  // ---------- Real data: LMS progress (server), my leads, roster record, targets ----------
+  const [lms, setLms] = useState(null);
+  const [myLeads, setMyLeads] = useState([]);
+  const [myTeamRec, setMyTeamRec] = useState(null);
+  const [myTargets, setMyTargets] = useState([]);
+  const loadLms = useCallback(async () => {
+    try { setLms(await getLmsProgress()); } catch (_) { /* offline — keep last */ }
+  }, []);
+  useEffect(() => {
+    loadLms();
+    if (!userName) return;
+    getLeads({ counselor: userName })
+      .then((r) => setMyLeads(Array.isArray(r?.leads) ? r.leads : (Array.isArray(r) ? r : [])))
+      .catch(() => {});
+    getTeam()
+      .then((list) => setMyTeamRec((Array.isArray(list) ? list : []).find((m) => String(m.name || '').toLowerCase() === userName.toLowerCase()) || null))
+      .catch(() => {});
+    getHrTargets({ assignedTo: userName }).then((t) => setMyTargets(Array.isArray(t) ? t : [])).catch(() => {});
+  }, [loadLms, userName]);
+
+  // Assessment modal state
+  const [quiz, setQuiz] = useState(null); // { moduleKey, passMark, questions }
+  const [quizAnswers, setQuizAnswers] = useState([]);
+  const [quizResult, setQuizResult] = useState(null);
+  const [quizBusy, setQuizBusy] = useState(false);
+  const [quizError, setQuizError] = useState('');
 
   const showToast = (msg) => {
     setToastMsg(msg);
@@ -213,7 +242,7 @@ export default function HrLmsSection({ currentUser }) {
   });
 
   // 5 Mandatory SOP Modules for Home & My Learning views
-  const mandatoryModulesList = [
+  const mandatoryModulesBase = [
     {
       id: 'sop1',
       title: 'ThoughtFlows Brand Training',
@@ -300,37 +329,9 @@ export default function HrLmsSection({ currentUser }) {
     { id: 'c20', title: 'CIC Crash Course Module', sub: 'CICX', progress: 0, desc: 'videos + PDF · test · 0% done', passingScore: '80%' }
   ]);
 
-  const handleCompleteModule = (modId) => {
-    if (mediaModulesState[activeNav]) {
-      setMediaModulesState(prev => ({
-        ...prev,
-        [activeNav]: {
-          ...prev[activeNav],
-          progress: 100,
-          testStatus: 'passed',
-          testButtonText: '✓ Passed — Review Test',
-          items: prev[activeNav].items.map(item => ({ ...item, isCompleted: true }))
-        }
-      }));
-    }
-
-    setCourseModules(prev => prev.map(c => {
-      if (c.id === modId) {
-        return {
-          ...c,
-          progress: 100,
-          desc: 'videos + PDF · test · completed 100%'
-        };
-      }
-      return c;
-    }));
-
-    setActiveModuleModal(null);
-    showToast('🎉 Test passed! Status updated.');
-  };
 
   // Detailed Course Eligibility List for My HR Profile view
-  const PROFILE_COURSE_ELIGIBILITY = [
+  const PROFILE_COURSE_BASE = [
     { code: 'CPC', name: 'CPC', category: 'Medical Coding', status: 'ELIGIBLE' },
     { code: 'COC', name: 'COC', category: 'Outpatient Coding', status: 'ELIGIBLE' },
     { code: 'CIC', name: 'CIC', category: 'Inpatient Coding', status: 'ELIGIBLE' },
@@ -342,7 +343,7 @@ export default function HrLmsSection({ currentUser }) {
   ];
 
   // 20 Course Cards Grid for dedicated Course Eligibility view
-  const ALL_COURSE_ELIGIBILITY_GRID = [
+  const ALL_COURSE_GRID_BASE = [
     { code: 'CPC', title: 'CPC', sub: 'CPC', canCounsel: true, score: 88 },
     { code: 'COC', title: 'COC', sub: 'COC', canCounsel: true, score: 82 },
     { code: 'CIC', title: 'CIC', sub: 'CIC', canCounsel: true, score: 79 },
@@ -592,49 +593,10 @@ export default function HrLmsSection({ currentUser }) {
   ];
 
   // MY RECORD Section Datasets matching reference screenshots
-  const HR_ASSESSMENTS_DATA = [
-    { id: 1, title: 'Brand Training', subtitle: 'passed', status: 'passed', score: '88%' },
-    { id: 2, title: 'Career Basics', subtitle: 'passed', status: 'passed', score: '81%' },
-    { id: 3, title: 'Lead Handling SOP', subtitle: 'not attempted yet', status: 'pending', score: 'PENDING' },
-    { id: 4, title: 'Placement (80%)', subtitle: 'not attempted yet', status: 'pending', score: 'PENDING' },
-    { id: 5, title: 'CPC Course', subtitle: 'passed', status: 'passed', score: '88%' },
-    { id: 6, title: 'COC Course', subtitle: 'passed', status: 'passed', score: '82%' },
-    { id: 7, title: 'CCS Course', subtitle: 'passed', status: 'passed', score: '90%' },
-    { id: 8, title: 'E/M Course', subtitle: 'passed', status: 'passed', score: '76%' },
-  ];
 
-  const CALL_AUDIT_DATA = [
-    {
-      id: 1,
-      score: 91,
-      title: 'Call review · 18 May',
-      note: 'Strong rapport. Slightly rushed the fee explanation.',
-      isAction: false
-    },
-    {
-      id: 2,
-      score: 84,
-      title: 'Call review · 14 May',
-      note: 'Good. Remember to confirm the next follow-up date on the call.',
-      isAction: false
-    },
-    {
-      id: 3,
-      score: 58,
-      title: 'Call review · 9 May',
-      note: 'Over-promised on placement timeline — corrected. Placement module re-assigned.',
-      isAction: true
-    }
-  ];
 
-  const PERFORMANCE_COURSE_BREAKDOWN = [
-    { course: 'CPC', leads: 32, converted: 14, convRate: '44%', lmsScore: '88%' },
-    { course: 'COC', leads: 18, converted: 6, convRate: '33%', lmsScore: '82%' },
-    { course: 'CCS', leads: 12, converted: 4, convRate: '33%', lmsScore: '90%' },
-    { course: 'E/M', leads: 9, converted: 2, convRate: '22%', lmsScore: '76%' },
-  ];
 
-  const INTERNAL_CERTIFICATION_LEVELS = [
+  const INTERNAL_CERTIFICATION_BASE = [
     { level: 1, title: 'Level 1 · Enrolled', subtitle: 'Automatic on enrollment', isAchieved: true },
     { level: 2, title: 'Level 2 · Counsellor', subtitle: 'Granted by HR Lead', isAchieved: true },
     { level: 3, title: 'Level 3 · Senior Counsellor', subtitle: 'Management approval', isAchieved: false },
@@ -691,8 +653,172 @@ export default function HrLmsSection({ currentUser }) {
     }
   ];
 
+
+  // ---------- View models built from the server progress ----------
+  const modState = (key) => lms?.modules?.[key] || null;
+  const mandatoryComplete = Boolean(lms?.mandatoryComplete);
+  const coursesPassed = lms?.coursesPassed || [];
+  const SOP_KEY = { sop1: 'Brand Training', sop2: 'Career Basics', sop3: 'Lead Handling SOP', sop4: 'Placement Explanation', sop5: 'Payment & Admission SOP' };
+
+  const mediaModulesView = useMemo(() => {
+    const out = {};
+    Object.entries(mediaModulesState).forEach(([key, m]) => {
+      const s = lms?.modules?.[key] || null;
+      const done = new Set(s?.completedItems || []);
+      const items = m.items.map((it) => ({ ...it, isCompleted: s?.passed ? true : (it.type === 'quiz' ? false : done.has(it.id)) }));
+      const progress = items.length ? Math.round((items.filter((i) => i.isCompleted).length / items.length) * 100) : 0;
+      const pass = parseInt(m.passingScore, 10) || 80;
+      out[key] = {
+        ...m,
+        items,
+        progress,
+        testStatus: s?.passed ? 'passed' : 'pending',
+        testButtonText: s?.passed ? `✓ Passed (${s.bestScore}%) — Review / Retake` : s?.attempts ? `Retake Test → (last ${s.lastScore}%, ${pass}% to pass)` : `Take Test → (${pass}% to pass)`
+      };
+    });
+    return out;
+  }, [mediaModulesState, lms]);
+
+  const mandatoryModulesList = useMemo(() => mandatoryModulesBase.map((mod) => {
+    const key = SOP_KEY[mod.id];
+    const v = mediaModulesView[key];
+    const isCompleted = Boolean(lms?.modules?.[key]?.passed);
+    const progress = v?.progress || 0;
+    return {
+      ...mod,
+      progress,
+      isCompleted,
+      passingScore: v?.passingScore || mod.passingScore,
+      badge: isCompleted ? 'COMPLETED' : progress > 0 ? `${progress}%` : 'NOT STARTED',
+      badgeClass: isCompleted ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' : progress > 0 ? 'bg-amber-100 text-amber-900 border border-amber-300/60' : 'bg-rose-100 text-rose-700 border border-rose-200',
+      actionText: isCompleted ? 'Review' : progress > 0 ? 'Resume' : 'Start',
+      iconColor: isCompleted ? 'bg-emerald-600' : progress > 0 ? 'bg-amber-500' : 'bg-rose-500'
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [mediaModulesView, lms]);
+
+  const courseModulesView = useMemo(() => courseModules.map((c) => {
+    const s = lms?.modules?.[`course:${c.sub}`] || null;
+    return {
+      ...c,
+      passed: Boolean(s?.passed),
+      progress: s?.passed ? 100 : (s?.bestScore || 0),
+      desc: s?.passed ? `test passed · ${s.bestScore}%` : s?.attempts ? `best ${s.bestScore}% · ${c.passingScore} to pass` : `course test · ${c.passingScore} to pass`
+    };
+  }), [courseModules, lms]);
+
+  const canCounsel = (sub) => mandatoryComplete && coursesPassed.includes(sub);
+  const ALL_COURSE_ELIGIBILITY_GRID = ALL_COURSE_GRID_BASE.map((c) => ({ ...c, canCounsel: canCounsel(c.sub), score: modState(`course:${c.sub}`)?.bestScore || 0 }));
+  const PROFILE_SUB = { CPC: 'CPC', COC: 'COC', CIC: 'CIC', CRC: 'CRC', CPMA: 'CPMA', CCS: 'CCS', AMCI_BEG: 'ACI', AMCI_MAS: 'AA' };
+  const PROFILE_COURSE_ELIGIBILITY = PROFILE_COURSE_BASE.map((c) => ({ ...c, status: canCounsel(PROFILE_SUB[c.code] || c.code) ? 'ELIGIBLE' : 'LOCKED' }));
+  const eligibleCount = ALL_COURSE_ELIGIBILITY_GRID.filter((c) => c.canCounsel).length;
+
+  const HR_ASSESSMENTS_DATA = [
+    ...Object.keys(mediaModulesState).map((key) => ({ key, title: mediaModulesState[key].title })),
+    ...courseModules.filter((c) => modState(`course:${c.sub}`)?.attempts).map((c) => ({ key: `course:${c.sub}`, title: c.title }))
+  ].map((m, i) => {
+    const s = modState(m.key);
+    return {
+      id: i + 1,
+      title: m.title,
+      subtitle: s?.passed ? `passed · ${s.attempts} attempt${s.attempts > 1 ? 's' : ''}` : s?.attempts ? `last ${s.lastScore}% — retake needed` : 'not attempted yet',
+      status: s?.passed ? 'passed' : 'pending',
+      score: s ? `${s.bestScore}%` : 'PENDING'
+    };
+  });
+
+  // No call-audit records exist yet — the view shows an empty state instead of sample reviews
+  const CALL_AUDIT_DATA = [];
+
+  const todayIso = localDateKey();
+  const monthKey = todayIso.slice(0, 7);
+  const leadStats = useMemo(() => {
+    const month = myLeads.filter((l) => String(l.createdAt || '').slice(0, 7) === monthKey);
+    const admittedMonth = month.filter((l) => l.stage === 'admitted').length;
+    const withFu = myLeads.filter((l) => l.followUpDate && !['admitted', 'closed'].includes(l.stage));
+    const overdue = withFu.filter((l) => String(l.followUpDate).slice(0, 10) < todayIso).length;
+    const calls = myLeads.reduce((a, l) => a + (Number(l.callCount) || 0), 0);
+    return {
+      monthLeads: month.length,
+      admittedMonth,
+      conversion: month.length ? Math.round((admittedMonth / month.length) * 100) : null,
+      followUpsDue: withFu.filter((l) => String(l.followUpDate).slice(0, 10) <= todayIso).length,
+      followUpDiscipline: withFu.length ? Math.round(((withFu.length - overdue) / withFu.length) * 100) : null,
+      calls
+    };
+  }, [myLeads, monthKey, todayIso]);
+
+  const PERFORMANCE_COURSE_BREAKDOWN = useMemo(() => {
+    const by = {};
+    myLeads.forEach((l) => {
+      const k = String(l.course || 'Unspecified').split('–')[0].split('—')[0].trim() || 'Unspecified';
+      if (!by[k]) by[k] = { course: k, leads: 0, converted: 0 };
+      by[k].leads += 1;
+      if (l.stage === 'admitted') by[k].converted += 1;
+    });
+    return Object.values(by).sort((a, b) => b.leads - a.leads).map((r) => {
+      const sub = (courseModules.find((c) => r.course.toUpperCase().startsWith(c.sub)) || {}).sub;
+      const s = sub ? modState(`course:${sub}`) : null;
+      return { ...r, convRate: r.leads ? `${Math.round((r.converted / r.leads) * 100)}%` : '—', lmsScore: s?.attempts ? `${s.bestScore}%` : '—' };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myLeads, lms]);
+
+  const monthTarget = myTargets.find((t) => !t.period || String(t.period).includes(monthKey) || /month/i.test(t.period)) || myTargets[0] || null;
+
+  // Level 1 on enrolment, Level 2 when all mandatory modules are passed; 3–5 need management approval (not tracked yet)
+  const deptLevel = mandatoryComplete ? 2 : 1;
+  const INTERNAL_CERTIFICATION_LEVELS = INTERNAL_CERTIFICATION_BASE.map((l) => ({
+    ...l,
+    subtitle: l.level === 2 ? 'All 5 mandatory modules passed' : l.subtitle,
+    isAchieved: l.level <= deptLevel
+  }));
+  const guidesTotal = Object.keys(mediaModulesState).length;
+  const guidesPassed = Object.keys(mediaModulesState).filter((k) => modState(k)?.passed).length;
+  const courseAttempts = courseModules.map((c) => modState(`course:${c.sub}`)).filter((s) => s?.attempts);
+  const avgCourseScore = courseAttempts.length ? Math.round(courseAttempts.reduce((a, s) => a + s.bestScore, 0) / courseAttempts.length) : null;
+  const retakes = [...Object.keys(mediaModulesState).map((k) => ({ key: k, nav: k, title: mediaModulesState[k].title })), ...courseModules.map((c) => ({ key: `course:${c.sub}`, nav: 'My Learning', title: c.title }))]
+    .filter((m) => { const s = modState(m.key); return s?.attempts && !s.passed; });
+  const greeting = (() => { const h = new Date().getHours(); return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening'; })();
+  const branchLabel = myTeamRec?.branchName || currentUser?.branch || '';
+
+  // ---------- Lesson + assessment actions ----------
+  const openLesson = async (item) => {
+    setActiveLesson(item);
+    setIsVideoPlaying(true);
+    if (item.type === 'quiz' || !mediaModulesState[activeNav]) return;
+    try { setLms(await markLmsItem(activeNav, item.id, true)); } catch (_) {}
+  };
+
+  const openAssessment = async (moduleKey, title) => {
+    setQuiz(null); setQuizResult(null); setQuizError(''); setQuizAnswers([]);
+    setActiveModuleModal({ id: moduleKey, title });
+    try {
+      const q = await getLmsAssessment(moduleKey);
+      setQuiz(q);
+      setQuizAnswers(new Array(q.questions.length).fill(null));
+    } catch (e) {
+      setQuizError(e?.response?.data?.error || e.message);
+    }
+  };
+
+  const submitQuiz = async () => {
+    if (!quiz) return;
+    setQuizBusy(true); setQuizError('');
+    try {
+      const r = await submitLmsAssessment(quiz.moduleKey, quizAnswers);
+      setQuizResult(r);
+      if (r.summary) setLms(r.summary);
+      showToast(r.passed ? `🎉 Passed with ${r.score}%` : `Scored ${r.score}% — ${r.passMark}% needed. Review and retake.`);
+    } catch (e) {
+      setQuizError(e?.response?.data?.error || e.message);
+    } finally {
+      setQuizBusy(false);
+    }
+  };
+
   // Check if activeNav is one of the video player modules (Mandatory or Guides)
-  const currentMediaModule = mediaModulesState[activeNav];
+  const currentMediaModule = mediaModulesView[activeNav];
 
   return (
     <div className="w-full flex flex-col lg:flex-row items-start gap-4 pb-16 relative">
@@ -837,11 +963,7 @@ export default function HrLmsSection({ currentUser }) {
                     return (
                       <div
                         key={item.id}
-                        onClick={() => {
-                          setActiveLesson(item);
-                          setIsVideoPlaying(true);
-                          showToast(`Loaded: ${item.title}`);
-                        }}
+                        onClick={() => openLesson(item)}
                         className={`flex items-center gap-2.5 text-xs cursor-pointer p-1.5 rounded-lg transition-all ${
                           isCurrent
                             ? 'bg-slate-50 font-bold text-slate-900'
@@ -867,14 +989,7 @@ export default function HrLmsSection({ currentUser }) {
 
             <div className="pt-2">
               <button
-                onClick={() => {
-                  setActiveModuleModal({
-                    id: activeNav,
-                    title: currentMediaModule.title,
-                    desc: currentMediaModule.subtitle,
-                    passingScore: currentMediaModule.passingScore
-                  });
-                }}
+                onClick={() => openAssessment(activeNav, currentMediaModule.title)}
                 className="w-full py-3 px-4 rounded-xl bg-[#b45309] hover:bg-[#92400e] text-white font-black text-xs sm:text-sm tracking-wide shadow-xs transition-all active:scale-98 flex items-center justify-center gap-2 cursor-pointer"
               >
                 <span>{currentMediaModule.testButtonText}</span>
@@ -988,9 +1103,9 @@ export default function HrLmsSection({ currentUser }) {
               </div>
 
               <div className="space-y-2">
-                {courseModules.map((c) => {
-                  const isCompleted = c.progress >= 70;
-                  const inProgress = c.progress > 0 && c.progress < 70;
+                {courseModulesView.map((c) => {
+                  const isCompleted = c.passed;
+                  const inProgress = !c.passed && c.progress > 0;
 
                   return (
                     <div
@@ -1049,11 +1164,11 @@ export default function HrLmsSection({ currentUser }) {
                               : 'bg-rose-50 text-rose-700 border border-rose-200'
                           }`}
                         >
-                          {isCompleted ? 'ELIGIBLE' : inProgress ? 'IN PROGRESS' : 'NOT STARTED'}
+                          {isCompleted ? (mandatoryComplete ? 'ELIGIBLE' : 'PASSED · finish mandatory') : inProgress ? 'IN PROGRESS' : 'NOT STARTED'}
                         </span>
 
                         <button
-                          onClick={() => setActiveModuleModal(c)}
+                          onClick={() => openAssessment(`course:${c.sub}`, c.title)}
                           className="bg-[#005a54] hover:bg-[#004742] text-white font-bold text-xs px-3.5 py-1.5 rounded-lg transition-all shadow-xs active:scale-95"
                         >
                           {isCompleted ? 'Review' : inProgress ? 'Resume' : 'Start'}
@@ -1173,10 +1288,10 @@ export default function HrLmsSection({ currentUser }) {
                   <div className="flex flex-wrap items-center gap-2 mt-1">
                     <span className="text-xs text-slate-500 font-medium flex items-center gap-1.5">
                       <span className="font-mono text-[11px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">
-                        TF-HR-001
+                        {currentUser?.id ? String(currentUser.id).slice(-6).toUpperCase() : '—'}
                       </span>
                       <span>·</span>
-                      <span>HR Coordinator</span>
+                      <span>{currentUser?.role || 'HR'}</span>
                     </span>
                     <div className="flex items-center gap-1.5">
                       <span className="bg-emerald-50 text-emerald-700 border border-emerald-300 font-black text-[10px] tracking-wider uppercase px-2 py-0.5 rounded-md">
@@ -1185,9 +1300,11 @@ export default function HrLmsSection({ currentUser }) {
                       <span className="bg-teal-50 text-teal-700 border border-teal-300 font-black text-[10px] tracking-wider uppercase px-2 py-0.5 rounded-md">
                         ACTIVE
                       </span>
-                      <span className="bg-amber-50 text-amber-800 border border-amber-300 font-black text-[10px] tracking-wider uppercase px-2 py-0.5 rounded-md">
-                        HIGH PERFORMER
-                      </span>
+                      {mandatoryComplete && (
+                        <span className="bg-amber-50 text-amber-800 border border-amber-300 font-black text-[10px] tracking-wider uppercase px-2 py-0.5 rounded-md">
+                          LMS CERTIFIED
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1208,7 +1325,7 @@ export default function HrLmsSection({ currentUser }) {
                     ROLE
                   </div>
                   <div className="text-xs sm:text-sm font-semibold text-slate-900 mt-0.5 truncate">
-                    HR Desk
+                    {currentUser?.role || myTeamRec?.role || 'HR'}
                   </div>
                 </div>
 
@@ -1217,7 +1334,7 @@ export default function HrLmsSection({ currentUser }) {
                     BRANCH
                   </div>
                   <div className="text-xs sm:text-sm font-semibold text-slate-900 mt-0.5 truncate">
-                    CBE - Saravanampatti
+                    {branchLabel || '—'}
                   </div>
                 </div>
 
@@ -1226,7 +1343,7 @@ export default function HrLmsSection({ currentUser }) {
                     REPORTING TO
                   </div>
                   <div className="text-xs sm:text-sm font-semibold text-slate-900 mt-0.5 truncate">
-                    HR Executive
+                    {currentUser?.reportingTo || '—'}
                   </div>
                 </div>
 
@@ -1235,7 +1352,7 @@ export default function HrLmsSection({ currentUser }) {
                     SHIFT
                   </div>
                   <div className="text-xs sm:text-sm font-semibold text-slate-900 mt-0.5 truncate">
-                    10:00 - 19:00
+                    {myTeamRec?.shift && myTeamRec.shift !== 'general' ? myTeamRec.shift : (currentUser?.shift || 'General shift')}
                   </div>
                 </div>
 
@@ -1244,7 +1361,7 @@ export default function HrLmsSection({ currentUser }) {
                     LANGUAGES
                   </div>
                   <div className="text-xs sm:text-sm font-semibold text-slate-900 mt-0.5 truncate">
-                    Tamil, English, Telugu
+                    {(currentUser?.languages || []).join(', ') || '—'}
                   </div>
                 </div>
 
@@ -1253,7 +1370,7 @@ export default function HrLmsSection({ currentUser }) {
                     EMAIL
                   </div>
                   <div className="text-xs sm:text-sm font-semibold text-slate-900 mt-0.5 truncate">
-                    kavitha@thoughtflows.in
+                    {currentUser?.email || '—'}
                   </div>
                 </div>
 
@@ -1262,7 +1379,7 @@ export default function HrLmsSection({ currentUser }) {
                     MOBILE
                   </div>
                   <div className="text-xs sm:text-sm font-semibold text-slate-900 mt-0.5 truncate">
-                    70xxxx 12345
+                    {currentUser?.phone || '—'}
                   </div>
                 </div>
 
@@ -1360,16 +1477,16 @@ export default function HrLmsSection({ currentUser }) {
             <div className="bg-[#005a54] text-white rounded-2xl p-5 sm:p-6 shadow-xs flex items-center justify-between gap-4">
               <div>
                 <h1 className="text-xl sm:text-2xl font-black tracking-tight text-white">
-                  Good afternoon, {userFirstName}
+                  {greeting}, {userFirstName}
                 </h1>
                 <p className="text-xs sm:text-[13px] text-teal-100/85 mt-1 font-medium">
-                  CBE - Saravanampatti · Complete your modules to unlock more courses
+                  {branchLabel ? `${branchLabel} · ` : ''}{mandatoryComplete ? `Certified for ${eligibleCount} course${eligibleCount === 1 ? '' : 's'} — pass more course tests to unlock more` : 'Complete the 5 mandatory modules to unlock lead allocation'}
                 </p>
               </div>
 
               <div className="text-right flex-shrink-0">
                 <div className="text-3xl sm:text-4xl font-black text-amber-300 leading-none">
-                  2
+                  {deptLevel}
                 </div>
                 <div className="text-[9px] font-black uppercase tracking-widest text-teal-200 mt-0.5">
                   DEPT LEVEL
@@ -1383,10 +1500,10 @@ export default function HrLmsSection({ currentUser }) {
                   LMS COMPLETION
                 </div>
                 <div className="text-2xl sm:text-3xl font-black text-slate-900 mt-2">
-                  68%
+                  {guidesTotal ? Math.round((guidesPassed / guidesTotal) * 100) : 0}%
                 </div>
                 <div className="text-xs text-slate-500 font-medium mt-0.5">
-                  11 of 16 modules
+                  {guidesPassed} of {guidesTotal} modules passed
                 </div>
               </div>
 
@@ -1395,7 +1512,7 @@ export default function HrLmsSection({ currentUser }) {
                   COURSE KNOWLEDGE
                 </div>
                 <div className="text-2xl sm:text-3xl font-black text-amber-600 mt-2">
-                  82%
+                  {avgCourseScore === null ? '—' : `${avgCourseScore}%`}
                 </div>
                 <div className="text-xs text-slate-500 font-medium mt-0.5">
                   avg test score
@@ -1404,13 +1521,13 @@ export default function HrLmsSection({ currentUser }) {
 
               <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/90 shadow-xs border-t-4 border-t-blue-600 flex flex-col justify-between">
                 <div className="text-[10px] sm:text-[11px] font-black uppercase tracking-wider text-slate-500">
-                  CALL AUDIT
+                  FOLLOW-UPS DUE
                 </div>
                 <div className="text-2xl sm:text-3xl font-black text-blue-600 mt-2">
-                  91%
+                  {leadStats.followUpsDue}
                 </div>
                 <div className="text-xs text-slate-500 font-medium mt-0.5">
-                  last review
+                  today or overdue
                 </div>
               </div>
 
@@ -1419,10 +1536,10 @@ export default function HrLmsSection({ currentUser }) {
                   CONVERSION
                 </div>
                 <div className="text-2xl sm:text-3xl font-black text-emerald-600 mt-2 flex items-center">
-                  <span className="inline-block w-6 h-1 bg-emerald-500 rounded-full" />
+                  {leadStats.conversion === null ? <span className="inline-block w-6 h-1 bg-emerald-500 rounded-full" /> : `${leadStats.conversion}%`}
                 </div>
                 <div className="text-xs text-slate-500 font-medium mt-0.5">
-                  this month
+                  this month · {leadStats.admittedMonth}/{leadStats.monthLeads} leads
                 </div>
               </div>
             </div>
@@ -1441,7 +1558,10 @@ export default function HrLmsSection({ currentUser }) {
               </div>
 
               <div className="space-y-3">
-                {mandatoryModulesList.slice(2).map((mod) => (
+                {mandatoryModulesList.filter((m) => !m.isCompleted).length === 0 && (
+                  <div className="text-xs text-emerald-700 font-semibold bg-emerald-50 border border-emerald-200 rounded-xl p-3">✓ All mandatory modules passed — lead allocation unlocked.</div>
+                )}
+                {mandatoryModulesList.filter((m) => !m.isCompleted).map((mod) => (
                   <div
                     key={mod.id}
                     className="p-3.5 rounded-xl border border-slate-200/80 hover:border-teal-300/80 bg-slate-50/40 hover:bg-white transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3"
@@ -1480,14 +1600,7 @@ export default function HrLmsSection({ currentUser }) {
                       </span>
 
                       <button
-                        onClick={() => {
-                          const mapping = {
-                            sop3: 'Lead Handling SOP',
-                            sop4: 'Placement Explanation',
-                            sop5: 'Payment & Admission SOP'
-                          };
-                          setActiveNav(mapping[mod.id] || 'Lead Handling SOP');
-                        }}
+                        onClick={() => setActiveNav(SOP_KEY[mod.id] || 'Brand Training')}
                         className="bg-[#005a54] hover:bg-[#004742] text-white font-bold text-xs px-4 py-1.5 rounded-lg transition-all active:scale-95 shadow-xs"
                       >
                         {mod.actionText}
@@ -1514,7 +1627,7 @@ export default function HrLmsSection({ currentUser }) {
               <div className="flex items-center gap-8 sm:gap-14 pt-1">
                 <div>
                   <div className="text-3xl sm:text-4xl font-black text-emerald-600 leading-none">
-                    6
+                    {eligibleCount}
                   </div>
                   <div className="text-xs font-bold text-slate-700 flex items-center gap-1.5 mt-1.5">
                     <span className="w-2 h-2 rounded-full bg-emerald-500" />
@@ -1524,7 +1637,7 @@ export default function HrLmsSection({ currentUser }) {
 
                 <div>
                   <div className="text-3xl sm:text-4xl font-black text-rose-600 leading-none">
-                    14
+                    {ALL_COURSE_ELIGIBILITY_GRID.length - eligibleCount}
                   </div>
                   <div className="text-xs font-bold text-slate-700 flex items-center gap-1.5 mt-1.5">
                     <span className="w-2 h-2 rounded-full bg-rose-500" />
@@ -1858,6 +1971,9 @@ export default function HrLmsSection({ currentUser }) {
 
             {/* 3 Call Reviews matching screenshot */}
             <div className="space-y-2.5">
+              {CALL_AUDIT_DATA.length === 0 && (
+                <div className="text-center text-xs text-slate-500 py-8 border border-dashed border-slate-200 rounded-xl">No call audits yet. Reviews from your team lead will appear here.</div>
+              )}
               {CALL_AUDIT_DATA.map((item) => (
                 <div
                   key={item.id}
@@ -1906,32 +2022,32 @@ export default function HrLmsSection({ currentUser }) {
                 <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
                   CONVERSION
                 </div>
-                <div className="text-2xl font-black text-[#005a54] my-1">—</div>
-                <div className="text-[11px] text-slate-400">vs last month</div>
+                <div className="text-2xl font-black text-[#005a54] my-1">{leadStats.conversion === null ? '—' : `${leadStats.conversion}%`}</div>
+                <div className="text-[11px] text-slate-400">{leadStats.admittedMonth} admitted of {leadStats.monthLeads} this month</div>
               </div>
 
               <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-xs border-t-4 border-t-amber-400 flex flex-col justify-between">
                 <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                  CALL AUDIT
+                  CALLS LOGGED
                 </div>
-                <div className="text-2xl font-black text-amber-500 my-1">91%</div>
-                <div className="text-[11px] text-slate-400">excellent</div>
+                <div className="text-2xl font-black text-amber-500 my-1">{leadStats.calls}</div>
+                <div className="text-[11px] text-slate-400">across {myLeads.length} leads</div>
               </div>
 
               <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-xs border-t-4 border-t-blue-500 flex flex-col justify-between">
                 <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
                   FOLLOW-UP DISCIPLINE
                 </div>
-                <div className="text-2xl font-black text-blue-600 my-1">88%</div>
-                <div className="text-[11px] text-slate-400">on time</div>
+                <div className="text-2xl font-black text-blue-600 my-1">{leadStats.followUpDiscipline === null ? '—' : `${leadStats.followUpDiscipline}%`}</div>
+                <div className="text-[11px] text-slate-400">follow-ups not overdue</div>
               </div>
 
               <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-xs border-t-4 border-t-emerald-500 flex flex-col justify-between">
                 <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
                   TARGET
                 </div>
-                <div className="text-2xl font-black text-emerald-600 my-1">61/70</div>
-                <div className="text-[11px] text-slate-400">9 to go · 10 days</div>
+                <div className="text-2xl font-black text-emerald-600 my-1">{monthTarget ? `${monthTarget.achieved || 0}/${monthTarget.target || 0}` : '—'}</div>
+                <div className="text-[11px] text-slate-400">{monthTarget ? `${Math.max(0, (monthTarget.target || 0) - (monthTarget.achieved || 0))} to go · ${monthTarget.title || monthTarget.unit || ''}` : 'No target assigned'}</div>
               </div>
             </div>
 
@@ -1961,6 +2077,9 @@ export default function HrLmsSection({ currentUser }) {
                     </tr>
                   </thead>
                   <tbody className="text-xs divide-y divide-slate-100">
+                    {PERFORMANCE_COURSE_BREAKDOWN.length === 0 && (
+                      <tr><td colSpan={5} className="py-6 text-center text-slate-400">No leads assigned to you yet.</td></tr>
+                    )}
                     {PERFORMANCE_COURSE_BREAKDOWN.map((row, idx) => (
                       <tr key={idx} className="hover:bg-slate-50/50 transition-colors">
                         <td className="py-3 font-bold text-slate-900">{row.course}</td>
@@ -1993,39 +2112,32 @@ export default function HrLmsSection({ currentUser }) {
               </div>
             </div>
 
-            {/* Retraining Module Card matching screenshot */}
-            <div className="border border-slate-200/80 hover:border-slate-300 rounded-xl p-3.5 flex items-center justify-between bg-white shadow-xs transition-all">
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-lg bg-rose-600 flex items-center justify-center text-white flex-shrink-0 shadow-xs">
-                  <AlertTriangle className="w-4 h-4 text-amber-300" />
+            {/* Retraining = modules attempted but not yet passed */}
+            {retakes.map((m) => {
+              const st = modState(m.key);
+              return (
+                <div key={m.key} className="border border-slate-200/80 hover:border-slate-300 rounded-xl p-3.5 flex items-center justify-between bg-white shadow-xs transition-all">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-lg bg-rose-600 flex items-center justify-center text-white flex-shrink-0 shadow-xs">
+                      <AlertTriangle className="w-4 h-4 text-amber-300" />
+                    </div>
+                    <div>
+                      <div className="font-bold text-xs sm:text-sm text-slate-900">{m.title} — re-take</div>
+                      <div className="text-[11px] text-slate-500 font-normal mt-0.5">
+                        last score {st.lastScore}% · best {st.bestScore}% · {st.attempts} attempt{st.attempts > 1 ? 's' : ''}{lms?.mandatory?.includes(m.key) ? ' · mandatory · blocks leads' : ''}
+                      </div>
+                    </div>
+                  </div>
+                  <button type="button" onClick={() => (m.key.startsWith('course:') ? openAssessment(m.key, m.title) : setActiveNav(m.nav))}
+                    className="px-4 py-1.5 bg-[#005a54] hover:bg-[#004742] text-white text-xs font-bold rounded-lg transition-all shadow-xs cursor-pointer">
+                    Retake
+                  </button>
                 </div>
-                <div>
-                  <div className="font-bold text-xs sm:text-sm text-slate-900">
-                    Placement Explanation — re-take
-                  </div>
-                  <div className="text-[11px] text-slate-500 font-normal mt-0.5">
-                    mandatory · assigned 9 May · due 23 May · blocks leads
-                  </div>
-                  <div className="w-44 h-1 bg-slate-100 rounded-full mt-1.5 overflow-hidden">
-                    <div className="h-full bg-slate-300 w-1/4 rounded-full"></div>
-                  </div>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setActiveNav('Placement Explanation');
-                  showToast('Opening Placement Explanation retraining module...');
-                }}
-                className="px-4 py-1.5 bg-[#005a54] hover:bg-[#004742] text-white text-xs font-bold rounded-lg transition-all shadow-xs cursor-pointer"
-              >
-                Start
-              </button>
-            </div>
+              );
+            })}
 
-            {/* Footer message matching screenshot */}
             <div className="text-center text-xs text-slate-500 font-medium pt-2 flex items-center justify-center gap-1.5">
-              <span>No other retraining assigned right now</span>
+              <span>{retakes.length ? 'Pass these to clear your retraining list' : 'No retraining needed right now'}</span>
               <CheckSquare className="w-3.5 h-3.5 text-emerald-600 fill-emerald-100" />
             </div>
           </div>
@@ -2105,7 +2217,7 @@ export default function HrLmsSection({ currentUser }) {
                     {activeModuleModal.title} — Assessment
                   </h3>
                   <p className="text-xs text-slate-500 font-mono">
-                    Passing score: {activeModuleModal.passingScore || '80%'}
+                    Passing score: {quiz ? `${quiz.passMark}%` : '…'}
                   </p>
                 </div>
               </div>
@@ -2118,44 +2230,42 @@ export default function HrLmsSection({ currentUser }) {
             </div>
 
             <div className="space-y-3 text-xs">
-              <div className="bg-teal-50 border border-teal-200 p-3.5 rounded-xl text-teal-950">
-                <div className="font-bold mb-1">Standard Operating Assessment Protocol</div>
-                <p className="text-teal-800 leading-relaxed">
-                  Review the questions below. Passing with {activeModuleModal.passingScore || '80%'} unlocks student lead allocation for these courses in your CRM dashboard.
-                </p>
-              </div>
-
-              <div className="space-y-2">
-                <div className="font-bold text-slate-800 text-[11px] uppercase tracking-wider">
-                  Question Checklist
-                </div>
-
-                <div className="space-y-1.5">
-                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-start gap-2.5">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0 mt-0.5" />
-                    <div>
-                      <span className="font-bold text-slate-800">1. Student Intake & Qualification Standards</span>
-                      <p className="text-slate-500 text-[11px] mt-0.5">Accurate evaluation of candidate medical background and eligibility.</p>
-                    </div>
+              {quizError && <div className="bg-rose-50 border border-rose-200 text-rose-700 rounded-xl p-3 font-semibold">{quizError}</div>}
+              {!quiz && !quizError && <div className="text-slate-500 p-4 text-center">Loading questions…</div>}
+              {quiz && (
+                <>
+                  <div className="bg-teal-50 border border-teal-200 p-3.5 rounded-xl text-teal-950">
+                    <div className="font-bold mb-1">{quiz.questions.length} questions · {quiz.passMark}% to pass</div>
+                    <p className="text-teal-800 leading-relaxed">
+                      {quiz.moduleKey.startsWith('course:') ? 'Passing this course test (plus the 5 mandatory modules) lets leads for this course be allocated to you.' : 'Graded on the server. Your best score is kept; you can retake any time.'}
+                    </p>
                   </div>
-
-                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-start gap-2.5">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0 mt-0.5" />
-                    <div>
-                      <span className="font-bold text-slate-800">2. Ethical Communication & Placement Promises</span>
-                      <p className="text-slate-500 text-[11px] mt-0.5">Adherence to strict ThoughtFlows placement explanation guidelines.</p>
+                  <ol className="space-y-3">
+                    {quiz.questions.map((q, qi) => {
+                      const verdict = quizResult ? quizResult.correct[qi] : null;
+                      return (
+                        <li key={q.id} className={`p-3 rounded-xl border ${verdict === null ? 'bg-slate-50 border-slate-200' : verdict ? 'bg-emerald-50 border-emerald-200' : 'bg-rose-50 border-rose-200'}`}>
+                          <div className="font-bold text-slate-800 mb-2">{qi + 1}. {q.q}</div>
+                          <div className="space-y-1.5">
+                            {q.o.map((opt, oi) => (
+                              <label key={oi} className={`flex items-start gap-2 p-2 rounded-lg cursor-pointer ${quizAnswers[qi] === oi ? 'bg-white ring-1 ring-[#005a54]' : 'hover:bg-white'}`}>
+                                <input type="radio" name={`q${qi}`} className="mt-0.5" disabled={Boolean(quizResult)} checked={quizAnswers[qi] === oi}
+                                  onChange={() => setQuizAnswers((prev) => prev.map((v, i) => (i === qi ? oi : v)))} />
+                                <span className="text-slate-700">{opt}</span>
+                              </label>
+                            ))}
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                  {quizResult && (
+                    <div className={`rounded-xl p-3.5 font-bold ${quizResult.passed ? 'bg-emerald-100 text-emerald-900' : 'bg-amber-100 text-amber-900'}`}>
+                      {quizResult.passed ? `✓ Passed — ${quizResult.score}%` : `${quizResult.score}% — you need ${quizResult.passMark}%. Questions marked red were wrong; review the module and retake.`}
                     </div>
-                  </div>
-
-                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-start gap-2.5">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0 mt-0.5" />
-                    <div>
-                      <span className="font-bold text-slate-800">3. CRM Stage Progression & Handover SOP</span>
-                      <p className="text-slate-500 text-[11px] mt-0.5">Correct logging of remarks, demo bookings, and fee structures.</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
+                  )}
+                </>
+              )}
 
               <div className="pt-3 flex items-center justify-end gap-2 border-t border-slate-100">
                 <button
@@ -2163,15 +2273,22 @@ export default function HrLmsSection({ currentUser }) {
                   onClick={() => setActiveModuleModal(null)}
                   className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs transition-all cursor-pointer"
                 >
-                  Cancel
+                  {quizResult ? 'Close' : 'Cancel'}
                 </button>
-                <button
-                  type="button"
-                  onClick={() => handleCompleteModule(activeModuleModal.id)}
-                  className="px-5 py-2 bg-[#005a54] hover:bg-[#004742] text-white font-bold rounded-xl text-xs transition-all shadow-sm cursor-pointer"
-                >
-                  Submit & Pass Assessment ✓
-                </button>
+                {quiz && quizResult && !quizResult.passed && (
+                  <button type="button" onClick={() => { setQuizResult(null); setQuizAnswers(new Array(quiz.questions.length).fill(null)); }}
+                    className="px-5 py-2 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-xl text-xs cursor-pointer">Retake</button>
+                )}
+                {quiz && !quizResult && (
+                  <button
+                    type="button"
+                    disabled={quizBusy || quizAnswers.some((a) => a === null)}
+                    onClick={submitQuiz}
+                    className="px-5 py-2 bg-[#005a54] hover:bg-[#004742] text-white font-bold rounded-xl text-xs transition-all shadow-sm cursor-pointer disabled:opacity-50"
+                  >
+                    {quizBusy ? 'Grading…' : `Submit (${quizAnswers.filter((a) => a !== null).length}/${quiz.questions.length} answered)`}
+                  </button>
+                )}
               </div>
             </div>
           </div>

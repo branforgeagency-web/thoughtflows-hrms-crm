@@ -50,6 +50,21 @@ import {
   onDataUpdate 
 } from '../services/api';
 import { COURSE_CATEGORIES } from '../constants/courses';
+import NotificationBell from './NotificationBell';
+
+// Readiness comes from the Training dashboard (tests + attendance + mock +
+// trainer scores → Student.readinessScore). Older records fall back to the
+// mock-interview text. null = not assessed yet (no invented number).
+const studentReadiness = (st) => {
+  if (!st) return null;
+  if (typeof st.readinessScore === 'number' && st.readinessScore > 0) return Math.round(st.readinessScore);
+  if (typeof st.mockScore === 'number' && st.mockScore > 0) return Math.round(st.mockScore);
+  if (st.mockInterview?.includes('/')) return parseInt(st.mockInterview, 10);
+  if (st.mockInterview?.includes('Cleared')) return 90;
+  if (st.certified?.includes('Certified')) return 95;
+  return null;
+};
+const trainerSaysReady = (st) => st?.trainerRecommendation === 'Ready' || Boolean(st?.syllabusCompleted);
 
 export default function CccpDashboard({
   onClose,
@@ -237,8 +252,8 @@ export default function CccpDashboard({
       studentId: candidateTfId,
       name: candidateName,
       tfId: candidateTfId,
-      readiness: targetStudent?.mockInterview?.includes('/') ? `${parseInt(targetStudent.mockInterview)}%` : '85%',
-      trainerRec: 'Ready',
+      readiness: studentReadiness(targetStudent) !== null ? `${studentReadiness(targetStudent)}%` : '—',
+      trainerRec: targetStudent?.trainerRecommendation || (targetStudent?.syllabusCompleted ? 'Syllabus complete' : 'Pending'),
       company: mapForm.company || (companiesList[0]?.name || 'Partner Company'),
       role: mapForm.role || 'Medical Coder',
       interview: mapForm.interviewDate 
@@ -703,6 +718,9 @@ export default function CccpDashboard({
       <main className="flex-1 flex flex-col h-full overflow-y-auto bg-[#f8fafc] bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(14,165,233,0.06),rgba(255,255,255,0))]">
         {/* Body Container */}
         <div className="p-5 sm:p-7 space-y-6 max-w-[1640px] mx-auto w-full">
+          <div className="flex justify-end -mb-4">
+            <NotificationBell audience="cccp" onOpenItem={() => setActiveNav('placement')} />
+          </div>
           {/* ======================================================== */}
           {/* MASTER HOME VIEW                                          */}
           {/* ======================================================== */}
@@ -730,6 +748,36 @@ export default function CccpDashboard({
                   </p>
                 </div>
               </div>
+
+              {/* FROM TRAINING: syllabus complete / trainer says Ready, not yet mapped */}
+              {(() => {
+                const mapped = new Set((placementStudents || []).map((p) => p.studentId || p.tfId));
+                const ready = students.filter((s) => trainerSaysReady(s) && !mapped.has(s.studentId));
+                if (!ready.length) return null;
+                return (
+                  <section className="bg-white rounded-2xl border border-emerald-200 p-4 sm:p-5">
+                    <div className="flex items-center justify-between mb-3">
+                      <div>
+                        <div className="text-[10px] font-extrabold tracking-wider text-emerald-700 uppercase">From Training</div>
+                        <div className="font-bold text-slate-900">{ready.length} student{ready.length > 1 ? 's' : ''} ready for placement mapping</div>
+                      </div>
+                      <button type="button" onClick={() => setActiveNav('placement')} className="text-xs font-semibold text-white bg-emerald-600 px-3 py-1.5 rounded-lg hover:bg-emerald-700">Open placements</button>
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                      {ready.slice(0, 9).map((s) => {
+                        const r = studentReadiness(s);
+                        return (
+                          <div key={s._id || s.studentId} className="border border-slate-200 rounded-xl px-3 py-2 text-xs">
+                            <div className="flex justify-between gap-2"><b className="text-slate-800 truncate">{s.name}</b><span className={`font-black ${r !== null && r >= 80 ? 'text-emerald-600' : 'text-amber-600'}`}>{r === null ? '—' : `${r}%`}</span></div>
+                            <div className="text-slate-500 truncate">{s.studentId} · {s.course}</div>
+                            <div className="text-[11px] mt-1 text-slate-600">{s.trainerName || 'Trainer'}: {s.trainerRecommendation || 'Syllabus complete'}{typeof s.attendancePct === 'number' ? ` · attendance ${s.attendancePct}%` : ''}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </section>
+                );
+              })()}
 
               {/* TOP ROW: 5 SUMMARY KPI CARDS */}
               <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 sm:gap-5">
@@ -1293,14 +1341,9 @@ export default function CccpDashboard({
                           </tr>
                         ) : (
                           students.map((st) => {
-                            const readiness = st.mockInterview?.includes('/')
-                              ? parseInt(st.mockInterview)
-                              : st.mockInterview?.includes('Cleared')
-                              ? 90
-                              : st.certified?.includes('Certified')
-                              ? 95
-                              : 65;
-                            const isReady = readiness >= 80 || st.mockInterview?.includes('Cleared') || st.certified?.includes('Certified');
+                            const readinessRaw = studentReadiness(st);
+                            const readiness = readinessRaw ?? 0;
+                            const isReady = trainerSaysReady(st) || readiness >= 80 || st.mockInterview?.includes('Cleared') || st.certified?.includes('Certified');
                             const stage = st.certified?.includes('Certified')
                               ? 'Certified'
                               : st.examStatus?.toLowerCase().includes('booked')
@@ -1336,7 +1379,7 @@ export default function CccpDashboard({
                                 </td>
                                 <td className="py-3.5 px-4">
                                   <div className="flex items-center gap-2">
-                                    <span className={`font-black ${readiness >= 80 ? 'text-emerald-600' : 'text-amber-600'}`}>{readiness}%</span>
+                                    <span className={`font-black ${readinessRaw === null ? 'text-slate-400' : readiness >= 80 ? 'text-emerald-600' : 'text-amber-600'}`} title={st.trainerRecommendation ? `Trainer: ${st.trainerRecommendation}` : 'From Training dashboard'}>{readinessRaw === null ? '—' : `${readiness}%`}</span>
                                     <div className="w-12 h-1.5 bg-slate-100 rounded-full overflow-hidden">
                                       <div 
                                         className={`h-full rounded-full ${readiness >= 80 ? 'bg-emerald-500' : 'bg-amber-500'}`}

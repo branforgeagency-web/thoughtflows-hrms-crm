@@ -686,6 +686,7 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
       {/* Generate Student ID Modal */}
       <GenerateStudentIdModal
         isOpen={showIdGenModal}
+        existingStudents={students}
         onClose={() => setShowIdGenModal(false)}
         onConfirm={(id, details) => {
           setShowIdGenModal(false);

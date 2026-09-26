@@ -1,18 +1,64 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, Check, Sparkles } from 'lucide-react';
+import { getStudents } from '../services/api';
 
-export default function GenerateStudentIdModal({ isOpen, onClose, onConfirm }) {
-  if (!isOpen) return null;
-
+export default function GenerateStudentIdModal({ isOpen, onClose, onConfirm, existingStudents }) {
   // Generator parameters matching screenshot defaults
   const [branch, setBranch] = useState('S');
   const [course, setCourse] = useState('C');
   const [courseType, setCourseType] = useState('O');
   const [month, setMonth] = useState('Y');
   const [year, setYear] = useState('6');
-  const [serial, setSerial] = useState('025');
+  const [serial, setSerial] = useState('001');
 
+  const [allStudents, setAllStudents] = useState(existingStudents || []);
   const [toastMsg, setToastMsg] = useState(null);
+
+  // Fetch or sync students list when modal is open
+  useEffect(() => {
+    if (!isOpen) return;
+    if (Array.isArray(existingStudents) && existingStudents.length > 0) {
+      setAllStudents(existingStudents);
+    } else {
+      getStudents()
+        .then((data) => {
+          if (Array.isArray(data)) setAllStudents(data);
+        })
+        .catch((err) => console.error('Error fetching students for ID serial generator:', err));
+    }
+  }, [isOpen, existingStudents]);
+
+  // Dynamically calculate next available 3-digit serial starting from 001 for current combination
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const companyPrefix = 'TF';
+    const middleCode = `${branch}${course}${courseType}${month}${year}`;
+    const targetPrefix = `${companyPrefix}${middleCode}`.toUpperCase();
+
+    let maxSerial = 0;
+    if (Array.isArray(allStudents) && allStudents.length > 0) {
+      allStudents.forEach((st) => {
+        const sId = (st.studentId || st.id || '').toString().trim().toUpperCase();
+        if (sId.startsWith(targetPrefix)) {
+          const suffix = sId.slice(targetPrefix.length);
+          const match = suffix.match(/^(\d+)/);
+          if (match) {
+            const num = parseInt(match[1], 10);
+            if (!isNaN(num) && num > maxSerial) {
+              maxSerial = num;
+            }
+          }
+        }
+      });
+    }
+
+    const nextSerialNum = maxSerial + 1;
+    const formattedSerial = String(nextSerialNum).padStart(3, '0');
+    setSerial(formattedSerial);
+  }, [branch, course, courseType, month, year, allStudents, isOpen]);
+
+  if (!isOpen) return null;
 
   const BRANCH_MAP = {
     'S': 'Saravanampatti',

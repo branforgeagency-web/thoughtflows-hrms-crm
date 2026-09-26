@@ -17,7 +17,14 @@ import {
 import { createApproval, getApprovals, getTeam, onDataUpdate } from '../services/api';
 import { getCurrentWeekScheduleDays, getWeekRangeString } from '../utils/dateUtils';
 
-export default function HrMySchedule({ isOnBreak, setIsOnBreak, currentUser }) {
+export default function HrMySchedule({
+  isOnBreak,
+  setIsOnBreak,
+  breakSeconds = 0,
+  accumulatedBreak = 0,
+  handleToggleBreak,
+  currentUser
+}) {
   const [activeHolidayTab, setActiveHolidayTab] = useState('india'); // india, international
   const [showLeaveModal, setShowLeaveModal] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
@@ -26,14 +33,33 @@ export default function HrMySchedule({ isOnBreak, setIsOnBreak, currentUser }) {
 
   // Local break state fallback if parent props not provided
   const [localBreak, setLocalBreak] = useState(false);
+  const [localSecs, setLocalSecs] = useState(0);
+
   const breakActive = isOnBreak !== undefined ? isOnBreak : localBreak;
+  const activeSecs = isOnBreak !== undefined ? breakSeconds : localSecs;
+
+  useEffect(() => {
+    if (isOnBreak !== undefined || !localBreak) return undefined;
+    const t = setInterval(() => setLocalSecs(s => s + 1), 1000);
+    return () => clearInterval(t);
+  }, [isOnBreak, localBreak]);
+
   const toggleBreak = () => {
-    if (setIsOnBreak) {
+    if (handleToggleBreak) {
+      handleToggleBreak();
+    } else if (setIsOnBreak) {
       setIsOnBreak(!isOnBreak);
     } else {
+      if (!localBreak) setLocalSecs(0);
       setLocalBreak(!localBreak);
     }
-    showToast(!breakActive ? '☕ Break started (45 mins allowance)' : '✓ Break ended, back on desk!');
+    showToast(!breakActive ? '☕ Break timer turned ON' : '✓ Break timer CLOSED & saved!');
+  };
+
+  const fmtBreakTimer = (secs) => {
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
   };
 
   const showToast = (msg) => {
@@ -79,11 +105,10 @@ export default function HrMySchedule({ isOnBreak, setIsOnBreak, currentUser }) {
 
       if (Array.isArray(tData) && tData.length > 0) {
         const uFirst = userName.split(' ')[0].toLowerCase();
-        const myRec = tData.find(m => 
-          m.name.toLowerCase() === userName.toLowerCase() ||
-          m.name.toLowerCase().includes(uFirst) ||
-          uFirst.includes(m.name.toLowerCase())
-        );
+        // Exact name first; first-name match only when it is unambiguous
+        const exact = tData.find(m => m.name.toLowerCase() === userName.toLowerCase());
+        const byFirst = tData.filter(m => m.name.toLowerCase().split(' ')[0] === uFirst);
+        const myRec = exact || (byFirst.length === 1 ? byFirst[0] : null);
         if (myRec) setTeamRosterData(myRec);
       }
     } catch (e) {
@@ -102,44 +127,16 @@ export default function HrMySchedule({ isOnBreak, setIsOnBreak, currentUser }) {
   // Compute weekly shift days (Read-only, updated by HR Head)
   const shiftDays = useMemo(() => {
     const uName = userName.toLowerCase();
-    const uFirst = uName.split(' ')[0];
+    let savedLocal = null;
+    try { savedLocal = uName ? localStorage.getItem(`thoughtflows_weekly_roster_${uName}`) : null; } catch (_) {}
 
-    // Check exact & partial keys in localStorage
-    let savedLocal = localStorage.getItem(`thoughtflows_weekly_roster_${uName}`) ||
-                     localStorage.getItem(`thoughtflows_weekly_roster_${uFirst}`);
-
-    if (!savedLocal) {
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (k && k.startsWith('thoughtflows_weekly_roster_')) {
-          const sub = k.replace('thoughtflows_weekly_roster_', '');
-          if (sub.includes(uFirst) || uFirst.includes(sub)) {
-            savedLocal = localStorage.getItem(k);
-            break;
-          }
-        }
-      }
-    }
-
-    // Latest allocated fallback
-    let latestAllocated = null;
-    if (!savedLocal) {
-      const latestStr = localStorage.getItem('thoughtflows_latest_allocated_roster');
-      if (latestStr) {
-        try {
-          const parsed = JSON.parse(latestStr);
-          if (parsed?.schedule) latestAllocated = parsed.schedule;
-        } catch (e) {}
-      }
-    }
-
+    // Server roster (set by Leadership in Team Roster) wins; the browser cache is
+    // only a fallback for this same user. Never show someone else's roster.
     let customSchedule = null;
-    if (savedLocal) {
-      try { customSchedule = JSON.parse(savedLocal); } catch (e) {}
-    } else if (latestAllocated) {
-      customSchedule = latestAllocated;
-    } else if (teamRosterData?.weeklySchedule && Array.isArray(teamRosterData.weeklySchedule)) {
+    if (teamRosterData?.weeklySchedule && Array.isArray(teamRosterData.weeklySchedule)) {
       customSchedule = teamRosterData.weeklySchedule;
+    } else if (savedLocal) {
+      try { customSchedule = JSON.parse(savedLocal); } catch (e) {}
     }
 
     const baseDays = customSchedule || getCurrentWeekScheduleDays();
@@ -329,28 +326,50 @@ export default function HrMySchedule({ isOnBreak, setIsOnBreak, currentUser }) {
           </div>
 
           {/* Break Status Card */}
-          <div className="bg-[#e6fffa] border border-teal-200/80 rounded-xl p-3 sm:p-3.5 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2.5">
-              <div className="w-2.5 h-2.5 rounded-full bg-teal-600 animate-pulse" />
-              <div>
-                <div className="text-xs font-black text-slate-900 flex items-center gap-1.5">
-                  <span>☕ Break</span>
-                </div>
-                <div className="text-[11px] text-slate-500 font-mono mt-0.5">
-                  {breakActive ? 'On break · clock ticking' : 'Not on break · 45 min/day allowed'}
+          <div className={`border rounded-xl p-3.5 transition-all ${
+            breakActive 
+              ? 'bg-amber-50 border-amber-300 ring-2 ring-amber-300/40 shadow-sm' 
+              : 'bg-[#e6fffa] border-teal-200/80'
+          }`}>
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                {breakActive ? (
+                  <Coffee className="w-5 h-5 text-amber-700 animate-bounce" />
+                ) : (
+                  <div className="w-2.5 h-2.5 rounded-full bg-teal-600" />
+                )}
+                <div>
+                  <div className="text-xs font-black text-slate-900 flex items-center gap-1.5">
+                    <span>☕ {breakActive ? 'Break Timer Active' : 'Break Allowance'}</span>
+                  </div>
+                  <div className="text-[11px] text-slate-600 font-mono mt-0.5">
+                    {breakActive ? (
+                      <span className="text-amber-900 font-bold">Clock ticking · 45 mins allowed</span>
+                    ) : accumulatedBreak > 0 ? (
+                      `Timer closed · Used ${Math.floor(accumulatedBreak / 60)}m ${accumulatedBreak % 60}s today`
+                    ) : (
+                      'Not on break · 45 min/day allowed'
+                    )}
+                  </div>
                 </div>
               </div>
+
+              {breakActive && (
+                <div className="font-mono font-black text-sm text-amber-950 bg-amber-200/90 border border-amber-300 px-2.5 py-1 rounded-lg animate-pulse">
+                  {fmtBreakTimer(activeSecs)}
+                </div>
+              )}
             </div>
 
             <button
               onClick={toggleBreak}
-              className={`font-bold text-xs px-4 py-1.5 rounded-lg shadow-xs transition-all active:scale-95 ${
+              className={`mt-3 w-full font-extrabold text-xs py-2 rounded-lg shadow-xs transition-all active:scale-[0.98] ${
                 breakActive
-                  ? 'bg-amber-400 hover:bg-amber-300 text-amber-950 font-black'
+                  ? 'bg-rose-600 hover:bg-rose-700 text-white'
                   : 'bg-[#00897b] hover:bg-[#00796b] text-white'
               }`}
             >
-              {breakActive ? 'End Break' : 'Start Break'}
+              {breakActive ? '🛑 Close & End Break' : '▶ Start Break Timer'}
             </button>
           </div>
 

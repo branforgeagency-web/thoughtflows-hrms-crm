@@ -1,4 +1,5 @@
 import React, { useMemo, useRef, useState } from 'react';
+import useFileToken from '../hooks/useFileToken';
 import { Eye, Send, Star, UploadCloud, X, CheckCircle2, Download, Trash2, Search } from 'lucide-react';
 import {
   uploadTrainingMaterial,
@@ -17,6 +18,7 @@ const canPreview = (m) => /^(application\/pdf|image\/)/.test(m?.mimeType || '');
 // Shared teaching library — every file here was uploaded by a trainer and is
 // stored in the database. "Assign" pushes a file to one of your batches.
 export default function TrainingLibraryMaterials({ currentUser = {}, batches = [], materials = [], onChanged }) {
+  useFileToken(); // keeps file links (downloads / audio) signed with a fresh short-lived token
   const [activeTab, setActiveTab] = useState('All');
   const [searchQuery, setSearchQuery] = useState('');
   const [uploadCategory, setUploadCategory] = useState('General');

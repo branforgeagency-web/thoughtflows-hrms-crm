@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import useFileToken from '../hooks/useFileToken';
 import {
   PhoneCall,
   Search,
@@ -18,6 +19,7 @@ import {
 import { getRecordings, deleteRecording, onDataUpdate, recordingUrl } from '../services/api';
 
 export default function HrCallRecordingsTable({ currentUser }) {
+  useFileToken(); // keeps file links (downloads / audio) signed with a fresh short-lived token
   const [recordings, setRecordings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');

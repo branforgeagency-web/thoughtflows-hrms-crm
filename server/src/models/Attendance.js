@@ -8,7 +8,11 @@ const attendanceSchema = new mongoose.Schema(
     checkIn: String,
     checkOut: String,
     status: { type: String, enum: ['in', 'break', 'out', 'absent'], default: 'absent' },
-    hoursWorked: { type: Number, default: 0 }
+    hoursWorked: { type: Number, default: 0 },
+    // Break tracking (self clock-in from staff dashboards)
+    breakMinutes: { type: Number, default: 0 },
+    breakStartedAt: { type: Date, default: null },
+    department: { type: String, default: '' }
   },
   { timestamps: true }
 );

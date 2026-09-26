@@ -35,7 +35,11 @@ import HrTarget from '../models/HrTarget.js';
 import ClassAttendance from '../models/ClassAttendance.js';
 import TrainingMaterial from '../models/TrainingMaterial.js';
 import Notification from '../models/Notification.js';
-import { requireAuth, signToken, checkPassword, hashPassword, hashIfPlain } from '../middleware/auth.js';
+import ClassFeedback from '../models/ClassFeedback.js';
+import LmsProgress from '../models/LmsProgress.js';
+import CallLog from '../models/CallLog.js';
+import { MANDATORY_MODULES, MODULE_ITEMS, PASS_MARK, COURSE_PASS_MARK, QUESTION_BANK, courseQuestions, courseModuleFor } from '../constants/hrLms.js';
+import { requireAuth, signToken, signFileToken, checkPassword, hashPassword, hashIfPlain } from '../middleware/auth.js';
 import LiveClassSession from '../models/LiveClassSession.js';
 import StudentSubmission from '../models/StudentSubmission.js';
 import StudentRequest, { TRAINER_REQUEST_TYPES } from '../models/StudentRequest.js';
@@ -402,7 +406,7 @@ router.delete('/recordings/:id', async (req, res) => {
 router.get('/closures/today', async (req, res) => {
   try {
     const counselorName = req.query.counselor;
-    const date = req.query.date || new Date().toISOString().split('T')[0];
+    const date = req.query.date || todayStr();
     if (!counselorName) {
       return res.status(400).json({ error: 'counselor query param is required' });
     }
@@ -829,6 +833,10 @@ router.get('/leadership/escalations', async (req, res) => {
     if (departmentCode) query.departmentCode = departmentCode;
     if (branchName) query.branchName = branchName;
     if (status) query.status = status;
+    // HR desk: student tickets of one counsellor (hrName) or all student tickets (studentsOnly=1)
+    if (req.query.hrName) query.hrName = new RegExp(`^${escapeRegex(String(req.query.hrName).trim())}$`, 'i');
+    if (req.query.studentsOnly || req.query.hrName) query.studentId = { $nin: ['', null] };
+    if (req.query.studentId) query.studentId = req.query.studentId;
     const escalations = await Escalation.find(query).sort({ createdAt: -1 });
     res.json(escalations);
   } catch (e) {
@@ -846,7 +854,24 @@ router.post('/leadership/escalations', async (req, res) => {
         ? 'ACAD'
         : 'ADM';
     }
+    // Student ticket → also routed to the student's HR counsellor
+    if (req.user?.department === 'student' && req.user.studentId) {
+      const st = await findStudentByAnyId(req.user.studentId);
+      payload.studentId = req.user.studentId;
+      if (st) {
+        payload.hrName = st.hrName || '';
+        payload.branchName = payload.branchName || st.location || '';
+      }
+    }
     const created = await Escalation.create(payload);
+    if (created.studentId) {
+      await pushNotification({
+        audience: 'hr', recipientName: created.hrName || '', type: 'ticket',
+        title: `Support ticket: ${created.title}`,
+        message: `${created.raisedBy || 'Student'} · ${created.type || ''}${created.description ? ` — ${String(created.description).slice(0, 160)}` : ''}`,
+        studentId: created.studentId, createdBy: created.raisedBy || ''
+      });
+    }
     res.status(201).json(created);
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -855,11 +880,20 @@ router.post('/leadership/escalations', async (req, res) => {
 
 router.patch('/leadership/escalations/:id/status', async (req, res) => {
   try {
-    const { action } = req.body; // action: 'resolved' | 'escalated' | 'in-progress'
+    const { action, response, respondedBy } = req.body; // action: 'resolved' | 'escalated' | 'in-progress'
     const update = { status: action };
     if (action === 'resolved' || action === 'closed') update.resolvedAt = new Date();
+    if (typeof response === 'string' && response.trim()) update.response = response.trim();
+    if (respondedBy || req.user?.name) update.respondedBy = respondedBy || req.user?.name || '';
     const updated = await Escalation.findByIdAndUpdate(req.params.id, update, { new: true });
     if (!updated) return res.status(404).json({ error: 'Escalation not found' });
+    if (updated.studentId) {
+      await notifyStudent(updated.studentId, {
+        type: 'ticket', title: `Ticket ${action}: ${updated.title}`,
+        message: updated.response || `Updated by ${updated.respondedBy || 'the branch team'}.`,
+        createdBy: updated.respondedBy || ''
+      });
+    }
     res.json(updated);
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -931,8 +965,9 @@ router.patch('/leadership/team/:id/shift', async (req, res) => {
 });
 
 // Attendance
+// Academy runs on IST: a UTC date would roll back to "yesterday" before 5:30 AM IST
 function todayStr() {
-  return new Date().toISOString().slice(0, 10);
+  return new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10);
 }
 
 router.get('/leadership/attendance/branch/:branchName', async (req, res) => {
@@ -1051,6 +1086,106 @@ router.post('/leadership/attendance/break', async (req, res) => {
   }
 });
 
+// ---- Counsellor call log (daily call counts for the HR dashboard & closure) ----
+router.post('/calls/log', async (req, res) => {
+  try {
+    const { leadId = '', leadName = '', outcome = '', durationSeconds = 0, callSid = '' } = req.body || {};
+    const counselorName = String(req.user?.name || req.body?.counselorName || '').trim();
+    if (!counselorName) return res.status(400).json({ error: 'No counsellor on this login' });
+    const doc = await CallLog.create({
+      counselorName, date: todayStr(), leadId: String(leadId), leadName, outcome,
+      durationSeconds: Number(durationSeconds) || 0, connected: Boolean(outcome) && outcome !== 'Not Reachable', callSid
+    });
+    res.status(201).json(doc);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.get('/calls/log', async (req, res) => {
+  try {
+    const date = req.query.date || todayStr();
+    const isLead = ['admin', 'leadership'].includes(req.user?.department);
+    const name = isLead && req.query.counselorName ? String(req.query.counselorName) : String(req.user?.name || '');
+    const query = { date };
+    if (!(isLead && req.query.counselorName === 'all')) query.counselorName = new RegExp(`^${escapeRegex(name.trim())}$`, 'i');
+    const list = await CallLog.find(query).sort({ createdAt: -1 }).limit(500);
+    res.json({ date, calls: list.length, connected: list.filter((c) => c.connected).length, list });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Self attendance for the signed-in staff member (HR dashboard clock-in / break /
+// end-of-day). Writes the same Attendance rows Leadership's branch view reads.
+async function selfAttendanceKey(req) {
+  const employeeName = String(req.user?.name || '').trim();
+  const member = employeeName ? await TeamMember.findOne({ name: new RegExp(`^${escapeRegex(employeeName)}$`, 'i') }).select('name branchName') : null;
+  return {
+    employeeName: member?.name || employeeName,
+    branchName: member?.branchName || String(req.body?.branchName || req.query?.branchName || '').trim() || 'Unassigned'
+  };
+}
+const attendanceView = (r) => {
+  if (!r) return null;
+  const o = r.toObject();
+  const running = o.breakStartedAt ? Math.max(0, Math.round((Date.now() - new Date(o.breakStartedAt).getTime()) / 60000)) : 0;
+  return { ...o, breakMinutesTotal: (o.breakMinutes || 0) + running };
+};
+
+router.get('/attendance/me', async (req, res) => {
+  try {
+    const { employeeName, branchName } = await selfAttendanceKey(req);
+    if (!employeeName) return res.status(400).json({ error: 'No staff name on this login' });
+    const rec = await Attendance.findOne({ employeeName, branchName, date: todayStr() });
+    res.json(attendanceView(rec) || { employeeName, branchName, date: todayStr(), status: 'absent', breakMinutes: 0, breakMinutesTotal: 0 });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.post('/attendance/me', async (req, res) => {
+  try {
+    const { action } = req.body || {}; // 'in' | 'break' | 'resume' | 'out'
+    if (!['in', 'break', 'resume', 'out'].includes(action)) return res.status(400).json({ error: 'Invalid action' });
+    const { employeeName, branchName } = await selfAttendanceKey(req);
+    if (!employeeName) return res.status(400).json({ error: 'No staff name on this login' });
+    const date = todayStr();
+    const now = new Date();
+    const hhmm = now.toTimeString().slice(0, 5);
+    let rec = await Attendance.findOne({ employeeName, branchName, date });
+    if (!rec) rec = new Attendance({ employeeName, branchName, date, department: req.user?.department || '' });
+    if (!rec.checkIn) rec.checkIn = hhmm;
+    const closeBreak = () => {
+      if (rec.breakStartedAt) {
+        rec.breakMinutes = (rec.breakMinutes || 0) + Math.max(0, Math.round((now - new Date(rec.breakStartedAt)) / 60000));
+        rec.breakStartedAt = null;
+      }
+    };
+    if (action === 'in') {
+      if (rec.status !== 'break') rec.status = 'in';
+    } else if (action === 'break') {
+      if (!rec.breakStartedAt) rec.breakStartedAt = now;
+      rec.status = 'break';
+    } else if (action === 'resume') {
+      closeBreak();
+      rec.status = 'in';
+    } else if (action === 'out') {
+      closeBreak();
+      rec.checkOut = hhmm;
+      rec.status = 'out';
+      const [inH, inM] = rec.checkIn.split(':').map(Number);
+      const [outH, outM] = hhmm.split(':').map(Number);
+      const worked = outH * 60 + outM - (inH * 60 + inM) - (rec.breakMinutes || 0);
+      rec.hoursWorked = Math.max(0, Math.round(worked / 6) / 10);
+    }
+    await rec.save();
+    res.json(attendanceView(rec));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 // ==========================================
 // REAL ADMITTED STUDENTS API
 // ==========================================
@@ -1077,6 +1212,19 @@ router.get('/students', async (req, res) => {
       ];
     }
     const students = await Student.find(query).sort({ createdAt: -1 });
+    // Trainers get full records only for their own students (and handed-over,
+    // not-yet-allocated ones they may pick up). Everyone else: just enough to
+    // match demo conversions — no fees, documents or contact history.
+    if (req.user?.department === 'training') {
+      const me = req.user.trainerId || '';
+      const FIN = ['feeStatus', 'feeAmount', 'courseFee', 'paidAmount', 'pendingBalance', 'paymentPlan', 'nextDueDate', 'examFee', 'paymentMethod', 'receipts', 'rewardPoints', 'documents'];
+      return res.json(students.map((s) => {
+        const o = s.toObject();
+        const mine = (me && o.trainerId === me) || (!o.trainerId && o.handoverStatus === 'Sent to Training');
+        if (mine) { FIN.forEach((k) => delete o[k]); return o; }
+        return { _id: o._id, studentId: o.studentId, name: o.name, phone: o.phone, email: o.email, course: o.course, createdAt: o.createdAt };
+      }));
+    }
     res.json(students);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1331,10 +1479,14 @@ router.post('/leads', async (req, res) => {
       payload.stage = 'new';
     }
 
+    const owner = payload.allocatedTo || payload.counselorAssigned;
+    const gate = await lmsGate(owner, payload.course);
+    if (gate?.blocked) return res.status(403).json({ error: gate.message, code: 'LMS_NOT_CERTIFIED' });
+
     const newLead = new StudentLead(payload);
     await newLead.save();
 
-    res.status(201).json(newLead);
+    res.status(201).json(gate ? { ...newLead.toObject(), lmsWarning: gate.message } : newLead);
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -1342,6 +1494,17 @@ router.post('/leads', async (req, res) => {
 
 router.put('/leads/:id', async (req, res) => {
   try {
+    // Re-allocation to another counsellor → LMS certification check
+    let gate = null;
+    const newOwner = req.body?.allocatedTo || req.body?.counselorAssigned;
+    if (newOwner && mongoose.isValidObjectId(req.params.id)) {
+      const current = await StudentLead.findById(req.params.id).select('allocatedTo counselorAssigned course');
+      const curOwner = current?.allocatedTo || current?.counselorAssigned || '';
+      if (current && String(newOwner).trim().toLowerCase() !== String(curOwner).trim().toLowerCase()) {
+        gate = await lmsGate(newOwner, req.body.course || current.course);
+        if (gate?.blocked) return res.status(403).json({ error: gate.message, code: 'LMS_NOT_CERTIFIED' });
+      }
+    }
     const updated = await StudentLead.findByIdAndUpdate(
       req.params.id,
       { $set: req.body },
@@ -1349,7 +1512,7 @@ router.put('/leads/:id', async (req, res) => {
     );
     if (!updated) return res.status(404).json({ error: 'Lead not found' });
     await creditReferralReward(updated);
-    res.json(updated);
+    res.json(gate ? { ...updated.toObject(), lmsWarning: gate.message } : updated);
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -1557,6 +1720,22 @@ const norm = (s = '') => String(s).trim().toLowerCase();
  * Returns { eligible: Trainer[], reason } where `reason` explains a zero
  * match (used to populate Demo.noEligibleTrainerReason).
  */
+// Does a class with days like "Mon,Wed,Fri" run on this YYYY-MM-DD? (no days / no date = yes)
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+function classRunsOn(days, date) {
+  const list = String(days || '').split(',').map((d) => d.trim().slice(0, 3)).filter(Boolean);
+  if (!list.length || !/^\d{4}-\d{2}-\d{2}/.test(String(date || ''))) return true;
+  const wd = WEEKDAYS[new Date(`${String(date).slice(0, 10)}T12:00:00Z`).getUTCDay()];
+  return list.includes(wd);
+}
+
+// Trainer marked this date (YYYY-MM-DD) as leave / unavailable
+function trainerOnLeave(t, date) {
+  const d = String(date || '').slice(0, 10);
+  if (!d) return false;
+  return (t.leaves || []).some((l) => l.from && d >= l.from && d <= (l.to || l.from));
+}
+
 async function findEligibleTrainers({ language, location, preferredDate, timeSlot, excludeDemoId }) {
   const langNorm = norm(language);
   const locNorm = norm(location);
@@ -1579,6 +1758,7 @@ async function findEligibleTrainers({ language, location, preferredDate, timeSlo
   // Condition 3a: free by schedule — slot inside shift and not during one of their classes
   const slot = parseSlotToRange(timeSlot);
   const freeBySchedule = languageLocationMatched.filter((t) => {
+    if (trainerOnLeave(t, preferredDate)) return false; // on leave that day
     if (!slot) return true; // unparseable slot → can't judge, don't exclude
     const shiftStart = Number.isFinite(t.shiftStartMin) ? t.shiftStartMin : 0;
     const shiftEnd = Number.isFinite(t.shiftEndMin) ? t.shiftEndMin : 1440;
@@ -1587,6 +1767,7 @@ async function findEligibleTrainers({ language, location, preferredDate, timeSlo
       : slot.startMin >= shiftStart || slot.endMin <= shiftEnd; // overnight shift
     if (!inShift) return false;
     const inClass = (t.scheduledClasses || []).some((c) => {
+      if (!classRunsOn(c.days, preferredDate)) return false; // class not held that weekday
       const r = Number.isFinite(c.startMin) && Number.isFinite(c.endMin)
         ? { startMin: c.startMin, endMin: c.endMin }
         : parseSlotToRange(c.timeSlot);
@@ -1652,6 +1833,51 @@ router.put('/trainer/settings/:id', async (req, res) => {
   }
 });
 
+// Trainer leave / unavailable days (trainer edits their own; admin & leadership any)
+const canEditTrainer = (req, trainerId) => ['admin', 'leadership'].includes(req.user?.department)
+  || (req.user?.department === 'training' && (!req.user?.trainerId || req.user.trainerId === trainerId));
+
+router.post('/trainer/settings/:id/leaves', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!canEditTrainer(req, id)) return res.status(403).json({ error: 'You can only change your own leave.' });
+    const { from, to = '', reason = '' } = req.body || {};
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(from || ''))) return res.status(400).json({ error: 'Pick a start date' });
+    const end = to && /^\d{4}-\d{2}-\d{2}$/.test(to) ? to : from;
+    if (end < from) return res.status(400).json({ error: 'End date is before start date' });
+    const trainer = await Trainer.findOne({ trainerId: id });
+    if (!trainer) return res.status(404).json({ error: 'Trainer not found' });
+    // Clash check: accepted demos inside the leave window
+    const clashes = await Demo.find({ trainerId: id, preferredDate: { $gte: from, $lte: end }, status: { $in: ['booked', 'confirmed', 'Booked', 'Confirmed'] } })
+      .select('candidateName preferredDate timeSlot bookedBy');
+    trainer.leaves.push({ from, to: end, reason: String(reason).slice(0, 200) });
+    await trainer.save();
+    for (const d of clashes) {
+      await pushNotification({
+        audience: 'hr', recipientName: d.bookedBy || '', type: 'demo',
+        title: `Trainer on leave: reschedule ${d.candidateName}`,
+        message: `${trainer.trainerName} is on leave ${from}${end !== from ? ` → ${end}` : ''}. The demo on ${d.preferredDate} ${d.timeSlot} needs a new trainer or slot.`,
+        demoId: String(d._id), createdBy: trainer.trainerName
+      });
+    }
+    res.status(201).json({ trainer, clashes: clashes.length });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.delete('/trainer/settings/:id/leaves/:leaveId', async (req, res) => {
+  try {
+    const { id, leaveId } = req.params;
+    if (!canEditTrainer(req, id)) return res.status(403).json({ error: 'You can only change your own leave.' });
+    const trainer = await Trainer.findOneAndUpdate({ trainerId: id }, { $pull: { leaves: { _id: leaveId } } }, { new: true });
+    if (!trainer) return res.status(404).json({ error: 'Trainer not found' });
+    res.json({ trainer });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 // Live preview for the booking form: which trainers would be notified for a
 // given language + location + date + time (and, optionally, course)?
 router.get('/demos/eligible-trainers', async (req, res) => {
@@ -1660,7 +1886,7 @@ router.get('/demos/eligible-trainers', async (req, res) => {
     const { eligible, reason } = await findEligibleTrainers({
       language,
       location,
-      preferredDate: preferredDate || new Date().toISOString().split('T')[0],
+      preferredDate: preferredDate || todayStr(),
       timeSlot: timeSlot || ''
     });
     const courseNorm = norm(course);
@@ -1718,7 +1944,7 @@ router.post('/demos', async (req, res) => {
     const course = rawData.course || rawData.subject || 'CPC';
     const language = rawData.language || 'Tamil';
     const location = rawData.location || rawData.branchName || '';
-    const preferredDate = rawData.preferredDate || new Date().toISOString().split('T')[0];
+    const preferredDate = rawData.preferredDate || todayStr();
     const demoSlot = rawData.timeSlot || rawData.time || '10:00–11:30 AM';
 
     // Demo Booking Notification Requirement: find every trainer who is
@@ -1935,19 +2161,24 @@ router.get('/fees/rates', async (req, res) => {
       if (missing.length > 0) {
         await CourseFeeRate.insertMany(missing);
       }
-      // Also ensure existing rates have originalFee & standardFee populated if missing
+      // Ensure existing rates have up-to-date master fee sheet values
       for (const def of DEFAULT_COURSE_FEE_RATES) {
         const existing = rates.find(r => (r.code || '').toUpperCase() === def.code.toUpperCase());
-        if (existing && (!existing.originalFee || !existing.standardFee)) {
+        if (existing) {
           await CourseFeeRate.updateOne(
             { _id: existing._id },
             { 
               $set: { 
-                originalFee: def.originalFee, 
-                standardFee: def.standardFee,
-                courseFee: def.courseFee,
-                trainingFee: def.trainingFee,
-                totalPayable: def.totalPayable
+                category: def.category || existing.category,
+                oldFee: def.oldFee || existing.oldFee || 0,
+                newFeeNoDiscount: def.newFeeNoDiscount || existing.newFeeNoDiscount || 0,
+                examFeeText: def.examFeeText,
+                examFee: def.examFee || 0,
+                duration: def.duration || existing.duration,
+                courseFee: def.courseFee || existing.courseFee,
+                standardFee: def.standardFee || existing.standardFee,
+                originalFee: def.originalFee || existing.originalFee,
+                totalPayable: def.totalPayable || existing.totalPayable
               } 
             }
           );
@@ -2210,6 +2441,11 @@ router.post('/auth/dev-login', async (req, res) => {
   } catch (e) {
     return res.status(500).json({ success: false, message: e.message });
   }
+});
+
+// Short-lived token for file links (downloads, audio, previews)
+router.post('/auth/file-token', (req, res) => {
+  res.json({ token: signFileToken(req.user), expiresInSeconds: 15 * 60 });
 });
 
 router.get('/auth/departments', (req, res) => {
@@ -2568,6 +2804,16 @@ async function pushNotification(payload) {
   }
 }
 
+// Student Portal bell: one student (by studentId) or every student of a batch
+async function notifyStudent(studentId, payload) {
+  if (!studentId) return null;
+  return pushNotification({ audience: 'student', ...payload, recipientId: String(studentId), studentId: String(studentId) });
+}
+async function notifyBatch(batch, payload) {
+  if (!batch) return null;
+  return pushNotification({ audience: 'student', ...payload, recipientId: '', recipientName: '', batch: String(batch) });
+}
+
 // Recompute readiness = average of the trainer-entered scores that exist
 function computeReadiness(st) {
   const parts = [st.mockScore, st.technicalScore, st.assessmentScore].filter((v) => typeof v === 'number');
@@ -2685,6 +2931,10 @@ router.put('/trainer/doubts/:id/reply', async (req, res) => {
       { new: true }
     );
     if (!updated) return res.status(404).json({ error: 'Doubt not found' });
+    await notifyStudent(updated.studentId, {
+      type: 'doubt', title: `${updated.trainerName || 'Your trainer'} replied to your doubt`,
+      message: `${updated.topic ? `${updated.topic}: ` : ''}${String(reply || '').slice(0, 200)}`, createdBy: updated.trainerName || ''
+    });
     res.json(formatDoubt(updated));
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -2737,6 +2987,11 @@ router.post('/trainer/assessments', async (req, res) => {
   try {
     const { id, _id, ...body } = req.body || {};
     const newTest = await TrainerAssessment.create({ status: 'Active', scores: {}, ...body });
+    await notifyBatch(newTest.batch, {
+      type: 'assessment', title: `New ${newTest.type || 'test'}: ${newTest.name}`,
+      message: [newTest.topic, newTest.date && `on ${newTest.date}`, newTest.totalMarks && `${newTest.totalMarks} marks`].filter(Boolean).join(' · '),
+      createdBy: newTest.trainerName || ''
+    });
     res.status(201).json(formatAssessment(newTest));
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -2758,6 +3013,15 @@ router.put('/trainer/assessments/:id/scores', async (req, res) => {
     if (item.status === 'Active' && Object.keys(item.scores instanceof Map ? Object.fromEntries(item.scores) : item.scores).length) item.status = 'Scored';
     await item.save();
     await recomputeAssessmentScores(Object.keys(incoming));
+    for (const key of Object.keys(incoming)) {
+      const st = await findStudentByAnyId(key);
+      if (st) {
+        await notifyStudent(st.studentId, {
+          type: 'score', title: `Score published: ${item.name}`,
+          message: `You scored ${incoming[key]}/${item.totalMarks || '—'}.`, createdBy: item.trainerName || ''
+        });
+      }
+    }
     res.json(formatAssessment(item));
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -2804,6 +3068,11 @@ async function recomputeAttendance(studentKeys) {
         message: `${st.name} (${st.studentId}) dropped to ${pct}% attendance in ${st.trainerName || 'training'}'s class. Please follow up.`,
         studentId: st.studentId, createdBy: st.trainerName || ''
       });
+      await notifyStudent(st.studentId, {
+        type: 'attendance', title: `Your attendance is ${pct}%`,
+        message: `Attendance below ${ATTENDANCE_RISK_PCT}% can hold back your certification and placement. Please attend the upcoming classes.`,
+        createdBy: st.trainerName || ''
+      });
     }
   }
 }
@@ -2829,7 +3098,7 @@ router.post('/trainer/attendance', async (req, res) => {
   try {
     const { trainerId = '', trainerName = '', batch, date, topic, records = {} } = req.body || {};
     if (!batch) return res.status(400).json({ error: 'batch is required' });
-    const day = date || new Date().toISOString().split('T')[0];
+    const day = date || todayStr();
     const set = { trainerName };
     if (topic) set.topic = topic;
     Object.entries(records).forEach(([k, v]) => { set[`records.${k}`] = v; });
@@ -2871,6 +3140,11 @@ router.post('/students/:id/handover', async (req, res) => {
       message: `${handedOverBy || 'HR'} handed over ${st.name} (${st.studentId}) · ${st.course} · batch ${st.batchName}.${trainerNote ? ` Note: ${trainerNote}` : ''}`,
       studentId: st.studentId, createdBy: handedOverBy
     });
+    await notifyStudent(st.studentId, {
+      type: 'handover', title: `Your trainer is ${trainer.trainerName}`,
+      message: `You've been allocated to ${trainer.trainerName} · batch ${st.batchName}. Your classes, materials and tests will appear here.`,
+      createdBy: handedOverBy
+    });
     res.json(st);
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -2891,6 +3165,17 @@ router.put('/students/:id/syllabus-complete', async (req, res) => {
       title: `Syllabus complete: ${st.name}`,
       message: `${trainerName || st.trainerName || 'Trainer'} marked the full syllabus complete for ${st.name} (${st.studentId}). Sent to CCCP for placement.`,
       studentId: st.studentId, createdBy: trainerName
+    });
+    await pushNotification({
+      audience: 'cccp', type: 'syllabus',
+      title: `New for placement: ${st.name}`,
+      message: `${trainerName || st.trainerName || 'Trainer'} completed the syllabus for ${st.name} (${st.studentId}) · ${st.course}${typeof st.readinessScore === 'number' ? ` · readiness ${st.readinessScore}%` : ''}${st.trainerRecommendation ? ` · ${st.trainerRecommendation}` : ''}.`,
+      studentId: st.studentId, createdBy: trainerName
+    });
+    await notifyStudent(st.studentId, {
+      type: 'syllabus', title: 'Syllabus completed 🎉',
+      message: 'Your trainer marked your syllabus complete. The placement (CCCP) team will contact you next.',
+      createdBy: trainerName
     });
     res.json(st);
   } catch (e) {
@@ -2917,6 +3202,14 @@ router.put('/students/:id/recommendation', async (req, res) => {
       message: `${trainerName || st.trainerName || 'Trainer'} set ${st.name} as "${status}"${typeof st.readinessScore === 'number' ? ` · readiness ${st.readinessScore}%` : ''}.`,
       studentId: st.studentId, createdBy: trainerName
     });
+    if (status === 'Ready') {
+      await pushNotification({
+        audience: 'cccp', type: 'recommendation',
+        title: `Placement-ready: ${st.name}`,
+        message: `${trainerName || st.trainerName || 'Trainer'} recommended ${st.name} (${st.studentId}) as Ready${typeof st.readinessScore === 'number' ? ` · readiness ${st.readinessScore}%` : ''}.`,
+        studentId: st.studentId, createdBy: trainerName
+      });
+    }
     res.json(st);
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -2947,25 +3240,66 @@ router.post('/students/:id/remedial', async (req, res) => {
 // ==========================================
 // NOTIFICATIONS (HR ⇄ TRAINING)
 // ==========================================
+// Shared notifications (no single recipient) track read state per reader
+const readerKey = (req) => String(req.user?.sub || req.user?.email || req.user?.name || '').toLowerCase();
+const isSharedNotification = (n) => !n.recipientId && !n.recipientName;
+const withReadState = (n, key) => {
+  const o = n.toObject ? n.toObject() : { ...n };
+  if (isSharedNotification(o)) o.read = (o.readBy || []).includes(key);
+  delete o.readBy;
+  return o;
+};
+
 router.get('/notifications', async (req, res) => {
   try {
-    const { audience, recipientId, recipientName, limit = 50 } = req.query;
+    const isStudent = req.user?.department === 'student';
+    const { recipientId, recipientName, limit = 50 } = req.query;
+    const audience = isStudent ? 'student' : req.query.audience;
     if (!audience) return res.status(400).json({ error: 'audience is required' });
-    const who = [{ recipientId: '', recipientName: '' }];
-    if (recipientId) who.push({ recipientId });
-    if (recipientName) who.push({ recipientName: new RegExp(`^${escapeRegex(String(recipientName).trim())}$`, 'i') });
+    let who;
+    if (audience === 'student') {
+      const sid = isStudent ? (req.user.studentId || '') : String(recipientId || '');
+      if (!sid) return res.status(400).json({ error: 'recipientId (studentId) is required' });
+      const st = await findStudentByAnyId(sid);
+      const batch = studentBatchOf(st);
+      who = [{ recipientId: st?.studentId || sid }];
+      if (batch) who.push({ recipientId: '', batch });
+    } else {
+      who = [{ recipientId: '', recipientName: '' }];
+      if (recipientId) who.push({ recipientId });
+      if (recipientName) who.push({ recipientName: new RegExp(`^${escapeRegex(String(recipientName).trim())}$`, 'i') });
+    }
+    const key = readerKey(req);
     const list = await Notification.find({ audience, $or: who }).sort({ createdAt: -1 }).limit(Number(limit) || 50);
-    res.json(list);
+    res.json(list.map((n) => withReadState(n, key)));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
+async function markNotificationsRead(ids, req) {
+  const key = readerKey(req);
+  const isStudent = req.user?.department === 'student';
+  const docs = await Notification.find({ _id: { $in: ids } });
+  const out = [];
+  for (const d of docs) {
+    if (isStudent && (d.audience !== 'student' || (d.recipientId && d.recipientId !== req.user.studentId))) continue;
+    if (isSharedNotification(d)) {
+      if (!d.readBy.includes(key)) d.readBy.push(key);
+    } else {
+      d.read = true;
+    }
+    await d.save();
+    out.push(d);
+  }
+  return out;
+}
+
 router.put('/notifications/read-all', async (req, res) => {
   try {
     const ids = Array.isArray(req.body?.ids) ? req.body.ids.filter((i) => mongoose.isValidObjectId(i)) : [];
-    if (ids.length) await Notification.updateMany({ _id: { $in: ids } }, { $set: { read: true } });
-    res.json({ success: true, updated: ids.length });
+    const updated = ids.length ? await markNotificationsRead(ids, req) : [];
+    res.json({ success: true, updated: updated.length });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -2973,9 +3307,10 @@ router.put('/notifications/read-all', async (req, res) => {
 
 router.put('/notifications/:id/read', async (req, res) => {
   try {
-    const n = await Notification.findByIdAndUpdate(req.params.id, { $set: { read: true } }, { new: true });
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+    const [n] = await markNotificationsRead([req.params.id], req);
     if (!n) return res.status(404).json({ error: 'Notification not found' });
-    res.json(n);
+    res.json(withReadState(n, readerKey(req)));
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -3029,6 +3364,12 @@ router.get('/training/materials/:id/file', async (req, res) => {
   try {
     const doc = await TrainingMaterial.findById(req.params.id).select('+data');
     if (!doc || !doc.data) return res.status(404).json({ error: 'File not found' });
+    // Students may only open material assigned to their own batch
+    if (req.user?.department === 'student') {
+      const st = await findStudentByAnyId(req.user.studentId || '');
+      const batch = studentBatchOf(st);
+      if (!batch || !(doc.assignments || []).some((a) => a.batch === batch)) return res.status(403).json({ error: 'This material is not assigned to your batch' });
+    }
     const buf = Buffer.from(doc.data, 'base64');
     res.setHeader('Content-Type', doc.mimeType || 'application/octet-stream');
     const disposition = req.query.download ? 'attachment' : 'inline';
@@ -3066,6 +3407,13 @@ router.post('/training/materials/:id/assign', async (req, res) => {
       doc.assignments.push({ batch, module, note, by, at: new Date() });
     });
     await doc.save();
+    for (const batch of batches) {
+      await notifyBatch(batch, {
+        type: 'material', title: `New material: ${doc.title}`,
+        message: [module && `Module: ${module}`, note].filter(Boolean).join(' · ') || 'Open My LMS to view it.',
+        createdBy: by
+      });
+    }
     res.json(doc);
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -3842,7 +4190,7 @@ router.get('/student-portal/me', async (req, res) => {
         .select('fullName phone course counselorAssigned stage status referralRewarded createdAt')
         .sort({ createdAt: -1 }),
       PlacementRecord.find({ $or: [{ studentId: st.studentId }, { tfId: st.studentId }] }).sort({ createdAt: -1 }),
-      Escalation.find({ raisedBy: new RegExp(escapeRegex(st.studentId)) }).sort({ createdAt: -1 }).limit(20),
+      Escalation.find({ $or: [{ studentId: st.studentId }, { raisedBy: new RegExp(escapeRegex(st.studentId)) }] }).sort({ createdAt: -1 }).limit(20),
       CorporatePartner.find({ hiring: /hiring/i }).select('name city type activeVacancies').limit(8)
     ]);
 
@@ -3904,6 +4252,23 @@ router.get('/student-portal/me', async (req, res) => {
     const pastSessions = batch
       ? await LiveClassSession.find({ batch, isLive: false, 'notes.0': { $exists: true } }).sort({ startedAt: -1 }).limit(20).select('topic trainerName startedAt notes')
       : [];
+    // Weekly timetable = allocated trainer's scheduled classes for this batch
+    const timetable = (trainer?.scheduledClasses || [])
+      .filter((c) => !c.batch || c.batch === batch)
+      .map((c) => ({ name: c.name, timeSlot: c.timeSlot || '', startMin: c.startMin, endMin: c.endMin, days: c.days || trainer.workingDays || '' }))
+      .sort((a, b) => (a.startMin ?? 0) - (b.startMin ?? 0));
+
+    // Recent ended classes the student can rate + feedback already given
+    const [recentClasses, myFeedback] = await Promise.all([
+      batch ? LiveClassSession.find({ batch, isLive: false }).sort({ startedAt: -1 }).limit(10).select('topic trainerId trainerName startedAt') : [],
+      ClassFeedback.find({ studentId: st.studentId }).sort({ createdAt: -1 }).limit(50)
+    ]);
+    const rateableClasses = recentClasses.map((sess) => {
+      const fb = myFeedback.find((f) => f.sessionId === sess._id.toString());
+      return { id: sess._id.toString(), topic: sess.topic || '', trainerName: sess.trainerName || '', date: sess.startedAt, myRating: fb?.rating || null };
+    });
+    const trainerFeedback = myFeedback.find((f) => f.kind === 'trainer' && f.trainerId === st.trainerId) || null;
+
     const classNotes = pastSessions.map((sess) => ({
       id: sess._id.toString(),
       topic: sess.topic,
@@ -3927,8 +4292,126 @@ router.get('/student-portal/me', async (req, res) => {
       referrals,
       placements,
       tickets,
-      hiringPartners: partners
+      hiringPartners: partners,
+      timetable,
+      rateableClasses,
+      trainerFeedback
     });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---- Student feedback on classes / trainer → HR & Leadership trainer-quality score ----
+router.post('/student-portal/:id/feedback', async (req, res) => {
+  try {
+    const st = await findStudentByAnyId(req.params.id);
+    if (!st) return res.status(404).json({ error: 'Student not found' });
+    const { kind = 'class', sessionId = '', rating, comment = '' } = req.body || {};
+    const r = Math.round(Number(rating));
+    if (!(r >= 1 && r <= 5)) return res.status(400).json({ error: 'Rating must be 1–5' });
+    let trainerId = st.trainerId || '';
+    let trainerName = st.trainerName || '';
+    let topic = '';
+    if (kind === 'class') {
+      if (!mongoose.isValidObjectId(sessionId)) return res.status(400).json({ error: 'Pick a class to rate' });
+      const sess = await LiveClassSession.findById(sessionId).select('batch trainerId trainerName topic');
+      if (!sess || sess.batch !== studentBatchOf(st)) return res.status(404).json({ error: 'Class not found for your batch' });
+      trainerId = sess.trainerId; trainerName = sess.trainerName; topic = sess.topic || '';
+    } else if (!trainerId) {
+      return res.status(400).json({ error: 'No trainer allocated yet' });
+    }
+    const key = kind === 'class' ? { studentId: st.studentId, sessionId } : { studentId: st.studentId, kind: 'trainer', trainerId };
+    const doc = await ClassFeedback.findOneAndUpdate(
+      key,
+      { $set: { ...key, kind, studentName: st.name, trainerId, trainerName, batch: studentBatchOf(st), topic, rating: r, comment: String(comment).slice(0, 500) } },
+      { new: true, upsert: true, setDefaultsOnInsert: true }
+    );
+    if (r <= 2) {
+      await pushNotification({
+        audience: 'hr', recipientName: st.hrName || '', type: 'feedback',
+        title: `Low rating (${r}★) from ${st.name}`,
+        message: `${kind === 'class' ? `Class "${topic || 'session'}"` : 'Trainer'} · ${trainerName}${comment ? ` — ${String(comment).slice(0, 160)}` : ''}`,
+        studentId: st.studentId, createdBy: st.name
+      });
+    }
+    res.status(201).json(doc);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Trainer-quality roll-up (HR, Leadership, Admin, Training)
+router.get('/feedback/summary', async (req, res) => {
+  try {
+    const match = {};
+    if (req.query.trainerId) match.trainerId = req.query.trainerId;
+    if (req.query.days) match.createdAt = { $gte: new Date(Date.now() - Number(req.query.days) * 864e5) };
+    const rows = await ClassFeedback.aggregate([
+      { $match: match },
+      { $sort: { createdAt: -1 } },
+      {
+        $group: {
+          _id: '$trainerId',
+          trainerName: { $first: '$trainerName' },
+          avg: { $avg: '$rating' },
+          count: { $sum: 1 },
+          classAvg: { $avg: { $cond: [{ $eq: ['$kind', 'class'] }, '$rating', null] } },
+          trainerAvg: { $avg: { $cond: [{ $eq: ['$kind', 'trainer'] }, '$rating', null] } },
+          low: { $sum: { $cond: [{ $lte: ['$rating', 2] }, 1, 0] } },
+          recent: { $push: { rating: '$rating', comment: '$comment', studentName: '$studentName', topic: '$topic', kind: '$kind', at: '$createdAt' } }
+        }
+      },
+      { $project: { _id: 0, trainerId: '$_id', trainerName: 1, count: 1, low: 1, avg: { $round: ['$avg', 2] }, classAvg: { $round: ['$classAvg', 2] }, trainerAvg: { $round: ['$trainerAvg', 2] }, recent: { $slice: ['$recent', 5] } } },
+      { $sort: { avg: -1 } }
+    ]);
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// One timeline per student: HR, trainer and student actions in date order
+router.get('/students/:id/timeline', async (req, res) => {
+  try {
+    const st = await findStudentByAnyId(req.params.id);
+    if (!st) return res.status(404).json({ error: 'Student not found' });
+    const sid = st.studentId;
+    const [doubts, submissions, requests, tickets, feedback, placements] = await Promise.all([
+      TrainerDoubt.find({ studentId: sid }).sort({ createdAt: -1 }).limit(50),
+      StudentSubmission.find({ studentId: sid }).sort({ createdAt: -1 }).limit(50),
+      StudentRequest.find({ studentId: sid }).sort({ createdAt: -1 }).limit(50),
+      Escalation.find({ $or: [{ studentId: sid }, { raisedBy: new RegExp(escapeRegex(sid)) }] }).sort({ createdAt: -1 }).limit(30),
+      ClassFeedback.find({ studentId: sid }).sort({ createdAt: -1 }).limit(30),
+      PlacementRecord.find({ $or: [{ studentId: sid }, { tfId: sid }] }).sort({ createdAt: -1 }).limit(20)
+    ]);
+    const ev = [];
+    const add = (at, kind, title, detail = '', by = '', status = '') => at && ev.push({ at, kind, title, detail, by, status });
+    add(st.createdAt, 'admission', 'Admitted', `${st.course || ''}${st.batchDate ? ` · batch ${st.batchDate}` : ''}`, st.hrName || '');
+    add(st.handedOverAt, 'handover', `Handed over to ${st.trainerName || 'trainer'}`, st.trainerNote || '', st.handedOverBy || '');
+    (st.remedialActions || []).forEach((r) => add(r.at, 'remedial', `Remedial: ${r.action}`, r.note || '', r.by || ''));
+    add(st.syllabusCompletedAt, 'syllabus', 'Syllabus completed', '', st.trainerName || '');
+    add(st.trainerRecommendationAt, 'recommendation', `Trainer recommendation: ${st.trainerRecommendation}`, typeof st.readinessScore === 'number' ? `Readiness ${st.readinessScore}%` : '', st.trainerName || '');
+    doubts.forEach((d) => {
+      add(d.createdAt, 'doubt', `Doubt: ${d.topic}`, d.question, st.name, d.status);
+      if (d.repliedAt) add(d.repliedAt, 'doubt', `Doubt answered: ${d.topic}`, d.reply, d.trainerName || '');
+    });
+    submissions.forEach((s) => {
+      add(s.createdAt, 'submission', `Submitted: ${s.title}`, s.note || '', st.name, s.status);
+      if (s.reviewedAt) add(s.reviewedAt, 'submission', `Reviewed: ${s.title} → ${s.status}`, [typeof s.score === 'number' && `Score ${s.score}`, s.feedback].filter(Boolean).join(' · '), s.reviewedBy || '');
+    });
+    requests.forEach((r) => {
+      add(r.createdAt, 'request', `Request: ${r.subject || r.type.replace(/_/g, ' ')}`, r.message, st.name, r.status);
+      if (r.respondedAt) add(r.respondedAt, 'request', `Request ${r.status}: ${r.subject || r.type.replace(/_/g, ' ')}`, r.response, r.respondedBy || '');
+    });
+    tickets.forEach((t) => {
+      add(t.createdAt, 'ticket', `Ticket: ${t.title}`, t.description || '', t.raisedBy || '', t.status);
+      if (t.resolvedAt) add(t.resolvedAt, 'ticket', `Ticket ${t.status}: ${t.title}`, t.response || '', t.respondedBy || '');
+    });
+    feedback.forEach((f) => add(f.updatedAt || f.createdAt, 'feedback', `Rated ${f.kind === 'class' ? `class "${f.topic || ''}"` : `trainer ${f.trainerName}`}: ${f.rating}★`, f.comment || '', st.name));
+    placements.forEach((p) => add(p.createdAt, 'placement', `Placement: ${p.company || p.companyName || 'record'}`, [p.role, p.status || p.stage].filter(Boolean).join(' · ')));
+    ev.sort((a, b) => new Date(b.at) - new Date(a.at));
+    res.json({ studentId: sid, name: st.name, events: ev });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -4064,6 +4547,8 @@ router.get('/student-portal/submissions/:id/file', async (req, res) => {
     if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
     const doc = await StudentSubmission.findById(req.params.id).select('+data');
     if (!doc || !doc.data) return res.status(404).json({ error: 'File not found' });
+    // Students may only open their own submissions
+    if (req.user?.department === 'student' && doc.studentId !== req.user.studentId) return res.status(403).json({ error: 'Not allowed' });
     res.setHeader('Content-Type', doc.mimeType || 'application/octet-stream');
     const disposition = req.query.download ? 'attachment' : 'inline';
     res.setHeader('Content-Disposition', `${disposition}; filename="${encodeURIComponent(doc.fileName || 'file')}"`);
@@ -4088,9 +4573,15 @@ router.put('/student-portal/submissions/:id/review', async (req, res) => {
     }
     const doc = await StudentSubmission.findByIdAndUpdate(req.params.id, { $set: set }, { new: true });
     if (!doc) return res.status(404).json({ error: 'Submission not found' });
+    await notifyStudent(doc.studentId, {
+      type: 'submission', title: `${doc.title || 'Submission'}: ${status}`,
+      message: [typeof set.score === 'number' && `Score ${set.score}`, feedback].filter(Boolean).join(' · ') || `Reviewed by ${reviewedBy || 'your trainer'}.`,
+      createdBy: reviewedBy
+    });
     if (doc.type === 'resume' || doc.type === 'video_intro') {
+      const owner = await findStudentByAnyId(doc.studentId);
       await pushNotification({
-        audience: 'hr', type: 'placement',
+        audience: 'hr', recipientName: owner?.hrName || '', type: 'placement',
         title: `${doc.type === 'resume' ? 'Resume' : 'Video intro'} ${status.toLowerCase()}: ${doc.studentName}`,
         message: `${reviewedBy || 'Trainer'} reviewed ${doc.studentName}'s ${doc.type === 'resume' ? 'resume' : 'video introduction'}${feedback ? ` — ${feedback}` : ''}.`,
         studentId: doc.studentId, createdBy: reviewedBy
@@ -4198,6 +4689,11 @@ router.put('/student-portal/requests/:id', async (req, res) => {
         await st.save();
       }
     }
+    await notifyStudent(doc.studentId, {
+      type: 'request', title: `${doc.subject || doc.type.replace(/_/g, ' ')}: ${status}`,
+      message: [doc.scheduledFor && `Scheduled for ${doc.scheduledFor}`, response].filter(Boolean).join(' · ') || `Updated by ${respondedBy || (doc.audience === 'hr' ? 'your HR' : 'your trainer')}.`,
+      createdBy: respondedBy
+    });
     res.json(doc);
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -4409,6 +4905,10 @@ router.post('/trainer/live-class/start', async (req, res) => {
       return res.status(501).json({ error: 'Zoom is not set up: add the Zoom S2S keys in server/.env, or a Class Zoom Link on this trainer profile.' });
     }
     await sess.save();
+    await notifyBatch(batch, {
+      type: 'live', title: `${trainerName || 'Your trainer'} is live now`,
+      message: `${sess.topic || 'Class'} has started — open Live Classes to join.`, createdBy: trainerName
+    });
     res.json(trainerSessionView(sess));
   } catch (e) {
     res.status(e.status || 400).json({ error: e.message });
@@ -4507,6 +5007,152 @@ router.post('/student-portal/live-class/join', async (req, res) => {
     res.json({ signature, sdkKey, meetingNumber: sess.zoomMeetingId, password: sess.zoomPassword, zak: '', topic: sess.topic, trainerName: sess.trainerName, joinUrl: sess.zoomJoinUrl });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+// ==========================================
+// HR LMS — lesson progress, graded assessments, certification
+// ==========================================
+const lmsUserKey = (u) => String(u?.email || u?.name || '').trim().toLowerCase();
+const lmsModuleOut = (m) => (m ? { completedItems: m.completedItems || [], passed: !!m.passed, bestScore: m.bestScore || 0, lastScore: m.lastScore ?? null, attempts: m.attempts || 0, passedAt: m.passedAt || null } : null);
+
+async function lmsQuestionsFor(moduleKey) {
+  if (moduleKey.startsWith('course:')) {
+    const rates = await CourseFeeRate.find().lean().catch(() => []);
+    return { questions: courseQuestions(moduleKey.slice(7), rates.length ? rates : DEFAULT_COURSE_FEE_RATES), passMark: COURSE_PASS_MARK };
+  }
+  const questions = QUESTION_BANK[moduleKey];
+  return questions ? { questions, passMark: PASS_MARK[moduleKey] || 80 } : null;
+}
+
+function lmsSummary(doc) {
+  const modules = {};
+  (doc?.modules ? [...doc.modules.entries()] : []).forEach(([k, v]) => { modules[k] = lmsModuleOut(v); });
+  const mandatoryPassed = MANDATORY_MODULES.filter((k) => modules[k]?.passed);
+  const coursesPassed = Object.keys(modules).filter((k) => k.startsWith('course:') && modules[k].passed).map((k) => k.slice(7));
+  return {
+    userName: doc?.userName || '',
+    email: doc?.email || '',
+    modules,
+    mandatory: MANDATORY_MODULES,
+    mandatoryPassed,
+    mandatoryComplete: mandatoryPassed.length === MANDATORY_MODULES.length,
+    coursesPassed,
+    moduleItems: MODULE_ITEMS
+  };
+}
+
+async function lmsDocFor(req, create = false) {
+  const key = lmsUserKey(req.user);
+  if (!key) return null;
+  let doc = await LmsProgress.findOne({ userKey: key });
+  if (!doc && create) doc = new LmsProgress({ userKey: key, userName: req.user?.name || '', email: req.user?.email || '', department: req.user?.department || '' });
+  return doc;
+}
+
+// Is this counsellor certified to take a lead for this course?
+async function lmsCheckCounsellor(name, course) {
+  const n = String(name || '').trim();
+  if (!n) return { ok: true, missing: [] };
+  const doc = await LmsProgress.findOne({ userName: new RegExp(`^${escapeRegex(n)}$`, 'i') });
+  const s = lmsSummary(doc);
+  const missing = MANDATORY_MODULES.filter((k) => !s.mandatoryPassed.includes(k));
+  const mod = courseModuleFor(course);
+  if (mod && !s.coursesPassed.includes(mod)) missing.push(`${mod} course module`);
+  return { ok: missing.length === 0, missing };
+}
+// LMS_ENFORCEMENT: 'warn' (default) — allocation goes through with a warning;
+// 'block' — allocation refused until certified; 'off' — no check.
+const LMS_MODE = () => String(process.env.LMS_ENFORCEMENT || 'warn').toLowerCase();
+async function lmsGate(counsellor, course) {
+  if (LMS_MODE() === 'off') return null;
+  const r = await lmsCheckCounsellor(counsellor, course);
+  if (r.ok) return null;
+  return { blocked: LMS_MODE() === 'block', message: `${counsellor} has not completed LMS certification: ${r.missing.join(', ')}` };
+}
+
+router.get('/hr/lms/progress', async (req, res) => {
+  try {
+    // Leadership / Admin may look up a counsellor; everyone else sees their own
+    if (req.query.userName && ['admin', 'leadership'].includes(req.user?.department)) {
+      const doc = await LmsProgress.findOne({ userName: new RegExp(`^${escapeRegex(String(req.query.userName).trim())}$`, 'i') });
+      return res.json(lmsSummary(doc));
+    }
+    res.json(lmsSummary(await lmsDocFor(req)));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Certification overview for every counsellor (Leadership / Admin / HR heads)
+router.get('/hr/lms/certifications', async (req, res) => {
+  try {
+    const docs = await LmsProgress.find().sort({ userName: 1 });
+    res.json(docs.map((d) => { const s = lmsSummary(d); delete s.modules; delete s.moduleItems; return s; }));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.put('/hr/lms/progress/item', async (req, res) => {
+  try {
+    const { moduleKey, itemId, done = true } = req.body || {};
+    if (!moduleKey || !Number.isFinite(Number(itemId))) return res.status(400).json({ error: 'moduleKey and itemId are required' });
+    const doc = await lmsDocFor(req, true);
+    if (!doc) return res.status(400).json({ error: 'No user on this login' });
+    const m = doc.modules.get(moduleKey) || {};
+    const set = new Set(m.completedItems || []);
+    if (done) set.add(Number(itemId)); else set.delete(Number(itemId));
+    doc.modules.set(moduleKey, { ...(m.toObject ? m.toObject() : m), completedItems: [...set].sort((a, b) => a - b) });
+    await doc.save();
+    res.json(lmsSummary(doc));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Questions without answers
+router.get('/hr/lms/assessment/:moduleKey', async (req, res) => {
+  try {
+    const bank = await lmsQuestionsFor(req.params.moduleKey);
+    if (!bank) return res.status(404).json({ error: 'No assessment for this module' });
+    res.json({ moduleKey: req.params.moduleKey, passMark: bank.passMark, questions: bank.questions.map((q, i) => ({ id: i, q: q.q, o: q.o })) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Graded on the server; best score kept, pass is permanent
+router.post('/hr/lms/assessment/:moduleKey', async (req, res) => {
+  try {
+    const moduleKey = req.params.moduleKey;
+    const bank = await lmsQuestionsFor(moduleKey);
+    if (!bank) return res.status(404).json({ error: 'No assessment for this module' });
+    const answers = Array.isArray(req.body?.answers) ? req.body.answers : [];
+    if (answers.length !== bank.questions.length || answers.some((a) => a === null || a === undefined)) return res.status(400).json({ error: 'Answer every question before submitting' });
+    const correct = bank.questions.map((q, i) => Number(answers[i]) === q.a);
+    const score = Math.round((correct.filter(Boolean).length / bank.questions.length) * 100);
+    const passed = score >= bank.passMark;
+    const doc = await lmsDocFor(req, true);
+    if (!doc) return res.status(400).json({ error: 'No user on this login' });
+    const prev = doc.modules.get(moduleKey);
+    const m = prev?.toObject ? prev.toObject() : (prev || {});
+    const items = MODULE_ITEMS[moduleKey];
+    doc.modules.set(moduleKey, {
+      ...m,
+      // Passing the test also completes the lesson list
+      completedItems: passed && items ? Array.from({ length: items }, (_, i) => i + 1) : (m.completedItems || []),
+      attempts: (m.attempts || 0) + 1,
+      lastScore: score,
+      bestScore: Math.max(m.bestScore || 0, score),
+      passed: Boolean(m.passed) || passed,
+      passedAt: m.passed ? m.passedAt : (passed ? new Date() : null),
+      lastAttemptAt: new Date()
+    });
+    await doc.save();
+    res.json({ score, passed, passMark: bank.passMark, correct, summary: lmsSummary(doc) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
   }
 });
 

@@ -279,12 +279,11 @@ export default function App() {
         theme={theme}
       />
 
-      {/* Course Catalog — mounted once here so the floating button & popup
-          are available on every page of the site, not just specific tabs */}
+      {/* Course Catalog — visible ONLY when logged into the HR Department dashboard */}
       <CourseCatalogWidget
         hidden={
-          isDashboardOpen &&
-          (selectedDashboard?.id === 'leadership' || selectedDashboard === 'leadership')
+          !isDashboardOpen ||
+          (selectedDashboard?.id !== 'hr' && selectedDashboard !== 'hr')
         }
       />
     </div>

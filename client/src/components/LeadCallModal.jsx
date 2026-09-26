@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import useFileToken from '../hooks/useFileToken';
 import {
   Phone,
   PhoneCall,
@@ -61,6 +62,7 @@ const STATUS_LABEL = {
 };
 
 export default function LeadCallModal({ isOpen, onClose, leadData, onSave, currentUser }) {
+  useFileToken(); // keeps file links (downloads / audio) signed with a fresh short-lived token
   // Call state
   const [callStatus, setCallStatus] = useState('idle');
   const [callSid, setCallSid] = useState(null);

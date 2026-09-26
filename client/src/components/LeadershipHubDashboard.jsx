@@ -42,6 +42,8 @@ import {
   Check
 } from 'lucide-react';
 import TeamPerformanceBoard from './TeamPerformanceBoard';
+import TrainerQualityBoard from './TrainerQualityBoard';
+import LmsCertificationBoard from './LmsCertificationBoard';
 import EscalationDeskBoard from './EscalationDeskBoard';
 import ReportsExportBoard from './ReportsExportBoard';
 import TeamRosterBoard from './TeamRosterBoard';
@@ -1812,7 +1814,11 @@ function HeadOfHrDashboard({ onBack, currentUser, onChanged }) {
 
       {/* Tab 2: Team Performance */}
       {tab === 'team' && (
-        <TeamPerformanceBoard />
+        <div className="space-y-6">
+          <TeamPerformanceBoard />
+          <LmsCertificationBoard />
+          <TrainerQualityBoard />
+        </div>
       )}
 
       {/* Tab 3: Approvals */}

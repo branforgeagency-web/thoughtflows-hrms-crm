@@ -103,7 +103,23 @@ const trainerSchema = new mongoose.Schema(
           name: String,
           timeSlot: String,
           startMin: Number,
-          endMin: Number
+          endMin: Number,
+          // Batch this class belongs to (shown on the students' timetable) and
+          // the weekdays it runs on, e.g. "Mon-Fri" / "Mon,Wed,Fri" (blank = every working day)
+          batch: String,
+          days: String
+        }
+      ],
+      default: []
+    },
+    // Leave / unavailable days — demo matching skips the trainer on these dates
+    leaves: {
+      type: [
+        {
+          from: String, // YYYY-MM-DD
+          to: String, // YYYY-MM-DD (inclusive)
+          reason: String,
+          createdAt: { type: Date, default: Date.now }
         }
       ],
       default: []

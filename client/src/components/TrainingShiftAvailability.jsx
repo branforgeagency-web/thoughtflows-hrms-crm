@@ -1,12 +1,45 @@
 import React, { useMemo, useState } from 'react';
-import { AlertTriangle } from 'lucide-react';
+import { localDateKey } from '../utils/dateUtils';
+import { AlertTriangle, CalendarOff, Trash2 } from 'lucide-react';
 import { parseSlotToRange, minutesToLabel, evaluateDemoSlot } from '../utils/slotUtils';
+import { addTrainerLeave, deleteTrainerLeave } from '../services/api';
 
 // Shift, scheduled classes and demo-notification eligibility — all read from
 // the trainer's roster record (admin: Trainer Settings) and real demo bookings.
-export default function TrainingShiftAvailability({ trainer, demos = [], batches = [] }) {
+export default function TrainingShiftAvailability({ trainer, demos = [], batches = [], onTrainerUpdated }) {
   const [testSlot, setTestSlot] = useState('');
-  const todayKey = new Date().toISOString().split('T')[0];
+  const todayKey = localDateKey();
+  const [leaveForm, setLeaveForm] = useState({ from: '', to: '', reason: '' });
+  const [leaveBusy, setLeaveBusy] = useState(false);
+  const [leaveMsg, setLeaveMsg] = useState('');
+  const upcomingLeaves = (trainer?.leaves || []).filter((l) => (l.to || l.from) >= todayKey).sort((a, b) => a.from.localeCompare(b.from));
+  const onLeaveToday = upcomingLeaves.some((l) => l.from <= todayKey && (l.to || l.from) >= todayKey);
+
+  const saveLeave = async () => {
+    if (!leaveForm.from) { setLeaveMsg('Pick a start date'); return; }
+    setLeaveBusy(true); setLeaveMsg('');
+    try {
+      const res = await addTrainerLeave(trainer.trainerId, leaveForm);
+      if (onTrainerUpdated) onTrainerUpdated(res.trainer);
+      setLeaveForm({ from: '', to: '', reason: '' });
+      setLeaveMsg(res.clashes ? `✓ Leave saved. ${res.clashes} booked demo${res.clashes > 1 ? 's' : ''} in this period — HR has been asked to reschedule.` : '✓ Leave saved. You won\'t get demo bookings on these days.');
+    } catch (e) {
+      setLeaveMsg(e?.response?.data?.error || e.message);
+    } finally {
+      setLeaveBusy(false);
+    }
+  };
+  const removeLeave = async (id) => {
+    setLeaveBusy(true); setLeaveMsg('');
+    try {
+      const res = await deleteTrainerLeave(trainer.trainerId, id);
+      if (onTrainerUpdated) onTrainerUpdated(res.trainer);
+    } catch (e) {
+      setLeaveMsg(e?.response?.data?.error || e.message);
+    } finally {
+      setLeaveBusy(false);
+    }
+  };
 
   const shiftStart = Number.isFinite(trainer?.shiftStartMin) ? trainer.shiftStartMin : null;
   const shiftEnd = Number.isFinite(trainer?.shiftEndMin) ? trainer.shiftEndMin : null;
@@ -16,7 +49,10 @@ export default function TrainingShiftAvailability({ trainer, demos = [], batches
   const timeline = useMemo(() => {
     if (!trainer) return [];
     const items = [];
+    const todayWd = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date().getDay()];
     (trainer.scheduledClasses || []).forEach((c) => {
+      const days = String(c.days || '').split(',').map((d) => d.trim()).filter(Boolean);
+      if (days.length && !days.includes(todayWd)) return; // not held today
       const r = Number.isFinite(c.startMin) && Number.isFinite(c.endMin) ? { startMin: c.startMin, endMin: c.endMin } : parseSlotToRange(c.timeSlot);
       if (r) items.push({ ...r, title: c.name, type: 'Scheduled Class' });
     });
@@ -76,6 +112,33 @@ export default function TrainingShiftAvailability({ trainer, demos = [], batches
         {maxLoad > 0 && classesCount > maxLoad && (
           <div className="p-3 rounded-xl bg-rose-500/15 border border-rose-500/40 text-rose-200 text-xs font-semibold">
             Over max load: {classesCount} scheduled classes vs a limit of {maxLoad} per day.
+          </div>
+        )}
+      </div>
+
+      <div className="bg-white rounded-3xl p-6 border border-slate-200/90 shadow-xs space-y-4">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2"><CalendarOff className="w-4 h-4 text-rose-500" />Leave & unavailable days</h3>
+            <p className="text-[11px] text-slate-500">Demo bookings skip you on these dates. HR is alerted about demos already booked with you.</p>
+          </div>
+          {onLeaveToday && <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-rose-100 text-rose-700 whitespace-nowrap">On leave today</span>}
+        </div>
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="text-[11px] font-semibold text-slate-600">From<input type="date" min={todayKey} value={leaveForm.from} onChange={(e) => setLeaveForm({ ...leaveForm, from: e.target.value })} className="block mt-1 px-3 py-2 rounded-xl border border-slate-200 text-xs" /></label>
+          <label className="text-[11px] font-semibold text-slate-600">To<input type="date" min={leaveForm.from || todayKey} value={leaveForm.to} onChange={(e) => setLeaveForm({ ...leaveForm, to: e.target.value })} className="block mt-1 px-3 py-2 rounded-xl border border-slate-200 text-xs" /></label>
+          <label className="text-[11px] font-semibold text-slate-600 flex-1 min-w-[160px]">Reason (optional)<input value={leaveForm.reason} onChange={(e) => setLeaveForm({ ...leaveForm, reason: e.target.value })} placeholder="e.g. Personal leave" className="block w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 text-xs" /></label>
+          <button type="button" disabled={leaveBusy} onClick={saveLeave} className="px-4 py-2 rounded-xl bg-[#0f212d] text-white text-xs font-bold disabled:opacity-50">{leaveBusy ? 'Saving…' : 'Add leave'}</button>
+        </div>
+        {leaveMsg && <div className="text-xs font-semibold text-slate-700">{leaveMsg}</div>}
+        {upcomingLeaves.length > 0 && (
+          <div className="divide-y divide-slate-100 text-xs">
+            {upcomingLeaves.map((l) => (
+              <div key={l._id || l.from} className="py-2 flex items-center justify-between gap-3">
+                <span><b>{l.from}{l.to && l.to !== l.from ? ` → ${l.to}` : ''}</b>{l.reason ? <span className="text-slate-500"> · {l.reason}</span> : null}</span>
+                {l._id && <button type="button" disabled={leaveBusy} onClick={() => removeLeave(l._id)} className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50" aria-label="Remove leave"><Trash2 className="w-4 h-4" /></button>}
+              </div>
+            ))}
           </div>
         )}
       </div>

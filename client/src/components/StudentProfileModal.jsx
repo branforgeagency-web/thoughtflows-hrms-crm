@@ -21,6 +21,7 @@ import {
   ExternalLink 
 } from 'lucide-react';
 import { updateStudent } from '../services/api';
+import StudentTimeline from './StudentTimeline';
 
 export default function StudentProfileModal({ isOpen, onClose, student: propStudent, onUpdateStudent }) {
   if (!isOpen || !propStudent) return null;
@@ -75,6 +76,7 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
     'Course Progress',
     'Exam & Certification',
     'Placement',
+    'Timeline',
   ];
 
   // ── Helper: status badge ─────────────────────────────────────────────────
@@ -118,100 +120,8 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
     if (Array.isArray(student.interviews) && student.interviews.length > 0) {
       return student.interviews;
     }
-    // Dynamic default realistic interviews matching student's track
-    return [
-      {
-        id: 'int-1',
-        company: student.placementCompany || 'Omega Healthcare Solutions',
-        logo: '🏢',
-        role: student.placementRole || `${student.course || 'AMCT'} - Medical Coder Trainee`,
-        date: '2026-09-18',
-        mode: 'Virtual Video Drive (Microsoft Teams)',
-        overallStatus: 'Shortlisted for Final HR Round',
-        offeredPackage: student.placementPackage || '₹3.80 LPA + Performance Bonus',
-        roundsAttended: 3,
-        totalRounds: 4,
-        rounds: [
-          {
-            name: 'Round 1: Medical Terminology, Anatomy & ICD-10-CM Aptitude',
-            status: 'Cleared ✓',
-            badgeColor: 'green',
-            score: '92 / 100',
-            date: '18 Sep 2026',
-            evaluator: 'Technical Assessment Team',
-            feedback: 'Outstanding knowledge in anatomical planes, disease pathology, and ICD-10 coding conventions.'
-          },
-          {
-            name: 'Round 2: Technical Chart Auditing & CPT Coding Drill',
-            status: 'Cleared ✓',
-            badgeColor: 'green',
-            score: '88 / 100',
-            date: '20 Sep 2026',
-            evaluator: 'Mr. Rajesh K., Lead Coding Auditor',
-            feedback: 'Accurate modifier selection (Mod 25, 59) and precise E/M level assignment with MDM matrix.'
-          },
-          {
-            name: 'Round 3: Client Panel Technical & Specialty Round',
-            status: 'Cleared ✓',
-            badgeColor: 'green',
-            score: 'Recommended',
-            date: '22 Sep 2026',
-            evaluator: 'US Healthcare Client Manager',
-            feedback: 'Confident operational mindset, ready for live production charting after client orientation.'
-          },
-          {
-            name: 'Round 4: Final HR & Salary Discussion',
-            status: 'In Progress ⏳',
-            badgeColor: 'amber',
-            score: 'Pending Offer Letter',
-            date: '25 Sep 2026',
-            evaluator: 'Corporate Talent Acquisition Lead',
-            feedback: 'Package proposed at ₹3.80 LPA. Awaiting candidate document verification.'
-          }
-        ]
-      },
-      {
-        id: 'int-2',
-        company: 'CorroHealth (Formerly Visionary RCM)',
-        logo: '🏥',
-        role: `${student.course || 'AMCT'} - Coding Associate (IP-DRG & Surgery Track)`,
-        date: '2026-09-12',
-        mode: 'Campus Placement Drive (Saravanampatti Branch)',
-        overallStatus: 'Technical Rounds Cleared',
-        offeredPackage: '₹3.60 LPA',
-        roundsAttended: 2,
-        totalRounds: 3,
-        rounds: [
-          {
-            name: 'Round 1: Written Medical Coding Assessment',
-            status: 'Cleared ✓',
-            badgeColor: 'green',
-            score: '86 / 100',
-            date: '12 Sep 2026',
-            evaluator: 'Campus Recruitment Team',
-            feedback: 'Solid fundamentals in medical root words, prefixes, and coding guidelines.'
-          },
-          {
-            name: 'Round 2: 1-on-1 Operative Report Coding Round',
-            status: 'Cleared ✓',
-            badgeColor: 'green',
-            score: '84 / 100',
-            date: '14 Sep 2026',
-            evaluator: 'Senior Auditor - CorroHealth',
-            feedback: 'Good comprehension of operative note parsing and modifier sequencing.'
-          },
-          {
-            name: 'Round 3: Client Project Allocation Round',
-            status: 'Scheduled ⏳',
-            badgeColor: 'blue',
-            score: 'Upcoming Drive',
-            date: '28 Sep 2026',
-            evaluator: 'Delivery Manager',
-            feedback: 'Shortlisted candidate slotted for batch allocation.'
-          }
-        ]
-      }
-    ];
+    // No invented interviews: only what the placement team recorded
+    return [];
   }, [student]);
 
   const totalAttendedRounds = useMemo(() => {
@@ -397,6 +307,13 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
 
         {/* ── TAB BODY ───────────────────────────────────────────────────── */}
         <div className="p-5 sm:p-6 overflow-y-auto space-y-4">
+
+          {/* ── TIMELINE: HR + trainer + student activity in one place ──── */}
+          {activeTab === 'Timeline' && (
+            <div className="bg-white rounded-2xl border border-slate-200 p-4">
+              <StudentTimeline studentId={student.studentId || student._id || student.id} />
+            </div>
+          )}
 
           {/* ── TAB 1: OVERVIEW ──────────────────────────────────────────── */}
           {activeTab === 'Overview' && (
@@ -733,10 +650,10 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
                     <Award className="w-4 h-4" />
                   </div>
                   <div className="text-xl font-black text-cyan-950">
-                    {student.mockInterview || 'Cleared (88%)'}
+                    {typeof student.mockScore === 'number' ? `${student.mockScore}%` : (student.mockInterview || 'Pending')}
                   </div>
                   <div className="text-[11px] text-cyan-700 font-semibold mt-0.5">
-                    Verified Ready by Trainer
+                    {student.trainerRecommendation ? `Trainer: ${student.trainerRecommendation}` : 'Awaiting trainer review'}
                   </div>
                 </div>
 
@@ -748,10 +665,10 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
                   <div className="text-lg font-black text-amber-950 truncate">
                     {student.placementStatus && student.placementStatus !== 'In course' 
                       ? student.placementStatus 
-                      : (currentStageIdx >= 5 ? 'Interview Scheduled' : 'Placement Ready')}
+                      : (currentStageIdx >= 5 ? 'Interview Scheduled' : student.trainerRecommendation === 'Ready' ? 'Placement Ready' : 'In training')}
                   </div>
                   <div className="text-[11px] text-amber-700 font-semibold mt-0.5 truncate">
-                    {interviewsList[0]?.offeredPackage || '₹3.80 LPA (In Discussion)'}
+                    {interviewsList[0]?.offeredPackage || student.placementPackage || 'No offer yet'}
                   </div>
                 </div>
               </div>
@@ -871,6 +788,9 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
                 </div>
 
                 <div className="space-y-4">
+                  {interviewsList.length === 0 && (
+                    <div className="border border-dashed border-slate-300 rounded-2xl p-6 text-center text-xs text-slate-500">No interviews recorded yet. Add one when the placement team schedules a drive.</div>
+                  )}
                   {interviewsList.map((interview, idx) => (
                     <div 
                       key={interview.id || idx} 

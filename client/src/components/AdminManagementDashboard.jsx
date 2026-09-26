@@ -56,6 +56,7 @@ import axios from 'axios';
 import TeamPerformanceBoard from './TeamPerformanceBoard';
 import { onDataUpdate, getStats, getAdminSlabs, updateAdminSlabs, getAuditLogs, createAuditLog } from '../services/api';
 import { COURSE_CATEGORIES, ALL_COURSES, TRAINER_COURSES } from '../constants/courses';
+import TrainerScheduleEditor from './TrainerScheduleEditor';
 
 // Exact Academy Roles matching User screenshot
 const ACADEMY_ROLES = [
@@ -1085,6 +1086,17 @@ export default function AdminManagementDashboard({
             }`}
           >
             <BookOpen className="w-4 h-4" /> Course Catalog
+          </button>
+
+          <button
+            onClick={() => setActiveModule('schedules')}
+            className={`px-4 py-2 rounded-xl text-xs font-extrabold transition-all flex items-center gap-2 whitespace-nowrap ${
+              activeModule === 'schedules'
+                ? 'bg-slate-900 text-white shadow-sm'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+            }`}
+          >
+            <BookOpen className="w-4 h-4" /> Trainer Schedules
           </button>
 
           <button
@@ -2162,6 +2174,8 @@ export default function AdminManagementDashboard({
         {/* ========================================================================= */}
         {/* 6. COURSE CATALOG & FEE STRUCTURE */}
         {/* ========================================================================= */}
+        {activeModule === 'schedules' && <TrainerScheduleEditor />}
+
         {activeModule === 'catalog' && (
           <div className="space-y-6">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-6 rounded-3xl bg-emerald-500/10 border border-emerald-200">
@@ -2185,26 +2199,31 @@ export default function AdminManagementDashboard({
                 <table className="w-full text-left text-xs">
                   <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase tracking-wider font-bold text-[11px]">
                     <tr>
-                      <th className="p-4">Code</th>
-                      <th className="p-4">Certification Course</th>
+                      <th className="p-4">Code / Course</th>
+                      <th className="p-4">Category</th>
+                      <th className="p-4">Old Fee</th>
+                      <th className="p-4 text-rose-600">New Fee (w/o Disc)</th>
+                      <th className="p-4 text-emerald-700">Course Fee (Incl. Taxes)</th>
                       <th className="p-4">Duration</th>
-                      <th className="p-4">Reg. Fee</th>
-                      <th className="p-4">Training Fee</th>
-                      <th className="p-4">AAPC Exam Fee</th>
-                      <th className="p-4 text-right">Total Payable</th>
+                      <th className="p-4 text-right">Exam Fee</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {courseRates.map((course, idx) => (
                       <tr key={course.code || idx} className="hover:bg-slate-50/70 transition-colors">
-                        <td className="p-4 font-mono font-bold text-emerald-700">{course.code}</td>
-                        <td className="p-4 font-bold text-slate-900">{course.name}</td>
-                        <td className="p-4 text-slate-600 font-medium">{course.duration}</td>
-                        <td className="p-4 text-slate-500">₹{(course.registrationFee || 2000).toLocaleString('en-IN')}</td>
-                        <td className="p-4 text-slate-700 font-semibold">₹{(course.trainingFee || course.courseFee || 19000).toLocaleString('en-IN')}</td>
-                        <td className="p-4 text-amber-700 font-medium">₹{(course.examFee || 22000).toLocaleString('en-IN')}</td>
-                        <td className="p-4 text-right font-black text-emerald-700 text-sm">
-                          ₹{(course.totalPayable || (course.trainingFee + (course.examFee || 0) + (course.registrationFee || 2000))).toLocaleString('en-IN')}
+                        <td className="p-4">
+                          <div className="font-mono font-bold text-emerald-700">{course.code}</div>
+                          <div className="font-bold text-slate-900 text-xs mt-0.5">{course.name}</div>
+                        </td>
+                        <td className="p-4 font-semibold text-slate-500 text-[11px]">{course.category || 'Specialty Track'}</td>
+                        <td className="p-4 text-slate-400 font-medium line-through">{course.oldFee ? `₹${Number(course.oldFee).toLocaleString('en-IN')}` : '—'}</td>
+                        <td className="p-4 text-rose-600 font-medium line-through">{course.newFeeNoDiscount ? `₹${Number(course.newFeeNoDiscount).toLocaleString('en-IN')}` : course.standardFee ? `₹${Number(course.standardFee).toLocaleString('en-IN')}` : '—'}</td>
+                        <td className="p-4 font-black text-emerald-700 text-sm">
+                          ₹{Number(course.courseFee || course.fee || 0).toLocaleString('en-IN')}
+                        </td>
+                        <td className="p-4 text-slate-700 font-medium">{course.duration || '3 Months'}</td>
+                        <td className="p-4 text-right font-semibold text-slate-800">
+                          {course.examFeeText || (course.examFee ? `₹${Number(course.examFee).toLocaleString('en-IN')}` : 'NO EXAM')}
                         </td>
                       </tr>
                     ))}

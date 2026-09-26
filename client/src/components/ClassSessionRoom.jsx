@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import useFileToken from '../hooks/useFileToken';
+import { localDateKey } from '../utils/dateUtils';
 import { Play, Clock, CheckSquare, Users, MessageSquare, Send, Copy, X, RefreshCw, ExternalLink } from 'lucide-react';
 import ZoomMeeting from './ZoomMeeting';
 import {
@@ -21,9 +23,10 @@ import {
 const studentKeyOf = (s) => String(s?.studentId || s?._id || '');
 const fmtTimer = (secs) => [Math.floor(secs / 3600), Math.floor((secs % 3600) / 60), secs % 60].map((n) => String(n).padStart(2, '0')).join(':');
 const fmtTime = (d) => (d ? new Date(d).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '');
-const todayKey = () => new Date().toISOString().split('T')[0];
+const todayKey = () => localDateKey();
 
 export default function ClassSessionRoom({ trainerId, trainerName, batches = [], materials = [], onAttendanceSaved }) {
+  useFileToken(); // keeps file links (downloads / audio) signed with a fresh short-lived token
   const [batchId, setBatchId] = useState('');
   const batch = batches.find((b) => b.id === batchId) || batches[0] || null;
   const [topic, setTopic] = useState('');

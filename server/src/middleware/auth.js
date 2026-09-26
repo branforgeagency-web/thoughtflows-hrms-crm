@@ -29,6 +29,17 @@ export function signToken(user) {
   return jwt.sign(payload, secret(), { expiresIn: TOKEN_TTL });
 }
 
+// Short-lived token for links the browser opens itself (<a href>, <audio src>,
+// <iframe src>). It only works as ?token= on GET file routes and expires in
+// 15 minutes, so a leaked URL (history, logs, shared link) is useless quickly.
+// The long-lived session token is never put in a URL.
+const FILE_TOKEN_TTL = '15m';
+export function signFileToken(user) {
+  const { iat, exp, typ, ...claims } = user || {};
+  return jwt.sign({ ...claims, typ: 'file' }, secret(), { expiresIn: FILE_TOKEN_TTL });
+}
+const FILE_ROUTES = [/^\/training\/materials\/[^/]+\/file$/, /^\/student-portal\/submissions\/[^/]+\/file$/];
+
 // ---------------------------------------------------------------------------
 // Passwords
 // ---------------------------------------------------------------------------
@@ -68,6 +79,73 @@ const ADMIN_ROUTES = [
   ['PUT', /^\/admin\/slabs$/]
 ];
 
+// Department guards for staff writes. Admin & Leadership may do everything;
+// any other department must be listed. Reads stay open to all staff.
+const FULL_ACCESS = ['admin', 'leadership'];
+const STAFF_RULES = [
+  // Leads & admissions (HR); Marketing can add leads from campaigns
+  ['POST', /^\/leads$/, ['hr', 'marketing']],
+  ['PUT', /^\/leads\/[^/]+$/, ['hr']],
+  ['DELETE', /^\/leads\/[^/]+$/, ['hr']],
+  ['POST', /^\/leads\/[^/]+\/whatsapp$/, ['hr']],
+  ['POST', /^\/students$/, ['hr']],
+  ['DELETE', /^\/students\/[^/]+$/, []],
+  ['POST', /^\/students\/[^/]+\/reset-login$/, ['hr']],
+  ['PUT', /^\/students\/[^/]+$/, ['hr', 'cccp']],
+  ['POST', /^\/students\/[^/]+\/handover$/, ['hr']],
+  ['POST', /^\/fees\/rates$/, ['hr']],
+  ['POST', /^\/closures$/, ['hr']],
+  ['*', /^\/calls\/(dial|log|[^/]+\/hangup)$/, ['hr']],
+  ['POST', /^\/recordings$/, ['hr']],
+  ['DELETE', /^\/recordings\/[^/]+$/, ['hr']],
+  ['POST', /^\/hr\/targets$/, ['hr']],
+  ['PUT', /^\/hr\/targets\/[^/]+$/, ['hr']],
+  ['DELETE', /^\/hr\/targets\/[^/]+$/, ['hr']],
+  // Training
+  ['PUT', /^\/students\/[^/]+\/(syllabus-complete|recommendation)$/, ['training']],
+  ['POST', /^\/students\/[^/]+\/remedial$/, ['training']],
+  ['PUT', /^\/trainer\/doubts\/[^/]+\/reply$/, ['training']],
+  ['POST', /^\/trainer\/assessments$/, ['training']],
+  ['PUT', /^\/trainer\/assessments\/[^/]+\/(scores|rationale)$/, ['training']],
+  ['POST', /^\/trainer\/attendance$/, ['training']],
+  ['POST', /^\/training\/materials(\/[^/]+\/assign)?$/, ['training']],
+  ['PUT', /^\/training\/materials\/[^/]+\/pin$/, ['training']],
+  ['DELETE', /^\/training\/materials\/[^/]+$/, ['training']],
+  ['PUT', /^\/student-portal\/submissions\/[^/]+\/review$/, ['training']],
+  ['*', /^\/trainer\/live-class\/(start|end|[^/]+\/(notes|attendance-saved))$/, ['training']],
+  ['PUT', /^\/trainer\/settings\/[^/]+$/, []],
+  ['*', /^\/trainer\/settings\/[^/]+\/leaves/, ['training']], // own-record check is in the route
+  // Student requests: trainer answers academic ones, HR the admin ones
+  ['PUT', /^\/student-portal\/requests\/[^/]+$/, ['training', 'hr']],
+  // Placement & marketing
+  ['*', /^\/cccp\//, ['cccp']],
+  ['*', /^\/marketing\/(campaigns|creatives)/, ['marketing']],
+  // Leadership desk
+  ['PATCH', /^\/leadership\/approvals\/[^/]+\/decision$/, ['marketing']],
+  ['PATCH', /^\/leadership\/escalations\/[^/]+\/status$/, ['hr']],
+  ['PUT', /^\/admin\/audit-logs/, []]
+];
+
+// Reads that stay with the owning department
+const READ_RULES = [
+  [/^\/leads(\/(?!pipeline$)|$)/, ['hr', 'marketing', 'cccp']], // pipeline counts stay open
+  [/^\/(recordings|closures|calls)(\/|$)/, ['hr']]
+];
+
+function staffAllowed(req, user) {
+  const dept = String(user.department || '').toLowerCase();
+  if (req.method === 'GET') {
+    if (FULL_ACCESS.includes(dept)) return true;
+    const rule = READ_RULES.find(([rx]) => rx.test(req.path));
+    return rule ? rule[1].includes(dept) : true;
+  }
+  if (FULL_ACCESS.includes(dept)) return true;
+  for (const [m, rx, depts] of STAFF_RULES) {
+    if ((m === '*' || m === req.method) && rx.test(req.path)) return depts.includes(dept);
+  }
+  return true;
+}
+
 const matches = (list, method, path) => list.some(([m, rx]) => (m === '*' || m === method) && rx.test(path));
 
 // Everything a student may call. Each rule can pin the request to the
@@ -75,11 +153,16 @@ const matches = (list, method, path) => list.some(([m, rx]) => (m === '*' || m =
 const STUDENT_RULES = [
   ['GET', /^\/student-portal\/me$/, (req, u) => { req.query.studentId = u.studentId || ''; req.query.email = u.email || ''; }],
   ['PUT', /^\/student-portal\/([^/]+)\/profile$/, 'own'],
-  ['POST', /^\/student-portal\/([^/]+)\/(referrals|submissions|requests)$/, 'own'],
+  ['POST', /^\/student-portal\/([^/]+)\/(referrals|submissions|requests|feedback)$/, 'own'],
+  ['POST', /^\/auth\/file-token$/],
+  // Own notification bell (the route pins the query to the student's own id / batch)
+  ['GET', /^\/notifications$/],
+  ['PUT', /^\/notifications\/read-all$/],
+  ['PUT', /^\/notifications\/[^/]+\/read$/],
   ['GET', /^\/student-portal\/submissions\/[^/]+\/file$/],
   ['GET', /^\/training\/materials\/[^/]+\/file$/],
   ['POST', /^\/trainer\/doubts$/, (req, u) => { req.body = { ...(req.body || {}), studentId: u.studentId }; }],
-  ['POST', /^\/leadership\/escalations$/, (req, u) => { req.body = { ...(req.body || {}), raisedBy: `${u.name} (${u.studentId})` }; }],
+  ['POST', /^\/leadership\/escalations$/, (req, u) => { req.body = { ...(req.body || {}), raisedBy: `${u.name} (${u.studentId})`, studentId: u.studentId || '' }; }],
   ['POST', /^\/demos$/],
   ['GET', /^\/demos\/eligible-trainers$/],
   ['GET', /^\/demos\/mine$/, (req, u) => { req.query.email = u.email; }],
@@ -107,15 +190,20 @@ export function requireAuth(req, res, next) {
   if (req.method === 'OPTIONS' || matches(PUBLIC_ROUTES, req.method, req.path)) return next();
 
   const header = req.headers.authorization || '';
-  // ?token= lets <a href> downloads (materials, submissions) carry the session
-  const token = header.startsWith('Bearer ') ? header.slice(7) : (req.query.token || '');
+  const fromHeader = header.startsWith('Bearer ');
+  // ?token= is only for short-lived file tokens on file downloads (see signFileToken)
+  const token = fromHeader ? header.slice(7) : (req.query.token || '');
   if (!token) return res.status(401).json({ error: 'Please log in to continue.', code: 'AUTH_REQUIRED' });
 
   let user;
   try {
     user = jwt.verify(String(token), secret());
   } catch (_) {
-    return res.status(401).json({ error: 'Your session has expired. Please log in again.', code: 'AUTH_EXPIRED' });
+    return res.status(401).json({ error: fromHeader ? 'Your session has expired. Please log in again.' : 'This link has expired. Open it again from the dashboard.', code: fromHeader ? 'AUTH_EXPIRED' : 'LINK_EXPIRED' });
+  }
+  if (fromHeader && user.typ === 'file') return res.status(401).json({ error: 'Invalid session token.', code: 'AUTH_REQUIRED' });
+  if (!fromHeader && (user.typ !== 'file' || req.method !== 'GET' || !FILE_ROUTES.some((rx) => rx.test(req.path)))) {
+    return res.status(401).json({ error: 'This link is not valid. Open it again from the dashboard.', code: 'LINK_INVALID' });
   }
   if (req.query.token) delete req.query.token;
   req.user = user;
@@ -127,15 +215,21 @@ export function requireAuth(req, res, next) {
   if (matches(ADMIN_ROUTES, req.method, req.path) && !['admin', 'leadership'].includes(user.department)) {
     return res.status(403).json({ error: 'Only Admin / Leadership can do this.' });
   }
+  if (!staffAllowed(req, user)) {
+    return res.status(403).json({ error: `Your department (${user.department || 'unknown'}) can't do this.` });
+  }
   return next();
 }
 
 // Staff-only guard for static files (call recordings)
 export function requireStaffToken(req, res, next) {
   const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : (req.query.token || '');
+  const fromHeader = header.startsWith('Bearer ');
+  const token = fromHeader ? header.slice(7) : (req.query.token || '');
   try {
     const user = jwt.verify(String(token), secret());
+    // Links (<audio src>) must carry a short-lived file token, never the session token
+    if (fromHeader ? user.typ === 'file' : user.typ !== 'file') return res.status(401).json({ error: 'This link has expired. Open it again from the dashboard.' });
     if (user.department === 'student') return res.status(403).end();
     return next();
   } catch (_) {

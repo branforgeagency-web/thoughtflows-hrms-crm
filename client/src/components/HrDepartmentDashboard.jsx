@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { localDateKey } from '../utils/dateUtils';
 import { 
   Search, 
   Plus, 
@@ -39,10 +40,13 @@ import HrStudentFeesCrm from './HrStudentFeesCrm';
 import HrHandoverDesk from './HrHandoverDesk';
 import HrReportsView from './HrReportsView';
 import HrCallRecordingsTable from './HrCallRecordingsTable';
+import HrStudentRequestsDesk from './HrStudentRequestsDesk';
+import TrainerQualityBoard from './TrainerQualityBoard';
+import { Inbox as InboxIcon } from 'lucide-react';
 import LeadCallModal from './LeadCallModal';
 import BookNewDemoModal from './BookNewDemoModal';
 import AddLeadModal from './AddLeadModal';
-import { getStudents, getLeads, createLead, updateLead, getDemos, createDemo, getRecordings, getTodayClosure, saveDailyClosure, onDataUpdate, getNotifications, markNotificationRead, markNotificationsRead } from '../services/api';
+import { getStudents, getLeads, createLead, updateLead, getDemos, createDemo, getRecordings, getTodayClosure, saveDailyClosure, onDataUpdate, getNotifications, markNotificationRead, markNotificationsRead, getStudentRequests, getStudentTickets, getMyAttendance, setMyAttendance, logCall, getTodayCallLog } from '../services/api';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 
 export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, onSwitchDepartment, theme = 'classic' }) {
@@ -97,7 +101,96 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   };
 
   const [searchQuery, setSearchQuery] = useState('');
-  const [isOnBreak, setIsOnBreak] = useState(false);
+  
+  // Live Break Timer State & Persistence
+  const [breakStartTime, setBreakStartTime] = useState(() => {
+    try {
+      const saved = localStorage.getItem('thoughtflows_break_start');
+      return saved ? parseInt(saved, 10) : null;
+    } catch { return null; }
+  });
+  const [breakSeconds, setBreakSeconds] = useState(0);
+  const [accumulatedBreak, setAccumulatedBreak] = useState(() => {
+    try {
+      const today = localDateKey();
+      const saved = localStorage.getItem(`thoughtflows_break_acc_${today}`);
+      return saved ? parseInt(saved, 10) : 0;
+    } catch { return 0; }
+  });
+  const [isOnBreak, setIsOnBreak] = useState(() => Boolean(breakStartTime));
+
+  useEffect(() => {
+    if (!isOnBreak) {
+      setBreakSeconds(0);
+      return undefined;
+    }
+    let start = breakStartTime;
+    if (!start) {
+      start = Date.now();
+      setBreakStartTime(start);
+      try { localStorage.setItem('thoughtflows_break_start', String(start)); } catch (_) {}
+    }
+    const tick = () => {
+      const elapsed = Math.max(0, Math.floor((Date.now() - start) / 1000));
+      setBreakSeconds(elapsed);
+    };
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [isOnBreak, breakStartTime]);
+
+  // Server attendance (Leadership branch view): clock in on open, restore break state
+  useEffect(() => {
+    if (!userName) return;
+    (async () => {
+      try {
+        const rec = await getMyAttendance(currentUser?.branch);
+        if (!rec?.checkIn || rec.status === 'absent') await setMyAttendance('in', currentUser?.branch);
+        else if (rec.status === 'break' && rec.breakStartedAt && !isOnBreak) {
+          const start = new Date(rec.breakStartedAt).getTime();
+          setBreakStartTime(start);
+          try { localStorage.setItem('thoughtflows_break_start', String(start)); } catch (_) {}
+          setIsOnBreak(true);
+        } else if (rec.status === 'in' && isOnBreak) {
+          // Break was ended on another device
+          try { localStorage.removeItem('thoughtflows_break_start'); } catch (_) {}
+          setBreakStartTime(null);
+          setIsOnBreak(false);
+        }
+        if (typeof rec?.breakMinutes === 'number' && rec.breakMinutes * 60 > accumulatedBreak) setAccumulatedBreak(rec.breakMinutes * 60);
+      } catch (_) { /* offline: local timer still works */ }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userName]);
+
+  const handleToggleBreak = () => {
+    setMyAttendance(isOnBreak ? 'resume' : 'break', currentUser?.branch).catch(() => {});
+    if (isOnBreak) {
+      const duration = breakStartTime ? Math.max(0, Math.floor((Date.now() - breakStartTime) / 1000)) : breakSeconds;
+      const newTotal = accumulatedBreak + duration;
+      setAccumulatedBreak(newTotal);
+      try {
+        const today = localDateKey();
+        localStorage.setItem(`thoughtflows_break_acc_${today}`, String(newTotal));
+        localStorage.removeItem('thoughtflows_break_start');
+      } catch (_) {}
+      setBreakStartTime(null);
+      setBreakSeconds(0);
+      setIsOnBreak(false);
+    } else {
+      const now = Date.now();
+      setBreakStartTime(now);
+      try { localStorage.setItem('thoughtflows_break_start', String(now)); } catch (_) {}
+      setIsOnBreak(true);
+    }
+  };
+
+  const fmtBreakTimer = (secs) => {
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  };
+
   const [closureSubmitted, setClosureSubmitted] = useState(false);
   const [closureSubmittedAt, setClosureSubmittedAt] = useState('');
   const [customMetrics, setCustomMetrics] = useState(null);
@@ -105,15 +198,18 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   const [callRecordings, setCallRecordings] = useState([]);
   
   // Local daily calls cache for instant reactivity when calling through modal
-  const [todayCallLogs, setTodayCallLogs] = useState(() => {
-    try {
-      const dKey = new Date().toISOString().split('T')[0];
-      const saved = localStorage.getItem(`thoughtflows_daily_calls_${dKey}_${userName}`);
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  // Today's calls come from the server call log (works across devices / browsers)
+  const [todayCallLogs, setTodayCallLogs] = useState([]);
+  useEffect(() => {
+    if (!userName) return undefined;
+    let alive = true;
+    const load = () => getTodayCallLog()
+      .then((r) => { if (alive && Array.isArray(r?.list)) setTodayCallLogs(r.list.map((c) => ({ id: c.leadId, time: c.createdAt, outcome: c.outcome, duration: c.durationSeconds, connected: c.connected }))); })
+      .catch(() => {});
+    load();
+    const t = setInterval(load, 120000);
+    return () => { alive = false; clearInterval(t); };
+  }, [userName]);
 
   const [dashMenuOpen, setDashMenuOpen] = useState(false);
   const [barTheme, setBarTheme] = useState(() => {
@@ -182,12 +278,20 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     setTimeout(() => setToastMsg(null), 3000);
   };
 
+  // Lead allocated to a counsellor without LMS certification (server warning)
+  useEffect(() => {
+    const onWarn = (e) => showToast(`⚠ ${e.detail?.message || 'Counsellor not LMS-certified for this course'}`);
+    window.addEventListener('thoughtflows_lms_warning', onWarn);
+    return () => window.removeEventListener('thoughtflows_lms_warning', onWarn);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const loadAllData = async () => {
     try {
       setLoading(true);
       const counselorFilter = currentUser?.name?.trim();
       const shouldFilterOnServer = counselorFilter && (!isElevatedUser || scopeMode === 'mine');
-      const dKey = new Date().toISOString().split('T')[0];
+      const dKey = localDateKey();
 
       const [stRes, ldRes, dmRes, recRes, closureRes] = await Promise.all([
         getStudents(shouldFilterOnServer ? { hrName: counselorFilter } : undefined),
@@ -415,6 +519,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         notes: `Daily closure submitted by ${userName} on ${todayKey}`
       };
       await saveDailyClosure(payload);
+      setMyAttendance('out', currentUser?.branch).catch(() => {});
       setClosureSubmitted(true);
       const timeStr = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
       setClosureSubmittedAt(timeStr);
@@ -435,6 +540,26 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     }
   };
 
+  // Open student requests + support tickets for this counsellor (Student Portal → HR)
+  const [studentInboxCount, setStudentInboxCount] = useState(0);
+  useEffect(() => {
+    const me = String(userName || '').trim().toLowerCase();
+    const load = async () => {
+      try {
+        const [reqs, tickets] = await Promise.all([
+          getStudentRequests({ audience: 'hr', status: 'Open' }).catch(() => []),
+          getStudentTickets({ status: 'open' }).catch(() => [])
+        ]);
+        const mine = (n) => !me || String(n || '').trim().toLowerCase() === me;
+        setStudentInboxCount((reqs || []).filter((r) => mine(r.hrName)).length + (tickets || []).filter((t) => mine(t.hrName)).length);
+      } catch (_) {}
+    };
+    load();
+    const t = setInterval(load, 60000);
+    const off = onDataUpdate(load);
+    return () => { clearInterval(t); off(); };
+  }, [userName]);
+
   // Dynamic Navigation Tabs with real database counts
   const NAV_TABS = useMemo(() => {
     const pipelineCount = scopedLeads.length.toString();
@@ -453,8 +578,9 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       { name: 'LMS', badge: 'Learn', isPillBadge: true, icon: BookOpen, iconBg: 'bg-yellow-700', color: 'green' },
       { name: 'Fees', badge: null, icon: IndianRupee, iconBg: 'bg-teal-600', color: 'teal' },
       { name: 'Handover', badge: handoverCount, icon: Repeat, iconBg: 'bg-orange-600', badgeBg: 'bg-orange-500', color: 'orange' },
+      { name: 'Student Requests', badge: studentInboxCount > 0 ? String(studentInboxCount) : null, icon: InboxIcon, iconBg: 'bg-indigo-600', badgeBg: 'bg-rose-500', color: 'indigo' },
     ];
-  }, [scopedLeads, scopedStudents, scopedDemos]);
+  }, [scopedLeads, scopedStudents, scopedDemos, studentInboxCount]);
 
   // Dynamic Priority Queue from real leads
   const priorityQueue = useMemo(() => {
@@ -489,7 +615,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     scopedStudents.slice(0, 3).forEach((s, idx) => {
       list.push({
         time: `1${5 - idx}:${42 - idx * 10}`,
-        primary: `${s.name} enrolled (${s.feeAmount || '₹25,000'})`,
+        primary: `${s.name} enrolled${s.feeAmount ? ` (${s.feeAmount})` : ''}`,
         secondary: `${s.course} • ID: ${s.studentId}`,
         tag: 'ADMITTED',
         tagStyle: 'bg-emerald-50 text-emerald-700 border-emerald-200'
@@ -742,10 +868,10 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
 
           {/* Break Button */}
           <button
-            onClick={() => setIsOnBreak(!isOnBreak)}
+            onClick={handleToggleBreak}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
               isOnBreak 
-                ? 'bg-amber-400 border-amber-300 text-amber-950 font-black shadow-xs' 
+                ? 'bg-amber-400 border border-amber-300 text-amber-950 font-black shadow-xs ring-2 ring-amber-300/60' 
                 : barTheme === 'clay'
                   ? 'clay-btn clay-btn-secondary text-[#073734]'
                   : barTheme === 'turquoise'
@@ -757,8 +883,13 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
                         : 'border bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-700'
             }`}
           >
-            <Coffee className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">{isOnBreak ? 'On Break' : 'Start Break'}</span>
+            <Coffee className={`w-3.5 h-3.5 ${isOnBreak ? 'animate-bounce text-amber-900' : ''}`} />
+            <span>
+              {isOnBreak ? `On Break (${fmtBreakTimer(breakSeconds)})` : 'Start Break'}
+            </span>
+            {!isOnBreak && accumulatedBreak > 0 && (
+              <span className="text-[10px] opacity-80">({Math.floor(accumulatedBreak / 60)}m used)</span>
+            )}
           </button>
 
           {/* Logout Button */}
@@ -887,7 +1018,14 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       {/* Main Content Body */}
       <main className="w-full px-4 sm:px-6 lg:px-8 py-5 space-y-5">
         {activeTab === 'My Schedule' ? (
-          <HrMySchedule isOnBreak={isOnBreak} setIsOnBreak={setIsOnBreak} currentUser={currentUser} />
+          <HrMySchedule 
+            isOnBreak={isOnBreak} 
+            setIsOnBreak={setIsOnBreak} 
+            breakSeconds={breakSeconds} 
+            accumulatedBreak={accumulatedBreak} 
+            handleToggleBreak={handleToggleBreak} 
+            currentUser={currentUser} 
+          />
         ) : activeTab === 'My Targets' ? (
           <HrMyTargets currentUser={currentUser} students={scopedStudents} />
         ) : activeTab === 'Admitted Students' ? (
@@ -922,12 +1060,17 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             onRefreshStudents={loadAllData} 
             currentUser={currentUser} 
           />
+) : activeTab === 'Student Requests' ? (
+          <HrStudentRequestsDesk currentUser={currentUser} onCountChange={setStudentInboxCount} />
         ) : activeTab === 'Handover' ? (
-          <HrHandoverDesk 
-            students={scopedStudents} 
-            onRefreshStudents={loadAllData} 
-            currentUser={currentUser} 
-          />
+          <div className="space-y-6">
+            <HrHandoverDesk 
+              students={scopedStudents} 
+              onRefreshStudents={loadAllData} 
+              currentUser={currentUser} 
+            />
+            <TrainerQualityBoard title="Trainer ratings — use when allocating" />
+          </div>
         ) : activeTab === 'Home' ? (
           <>
         
@@ -1133,7 +1276,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
                           if (item.actionText.includes('DEMO')) {
                             setBookDemoInitialData({
                               studentName: rawName,
-                              mobile: item.leadData?.phone || '+919876500000',
+                              mobile: item.leadData?.phone || '',
                               course: item.leadData?.course || 'CPC',
                               mode: item.actionText.includes('CLOSE') ? 'Classroom (Saravanampatti)' : 'Online'
                             });
@@ -1516,13 +1659,9 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             duration: data.durationSeconds || 0,
             connected: data.outcome !== 'Not Reachable'
           };
-          setTodayCallLogs((prev) => {
-            const next = [newCallEntry, ...prev];
-            try {
-              localStorage.setItem(`thoughtflows_daily_calls_${todayKey}_${userName}`, JSON.stringify(next));
-            } catch (e) {}
-            return next;
-          });
+          setTodayCallLogs((prev) => [newCallEntry, ...prev]);
+          logCall({ leadId, leadName: data.leadForm?.name || selectedCallLead?.name || '', outcome: data.outcome, durationSeconds: data.durationSeconds || 0 })
+            .catch(() => showToast('⚠ Call saved on the lead, but the daily call counter could not be updated'));
 
           showToast(`✓ Call outcome saved for ${data.leadForm?.name || selectedCallLead.name} (${data.outcome}, ${Math.round(data.durationSeconds)}s)`);
         }}

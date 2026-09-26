@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import useFileToken from '../hooks/useFileToken';
 import ZoomMeeting from './ZoomMeeting';
 import {
   Home,
@@ -41,8 +42,10 @@ import {
   createDemo,
   trainingMaterialFileUrl,
   joinStudentLiveClass,
+  submitStudentFeedback,
   onDataUpdate
 } from '../services/api';
+import NotificationBell from './NotificationBell';
 import { COURSE_CATEGORIES } from '../constants/courses';
 
 // ----------------------------------------------------------------------------
@@ -181,9 +184,27 @@ const Field = ({ label, children }) => (
   </label>
 );
 const inputCls = 'w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-800 text-xs focus:outline-none focus:border-[#483ec7]';
+const fmtMin = (m) => {
+  if (!Number.isFinite(m)) return '';
+  const h = Math.floor(m / 60) % 24;
+  const mm = String(m % 60).padStart(2, '0');
+  return `${((h + 11) % 12) + 1}:${mm} ${h < 12 ? 'AM' : 'PM'}`;
+};
+const Stars = ({ value = 0, onRate, disabled, size = 'text-xl' }) => (
+  <div className="flex items-center gap-0.5" role="radiogroup" aria-label="Rating">
+    {[1, 2, 3, 4, 5].map((n) => (
+      <button key={n} type="button" role="radio" aria-checked={value === n} aria-label={`${n} star${n > 1 ? 's' : ''}`} disabled={disabled}
+        onClick={() => onRate && onRate(n)}
+        className={`${size} leading-none transition cursor-pointer disabled:cursor-default ${n <= value ? 'text-amber-400' : 'text-slate-300 hover:text-amber-300'}`}>★</button>
+    ))}
+  </div>
+);
+// Notification type → portal section
+const NOTIF_NAV = { doubt: 'trainers', handover: 'trainers', assessment: 'lms', score: 'lms', material: 'lms', submission: 'lms', live: 'classes', attendance: 'classes', ticket: 'help', syllabus: 'placement-prep', request: 'dashboard' };
 
 // ============================================================================
 export default function StudentPortalDashboard({ onClose, currentUser, onLogout }) {
+  useFileToken(); // keeps file links (downloads / audio) signed with a fresh short-lived token
   const [activeNav, setActiveNav] = useState('dashboard');
   const [portal, setPortal] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -232,12 +253,15 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
 
   useEffect(() => {
     load();
-    // live class / replies / reviews made by the trainer on other machines
-    const poll = setInterval(() => load(true), 30000);
+    // Full reload is heavy (≈12 queries), so it runs rarely; the notification
+    // bell (45s, tiny query) triggers an immediate reload when something new arrives.
+    const poll = setInterval(() => { if (document.visibilityState !== 'hidden') load(true); }, 180000);
+    const onVisible = () => { if (document.visibilityState === 'visible') load(true); };
+    document.addEventListener('visibilitychange', onVisible);
     const unsub = onDataUpdate((entity) => {
       if (['students', 'doubts', 'trainer_doubts', 'live_class', 'assessments', 'trainer_attendance', 'materials', 'student_submissions', 'student_requests', 'leads'].includes(entity)) load(true);
     });
-    return () => { clearInterval(poll); unsub(); };
+    return () => { clearInterval(poll); unsub(); document.removeEventListener('visibilitychange', onVisible); };
   }, [load]);
 
   // --------------------------------------------------------------------------
@@ -257,6 +281,20 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
   const tickets = portal?.tickets || [];
   const classNotes = portal?.classNotes || [];
   const partners = portal?.hiringPartners || [];
+  const timetable = portal?.timetable || [];
+  const rateableClasses = portal?.rateableClasses || [];
+  const trainerFeedback = portal?.trainerFeedback || null;
+
+  const [trainerComment, setTrainerComment] = useState('');
+  const rate = async (payload, msg = '✓ Thanks for your feedback') => {
+    try {
+      await submitStudentFeedback(st.studentId, payload);
+      showToast(msg);
+      load(true);
+    } catch (e) {
+      showToast(errMsg(e, 'Could not save your rating'));
+    }
+  };
 
   const d = useMemo(() => {
     if (!st) return null;
@@ -729,6 +767,32 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
         )}
       </Card>
       <Card>
+        <CardTitle icon="🗓" title="Weekly Timetable" sub={trainer ? `${trainer.trainerName}'s classes for your batch` : 'Appears once your trainer is allocated'} />
+        {timetable.length === 0 ? <Empty icon="🗓" title="No timetable published yet" text={st.batchTiming ? `Batch timing: ${st.batchTiming}` : 'Your trainer or admin adds class slots to the trainer roster.'} /> : (
+          <div className="divide-y divide-slate-100">
+            {timetable.map((c, i) => (
+              <div key={`${c.name}-${i}`} className="py-3 flex items-center justify-between gap-3">
+                <div className="min-w-0"><div className="text-sm font-bold text-slate-900 truncate">{c.name || 'Class'}</div><div className="text-[11px] text-slate-500">{c.days || 'Working days'}</div></div>
+                <span className="text-xs font-bold text-[#483ec7] bg-indigo-50 border border-indigo-100 px-2.5 py-1 rounded-lg whitespace-nowrap">{Number.isFinite(c.startMin) && Number.isFinite(c.endMin) ? `${fmtMin(c.startMin)} – ${fmtMin(c.endMin)}` : c.timeSlot}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+      {rateableClasses.length > 0 && (
+        <Card>
+          <CardTitle icon="⭐" title="Rate Recent Classes" sub="Anonymous to classmates — helps your trainer and the academy improve" />
+          <div className="divide-y divide-slate-100">
+            {rateableClasses.map((c) => (
+              <div key={c.id} className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="min-w-0"><div className="text-sm font-bold text-slate-900 truncate">{c.topic || 'Class session'}</div><div className="text-[11px] text-slate-400">{fmtDate(c.date)}{c.trainerName ? ` · ${c.trainerName}` : ''}</div></div>
+                <Stars value={c.myRating || 0} onRate={(n) => rate({ kind: 'class', sessionId: c.id, rating: n })} />
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+      <Card>
         <CardTitle icon="🗂" title="Past Classes" sub="Every class your trainer recorded attendance for" />
         {attendance.length === 0 ? <Empty icon="🗓" title="No classes recorded yet" /> : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -864,6 +928,13 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                 </>
               ) : <Empty icon="⏳" title="Trainer not allocated yet" text={`${st.hrName || 'Your HR counsellor'} allocates your trainer at handover. Doubts you post now will be routed once allocated.`} />}
             </Card>
+            {trainer && (
+              <Card>
+                <CardTitle icon="⭐" title={`Rate ${trainer.trainerName}`} sub={trainerFeedback ? `You rated ${trainerFeedback.rating}★ · you can update it anytime` : 'Your overall experience so far'} />
+                <Stars value={trainerFeedback?.rating || 0} size="text-3xl" onRate={(n) => rate({ kind: 'trainer', rating: n, comment: trainerComment || trainerFeedback?.comment || '' })} />
+                <textarea rows={2} value={trainerComment} onChange={(e) => setTrainerComment(e.target.value)} placeholder={trainerFeedback?.comment || 'Optional comment (then tap a star to save)'} className={`${inputCls} mt-3`} />
+              </Card>
+            )}
             {consults.length > 0 && (
               <Card>
                 <CardTitle icon="📅" title="1-on-1 Requests" />
@@ -1487,6 +1558,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
           </div>
           <div className="flex items-center gap-2">
             {st.location && <span className="hidden md:flex items-center gap-1 text-xs font-semibold text-slate-600"><MapPin className="w-3.5 h-3.5" />{st.location}</span>}
+            {st?.studentId && <NotificationBell audience="student" recipientId={st.studentId} onNew={() => load(true)} onOpenItem={(n) => { setActiveNav(NOTIF_NAV[n.type] || 'dashboard'); load(true); }} />}
             <button onClick={() => load(true)} title="Refresh" className="p-2 rounded-xl text-slate-500 hover:bg-slate-100 cursor-pointer"><RefreshCw className="w-4 h-4" /></button>
             <button onClick={onLogout || onClose} className="px-3 py-2 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-100 flex items-center gap-1.5 cursor-pointer"><LogOut className="w-4 h-4" /><span className="hidden sm:inline">Logout</span></button>
           </div>
