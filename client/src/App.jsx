@@ -8,9 +8,39 @@ import DepartmentsModal from './components/DepartmentsModal';
 import DashboardModal from './components/DashboardModal';
 import LoginModal from './components/LoginModal';
 import CourseCatalogWidget from './components/CourseCatalogWidget';
+import StudentRegistrationPage from './components/StudentRegistrationPage';
 import axios from 'axios';
 
 export default function App() {
+  const [isRegistrationRoute, setIsRegistrationRoute] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    const path = (window.location.pathname || '').toLowerCase();
+    const search = new URLSearchParams(window.location.search);
+    return (
+      path === '/register' ||
+      path === '/registration' ||
+      path.startsWith('/register/') ||
+      search.get('register') === 'true' ||
+      search.has('register')
+    );
+  });
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const path = (window.location.pathname || '').toLowerCase();
+      const search = new URLSearchParams(window.location.search);
+      setIsRegistrationRoute(
+        path === '/register' ||
+        path === '/registration' ||
+        path.startsWith('/register/') ||
+        search.get('register') === 'true' ||
+        search.has('register')
+      );
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
   const [isDepartmentsOpen, setIsDepartmentsOpen] = useState(false);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [loginDepartment, setLoginDepartment] = useState('hr');
@@ -152,6 +182,21 @@ export default function App() {
       setIsDepartmentsOpen(true);
     }
   };
+
+  if (isRegistrationRoute) {
+    return (
+      <StudentRegistrationPage
+        onBack={() => {
+          if (window.history?.pushState) {
+            window.history.pushState({}, '', '/');
+          } else {
+            window.location.href = '/';
+          }
+          setIsRegistrationRoute(false);
+        }}
+      />
+    );
+  }
 
   return (
     <div className="relative min-h-screen w-full overflow-x-hidden bg-[#f4fcfb] selection:bg-teal-200 selection:text-teal-950 font-sans flex flex-col justify-between">

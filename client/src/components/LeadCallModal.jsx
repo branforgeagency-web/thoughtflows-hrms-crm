@@ -31,6 +31,7 @@ import {
 import BookNewDemoModal from './BookNewDemoModal';
 import { createDemo, dialCall, getCallStatus, hangupCall, getRecordings, saveRecording, recordingUrl } from '../services/api';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
+import { copyToClipboard } from '../utils/clipboard';
 import { COURSE_CATEGORIES } from '../constants/courses';
 
 // Maps a real call outcome to a real pipeline stage change.
@@ -446,9 +447,9 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
     }
   };
 
-  const handleSendRegistrationLink = () => {
-    const regUrl = `${window.location.origin}/register?name=${encodeURIComponent(leadForm.name)}&phone=${encodeURIComponent(leadForm.phone)}&course=${encodeURIComponent(leadForm.course)}`;
-    navigator.clipboard?.writeText(regUrl);
+  const handleSendRegistrationLink = async () => {
+    const regUrl = `${window.location.origin}/register?name=${encodeURIComponent(leadForm.name || '')}&phone=${encodeURIComponent(leadForm.phone || '')}&course=${encodeURIComponent(leadForm.course || '')}${currentUser?.name ? `&hr=${encodeURIComponent(currentUser.name)}` : ''}`;
+    await copyToClipboard(regUrl);
     showToast('✓ Registration link copied to clipboard & sent!');
   };
 

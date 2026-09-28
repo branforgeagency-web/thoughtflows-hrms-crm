@@ -205,15 +205,6 @@ export default function HrMySchedule({
       statusClass: 'bg-amber-100 text-amber-800'
     };
 
-    setLeaveRequests(prev => [createdLocal, ...prev]);
-
-    // Save to local storage key for instant Head of HR pending approvals sync
-    try {
-      const lStr = localStorage.getItem('thoughtflows_pending_approvals');
-      const lArr = lStr ? JSON.parse(lStr) : [];
-      localStorage.setItem('thoughtflows_pending_approvals', JSON.stringify([createdLocal, ...lArr]));
-    } catch (e) {}
-
     try {
       await createApproval({
         title: leaveTitle,
@@ -225,10 +216,12 @@ export default function HrMySchedule({
         branchName: currentUser?.branch || 'Saravanampatti Branch (CBE)',
         requestedBy: userName
       });
+      setLeaveRequests(prev => [createdLocal, ...prev]);
       showToast('✓ Submitted leave request to Head of HR');
     } catch (err) {
       console.error('API leave submission error:', err);
-      showToast('✓ Submitted leave request to Head of HR');
+      showToast(`⚠ Leave request not sent: ${err?.response?.data?.error || err.message}`);
+      return;
     }
 
     setShowLeaveModal(false);

@@ -69,6 +69,9 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   };
 
   const userName = currentUser?.name || currentUser?.userName || '';
+  // Break timer is kept per counsellor so a shared browser never mixes two people's breaks
+  const userKey = String(userName || 'anon').trim().toLowerCase().replace(/\s+/g, '_');
+  const breakStartKey = `thoughtflows_break_start_${userKey}`;
   const userFirstName = userName.split(' ')[0] || 'there';
   const branchName = currentUser?.branch || 'Saravanampatti Branch (CBE)';
 
@@ -105,7 +108,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   // Live Break Timer State & Persistence
   const [breakStartTime, setBreakStartTime] = useState(() => {
     try {
-      const saved = localStorage.getItem('thoughtflows_break_start');
+      const saved = localStorage.getItem(breakStartKey);
       return saved ? parseInt(saved, 10) : null;
     } catch { return null; }
   });
@@ -113,7 +116,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   const [accumulatedBreak, setAccumulatedBreak] = useState(() => {
     try {
       const today = localDateKey();
-      const saved = localStorage.getItem(`thoughtflows_break_acc_${today}`);
+      const saved = localStorage.getItem(`thoughtflows_break_acc_${userKey}_${today}`);
       return saved ? parseInt(saved, 10) : 0;
     } catch { return 0; }
   });
@@ -128,7 +131,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     if (!start) {
       start = Date.now();
       setBreakStartTime(start);
-      try { localStorage.setItem('thoughtflows_break_start', String(start)); } catch (_) {}
+      try { localStorage.setItem(breakStartKey, String(start)); } catch (_) {}
     }
     const tick = () => {
       const elapsed = Math.max(0, Math.floor((Date.now() - start) / 1000));
@@ -149,11 +152,11 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         else if (rec.status === 'break' && rec.breakStartedAt && !isOnBreak) {
           const start = new Date(rec.breakStartedAt).getTime();
           setBreakStartTime(start);
-          try { localStorage.setItem('thoughtflows_break_start', String(start)); } catch (_) {}
+          try { localStorage.setItem(breakStartKey, String(start)); } catch (_) {}
           setIsOnBreak(true);
         } else if (rec.status === 'in' && isOnBreak) {
           // Break was ended on another device
-          try { localStorage.removeItem('thoughtflows_break_start'); } catch (_) {}
+          try { localStorage.removeItem(breakStartKey); } catch (_) {}
           setBreakStartTime(null);
           setIsOnBreak(false);
         }
@@ -171,8 +174,8 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       setAccumulatedBreak(newTotal);
       try {
         const today = localDateKey();
-        localStorage.setItem(`thoughtflows_break_acc_${today}`, String(newTotal));
-        localStorage.removeItem('thoughtflows_break_start');
+        localStorage.setItem(`thoughtflows_break_acc_${userKey}_${today}`, String(newTotal));
+        localStorage.removeItem(breakStartKey);
       } catch (_) {}
       setBreakStartTime(null);
       setBreakSeconds(0);
@@ -180,7 +183,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     } else {
       const now = Date.now();
       setBreakStartTime(now);
-      try { localStorage.setItem('thoughtflows_break_start', String(now)); } catch (_) {}
+      try { localStorage.setItem(breakStartKey, String(now)); } catch (_) {}
       setIsOnBreak(true);
     }
   };
@@ -243,10 +246,19 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   // demo outcomes, syllabus completion, trainer recommendations)
   const [hrNotifications, setHrNotifications] = useState([]);
   const [showHrNotifs, setShowHrNotifs] = useState(false);
+  // A new notification (referral lead, trainer progress, student request…)
+  // came from another user's device — reload the CRM data behind it.
+  const seenHrNotifIds = React.useRef(null);
+  const reloadDataRef = React.useRef(null);
   const loadHrNotifications = async () => {
     try {
       const list = await getNotifications({ audience: 'hr', recipientName: currentUser?.name || currentUser?.userName || '' });
-      setHrNotifications(Array.isArray(list) ? list : []);
+      const arr = Array.isArray(list) ? list : [];
+      setHrNotifications(arr);
+      const ids = arr.map(n => n._id);
+      const hasNew = seenHrNotifIds.current && ids.some(id => !seenHrNotifIds.current.has(id));
+      seenHrNotifIds.current = new Set(ids);
+      if (hasNew && reloadDataRef.current) reloadDataRef.current();
     } catch (_) {}
   };
   useEffect(() => {
@@ -286,9 +298,9 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const loadAllData = async () => {
+  const loadAllData = async (silent = false) => {
     try {
-      setLoading(true);
+      if (!silent) setLoading(true);
       const counselorFilter = currentUser?.name?.trim();
       const shouldFilterOnServer = counselorFilter && (!isElevatedUser || scopeMode === 'mine');
       const dKey = localDateKey();
@@ -346,6 +358,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       setLoading(false);
     }
   };
+  reloadDataRef.current = () => loadAllData(true);
 
   useEffect(() => {
     loadAllData();
@@ -459,8 +472,15 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     const todayAdmissions = scopedStudents.filter(s => isToday(s.createdAt) || isToday(s.admissionDate));
     const admissionsToday = todayAdmissions.length;
 
-    // 5. Fees collected TODAY (from today's admissions/payments only)
-    const feesTodayNum = todayAdmissions.reduce((acc, s) => acc + (Number(s.courseFee) || Number(s.paidAmount) || 0), 0);
+    // 5. Fees collected TODAY = receipts dated today (admission payments + instalments).
+    //    Older admissions saved before receipts existed count their paid amount.
+    const feesTodayNum = scopedStudents.reduce((acc, s) => {
+      const receipts = Array.isArray(s.receipts) ? s.receipts : [];
+      if (!receipts.length) return acc + (isToday(s.createdAt) ? Number(s.paidAmount) || 0 : 0);
+      return acc + receipts
+        .filter(r => r.date === todayKey || (!r.date && isToday(r.at)))
+        .reduce((a, r) => a + (Number(r.amount) || 0), 0);
+    }, 0);
 
     // 6. Pending follow-ups due TODAY or overdue
     const pendingToday = scopedLeads.filter(l => {

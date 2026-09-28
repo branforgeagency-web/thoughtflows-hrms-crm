@@ -684,6 +684,22 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
                     <p className="text-[11px] text-slate-500 mt-0.5">
                       Click any stage below or select from dropdown to update candidate hiring progress
                     </p>
+                    {/* Trainer-reviewed placement documents (needed before Talentera sync) */}
+                    <div className="flex flex-wrap gap-1.5 mt-2">
+                      {[['Resume', student.resumeStatus], ['Video intro', student.videoIntroStatus]].map(([label, status]) => (
+                        <span
+                          key={label}
+                          className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${
+                            status === 'Approved' ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                              : status === 'Needs Revision' ? 'bg-rose-50 text-rose-700 border-rose-200'
+                              : status === 'Submitted' ? 'bg-amber-50 text-amber-700 border-amber-200'
+                              : 'bg-slate-50 text-slate-500 border-slate-200'
+                          }`}
+                        >
+                          {label}: {status || 'Not submitted'}
+                        </span>
+                      ))}
+                    </div>
                   </div>
                   
                   <div className="flex items-center gap-2 flex-wrap self-start sm:self-auto">
@@ -930,15 +946,19 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
                   <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200/80 space-y-1.5">
                     <div className="flex justify-between text-xs font-bold">
                       <span className="text-slate-700">Coding Readiness Assessment</span>
-                      <span className="text-blue-700 font-mono">{student.readinessScore != null ? `${student.readinessScore}/100` : '85/100'}</span>
+                      <span className="text-blue-700 font-mono">{student.readinessScore != null ? `${student.readinessScore}/100` : '—'}</span>
                     </div>
                     <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
                       <div
                         className="h-full bg-blue-600 rounded-full"
-                        style={{ width: `${Math.min(student.readinessScore || 85, 100)}%` }}
+                        style={{ width: `${Math.min(Number(student.readinessScore) || 0, 100)}%` }}
                       />
                     </div>
-                    <div className="text-[10px] text-slate-500 font-medium">Evaluation based on anatomy, CPT, and ICD-10 drills</div>
+                    <div className="text-[10px] text-slate-500 font-medium">
+                      {student.readinessScore != null
+                        ? 'Average of test, mock interview and technical scores'
+                        : `Pending — needs ${[['test', student.assessmentScore], ['mock', student.mockScore], ['technical', student.technicalScore]].filter(([, v]) => typeof v !== 'number').map(([k]) => k).join(', ')} score`}
+                    </div>
                   </div>
                 </div>
 

@@ -77,6 +77,7 @@ import {
   markSyllabusComplete,
   logRemedialAction,
   getNotifications,
+  getFeedbackSummary,
   markNotificationRead,
   onDataUpdate,
   notifyDataUpdate
@@ -154,6 +155,7 @@ export default function TrainingDepartmentDashboard({
   const [attendanceSessions, setAttendanceSessions] = useState([]);
   const [materials, setMaterials] = useState([]);
   const [trainerNotifications, setTrainerNotifications] = useState([]);
+  const [myFeedback, setMyFeedback] = useState(null); // { avg, classAvg, trainerAvg, count } from student ratings
   const [showNotifPanel, setShowNotifPanel] = useState(false);
   const [attendanceBatchId, setAttendanceBatchId] = useState('');
   const [attendanceSavedToast, setAttendanceSavedToast] = useState(null);
@@ -204,6 +206,12 @@ export default function TrainingDepartmentDashboard({
   const loadRealData = async () => {
     try {
       setLoading(true);
+      // This month's student ratings feed the quality score
+      if (trainerId) {
+        getFeedbackSummary({ trainerId, days: new Date().getDate() })
+          .then(rows => setMyFeedback((Array.isArray(rows) ? rows : []).find(r => r.trainerId === trainerId) || null))
+          .catch(() => setMyFeedback(null));
+      }
       const [stRes, dmRes, ldRes, dbtRes, asmRes, attRes, rosterRes, matRes] = await Promise.all([
         getStudents().catch(() => []),
         getDemos().catch(() => []),
@@ -241,11 +249,19 @@ export default function TrainingDepartmentDashboard({
     }
   };
 
+  // Notifications are the cross-device signal: a new one (student doubt,
+  // submission, HR handover…) means the data behind it changed, so reload it.
+  const seenNotifIds = React.useRef(null);
   const loadNotifications = async () => {
     if (!trainerId) return;
     try {
       const list = await getNotifications({ audience: 'trainer', recipientId: trainerId, recipientName: trainerName });
-      setTrainerNotifications(Array.isArray(list) ? list : []);
+      const arr = Array.isArray(list) ? list : [];
+      setTrainerNotifications(arr);
+      const ids = arr.map(n => n._id);
+      const hasNew = seenNotifIds.current && ids.some(id => !seenNotifIds.current.has(id));
+      seenNotifIds.current = new Set(ids);
+      if (hasNew) loadRealData();
     } catch (_) {}
   };
 
@@ -468,12 +484,20 @@ export default function TrainingDepartmentDashboard({
       raw: applicable ? (achieved * weight) / 100 : 0
     });
     const assessmentAch = testsTarget > 0 ? pct(monthTests.length, testsTarget) : 0;
+    // Student Portal ratings this month (1–5★ → %). Trainer ratings drive
+    // "Student feedback" (doubt SLA only until the first rating arrives);
+    // class ratings drive "Quality rating".
+    const starPct = (v) => (typeof v === 'number' ? Math.round((v / 5) * 100) : null);
+    const trainerRatingPct = starPct(myFeedback?.trainerAvg) ?? starPct(myFeedback?.avg);
+    const classRatingPct = starPct(myFeedback?.classAvg);
     const qualityBuckets = [
       bucket('Attendance', 30, avgAtt, attValues.length > 0),
       bucket('Assessments conducted', 25, assessmentAch, batches.length > 0),
-      bucket('Student feedback (doubt SLA)', 20, pct(repliedInSla, myDoubts.length), myDoubts.length > 0),
+      trainerRatingPct !== null
+        ? bucket(`Student feedback (${myFeedback.count} rating${myFeedback.count === 1 ? '' : 's'})`, 20, trainerRatingPct, true)
+        : bucket('Student feedback (doubt SLA — no ratings yet)', 20, pct(repliedInSla, myDoubts.length), myDoubts.length > 0),
       bucket('Employee feedback', 15, 0, false),
-      bucket('Quality rating', 10, 0, false)
+      bucket('Quality rating (class ratings)', 10, classRatingPct ?? 0, classRatingPct !== null)
     ];
     const qWeight = qualityBuckets.filter(b => b.applicable).reduce((a, b) => a + Number(b.weight), 0);
     const qualityScore = qWeight > 0 ? parseFloat(((qualityBuckets.reduce((a, b) => a + b.raw, 0) / qWeight) * 100).toFixed(1)) : 0;
@@ -483,7 +507,7 @@ export default function TrainingDepartmentDashboard({
     const variablePay = gatesPass && payBase > 0 ? Math.round((qualityScore / 100) * payBase) : 0;
 
     return { actionScore, zone, variablePay, payBase, qualityScore, gatesPass, factors, qualityBuckets };
-  }, [batches, attendanceSessions, assessmentTests, weakStudents, myDoubts, myMonthDemos, myStudents, trainerProfile, monthKey, monthStartKey]);
+  }, [batches, attendanceSessions, assessmentTests, weakStudents, myDoubts, myMonthDemos, myStudents, trainerProfile, monthKey, monthStartKey, myFeedback]);
 
   // Incentive events — demos I delivered this month + admissions converted from my demos
   const incentiveEvents = React.useMemo(() => {

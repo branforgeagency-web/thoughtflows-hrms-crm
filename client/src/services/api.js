@@ -443,6 +443,19 @@ export const recordTrainerAttendance = async (attendanceData) => {
 };
 
 // HR → Training handover & Training → HR progress
+// Existing batch names (optionally one trainer's) with student counts
+export const getBatches = async (params = {}) => {
+  const res = await api.get('/batches', { params });
+  return res.data;
+};
+
+// HR records a fee instalment — returns the updated student (receipt added, balance recomputed)
+export const recordStudentPayment = async (id, data) => {
+  const res = await api.post(`/students/${encodeURIComponent(id)}/payments`, data);
+  notifyDataUpdate('students');
+  return res.data;
+};
+
 export const handoverStudentToTrainer = async (id, data) => {
   const res = await api.post(`/students/${id}/handover`, data);
   notifyDataUpdate('students');

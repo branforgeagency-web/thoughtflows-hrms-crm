@@ -14,7 +14,7 @@ import {
   Filter
 } from 'lucide-react';
 
-import { getStudents, updateStudent, getTrainerSettings, handoverStudentToTrainer } from '../services/api';
+import { getStudents, updateStudent, getTrainerSettings, handoverStudentToTrainer, getBatches } from '../services/api';
 
 export default function HrHandoverDesk({ students: propStudents, onRefreshStudents, currentUser }) {
   const [toastMsg, setToastMsg] = useState(null);
@@ -75,6 +75,19 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
     });
     setAssigning(stu);
   };
+
+  // The chosen trainer's existing batches → pick-list, so one batch never gets two spellings
+  const [trainerBatches, setTrainerBatches] = useState([]);
+  useEffect(() => {
+    if (!assigning || !assignForm.trainerId) { setTrainerBatches([]); return undefined; }
+    let alive = true;
+    getBatches({ trainerId: assignForm.trainerId })
+      .then(rows => { if (alive) setTrainerBatches(Array.isArray(rows) ? rows : []); })
+      .catch(() => { if (alive) setTrainerBatches([]); });
+    return () => { alive = false; };
+  }, [assigning, assignForm.trainerId]);
+  const batchKey = (b) => String(b || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const isNewBatch = Boolean(assignForm.batchName.trim()) && !trainerBatches.some(b => batchKey(b.batch) === batchKey(assignForm.batchName));
 
   const handleSendToTraining = async () => {
     if (!assigning) return;
@@ -404,13 +417,32 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
                 {trainers.length === 0 && <p className="text-[11px] text-rose-600 mt-1">No active trainers in Trainer Settings.</p>}
               </div>
               <div>
-                <label className="font-bold text-slate-700 block mb-1">Batch name</label>
+                <label className="font-bold text-slate-700 block mb-1">Batch</label>
+                {trainerBatches.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 mb-2">
+                    {trainerBatches.map(b => (
+                      <button
+                        key={b.batch}
+                        type="button"
+                        onClick={() => setAssignForm(prev => ({ ...prev, batchName: b.batch }))}
+                        className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold ${assignForm.batchName === b.batch ? 'bg-[#0e6977] text-white border-[#0e6977]' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'}`}
+                      >
+                        {b.batch} <span className="opacity-70">· {b.students}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <input
                   value={assignForm.batchName}
                   onChange={(e) => setAssignForm(prev => ({ ...prev, batchName: e.target.value }))}
-                  placeholder="e.g. CPC Morning Oct-26"
+                  placeholder="Pick an existing batch above, or type a new one"
                   className="w-full p-2.5 rounded-xl border border-slate-200"
                 />
+                <p className={`text-[11px] mt-1 ${isNewBatch ? 'text-amber-700' : 'text-slate-400'}`}>
+                  {isNewBatch
+                    ? 'New batch for this trainer — materials, tests and live classes are shared per batch, so reuse an existing one if the student joins it.'
+                    : 'Joins an existing batch: the student gets its materials, tests and live classes.'}
+                </p>
               </div>
               <div>
                 <label className="font-bold text-slate-700 block mb-1">Note for the trainer</label>

@@ -13,8 +13,8 @@ import {
   X,
   FileSpreadsheet
 } from 'lucide-react';
-import { getCourseFeeRates, saveCourseFeeRate, createStudent, getStudents, updateStudent } from '../services/api';
-import { getCurrentMonthYear } from '../utils/dateUtils';
+import { getCourseFeeRates, saveCourseFeeRate, getStudents, updateStudent, recordStudentPayment } from '../services/api';
+import { localDateKey } from '../utils/dateUtils';
 import AddCourseRateModal from './AddCourseRateModal';
 
 export default function HrStudentFeesCrm({ students: propStudents, onRefreshStudents, currentUser }) {
@@ -82,7 +82,7 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
     name: '',
     course: 'CPC',
     counsellor: currentUser?.name || '',
-    courseFee: 21000
+    courseFee: ''
   });
 
   // Calculate dynamic fees mapping
@@ -93,6 +93,19 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
     });
     return map;
   }, [courseRates]);
+
+  // Student course text ("CPC — Certified Professional Coder") → its rate row
+  const rateFor = (course = '') => {
+    const c = String(course).trim().toUpperCase();
+    if (!c) return null;
+    return courseRateMap[course]
+      || courseRates.find(cr => (cr.code || '').toUpperCase() === c || (cr.name || '').toUpperCase() === c)
+      || courseRates.find(cr => cr.code && c.split(/[^A-Z0-9/-]+/).includes(cr.code.toUpperCase()))
+      || null;
+  };
+  // Exam fee: the student's own exam fee, else the course rate's — never a guessed default
+  const examFeeOf = (s) => Number(s.examFee) || Number(rateFor(s.course)?.examFee) || 0;
+  const balanceOf = (s) => Math.max(0, (Number(s.courseFee) || 0) - (Number(s.paidAmount) || 0));
 
   // Handle student ID selection: auto-fills name, course, and course fee if matched
   const handleSelectStudentId = (selectedId) => {
@@ -131,7 +144,7 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
       else if (rawCourse.includes('CPC')) normalizedCourse = 'CPC';
 
       const cr = courseRateMap[normalizedCourse];
-      const fee = Number(matched.courseFee) || (cr ? cr.courseFee : 21000);
+      const fee = Number(matched.courseFee) || (cr ? Number(cr.courseFee) || 0 : 0);
 
       setNewRecord(prev => ({
         ...prev,
@@ -159,20 +172,52 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
   }, [students, searchQuery]);
 
   // Calculations for Summary
-  const { totalCourseFee, totalExamFee, grandTotal } = useMemo(() => {
+  const { totalCourseFee, totalExamFee, grandTotal, totalPaid, totalBalance } = useMemo(() => {
     let cTotal = 0;
     let eTotal = 0;
+    let paid = 0;
+    let bal = 0;
     filteredStudents.forEach(s => {
       cTotal += Number(s.courseFee) || 0;
-      const rate = courseRateMap[s.course];
-      eTotal += rate ? rate.examFee : 22000;
+      eTotal += examFeeOf(s);
+      paid += Number(s.paidAmount) || 0;
+      bal += balanceOf(s);
     });
     return {
       totalCourseFee: cTotal,
       totalExamFee: eTotal,
-      grandTotal: cTotal + eTotal
+      grandTotal: cTotal + eTotal,
+      totalPaid: paid,
+      totalBalance: bal
     };
-  }, [filteredStudents, courseRateMap]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filteredStudents, courseRateMap, courseRates]);
+
+  // Record a fee instalment → receipt + recomputed balance on the student record
+  const emptyPayment = () => ({ amount: '', mode: 'UPI / GPay / PhonePe', date: localDateKey(), reference: '', note: '', nextDueDate: '' });
+  const [payingStudent, setPayingStudent] = useState(null);
+  const [payment, setPayment] = useState(emptyPayment);
+  const [savingPayment, setSavingPayment] = useState(false);
+  const openPayment = (stu) => {
+    setPayment({ ...emptyPayment(), nextDueDate: stu.nextDueDate || '' });
+    setPayingStudent(stu);
+  };
+  const handleRecordPayment = async (e) => {
+    e.preventDefault();
+    if (!(Number(payment.amount) > 0)) { showToast('Enter the amount received'); return; }
+    setSavingPayment(true);
+    try {
+      const updated = await recordStudentPayment(payingStudent.studentId || payingStudent._id, { ...payment, amount: Number(payment.amount) });
+      setStudents(prev => prev.map(s => (s._id === updated._id ? updated : s)));
+      if (onRefreshStudents) onRefreshStudents();
+      showToast(`✓ ₹${Number(payment.amount).toLocaleString('en-IN')} recorded for ${updated.name}`);
+      setPayingStudent(null);
+    } catch (err) {
+      showToast(`⚠ Not saved: ${err?.response?.data?.error || err.message}`);
+    } finally {
+      setSavingPayment(false);
+    }
+  };
 
   // Add Record Handler
   const handleAddRecord = async (e) => {
@@ -181,15 +226,12 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
       showToast('Please provide a student name');
       return;
     }
-    const feeNum = Number(newRecord.courseFee) || 21000;
-    const finalStudentId = newRecord.id.trim() || `TFSCOY${Math.floor(6000 + Math.random() * 900)}`;
-
-    const created = {
-      ...newRecord,
-      studentId: finalStudentId,
-      id: finalStudentId,
-      courseFee: feeNum
-    };
+    const feeNum = Number(newRecord.courseFee) || 0;
+    const finalStudentId = newRecord.id.trim();
+    if (!finalStudentId) {
+      showToast('Select an admitted student ID');
+      return;
+    }
 
     try {
       const matched = students.find(
@@ -223,25 +265,8 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
       name: '',
       course: 'CPC',
       counsellor: currentUser?.name || '',
-      courseFee: 21000
+      courseFee: ''
     });
-  };
-
-  // Update Course Rate
-  const handleSaveCourseRate = (e) => {
-    e.preventDefault();
-    setCourseRates(prev => prev.map(cr => {
-      if (cr.code === editingCourse.code) {
-        return {
-          ...cr,
-          courseFee: Number(editingCourse.courseFee) || cr.courseFee,
-          examFee: Number(editingCourse.examFee) || cr.examFee
-        };
-      }
-      return cr;
-    }));
-    setEditingCourse(null);
-    showToast(`✓ Updated rate structure for ${editingCourse.code}`);
   };
 
   return (
@@ -340,18 +365,21 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
                 <th className="py-3 px-4 text-right">COURSE FEE</th>
                 <th className="py-3 px-4 text-right">EXAM FEE (CCCP)</th>
                 <th className="py-3 px-4 text-right">TOTAL FEE</th>
+                <th className="py-3 px-4 text-right">PAID</th>
+                <th className="py-3 px-4 text-right">BALANCE</th>
+                <th className="py-3 px-4 text-center">ACTION</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {filteredStudents.map((stu) => {
-                const cr = courseRateMap[stu.course];
-                const examFee = cr ? cr.examFee : 22000;
-                const total = Number(stu.courseFee) + examFee;
+                const examFee = examFeeOf(stu);
+                const total = (Number(stu.courseFee) || 0) + examFee;
+                const balance = balanceOf(stu);
 
                 return (
-                  <tr key={stu.id} className="hover:bg-teal-50/30 transition-colors">
+                  <tr key={stu._id || stu.studentId} className="hover:bg-teal-50/30 transition-colors">
                     <td className="py-3 px-4 font-mono font-bold text-slate-500 text-[11px]">
-                      {stu.id}
+                      {stu.studentId}
                     </td>
                     <td className="py-3 px-4 font-extrabold text-slate-900">
                       {stu.name}
@@ -362,10 +390,10 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
                       </span>
                     </td>
                     <td className="py-3 px-4 text-slate-600 font-medium">
-                      {stu.counsellor}
+                      {stu.hrName}
                     </td>
                     <td className="py-3 px-4 text-right font-bold text-slate-800 font-mono">
-                      ₹{Number(stu.courseFee).toLocaleString('en-IN')}
+                      ₹{(Number(stu.courseFee) || 0).toLocaleString('en-IN')}
                     </td>
                     <td className="py-3 px-4 text-right font-mono font-bold text-slate-800">
                       <span className="inline-flex items-center gap-1">
@@ -377,6 +405,23 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
                     </td>
                     <td className="py-3 px-4 text-right font-black text-slate-900 font-mono">
                       ₹{total.toLocaleString('en-IN')}
+                    </td>
+                    <td className="py-3 px-4 text-right font-bold text-emerald-700 font-mono">
+                      ₹{(Number(stu.paidAmount) || 0).toLocaleString('en-IN')}
+                    </td>
+                    <td className={`py-3 px-4 text-right font-black font-mono ${balance > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>
+                      {balance > 0 ? `₹${balance.toLocaleString('en-IN')}` : 'Cleared'}
+                      {balance > 0 && stu.nextDueDate && <div className="text-[9.5px] font-semibold text-slate-400">due {stu.nextDueDate}</div>}
+                    </td>
+                    <td className="py-3 px-4 text-center">
+                      <button
+                        onClick={() => openPayment(stu)}
+                        disabled={balance === 0 && Number(stu.courseFee) > 0}
+                        className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-teal-50 hover:bg-teal-100 text-teal-800 font-bold text-[11px] border border-teal-200 transition-all cursor-pointer whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        <IndianRupee className="w-3 h-3" />
+                        <span>Record payment</span>
+                      </button>
                     </td>
                   </tr>
                 );
@@ -398,6 +443,13 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
                 <td className="py-3.5 px-4 text-right text-[#0e6977] font-mono font-black text-sm">
                   ₹{grandTotal.toLocaleString('en-IN')}
                 </td>
+                <td className="py-3.5 px-4 text-right text-emerald-700 font-mono font-black">
+                  ₹{totalPaid.toLocaleString('en-IN')}
+                </td>
+                <td className="py-3.5 px-4 text-right text-amber-700 font-mono font-black">
+                  ₹{totalBalance.toLocaleString('en-IN')}
+                </td>
+                <td />
               </tr>
             </tfoot>
           </table>
@@ -613,13 +665,13 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
                 <div className="flex justify-between">
                   <span>Exam Fee (CCCP Auto-filled):</span>
                   <span className="font-bold font-mono">
-                    ₹{(courseRateMap[newRecord.course]?.examFee || 22000).toLocaleString('en-IN')}
+                    ₹{(Number(courseRateMap[newRecord.course]?.examFee) || 0).toLocaleString('en-IN')}
                   </span>
                 </div>
                 <div className="flex justify-between font-black text-teal-950 pt-1 border-t border-teal-200">
                   <span>Total Payable:</span>
                   <span className="font-mono">
-                    ₹{(Number(newRecord.courseFee) + (courseRateMap[newRecord.course]?.examFee || 22000)).toLocaleString('en-IN')}
+                    ₹{((Number(newRecord.courseFee) || 0) + (Number(courseRateMap[newRecord.course]?.examFee) || 0)).toLocaleString('en-IN')}
                   </span>
                 </div>
               </div>
@@ -638,6 +690,56 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
                 >
                   Add Record
                 </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Record Payment */}
+      {payingStudent && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4" onClick={() => !savingPayment && setPayingStudent(null)}>
+          <div className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl border border-slate-200 space-y-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div>
+                <h3 className="font-extrabold text-slate-900 text-base">Record payment</h3>
+                <p className="text-[11px] text-slate-500 mt-0.5">{payingStudent.name} · <span className="font-mono">{payingStudent.studentId}</span></p>
+              </div>
+              <button onClick={() => setPayingStudent(null)} className="w-7 h-7 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 flex items-center justify-center"><X className="w-3.5 h-3.5" /></button>
+            </div>
+            <div className="grid grid-cols-3 gap-2 text-center text-[11px]">
+              <div className="bg-slate-50 rounded-xl p-2 border border-slate-200"><div className="text-slate-500 font-bold">Course fee</div><div className="font-mono font-black">₹{(Number(payingStudent.courseFee) || 0).toLocaleString('en-IN')}</div></div>
+              <div className="bg-emerald-50 rounded-xl p-2 border border-emerald-200"><div className="text-emerald-700 font-bold">Paid</div><div className="font-mono font-black text-emerald-800">₹{(Number(payingStudent.paidAmount) || 0).toLocaleString('en-IN')}</div></div>
+              <div className="bg-amber-50 rounded-xl p-2 border border-amber-200"><div className="text-amber-700 font-bold">Balance</div><div className="font-mono font-black text-amber-800">₹{balanceOf(payingStudent).toLocaleString('en-IN')}</div></div>
+            </div>
+            <form onSubmit={handleRecordPayment} className="space-y-3 text-xs">
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block"><span className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Amount (₹)</span>
+                  <input type="number" min="1" required autoFocus value={payment.amount} onChange={(e) => setPayment({ ...payment, amount: e.target.value })} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-mono font-bold outline-none focus:border-[#0e6977] focus:bg-white" />
+                </label>
+                <label className="block"><span className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Date</span>
+                  <input type="date" value={payment.date} onChange={(e) => setPayment({ ...payment, date: e.target.value })} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 outline-none focus:border-[#0e6977] focus:bg-white" />
+                </label>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block"><span className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Mode</span>
+                  <select value={payment.mode} onChange={(e) => setPayment({ ...payment, mode: e.target.value })} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 outline-none focus:border-[#0e6977] focus:bg-white font-semibold">
+                    {['UPI / GPay / PhonePe', 'Cash', 'Card', 'Bank Transfer', 'Cheque', 'EMI / Loan'].map(m => <option key={m}>{m}</option>)}
+                  </select>
+                </label>
+                <label className="block"><span className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Reference / Txn ID</span>
+                  <input value={payment.reference} onChange={(e) => setPayment({ ...payment, reference: e.target.value })} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 outline-none focus:border-[#0e6977] focus:bg-white" />
+                </label>
+              </div>
+              <label className="block"><span className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Next due date (if balance remains)</span>
+                <input type="date" value={payment.nextDueDate} onChange={(e) => setPayment({ ...payment, nextDueDate: e.target.value })} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 outline-none focus:border-[#0e6977] focus:bg-white" />
+              </label>
+              <label className="block"><span className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Note (optional)</span>
+                <input value={payment.note} onChange={(e) => setPayment({ ...payment, note: e.target.value })} placeholder="e.g. 2nd instalment" className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 outline-none focus:border-[#0e6977] focus:bg-white" />
+              </label>
+              <div className="pt-2 flex items-center gap-2">
+                <button type="button" onClick={() => setPayingStudent(null)} className="w-1/2 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl">Cancel</button>
+                <button type="submit" disabled={savingPayment} className="w-1/2 py-2.5 bg-[#0e6977] hover:bg-[#00796b] text-white font-bold rounded-xl shadow-sm disabled:opacity-50">{savingPayment ? 'Saving…' : 'Save payment'}</button>
               </div>
             </form>
           </div>

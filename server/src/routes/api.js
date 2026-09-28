@@ -880,7 +880,10 @@ router.post('/leadership/escalations', async (req, res) => {
 
 router.patch('/leadership/escalations/:id/status', async (req, res) => {
   try {
-    const { action, response, respondedBy } = req.body; // action: 'resolved' | 'escalated' | 'in-progress'
+    const { action, response, respondedBy } = req.body || {}; // action: 'open' | 'in-progress' | 'resolved' | 'closed'
+    if (!['open', 'in-progress', 'resolved', 'closed'].includes(action)) {
+      return res.status(400).json({ error: 'Status must be open, in-progress, resolved or closed' });
+    }
     const update = { status: action };
     if (action === 'resolved' || action === 'closed') update.resolvedAt = new Date();
     if (typeof response === 'string' && response.trim()) update.response = response.trim();
@@ -1279,6 +1282,14 @@ router.post('/students', async (req, res) => {
     if (!payload.statusGroup || !['all', 'in_course', 'placed', 'on_hold'].includes(payload.statusGroup)) {
       payload.statusGroup = payload.placementStatus?.toLowerCase().includes('place') ? 'placed' : 'in_course';
     }
+    // First payment taken at admission → opening receipt, so the ledger adds up
+    if (Number(payload.paidAmount) > 0 && !(payload.receipts || []).length) {
+      const receiptNo = `RC-${payload.studentId}-01`;
+      payload.receipts = [{
+        id: receiptNo, receiptNo, label: 'Admission payment', amount: Number(payload.paidAmount),
+        mode: payload.paymentMethod || '', date: todayStr(), recordedBy: req.user?.name || '', at: new Date()
+      }];
+    }
 
     const newStudent = new Student(payload);
     await newStudent.save();
@@ -1355,6 +1366,60 @@ router.post('/students/:id/reset-login', async (req, res) => {
   }
 });
 
+// Fee status / balance always derived from course fee and what was paid
+function applyFeeTotals(st) {
+  const fee = Number(st.courseFee) || 0;
+  const paid = Number(st.paidAmount) || 0;
+  st.pendingBalance = Math.max(0, fee - paid);
+  st.feeStatus = fee > 0 && st.pendingBalance === 0 ? 'Fully Paid' : paid > 0 ? 'Part Paid' : 'Pending';
+  st.feeAmount = st.pendingBalance === 0 && fee > 0
+    ? `₹${fee.toLocaleString('en-IN')}`
+    : `₹${paid.toLocaleString('en-IN')} / ₹${fee.toLocaleString('en-IN')}`;
+}
+
+// HR records an instalment → receipt on the student record, balance recomputed
+router.post('/students/:id/payments', async (req, res) => {
+  try {
+    const st = await findStudentByAnyId(req.params.id);
+    if (!st) return res.status(404).json({ error: 'Student not found' });
+    const { amount, mode = '', date = '', reference = '', note = '', nextDueDate } = req.body || {};
+    const amt = Math.round(Number(amount));
+    if (!(amt > 0)) return res.status(400).json({ error: 'Enter a payment amount greater than 0' });
+    const balance = Math.max(0, (Number(st.courseFee) || 0) - (Number(st.paidAmount) || 0));
+    if (Number(st.courseFee) > 0 && amt > balance) {
+      return res.status(400).json({ error: `Amount is more than the pending balance of ₹${balance.toLocaleString('en-IN')}` });
+    }
+    const receiptNo = `RC-${st.studentId}-${String((st.receipts || []).length + 1).padStart(2, '0')}`;
+    st.receipts = [...(st.receipts || []), {
+      id: receiptNo,
+      receiptNo,
+      label: note ? String(note).slice(0, 120) : `Fee instalment ${(st.receipts || []).length + 1}`,
+      amount: amt,
+      mode: String(mode || st.paymentMethod || ''),
+      reference: String(reference || ''),
+      date: date || todayStr(),
+      recordedBy: req.user?.name || '',
+      at: new Date()
+    }];
+    st.paidAmount = (Number(st.paidAmount) || 0) + amt;
+    if (mode) st.paymentMethod = String(mode);
+    applyFeeTotals(st);
+    if (nextDueDate !== undefined) st.nextDueDate = st.pendingBalance === 0 ? '' : String(nextDueDate || '');
+    else if (st.pendingBalance === 0) st.nextDueDate = '';
+    await st.save();
+    await notifyStudent(st.studentId, {
+      type: 'payment', title: `Payment received: ₹${amt.toLocaleString('en-IN')}`,
+      message: st.pendingBalance === 0
+        ? `Receipt ${receiptNo}. Your course fee is fully paid.`
+        : `Receipt ${receiptNo}. Pending balance ₹${st.pendingBalance.toLocaleString('en-IN')}${st.nextDueDate ? ` · next due ${st.nextDueDate}` : ''}.`,
+      createdBy: req.user?.name || ''
+    });
+    res.status(201).json(st);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 router.put('/students/:id', async (req, res) => {
   try {
     const payload = { ...req.body };
@@ -1381,6 +1446,11 @@ router.put('/students/:id', async (req, res) => {
         { new: true }
       );
       if (!updated) return res.status(404).json({ error: 'Student not found' });
+    }
+    // Fee edits keep balance / status in step with the ledger
+    if ('courseFee' in payload || 'paidAmount' in payload) {
+      applyFeeTotals(updated);
+      await updated.save();
     }
     res.json(updated);
   } catch (err) {
@@ -2814,10 +2884,12 @@ async function notifyBatch(batch, payload) {
   return pushNotification({ audience: 'student', ...payload, recipientId: '', recipientName: '', batch: String(batch) });
 }
 
-// Recompute readiness = average of the trainer-entered scores that exist
+// Readiness = average of test, mock and technical scores — only once all three
+// exist, so one early test can't make a student look placement-ready
 function computeReadiness(st) {
-  const parts = [st.mockScore, st.technicalScore, st.assessmentScore].filter((v) => typeof v === 'number');
-  return parts.length ? Math.round(parts.reduce((a, b) => a + b, 0) / parts.length) : null;
+  const parts = [st.mockScore, st.technicalScore, st.assessmentScore];
+  if (!parts.every((v) => typeof v === 'number')) return null;
+  return Math.round(parts.reduce((a, b) => a + b, 0) / parts.length);
 }
 
 // Doubt SLA: 24h normal. Unreplied past SLA → Overdue.
@@ -3117,6 +3189,36 @@ router.post('/trainer/attendance', async (req, res) => {
 // ==========================================
 // HR → TRAINING HANDOVER  and  TRAINING → HR PROGRESS
 // ==========================================
+// Batches are keyed by their exact name everywhere (materials, tests, live
+// classes, notifications), so "CPC · 7PM" and "cpc - 7 pm" must resolve to one.
+const batchMatchKey = (name = '') => String(name).toLowerCase().replace(/[^a-z0-9]/g, '');
+const tidyBatchName = (name = '') => String(name).replace(/\s+/g, ' ').trim();
+
+async function canonicalBatchName(name, trainerId) {
+  const clean = tidyBatchName(name);
+  if (!clean) return '';
+  const key = batchMatchKey(clean);
+  const existing = await Student.distinct('batchName', trainerId ? { trainerId } : {});
+  return existing.find((b) => b && batchMatchKey(b) === key) || clean;
+}
+
+// Existing batches (optionally one trainer's) with their student counts — the handover pick-list
+router.get('/batches', async (req, res) => {
+  try {
+    const match = { batchName: { $nin: ['', null] } };
+    if (req.query.trainerId) match.trainerId = String(req.query.trainerId);
+    const rows = await Student.aggregate([
+      { $match: match },
+      { $group: { _id: { batch: '$batchName', trainerId: '$trainerId' }, trainerName: { $first: '$trainerName' }, course: { $first: '$course' }, students: { $sum: 1 } } },
+      { $project: { _id: 0, batch: '$_id.batch', trainerId: '$_id.trainerId', trainerName: 1, course: 1, students: 1 } },
+      { $sort: { batch: 1 } }
+    ]);
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.post('/students/:id/handover', async (req, res) => {
   try {
     const { trainerId, batchName = '', trainerNote = '', handedOverBy = '' } = req.body || {};
@@ -3125,9 +3227,10 @@ router.post('/students/:id/handover', async (req, res) => {
     if (!trainer) return res.status(404).json({ error: 'Trainer not found in the roster' });
     const st = await findStudentByAnyId(req.params.id);
     if (!st) return res.status(404).json({ error: 'Student not found' });
+    const previousBatch = st.handedOverAt ? studentBatchOf(st) : '';
     st.trainerId = trainer.trainerId;
     st.trainerName = trainer.trainerName;
-    st.batchName = batchName || st.batchName || `${st.course}${st.batchTiming ? ` · ${st.batchTiming}` : ''}`;
+    st.batchName = await canonicalBatchName(batchName || st.batchName || `${st.course}${st.batchTiming ? ` · ${st.batchTiming}` : ''}`, trainer.trainerId);
     st.trainerNote = trainerNote;
     st.handoverStatus = 'Sent to Training';
     st.handedOverBy = handedOverBy;
@@ -3137,7 +3240,7 @@ router.post('/students/:id/handover', async (req, res) => {
     await pushNotification({
       audience: 'trainer', recipientId: trainer.trainerId, recipientName: trainer.trainerName, type: 'handover',
       title: `New student allocated: ${st.name}`,
-      message: `${handedOverBy || 'HR'} handed over ${st.name} (${st.studentId}) · ${st.course} · batch ${st.batchName}.${trainerNote ? ` Note: ${trainerNote}` : ''}`,
+      message: `${handedOverBy || 'HR'} handed over ${st.name} (${st.studentId}) · ${st.course} · batch ${st.batchName}.${previousBatch && previousBatch !== st.batchName ? ` Moved from "${previousBatch}" — re-assign any materials they still need.` : ''}${trainerNote ? ` Note: ${trainerNote}` : ''}`,
       studentId: st.studentId, createdBy: handedOverBy
     });
     await notifyStudent(st.studentId, {
@@ -4513,6 +4616,11 @@ router.post('/student-portal/:id/submissions', async (req, res) => {
       fileSize: size,
       data: base64
     });
+    if (type === 'resume' || type === 'video_intro') {
+      if (type === 'resume') st.resumeStatus = 'Submitted';
+      else st.videoIntroStatus = 'Submitted';
+      await st.save();
+    }
     if (st.trainerId) {
       await pushNotification({
         audience: 'trainer', recipientId: st.trainerId, recipientName: st.trainerName, type: 'submission',
@@ -4558,8 +4666,8 @@ router.get('/student-portal/submissions/:id/file', async (req, res) => {
   }
 });
 
-// Trainer reviews a submission. Approved resume / video intro also tick the
-// student's placement checklist items.
+// Trainer reviews a submission. A resume / video intro review is also written
+// to the student record (resumeStatus / videoIntroStatus) for HR & CCCP.
 router.put('/student-portal/submissions/:id/review', async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
@@ -4580,6 +4688,11 @@ router.put('/student-portal/submissions/:id/review', async (req, res) => {
     });
     if (doc.type === 'resume' || doc.type === 'video_intro') {
       const owner = await findStudentByAnyId(doc.studentId);
+      if (owner) {
+        if (doc.type === 'resume') { owner.resumeStatus = status; owner.resumeReviewedAt = set.reviewedAt; }
+        else { owner.videoIntroStatus = status; owner.videoIntroReviewedAt = set.reviewedAt; }
+        await owner.save();
+      }
       await pushNotification({
         audience: 'hr', recipientName: owner?.hrName || '', type: 'placement',
         title: `${doc.type === 'resume' ? 'Resume' : 'Video intro'} ${status.toLowerCase()}: ${doc.studentName}`,
@@ -4605,8 +4718,14 @@ router.post('/student-portal/:id/requests', async (req, res) => {
       return res.status(400).json({ error: 'No trainer has been allocated to you yet. Your HR counsellor will allocate one.' });
     }
     if (type === 'redeem_points') {
-      const pts = Number(details.points || 0);
-      if (!pts || pts > (st.rewardPoints || 0)) return res.status(400).json({ error: 'Not enough reward points to redeem' });
+      const pts = Math.round(Number(details.points || 0));
+      // Points already asked for in open / scheduled redemptions are on hold
+      const pending = await StudentRequest.find({ studentId: st.studentId, type: 'redeem_points', status: { $in: ['Open', 'Scheduled'] } }).select('details');
+      const held = pending.reduce((a, r) => a + (Number(r.details?.points) || 0), 0);
+      const available = Math.max(0, (st.rewardPoints || 0) - held);
+      if (!(pts > 0) || pts > available) {
+        return res.status(400).json({ error: held ? `Only ${available} points available — ${held} are in a pending redemption` : 'Not enough reward points to redeem' });
+      }
     }
     const doc = await StudentRequest.create({
       studentId: st.studentId,
@@ -4664,6 +4783,16 @@ router.put('/student-portal/requests/:id', async (req, res) => {
     const doc = await StudentRequest.findById(req.params.id);
     if (!doc) return res.status(404).json({ error: 'Request not found' });
     const wasResolved = doc.status === 'Resolved';
+    if (wasResolved && status !== 'Resolved' && doc.type === 'redeem_points') {
+      return res.status(400).json({ error: 'This redemption is already approved and the points were deducted' });
+    }
+    if (doc.type === 'redeem_points' && status === 'Resolved' && !wasResolved) {
+      const owner = await findStudentByAnyId(doc.studentId);
+      const pts = Number(doc.details?.points || 0);
+      if (owner && pts > (owner.rewardPoints || 0)) {
+        return res.status(400).json({ error: `${owner.name} now has only ${owner.rewardPoints || 0} points — decline this request or ask for a smaller redemption` });
+      }
+    }
     doc.status = status;
     doc.response = response;
     doc.scheduledFor = scheduledFor || doc.scheduledFor;

@@ -93,6 +93,7 @@ const STAFF_RULES = [
   ['POST', /^\/students\/[^/]+\/reset-login$/, ['hr']],
   ['PUT', /^\/students\/[^/]+$/, ['hr', 'cccp']],
   ['POST', /^\/students\/[^/]+\/handover$/, ['hr']],
+  ['POST', /^\/students\/[^/]+\/payments$/, ['hr']],
   ['POST', /^\/fees\/rates$/, ['hr']],
   ['POST', /^\/closures$/, ['hr']],
   ['*', /^\/calls\/(dial|log|[^/]+\/hangup)$/, ['hr']],

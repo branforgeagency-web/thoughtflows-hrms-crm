@@ -24,6 +24,7 @@ import CompleteRegistrationModal from './CompleteRegistrationModal';
 
 import { getStudents, createStudent, resetStudentLogin } from '../services/api';
 import { getCurrentMonthYear, getCurrentMonthName } from '../utils/dateUtils';
+import { copyToClipboard } from '../utils/clipboard';
 
 export default function HrAdmittedStudentsCrm({ students: propStudents, onRefreshStudents, currentUser, onStudentLogin }) {
   // Show new / reset portal credentials in the persistent card owned by the HR dashboard
@@ -43,6 +44,7 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
   const [activeTabFilter, setActiveTabFilter] = useState('all'); // all, in_course, placed, on_hold
   const [searchQuery, setSearchQuery] = useState('');
   const [toastMessage, setToastMessage] = useState(null);
+  const [copiedLink, setCopiedLink] = useState(false);
   const [showWalkinModal, setShowWalkinModal] = useState(false);
   const [showIdGenModal, setShowIdGenModal] = useState(false);
   const [showCompleteRegModal, setShowCompleteRegModal] = useState(false);
@@ -89,7 +91,6 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
     mode: 'Classroom (Saravanampatti)',
     qualification: '',
     college: '',
-    feePaid: '₹25,000',
     timing: '8-10 PM Weekdays'
   });
 
@@ -101,7 +102,6 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
     }
 
     const newStudent = {
-      studentId: `TFMC0Y${Math.floor(1000 + Math.random() * 9000)}`,
       name: newWalkin.name.toUpperCase(),
       phone: newWalkin.phone,
       course: newWalkin.course,
@@ -112,7 +112,8 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
       qualification: newWalkin.qualification || '',
       qualTag: '',
       collegeCompany: newWalkin.college || '',
-      location: 'Saravanampatti',
+      // "Saravanampatti Branch (CBE)" → "Saravanampatti"
+      location: String(currentUser?.branch || '').replace(/\s*(Branch)?\s*\(.*\)\s*$/i, '').trim(),
       email: newWalkin.email || '',
       dob: '',
       enqDate: getCurrentMonthName(),
@@ -124,7 +125,7 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
       certified: 'Non-certified',
       placementStatus: 'In course',
       feeStatus: 'Pending',
-      feeAmount: newWalkin.feePaid,
+      feeAmount: '',
       statusGroup: 'in_course',
       handoverStatus: 'Ready'
     };
@@ -151,7 +152,6 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
       mode: 'Classroom (Saravanampatti)',
       qualification: '',
       college: '',
-      feePaid: '₹25,000',
       timing: '8-10 PM Weekdays'
     });
   };
@@ -179,9 +179,22 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
     showToast('✓ Exported CSV for TF Billing 2');
   };
 
-  const handleShareLink = () => {
-    navigator.clipboard?.writeText(window.location.href);
-    showToast('🔗 Copied Student Registration Link to clipboard');
+  const handleShareLink = async () => {
+    // Generate the official student registration form link
+    const regUrl = `${window.location.origin}/register${
+      currentUser?.name
+        ? `?hr=${encodeURIComponent(currentUser.name)}${currentUser?.branch ? `&branch=${encodeURIComponent(currentUser.branch)}` : ''}`
+        : ''
+    }`;
+
+    const success = await copyToClipboard(regUrl);
+    if (success) {
+      setCopiedLink(true);
+      showToast('✓ Registration form link copied to clipboard!');
+      setTimeout(() => setCopiedLink(false), 2500);
+    } else {
+      prompt('Copy student registration form link:', regUrl);
+    }
   };
 
   // Filter students
@@ -274,10 +287,24 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
         <div className="flex items-center gap-2 flex-wrap">
           <button
             onClick={handleShareLink}
-            className="flex items-center gap-1.5 bg-white hover:bg-teal-50 text-slate-900 font-bold text-xs px-3.5 py-2 rounded-xl transition-all shadow-xs"
+            title="Copy student registration form link to clipboard"
+            className={`flex items-center gap-1.5 font-bold text-xs px-3.5 py-2 rounded-xl transition-all shadow-xs cursor-pointer ${
+              copiedLink
+                ? 'bg-emerald-100 text-emerald-900 border border-emerald-300 ring-2 ring-emerald-400/30'
+                : 'bg-white hover:bg-teal-50 text-slate-900'
+            }`}
           >
-            <Share2 className="w-3.5 h-3.5 text-slate-700" />
-            <span>Share Link</span>
+            {copiedLink ? (
+              <>
+                <Check className="w-3.5 h-3.5 text-emerald-600" />
+                <span className="text-emerald-800 font-extrabold">Link Copied!</span>
+              </>
+            ) : (
+              <>
+                <Share2 className="w-3.5 h-3.5 text-slate-700" />
+                <span>Share Link</span>
+              </>
+            )}
           </button>
 
           <button

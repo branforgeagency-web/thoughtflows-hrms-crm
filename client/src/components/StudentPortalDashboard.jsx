@@ -200,7 +200,7 @@ const Stars = ({ value = 0, onRate, disabled, size = 'text-xl' }) => (
   </div>
 );
 // Notification type → portal section
-const NOTIF_NAV = { doubt: 'trainers', handover: 'trainers', assessment: 'lms', score: 'lms', material: 'lms', submission: 'lms', live: 'classes', attendance: 'classes', ticket: 'help', syllabus: 'placement-prep', request: 'dashboard' };
+const NOTIF_NAV = { payment: 'payments', doubt: 'trainers', handover: 'trainers', assessment: 'lms', score: 'lms', material: 'lms', submission: 'lms', live: 'classes', attendance: 'classes', ticket: 'help', syllabus: 'placement-prep', request: 'dashboard' };
 
 // ============================================================================
 export default function StudentPortalDashboard({ onClose, currentUser, onLogout }) {
@@ -339,13 +339,14 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
       resume: latestOf('resume'),
       videoIntro: latestOf('video_intro'),
       openMock: requests.find((r) => r.type === 'mock_interview' && ['Open', 'Scheduled'].includes(r.status)) || null,
-      pendingPoints: requests.filter((r) => r.type === 'redeem_points' && r.status === 'Open').reduce((a, r) => a + Number(r.details?.points || 0), 0)
+      pendingPoints: requests.filter((r) => r.type === 'redeem_points' && ['Open', 'Scheduled'].includes(r.status)).reduce((a, r) => a + Number(r.details?.points || 0), 0)
     };
   }, [st, portal?.batch, attendance, assessments, referrals, submissions, requests, placements, currentUser?.name]);
 
   // --------------------------------------------------------------------------
   // Actions (all persisted to the server)
   // --------------------------------------------------------------------------
+  // Resolves true on success so callers only clear their inputs when it saved
   const run = async (fn, okMsg) => {
     setBusy(true);
     try {
@@ -353,8 +354,10 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
       closeModal();
       if (okMsg) showToast(okMsg);
       await load(true);
+      return true;
     } catch (e) {
       showToast(`⚠ ${errMsg(e, 'Something went wrong')}`, 5000);
+      return false;
     } finally {
       setBusy(false);
     }
@@ -725,7 +728,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                 <div key={l} className="bg-slate-50 border border-slate-200 rounded-xl p-2.5"><div className="font-black text-slate-900">{typeof v === 'number' ? v : '—'}</div><div className="text-[10px] text-slate-500 font-semibold">{l}</div></div>
               ))}
             </div>
-            <p className="text-[11px] text-slate-500 mt-4 text-left">Average of your test score and the mock & technical scores your trainer enters. Reach {READINESS_TARGET}+ to be referred to placement.</p>
+            <p className="text-[11px] text-slate-500 mt-4 text-left">Average of your test score and the mock & technical scores your trainer enters — shown once all three are in. Reach {READINESS_TARGET}+ to be referred to placement.</p>
           </Card>
           <Card>
             <CardTitle icon="🧭" title="Trainer Recommendation" />
@@ -1114,7 +1117,6 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
   const renderPayments = () => {
     const receipts = st.receipts || [];
     const feeReqs = requests.filter((r) => r.type === 'fee_query' || r.type === 'payment_link');
-    const discount = Math.max(0, Number(st.discount || 0));
     return (
       <div className="space-y-6 pb-12">
         <PageHeader title="Payments" sub="Your fee record as maintained by the accounts / HR team" right={<HeaderStat label="Balance" value={d.balance === 0 ? 'Cleared' : inr(d.balance)} />} />
@@ -1128,7 +1130,6 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
             </div>
             <div className="divide-y divide-slate-100">
               <Row label="Course fee" value={d.courseFee ? inr(d.courseFee) : ''} />
-              {discount > 0 && <Row label="Discount" value={`- ${inr(discount)}`} />}
               <Row label="Paid so far" value={inr(d.paid)} />
               <Row label="Payment plan" value={st.paymentPlan} />
               <Row label="Payment method" value={st.paymentMethod} />
@@ -1145,7 +1146,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                 <div className="space-y-2">
                   {receipts.map((r, i) => (
                     <div key={r.id || i} className="p-3 rounded-xl border border-slate-200 flex items-center justify-between gap-2 text-xs">
-                      <div className="min-w-0"><div className="font-bold text-slate-900 truncate">{r.label || r.title || r.name || `Receipt ${i + 1}`}</div><div className="text-[10px] text-slate-400">{[r.id || r.receiptNo, r.date && fmtDate(r.date), r.mode].filter(Boolean).join(' · ')}</div></div>
+                      <div className="min-w-0"><div className="font-bold text-slate-900 truncate">{r.label || r.title || r.name || `Receipt ${i + 1}`}</div><div className="text-[10px] text-slate-400">{[r.receiptNo || r.id, r.date && fmtDate(r.date), r.mode, r.reference].filter(Boolean).join(' · ')}</div></div>
                       <div className="flex items-center gap-2">
                         {r.amount && <span className="font-bold text-emerald-600">{typeof r.amount === 'number' ? inr(r.amount) : r.amount}</span>}
                         {(r.url || r.fileUrl) && <a href={r.url || r.fileUrl} target="_blank" rel="noreferrer" className="p-1.5 rounded-lg bg-slate-100"><Download className="w-3.5 h-3.5" /></a>}
@@ -1221,7 +1222,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         <Card className="lg:col-span-6">
           <CardTitle icon="💭" title="Ask your trainer" sub={trainer ? `Goes to ${trainer.trainerName} · 24h SLA` : 'Routed once a trainer is allocated'} />
-          <form onSubmit={(e) => { e.preventDefault(); if (quickDoubt.trim()) submitDoubt(quickDoubt.trim()).then(() => setQuickDoubt('')); }} className="space-y-3">
+          <form onSubmit={(e) => { e.preventDefault(); if (quickDoubt.trim()) submitDoubt(quickDoubt.trim()).then((ok) => ok && setQuickDoubt('')); }} className="space-y-3">
             <textarea rows={4} value={quickDoubt} onChange={(e) => setQuickDoubt(e.target.value)} placeholder="Explain your doubt — include code numbers or the case snippet…" className={inputCls} />
             <Btn type="submit" disabled={busy || !quickDoubt.trim()} className="w-full"><Send className="w-4 h-4" />Send doubt</Btn>
           </form>
@@ -1305,7 +1306,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                   <span key={s} className="px-3 py-1.5 rounded-xl bg-teal-50 border border-teal-200 text-teal-800 text-xs font-semibold flex items-center gap-1.5">{s}<button onClick={() => saveProfile({ skills: skills.filter((x) => x !== s) })} className="text-teal-500 hover:text-rose-600 cursor-pointer">✕</button></span>
                 ))}
               </div>
-              <form onSubmit={(e) => { e.preventDefault(); const v = newSkill.trim(); if (!v) return; if (skills.some((s) => s.toLowerCase() === v.toLowerCase())) { showToast('Already in your list'); return; } saveProfile({ skills: [...skills, v] }, `Added ${v}`).then(() => setNewSkill('')); }} className="flex gap-2">
+              <form onSubmit={(e) => { e.preventDefault(); const v = newSkill.trim(); if (!v) return; if (skills.some((s) => s.toLowerCase() === v.toLowerCase())) { showToast('Already in your list'); return; } saveProfile({ skills: [...skills, v] }, `Added ${v}`).then((ok) => ok && setNewSkill('')); }} className="flex gap-2">
                 <input value={newSkill} onChange={(e) => setNewSkill(e.target.value)} placeholder="Add a skill (e.g. MS Excel)" className={inputCls} />
                 <Btn type="submit" disabled={busy}>+ Add</Btn>
               </form>

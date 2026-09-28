@@ -173,6 +173,12 @@ const studentSchema = new mongoose.Schema({
   syllabusCompletedAt: { type: Date, default: null },
   trainerRecommendation: { type: String, default: '' },
   trainerRecommendationAt: { type: Date, default: null },
+  // Latest trainer review of the student's resume / video intro (Student Portal
+  // submissions) — CCCP uses these for the "Talentera Synced" stage
+  resumeStatus: { type: String, default: '' },          // '' | 'Submitted' | 'Approved' | 'Needs Revision'
+  resumeReviewedAt: { type: Date, default: null },
+  videoIntroStatus: { type: String, default: '' },
+  videoIntroReviewedAt: { type: Date, default: null },
   remedialActions: {
     type: [{ action: String, note: String, by: String, at: Date }],
     default: []
