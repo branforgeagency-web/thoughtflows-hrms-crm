@@ -42,9 +42,13 @@ import { MANDATORY_MODULES, MODULE_ITEMS, PASS_MARK, COURSE_PASS_MARK, QUESTION_
 import { requireAuth, signToken, signFileToken, checkPassword, hashPassword, hashIfPlain } from '../middleware/auth.js';
 import LiveClassSession from '../models/LiveClassSession.js';
 import StudentSubmission from '../models/StudentSubmission.js';
+import { PLACEMENT_EDITORS, autoStage, effectiveStage, blockReason, stageChecks } from '../constants/placement.js';
 import StudentRequest, { TRAINER_REQUEST_TYPES } from '../models/StudentRequest.js';
 
 const router = express.Router();
+
+// Drop legacy unique index if it exists in MongoDB so group demos up to 6 students work smoothly
+Demo.collection?.dropIndex('trainerId_1_preferredDate_1_timeSlot_1').catch(() => {});
 
 // Every API call needs a valid login token (see middleware/auth.js for the few public routes)
 router.use(requireAuth);
@@ -273,7 +277,9 @@ router.post('/calls/:callSid/hangup', async (req, res) => {
 
 router.get('/recordings', async (req, res) => {
   try {
-    const { leadPhone, leadId, counselorName, search } = req.query;
+    const { leadPhone, leadId, search } = req.query;
+    // Counsellors only hear their own calls; managers may filter by name
+    const counselorName = isScopedHr(req) ? req.user?.name : (req.query.counselorName || req.query.counselor);
     let query = {};
     if (leadPhone) {
       const digits = leadPhone.replace(/[^\d]/g, '');
@@ -282,7 +288,7 @@ router.get('/recordings', async (req, res) => {
     if (leadId && mongoose.isValidObjectId(leadId)) {
       query.leadId = leadId;
     }
-    if (counselorName) query.counselorName = { $regex: counselorName, $options: 'i' };
+    if (counselorName && counselorName !== 'all') query.counselorName = exactNameRx(counselorName);
     if (search) {
       query.$or = [
         { leadName: { $regex: search, $options: 'i' } },
@@ -405,13 +411,13 @@ router.delete('/recordings/:id', async (req, res) => {
 // ==========================================
 router.get('/closures/today', async (req, res) => {
   try {
-    const counselorName = req.query.counselor;
+    const counselorName = isScopedHr(req) ? req.user?.name : req.query.counselor;
     const date = req.query.date || todayStr();
     if (!counselorName) {
       return res.status(400).json({ error: 'counselor query param is required' });
     }
     const closure = await DailyClosure.findOne({
-      counselorName: { $regex: new RegExp(`^${counselorName.trim()}$`, 'i') },
+      counselorName: exactNameRx(counselorName),
       date
     });
     res.json(closure || null);
@@ -422,13 +428,15 @@ router.get('/closures/today', async (req, res) => {
 
 router.post('/closures', async (req, res) => {
   try {
-    const { counselorName, date, callsMade, connected, demosBooked, admissions, feesCollected, pendingFus, notes, branch } = req.body;
+    const { date, callsMade, connected, demosBooked, admissions, feesCollected, pendingFus, notes, branch, systemMetrics } = req.body;
+    // A counsellor can only close their own day
+    const counselorName = isScopedHr(req) ? String(req.user?.name || "") : String(req.body.counselorName || req.user?.name || "");
     if (!counselorName || !date) {
       return res.status(400).json({ error: 'counselorName and date are required' });
     }
     const closure = await DailyClosure.findOneAndUpdate(
       {
-        counselorName: { $regex: new RegExp(`^${counselorName.trim()}$`, 'i') },
+        counselorName: exactNameRx(counselorName),
         date
       },
       {
@@ -444,7 +452,15 @@ router.post('/closures', async (req, res) => {
           branch: branch || 'Saravanampatti Branch (CBE)',
           status: 'submitted',
           submittedAt: new Date(),
-          notes: notes || ''
+          notes: notes || '',
+          counselorEmail: req.body.counselorEmail || req.user?.email || '',
+          // What the system counted, so any hand-corrected number is visible to managers
+          systemMetrics: systemMetrics || null,
+          editedFields: systemMetrics
+            ? ['callsMade', 'connected', 'demosBooked', 'admissions', 'feesCollected', 'pendingFus']
+                .filter((k) => Number(systemMetrics[k] ?? 0) !== Number(req.body[k] ?? 0))
+            : [],
+          submittedBy: req.user?.name || ''
         }
       },
       { new: true, upsert: true }
@@ -459,7 +475,8 @@ router.get('/closures', async (req, res) => {
   try {
     const query = {};
     if (req.query.date) query.date = req.query.date;
-    if (req.query.counselor) query.counselorName = { $regex: new RegExp(req.query.counselor, 'i') };
+    const counselor = isScopedHr(req) ? req.user?.name : req.query.counselor;
+    if (counselor) query.counselorName = exactNameRx(counselor);
     const closures = await DailyClosure.find(query).sort({ date: -1, createdAt: -1 });
     res.json(closures);
   } catch (err) {
@@ -1189,31 +1206,127 @@ router.post('/attendance/me', async (req, res) => {
   }
 });
 
+// ---- HR record ownership ----
+// A counsellor (department 'hr') only sees and changes their own leads and
+// students; Admin / Leadership see everyone's. Names are compared whole
+// (case / spacing ignored) so "Ram" never matches "Ramesh".
+const normName = (v) => String(v || '').trim().replace(/\s+/g, ' ').toLowerCase();
+const exactNameRx = (v) => new RegExp(`^\\s*${escapeRegex(String(v || '').trim()).replace(/\s+/g, '\\s+')}\\s*$`, 'i');
+const isScopedHr = (req) => req.user?.department === 'hr';
+const leadOwner = (l) => l?.counselorAssigned || l?.allocatedTo || '';
+const leadOwnerQuery = (name) => ({
+  $or: [
+    { counselorAssigned: exactNameRx(name) },
+    { counselorAssigned: { $in: ['', null] }, allocatedTo: exactNameRx(name) }
+  ]
+});
+const ownsLead = (req, lead) => !isScopedHr(req) || normName(leadOwner(lead)) === normName(req.user?.name);
+const branchShort = (v) => String(v || '').replace(/\s*(branch|\(.*\)|hq)\b/gi, '').trim();
+const bClean = (v) => String(v || '').toLowerCase().replace(/\s*(branch|\(.*\)|hq)\b/gi, '').replace(/[^a-z0-9]/g, '');
+
+const ownsStudent = (req, st) => {
+  if (!isScopedHr(req)) return true;
+  if (normName(st?.hrName) === normName(req.user?.name)) return true;
+  const userBranch = branchShort(req.user?.branch || req.query?.branch);
+  if (userBranch) {
+    const ub = bClean(userBranch);
+    if (ub && (bClean(st?.branch).includes(ub) || bClean(st?.location).includes(ub) || bClean(st?.leadBranch).includes(ub))) {
+      return true;
+    }
+  }
+  return false;
+};
+
+const ownsDemo = (req, demo) => {
+  if (!isScopedHr(req)) return true;
+  const counselor = req.user?.name;
+  if (counselor && (normName(demo?.bookedBy) === normName(counselor) || normName(demo?.counselor) === normName(counselor))) {
+    return true;
+  }
+  const userBranch = branchShort(req.user?.branch || req.query?.branch);
+  if (userBranch) {
+    const ub = bClean(userBranch);
+    if (ub && (bClean(demo?.location).includes(ub) || bClean(demo?.branch).includes(ub))) {
+      return true;
+    }
+  }
+  return false;
+};
+const NOT_YOURS = { error: 'This record belongs to another counsellor.' };
+
+// The lead a new admission / demo belongs to: explicit leadId first, then
+// the same email or the same last-10-digit phone.
+const phoneDigits = (p) => String(p || '').replace(/\D/g, '').slice(-10);
+async function findLeadByContact({ leadId, email, phone }, stageFilter) {
+  if (leadId && mongoose.isValidObjectId(leadId)) {
+    const byId = await StudentLead.findById(leadId);
+    if (byId) return byId;
+  }
+  const base = stageFilter ? { stage: stageFilter } : {};
+  const mail = String(email || '').trim().toLowerCase();
+  if (mail) {
+    const byMail = await StudentLead.findOne({ ...base, email: exactNameRx(mail) }).sort({ createdAt: -1 });
+    if (byMail) return byMail;
+  }
+  const digits = phoneDigits(phone);
+  if (digits.length === 10) {
+    // Cheap pre-filter on the last 4 digits, exact match on all 10
+    const candidates = await StudentLead.find({ ...base, phone: new RegExp(`${digits.slice(-4).split('').join('\\D*')}\\D*$`) }).sort({ createdAt: -1 });
+    return candidates.find((l) => phoneDigits(l.phone) === digits) || null;
+  }
+  return null;
+}
+const findLeadForAdmission = (p) => findLeadByContact({ leadId: p.leadId, email: p.email, phone: p.phone || p.whatsappNumber });
+
 // ==========================================
 // REAL ADMITTED STUDENTS API
 // ==========================================
 router.get('/students', async (req, res) => {
   try {
-    const { statusGroup, search, hrName, trainerId, handoverStatus } = req.query;
-    let query = {};
-    if (trainerId) query.trainerId = trainerId;
-    if (handoverStatus) query.handoverStatus = handoverStatus;
+    const { statusGroup, search, trainerId, handoverStatus } = req.query;
+    const hrName = isScopedHr(req) ? req.user?.name : req.query.hrName;
+    const userBranch = branchShort(req.user?.branch || req.query.branch);
+
+    const andConditions = [];
+    if (trainerId) andConditions.push({ trainerId });
+    if (handoverStatus) andConditions.push({ handoverStatus });
     if (statusGroup && statusGroup !== 'all') {
-      query.statusGroup = statusGroup;
+      andConditions.push({ statusGroup });
     }
-    if (hrName && hrName !== 'all') {
-      const escapedHr = hrName.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      query.hrName = { $regex: new RegExp(escapedHr, 'i') };
+
+    if (isScopedHr(req)) {
+      const counselor = req.user?.name;
+      const hrOr = [];
+      if (counselor) hrOr.push({ hrName: exactNameRx(counselor) });
+      if (userBranch) {
+        const bRx = new RegExp(escapeRegex(userBranch), 'i');
+        hrOr.push({ branch: bRx }, { location: bRx }, { leadBranch: bRx });
+      }
+      if (hrOr.length > 0) andConditions.push({ $or: hrOr });
+    } else if (hrName && hrName !== 'all') {
+      const hrOr = [{ hrName: exactNameRx(hrName) }];
+      if (userBranch) {
+        const bRx = new RegExp(escapeRegex(userBranch), 'i');
+        hrOr.push({ branch: bRx }, { location: bRx }, { leadBranch: bRx });
+      }
+      andConditions.push({ $or: hrOr });
     }
+
     if (search) {
-      query.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { studentId: { $regex: search, $options: 'i' } },
-        { phone: { $regex: search, $options: 'i' } },
-        { course: { $regex: search, $options: 'i' } },
-        { hrName: { $regex: search, $options: 'i' } }
-      ];
+      andConditions.push({
+        $or: [
+          { name: { $regex: search, $options: 'i' } },
+          { studentId: { $regex: search, $options: 'i' } },
+          { phone: { $regex: search, $options: 'i' } },
+          { course: { $regex: search, $options: 'i' } },
+          { hrName: { $regex: search, $options: 'i' } },
+          { branch: { $regex: search, $options: 'i' } },
+          { location: { $regex: search, $options: 'i' } }
+        ]
+      });
     }
+
+    const query = andConditions.length > 0 ? { $and: andConditions } : {};
     const students = await Student.find(query).sort({ createdAt: -1 });
     // Trainers get full records only for their own students (and handed-over,
     // not-yet-allocated ones they may pick up). Everyone else: just enough to
@@ -1245,6 +1358,7 @@ router.get('/students/:id', async (req, res) => {
       ]
     });
     if (!student) return res.status(404).json({ error: 'Student not found' });
+    if (!ownsStudent(req, student)) return res.status(403).json(NOT_YOURS);
     res.json(student);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1259,6 +1373,96 @@ function generateStudentPassword() {
   return out;
 }
 
+// Standard ThoughtFlows Student ID Generator: TF + Branch + Course + Type + Month + Year + Serial
+async function generateStandardStudentId({ branch, course, mode, date }) {
+  const branchMap = {
+    'S': 'Saravanampatti', 'H': 'Hopes', 'G': 'Gandhipuram', 'C': 'Trichy',
+    'M': 'Salem', 'K': 'Kochi', 'V': 'Trivandrum', 'T': 'Tirupati',
+    'D': 'Hyderabad Dilsukhnagar', 'R': 'Hyderabad Ameerpet', 'Z': 'Vizag',
+    'P': 'Pune', 'L': 'Kollapur', 'N': 'Theni'
+  };
+  const monthCodes = ['A', 'B', 'C', 'D', 'Y', 'J', 'L', 'G', 'S', 'T', 'N', 'E'];
+
+  // Branch code
+  let b = 'S';
+  const bStr = String(branch || '').toLowerCase();
+  if (branchMap[String(branch || '').toUpperCase()]) b = String(branch).toUpperCase();
+  else if (bStr.includes('hopes')) b = 'H';
+  else if (bStr.includes('gandhi') || bStr.includes('gpm')) b = 'G';
+  else if (bStr.includes('trichy')) b = 'C';
+  else if (bStr.includes('salem')) b = 'M';
+  else if (bStr.includes('kochi') || bStr.includes('cochin')) b = 'K';
+  else if (bStr.includes('trivandrum')) b = 'V';
+  else if (bStr.includes('tirupati')) b = 'T';
+  else if (bStr.includes('dilsukh')) b = 'D';
+  else if (bStr.includes('ameerpet') || bStr.includes('hyderabad')) b = 'R';
+  else if (bStr.includes('vizag')) b = 'Z';
+  else if (bStr.includes('pune')) b = 'P';
+  else if (bStr.includes('kollapur') || bStr.includes('kolhapur')) b = 'L';
+  else if (bStr.includes('theni')) b = 'N';
+
+  // Course code
+  let c = 'C';
+  const cStr = String(course || '').toUpperCase();
+  if (cStr.includes('CRASH')) c = 'F';
+  else if (cStr.includes('AMCT BEGINNER')) c = 'AB';
+  else if (cStr.includes('AMCT INTERMEDIATE')) c = 'AI';
+  else if (cStr.includes('AMCT ADVANCED')) c = 'AA';
+  else if (cStr.includes('AMCT') || cStr.includes('MCT')) c = 'A';
+  else if (cStr.includes('CPMA')) c = 'P';
+  else if (cStr.includes('COC')) c = 'B';
+  else if (cStr.includes('CRC')) c = 'R';
+  else if (cStr.includes('CPB')) c = 'PB';
+  else if (cStr.includes('CEDC')) c = 'EDC';
+  else if (cStr.includes('CEMC')) c = 'CN';
+  else if (cStr.includes('CDEO')) c = 'CDO';
+  else if (cStr.includes('CDEI')) c = 'CDEI';
+  else if (cStr.includes('CPPM')) c = 'PPM';
+  else if (cStr.includes('CIC')) c = 'E';
+  else if (cStr.includes('SURGERY')) c = 'Y';
+  else if (cStr.includes('EMERGENCY') || cStr.includes('ED -') || cStr.includes('ED (')) c = 'D';
+  else if (cStr.includes('EVALUATION') || cStr.includes('EM -') || cStr.includes('E/M')) c = 'N';
+  else if (cStr.includes('RADIOLOGY')) c = 'RD';
+  else if (cStr.includes('ANESTHESIA')) c = 'AN';
+  else if (cStr.includes('IP DRG') || cStr.includes('IPDRG')) c = 'I';
+  else if (cStr.includes('HCC')) c = 'H';
+  else if (cStr.includes('IVR')) c = 'IVR';
+  else if (cStr.includes('CDI')) c = 'CDI';
+  else if (cStr.includes('CCS-P')) c = 'CSP';
+  else if (cStr.includes('CCS')) c = 'S';
+  else if (cStr.includes('RHIA')) c = 'RIA';
+  else if (cStr.includes('RHIT')) c = 'RIT';
+  else if (cStr.includes('CCC')) c = 'CCC';
+  else if (cStr.includes('HIM')) c = 'HIM';
+  else if (cStr.includes('CPT')) c = 'T';
+  else if (cStr.includes('ICD')) c = 'Z';
+  else if (cStr.includes('ANATOMY')) c = 'O';
+  else if (cStr.includes('CPC')) c = 'C';
+
+  // Mode code (O = Online, C = Classroom, H = Hybrid)
+  let t = 'O';
+  const mStr = String(mode || '').toLowerCase();
+  if (mStr.includes('class') || mStr.includes('off')) t = 'C';
+  else if (mStr.includes('hyb')) t = 'H';
+
+  // Month & Year codes
+  const d = date ? new Date(date) : new Date();
+  const m = monthCodes[!isNaN(d.getTime()) ? d.getMonth() : new Date().getMonth()] || 'Y';
+  const y = String(!isNaN(d.getTime()) ? d.getFullYear() : new Date().getFullYear()).slice(-1);
+
+  const prefix = `TF${b}${c}${t}${m}${y}`.toUpperCase();
+
+  const existing = await Student.find({ studentId: new RegExp(`^${prefix}`, 'i') }).select('studentId').lean();
+  let maxSerial = 0;
+  for (const st of existing) {
+    const suf = String(st.studentId || '').slice(prefix.length);
+    const num = parseInt(suf, 10);
+    if (!isNaN(num) && num > maxSerial) maxSerial = num;
+  }
+  const serial = String(maxSerial + 1).padStart(3, '0');
+  return `${prefix}${serial}`;
+}
+
 router.post('/students', async (req, res) => {
   try {
     let payload = { ...req.body };
@@ -1266,33 +1470,77 @@ router.post('/students', async (req, res) => {
       return res.status(409).json({ error: `Student ID ${payload.studentId} is already in use` });
     }
     if (!payload.studentId) {
-      // Unique random ID (retry on the rare collision)
-      for (let i = 0; i < 20 && !payload.studentId; i++) {
-        const candidate = `TFMC0Y${crypto.randomInt(1000, 10000)}`;
-        if (!(await Student.exists({ studentId: candidate }))) payload.studentId = candidate;
-      }
-      if (!payload.studentId) payload.studentId = `TFMC${Date.now().toString(36).toUpperCase()}`;
+      payload.studentId = await generateStandardStudentId({
+        branch: payload.branch || payload.leadBranch || payload.location,
+        course: payload.course,
+        mode: payload.mode,
+        date: payload.batchDate || payload.registeredAt || new Date()
+      });
     }
     if (payload.mode && !['Online', 'Classroom'].includes(payload.mode)) {
       payload.mode = (payload.mode.toLowerCase().includes('class') || payload.mode.toLowerCase().includes('off')) ? 'Classroom' : 'Online';
     }
     if (!payload.onboardStatus) payload.onboardStatus = '7/7 ✓';
     if (!payload.syllabusModule) payload.syllabusModule = 'Module 1';
-    if (!payload.handoverStatus) payload.handoverStatus = 'Ready';
     if (!payload.statusGroup || !['all', 'in_course', 'placed', 'on_hold'].includes(payload.statusGroup)) {
       payload.statusGroup = payload.placementStatus?.toLowerCase().includes('place') ? 'placed' : 'in_course';
     }
+    // A counsellor always admits under their own name
+    if (isScopedHr(req) || !payload.hrName) payload.hrName = req.user?.name || payload.hrName || '';
+
+    // Link the admission to its lead (explicit leadId, else same phone / email)
+    let lead = await findLeadForAdmission(payload);
+    if (lead?.admittedStudentId) {
+      // Admitting the same lead twice is a mistake; a matching phone on an old,
+      // already-admitted lead is just a returning student taking another course.
+      if (payload.leadId) return res.status(409).json({ error: `${lead.fullName || 'This lead'} is already admitted as ${lead.admittedStudentId}` });
+      lead = null;
+    }
+    if (lead) {
+      payload.leadId = String(lead._id);
+      if (!payload.leadBranch && lead.branch) payload.leadBranch = lead.branch;
+      if (!payload.branch && lead.branch) payload.branch = lead.branch;
+    }
+    if (!payload.branch && payload.location) payload.branch = payload.location;
+    if (!payload.location && payload.branch) payload.location = payload.branch;
+
+    // No fee given → take it from the course rate card
+    if (!(Number(payload.courseFee) > 0) && payload.course) {
+      const code = String(payload.course).split(/\s+[-–]\s+|\s*·\s*/)[0].trim();
+      const rate = await CourseFeeRate.findOne({ $or: [{ code: exactNameRx(code) }, { name: exactNameRx(payload.course) }] });
+      if (rate?.courseFee > 0) payload.courseFee = rate.courseFee;
+    }
+    if (Number(payload.courseFee) > 0) applyFeeTotals(payload);
+
+    // Handover readiness is earned through the checklist, never assumed
+    payload.checklist = { ...(payload.checklist || {}), paymentStatus: Number(payload.paidAmount) > 0 };
+    payload.handoverStatus = 'Pending Handover';
     // First payment taken at admission → opening receipt, so the ledger adds up
     if (Number(payload.paidAmount) > 0 && !(payload.receipts || []).length) {
       const receiptNo = `RC-${payload.studentId}-01`;
       payload.receipts = [{
-        id: receiptNo, receiptNo, label: 'Admission payment', amount: Number(payload.paidAmount),
-        mode: payload.paymentMethod || '', date: todayStr(), recordedBy: req.user?.name || '', at: new Date()
+        id: receiptNo,
+        receiptNo,
+        label: 'Admission payment',
+        amount: Number(payload.paidAmount),
+        mode: payload.paymentMethod || '',
+        reference: String(payload.paymentReference || payload.transactionId || ''),
+        date: todayStr(),
+        recordedBy: req.user?.name || '',
+        at: new Date()
       }];
     }
 
     const newStudent = new Student(payload);
     await newStudent.save();
+
+    if (lead) {
+      lead.stage = 'admitted';
+      lead.status = 'completed';
+      lead.admittedStudentId = newStudent.studentId;
+      await lead.save();
+      await creditReferralReward(lead);
+    }
 
     // Create student login user email + password in User collection upon student admission/registration
     let studentLogin = null;
@@ -1334,6 +1582,7 @@ router.post('/students/:id/reset-login', async (req, res) => {
     const isObjectId = mongoose.isValidObjectId(req.params.id);
     const st = await Student.findOne({ $or: [...(isObjectId ? [{ _id: req.params.id }] : []), { studentId: req.params.id }] });
     if (!st) return res.status(404).json({ error: 'Student not found' });
+    if (!ownsStudent(req, st)) return res.status(403).json(NOT_YOURS);
     const email = String(st.email || '').trim().toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || /^student\.\d+@thoughtflows\.in$/.test(email)) {
       return res.status(400).json({ error: "Add the student's real email address first — it is their login ID." });
@@ -1382,6 +1631,7 @@ router.post('/students/:id/payments', async (req, res) => {
   try {
     const st = await findStudentByAnyId(req.params.id);
     if (!st) return res.status(404).json({ error: 'Student not found' });
+    if (!ownsStudent(req, st)) return res.status(403).json(NOT_YOURS);
     const { amount, mode = '', date = '', reference = '', note = '', nextDueDate } = req.body || {};
     const amt = Math.round(Number(amount));
     if (!(amt > 0)) return res.status(400).json({ error: 'Enter a payment amount greater than 0' });
@@ -1402,6 +1652,7 @@ router.post('/students/:id/payments', async (req, res) => {
       at: new Date()
     }];
     st.paidAmount = (Number(st.paidAmount) || 0) + amt;
+    if (st.checklist) st.checklist.paymentStatus = true;
     if (mode) st.paymentMethod = String(mode);
     applyFeeTotals(st);
     if (nextDueDate !== undefined) st.nextDueDate = st.pendingBalance === 0 ? '' : String(nextDueDate || '');
@@ -1429,24 +1680,52 @@ router.put('/students/:id', async (req, res) => {
     if (payload.statusGroup && !['all', 'in_course', 'placed', 'on_hold'].includes(payload.statusGroup)) {
       payload.statusGroup = payload.placementStatus?.toLowerCase().includes('place') ? 'placed' : 'in_course';
     }
-    const isObjectId = mongoose.isValidObjectId(req.params.id);
-    let updated = null;
-    if (isObjectId) {
-      updated = await Student.findByIdAndUpdate(
-        req.params.id,
-        { $set: payload },
-        { new: true }
-      );
+    const existing = await findStudentByAnyId(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Student not found' });
+    if (!ownsStudent(req, existing)) return res.status(403).json(NOT_YOURS);
+    // Money only moves through POST /students/:id/payments (receipt ledger);
+    // Admin / Leadership may still correct the totals directly.
+    const elevated = ['admin', 'leadership'].includes(req.user?.department);
+    if (!elevated) {
+      ['paidAmount', 'receipts', 'pendingBalance', 'feeStatus', 'feeAmount', 'leadId'].forEach((k) => delete payload[k]);
+      if (isScopedHr(req)) delete payload.hrName;
     }
-    if (!updated) {
-      // Try finding by studentId string
-      updated = await Student.findOneAndUpdate(
-        { studentId: req.params.id },
-        { $set: payload },
-        { new: true }
-      );
-      if (!updated) return res.status(404).json({ error: 'Student not found' });
+    // Handover to training happens only through POST /students/:id/handover,
+    // and a checklist edit never pulls a handed-over student back
+    if (payload.handoverStatus === 'Sent to Training' || existing.handoverStatus === 'Sent to Training') delete payload.handoverStatus;
+    // Placement pipeline: status / group always follow the stage (set by the model)
+    delete payload.placementStatus;
+    if (payload.statusGroup === 'placed') delete payload.statusGroup;
+    const touchesPlacement = 'placementStage' in payload || 'interviews' in payload;
+    if (touchesPlacement) {
+      if (!PLACEMENT_EDITORS.includes(req.user?.department)) {
+        return res.status(403).json({ error: 'Only HR, CCCP (placement) or Admin can update the placement pipeline.' });
+      }
+      const merged = { ...existing.toObject(), ...payload };
+      if ('interviews' in payload) {
+        if (effectiveStage(existing) < 3) {
+          return res.status(400).json({ error: `${blockReason(existing, 4)} Interviews can be logged only after Stage 3.` });
+        }
+        const c = stageChecks(merged);
+        const floor = c.hasOffer ? 6 : c.hasInterview ? 5 : 0;
+        const current = effectiveStage(existing);
+        if (!('placementStage' in payload) && floor > current) payload.placementStage = floor;
+      }
+      if ('placementStage' in payload) {
+        const target = Number(payload.placementStage) || 0;
+        if (target <= 3) {
+          payload.placementStage = 0; // back to automatic stages
+        } else {
+          const current = effectiveStage(existing);
+          // Moves triggered by logging an interview may jump straight to 5 / 6
+          const viaInterview = 'interviews' in payload && target <= 6;
+          const reason = viaInterview ? '' : (target === current ? '' : target < current ? '' : blockReason(merged, target));
+          if (reason) return res.status(400).json({ error: reason });
+          payload.placementStage = target;
+        }
+      }
     }
+    const updated = await Student.findByIdAndUpdate(existing._id, { $set: payload }, { new: true });
     // Fee edits keep balance / status in step with the ledger
     if ('courseFee' in payload || 'paidAmount' in payload) {
       applyFeeTotals(updated);
@@ -1477,14 +1756,12 @@ router.delete('/students/:id', async (req, res) => {
 // ==========================================
 router.get('/leads', async (req, res) => {
   try {
-    const { counselor, search, stage, branch } = req.query;
+    const { search, stage, branch } = req.query;
+    // Counsellors are always pinned to their own leads
+    const counselor = isScopedHr(req) ? req.user?.name : req.query.counselor;
     let query = {};
     if (counselor && counselor !== 'all') {
-      const escaped = counselor.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      query.$or = [
-        { counselorAssigned: { $regex: new RegExp(escaped, 'i') } },
-        { allocatedTo: { $regex: new RegExp(escaped, 'i') } }
-      ];
+      query.$or = leadOwnerQuery(counselor).$or;
     }
     if (stage && stage !== 'all') {
       query.stage = stage;
@@ -1549,7 +1826,10 @@ router.post('/leads', async (req, res) => {
       payload.stage = 'new';
     }
 
-    const owner = payload.allocatedTo || payload.counselorAssigned;
+    // A counsellor adding a lead without naming an owner keeps it
+    if (isScopedHr(req) && !payload.counselorAssigned && !payload.allocatedTo) payload.counselorAssigned = req.user?.name || "";
+    delete payload.admittedStudentId;
+    const owner = leadOwner(payload);
     const gate = await lmsGate(owner, payload.course);
     if (gate?.blocked) return res.status(403).json({ error: gate.message, code: 'LMS_NOT_CERTIFIED' });
 
@@ -1564,23 +1844,23 @@ router.post('/leads', async (req, res) => {
 
 router.put('/leads/:id', async (req, res) => {
   try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Lead not found' });
+    const current = await StudentLead.findById(req.params.id).select('allocatedTo counselorAssigned course');
+    if (!current) return res.status(404).json({ error: 'Lead not found' });
+    if (!ownsLead(req, current)) return res.status(403).json(NOT_YOURS);
+    const body = { ...(req.body || {}) };
+    delete body.admittedStudentId; // set only when the student record is created
     // Re-allocation to another counsellor → LMS certification check
     let gate = null;
-    const newOwner = req.body?.allocatedTo || req.body?.counselorAssigned;
-    if (newOwner && mongoose.isValidObjectId(req.params.id)) {
-      const current = await StudentLead.findById(req.params.id).select('allocatedTo counselorAssigned course');
-      const curOwner = current?.allocatedTo || current?.counselorAssigned || '';
-      if (current && String(newOwner).trim().toLowerCase() !== String(curOwner).trim().toLowerCase()) {
-        gate = await lmsGate(newOwner, req.body.course || current.course);
-        if (gate?.blocked) return res.status(403).json({ error: gate.message, code: 'LMS_NOT_CERTIFIED' });
-      }
+    const newOwner = body.allocatedTo || body.counselorAssigned;
+    if (newOwner && normName(newOwner) !== normName(leadOwner(current))) {
+      gate = await lmsGate(newOwner, body.course || current.course);
+      if (gate?.blocked) return res.status(403).json({ error: gate.message, code: 'LMS_NOT_CERTIFIED' });
+      // counselorAssigned wins over allocatedTo, so keep the two in step
+      body.counselorAssigned = newOwner;
+      body.allocatedTo = newOwner;
     }
-    const updated = await StudentLead.findByIdAndUpdate(
-      req.params.id,
-      { $set: req.body },
-      { new: true }
-    );
-    if (!updated) return res.status(404).json({ error: 'Lead not found' });
+    const updated = await StudentLead.findByIdAndUpdate(current._id, { $set: body }, { new: true });
     await creditReferralReward(updated);
     res.json(gate ? { ...updated.toObject(), lmsWarning: gate.message } : updated);
   } catch (err) {
@@ -1590,7 +1870,10 @@ router.put('/leads/:id', async (req, res) => {
 
 router.delete('/leads/:id', async (req, res) => {
   try {
-    await StudentLead.findByIdAndDelete(req.params.id);
+    const lead = mongoose.isValidObjectId(req.params.id) ? await StudentLead.findById(req.params.id) : null;
+    if (!lead) return res.status(404).json({ error: 'Lead not found' });
+    if (!ownsLead(req, lead)) return res.status(403).json(NOT_YOURS);
+    await lead.deleteOne();
     res.json({ message: 'Lead deleted successfully' });
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -1602,6 +1885,7 @@ router.get('/leads/:id/whatsapp', async (req, res) => {
   try {
     const lead = await StudentLead.findById(req.params.id);
     if (!lead) return res.status(404).json({ error: 'Lead not found' });
+    if (!ownsLead(req, lead)) return res.status(403).json(NOT_YOURS);
 
     // If first time, initialize with authentic initial student inquiry
     if (!lead.whatsappMessages || lead.whatsappMessages.length === 0) {
@@ -1632,6 +1916,7 @@ router.post('/leads/:id/whatsapp', async (req, res) => {
   try {
     const lead = await StudentLead.findById(req.params.id);
     if (!lead) return res.status(404).json({ error: 'Lead not found' });
+    if (!ownsLead(req, lead)) return res.status(403).json(NOT_YOURS);
 
     const { text, mediaUrl, mediaType, mediaName, sender = 'counselor', senderName = 'Counselor' } = req.body;
     if (!text && !mediaUrl) {
@@ -1806,6 +2091,8 @@ function trainerOnLeave(t, date) {
   return (t.leaves || []).some((l) => l.from && d >= l.from && d <= (l.to || l.from));
 }
 
+export const DEMO_GROUP_CAPACITY = 6; // Up to 6 demo students conducted together in one group session
+
 async function findEligibleTrainers({ language, location, preferredDate, timeSlot, excludeDemoId }) {
   const langNorm = norm(language);
   const locNorm = norm(location);
@@ -1853,8 +2140,9 @@ async function findEligibleTrainers({ language, location, preferredDate, timeSlo
     };
   }
 
-  // Condition 3b: free at the exact demo date + time — exclude anyone who
-  // already has a booked/confirmed demo whose slot overlaps this one.
+  // Condition 3b: free at the exact demo date + time.
+  // Group demo sessions support up to DEMO_GROUP_CAPACITY (6) candidates simultaneously.
+  // Exclude trainers who have already reached capacity for this overlapping slot.
   const busyQuery = {
     preferredDate,
     trainerId: { $in: freeBySchedule.map((t) => t.trainerId) },
@@ -1863,8 +2151,15 @@ async function findEligibleTrainers({ language, location, preferredDate, timeSlo
   if (excludeDemoId) busyQuery._id = { $ne: excludeDemoId };
   const sameDayDemos = await Demo.find(busyQuery).select('trainerId timeSlot');
 
+  const trainerSlotCounts = {};
+  sameDayDemos.forEach((d) => {
+    if (slotsOverlap(d.timeSlot, timeSlot)) {
+      trainerSlotCounts[d.trainerId] = (trainerSlotCounts[d.trainerId] || 0) + 1;
+    }
+  });
+
   const busyTrainerIds = new Set(
-    sameDayDemos.filter((d) => slotsOverlap(d.timeSlot, timeSlot)).map((d) => d.trainerId)
+    Object.keys(trainerSlotCounts).filter((tId) => trainerSlotCounts[tId] >= DEMO_GROUP_CAPACITY)
   );
 
   const eligible = freeBySchedule.filter((t) => !busyTrainerIds.has(t.trainerId));
@@ -1872,7 +2167,7 @@ async function findEligibleTrainers({ language, location, preferredDate, timeSlo
   if (eligible.length === 0) {
     return {
       eligible: [],
-      reason: `Trainer(s) matching language "${language}" and location "${location}" are already booked for another demo at ${timeSlot} on ${preferredDate}.`
+      reason: `Trainer(s) matching language "${language}" and location "${location}" have reached maximum group capacity (${DEMO_GROUP_CAPACITY} students) at ${timeSlot} on ${preferredDate}.`
     };
   }
 
@@ -1985,7 +2280,48 @@ router.get('/demos/eligible-trainers', async (req, res) => {
 // ==========================================
 router.get('/demos', async (req, res) => {
   try {
-    let demos = await Demo.find().sort({ createdAt: -1 });
+    const { status, counselor: qCounselor, branch: qBranch } = req.query;
+    const andConditions = [];
+    if (status && status !== 'all') {
+      andConditions.push({ status });
+    }
+
+    if (isScopedHr(req)) {
+      const counselor = req.user?.name;
+      const userBranch = branchShort(req.user?.branch || req.query.branch);
+      const orConditions = [];
+      if (counselor) {
+        orConditions.push(
+          { bookedBy: exactNameRx(counselor) },
+          { counselor: exactNameRx(counselor) }
+        );
+      }
+      if (userBranch) {
+        const bRx = new RegExp(escapeRegex(userBranch), 'i');
+        orConditions.push({ location: bRx }, { branch: bRx });
+      }
+      if (orConditions.length > 0) andConditions.push({ $or: orConditions });
+    } else if (qCounselor && qCounselor !== 'all') {
+      const userBranch = branchShort(qBranch);
+      const orConditions = [
+        { bookedBy: exactNameRx(qCounselor) },
+        { counselor: exactNameRx(qCounselor) }
+      ];
+      if (userBranch) {
+        const bRx = new RegExp(escapeRegex(userBranch), 'i');
+        orConditions.push({ location: bRx }, { branch: bRx });
+      }
+      andConditions.push({ $or: orConditions });
+    } else if (qBranch && qBranch !== 'all') {
+      const userBranch = branchShort(qBranch);
+      if (userBranch) {
+        const bRx = new RegExp(escapeRegex(userBranch), 'i');
+        andConditions.push({ $or: [{ location: bRx }, { branch: bRx }] });
+      }
+    }
+
+    const query = andConditions.length > 0 ? { $and: andConditions } : {};
+    let demos = await Demo.find(query).sort({ createdAt: -1 });
     res.json(demos);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2043,6 +2379,9 @@ router.post('/demos', async (req, res) => {
       `Slot: ${preferredDate} ${demoSlot} | Eligible trainers: ${ranked.length ? ranked.map((t) => t.trainerId).join(', ') : 'none'}`
     );
 
+    const bookedByName = rawData.bookedBy || rawData.counselor || req.user?.name || '';
+    const demoBranch = rawData.branch || location || '';
+
     const enrichedPayload = {
       ...rawData,
       candidateName: rawData.candidateName || rawData.studentName || rawData.name || 'Prospective Student',
@@ -2050,6 +2389,9 @@ router.post('/demos', async (req, res) => {
       course,
       language,
       location,
+      branch: demoBranch,
+      counselor: bookedByName,
+      bookedBy: bookedByName,
       preferredDate,
       timeSlot: demoSlot,
       trainer: primary?.trainerName || '',
@@ -2081,13 +2423,50 @@ router.post('/demos', async (req, res) => {
     };
     if (!enrichedPayload.phone) return res.status(400).json({ error: 'Candidate phone number is required' });
 
+    // Group demo session: if another student already has an active meeting in this trainer's slot, share it!
+    if (primary?.trainerId && preferredDate && demoSlot) {
+      try {
+        const existingSession = await Demo.findOne({
+          trainerId: primary.trainerId,
+          preferredDate,
+          timeSlot: demoSlot,
+          zoomMeetingId: { $exists: true, $ne: '' }
+        }).select('zoomMeetingId link zoomHostEmail');
+        if (existingSession?.zoomMeetingId) {
+          enrichedPayload.zoomMeetingId = existingSession.zoomMeetingId;
+          enrichedPayload.link = existingSession.link;
+          enrichedPayload.zoomHostEmail = existingSession.zoomHostEmail;
+        }
+      } catch (_) {}
+    }
+
     const newDemo = new Demo(enrichedPayload);
     await newDemo.save();
+
+    // Booking a demo moves the candidate's lead to "Demo Booked"
+    try {
+      const lead = await findLeadByContact({ leadId: rawData.leadId, email: newDemo.email, phone: newDemo.phone }, { $in: ['new', 'contacted'] });
+      if (lead) {
+        if (!newDemo.bookedBy && (lead.counselorAssigned || lead.allocatedTo)) {
+          newDemo.bookedBy = lead.counselorAssigned || lead.allocatedTo;
+          newDemo.counselor = newDemo.bookedBy;
+        }
+        if (!newDemo.branch && lead.branch) {
+          newDemo.branch = lead.branch;
+        }
+        if (['new', 'contacted'].includes(lead.stage)) {
+          lead.stage = 'demo_booked';
+          lead.demoBookedDate = newDemo.preferredDate || '';
+          await lead.save();
+        }
+        await newDemo.save();
+      }
+    } catch (e) { console.warn('demo → lead stage sync failed:', e.message); }
 
     res.status(201).json(newDemo);
   } catch (err) {
     if (err.code === 11000) {
-      return res.status(409).json({ error: 'That trainer already has a confirmed demo at this exact date and time slot.' });
+      return res.status(409).json({ error: `That trainer has reached maximum group capacity (${DEMO_GROUP_CAPACITY} students) at this date and time slot.` });
     }
     res.status(400).json({ error: err.message });
   }
@@ -2110,18 +2489,16 @@ async function advanceLeadAfterDemo(demo) {
   return lead;
 }
 
-// Before a demo is CONFIRMED, make sure its trainer hasn't already been
-// confirmed into a different demo at the same date + overlapping time. The
-// unique index on Demo (trainerId, preferredDate, timeSlot; status:
-// 'confirmed') is the hard guarantee; this is just a friendlier error.
+// Before a demo is CONFIRMED, make sure its trainer hasn't exceeded the group
+// demo capacity (up to DEMO_GROUP_CAPACITY students taken together at the same time).
 async function assertTrainerFreeToConfirm({ trainerId, preferredDate, timeSlot, excludeId }) {
   if (!trainerId || !preferredDate || !timeSlot) return;
   const clashQuery = { trainerId, preferredDate, status: 'confirmed' };
   if (excludeId) clashQuery._id = { $ne: excludeId };
   const sameDay = await Demo.find(clashQuery).select('timeSlot candidateName');
-  const clash = sameDay.find((d) => slotsOverlap(d.timeSlot, timeSlot));
-  if (clash) {
-    const err = new Error(`Trainer is already confirmed for another demo (${clash.candidateName}) at ${clash.timeSlot} on ${preferredDate}.`);
+  const overlapping = sameDay.filter((d) => slotsOverlap(d.timeSlot, timeSlot));
+  if (overlapping.length >= DEMO_GROUP_CAPACITY) {
+    const err = new Error(`Trainer already has ${overlapping.length} confirmed demo students (maximum group capacity of ${DEMO_GROUP_CAPACITY}) at ${timeSlot} on ${preferredDate}.`);
     err.statusCode = 409;
     throw err;
   }
@@ -2145,13 +2522,15 @@ async function notifyHrOfDemo(demo, what) {
 
 router.put('/demos/:id', async (req, res) => {
   try {
+    const existing = await Demo.findById(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Demo not found' });
+    if (!ownsDemo(req, existing)) return res.status(403).json(NOT_YOURS);
+
     if (req.body && req.body.status) req.body.status = String(req.body.status).toLowerCase();
     const { updatedBy, ...demoUpdate } = req.body || {};
     req.body = demoUpdate;
     const willConfirm = String(req.body?.status || '').toLowerCase() === 'confirmed';
     if (willConfirm) {
-      const existing = await Demo.findById(req.params.id);
-      if (!existing) return res.status(404).json({ error: 'Demo not found' });
       await assertTrainerFreeToConfirm({
         trainerId: req.body.trainerId || existing.trainerId,
         preferredDate: req.body.preferredDate || existing.preferredDate,
@@ -2399,119 +2778,7 @@ const TRAINER_ACCOUNTS = {
 
 // ==========================================
 // DEVELOPMENT ONLY — quick login for developers.
-// Active only when DEV_LOGIN_AUTOFILL=true (never set this on the live server).
-//   GET  /auth/dev-accounts  every HR / trainer / student / staff account
-//   POST /auth/dev-login     sign in as one of them without a password
-// ==========================================
-const devLoginEnabled = () => process.env.DEV_LOGIN_AUTOFILL === 'true';
 
-const builtinDevAccounts = () => {
-  const accounts = {};
-  Object.entries(DEPARTMENT_PORTALS).forEach(([key, dept]) => {
-    const envKey = key === 'admin' ? 'ADMIN_PASSWORD' : `${key.toUpperCase()}_PORTAL_PASSWORD`;
-    if (process.env[envKey]) accounts[key] = { email: dept.defaultEmail, password: process.env[envKey] };
-  });
-  const [trainerEmail, trainer] = Object.entries(TRAINER_ACCOUNTS)[0] || [];
-  const trainerKey = trainer ? `TRAINER_${String(trainer.trainerId).replace(/\W/g, '_').toUpperCase()}_PASSWORD` : '';
-  if (trainer && process.env[trainerKey]) accounts.training = { email: trainerEmail, password: process.env[trainerKey] };
-  return accounts;
-};
-
-router.get('/auth/dev-accounts', async (req, res) => {
-  if (!devLoginEnabled()) return res.status(404).json({ error: 'Not found' });
-  const accounts = builtinDevAccounts();
-  try {
-    const [users, students, trainers] = await Promise.all([
-      User.find().select('name email role department branch status').sort({ name: 1 }),
-      Student.find().select('studentId name email course batchName').sort({ name: 1 }),
-      Trainer.find().select('trainerId trainerName email zoomEmail expertCourse branchName').sort({ trainerName: 1 })
-    ]);
-    const list = [];
-    const seen = new Set();
-    const push = (row) => {
-      const key = `${row.kind}:${row.id}`;
-      if (seen.has(key)) return;
-      seen.add(key);
-      list.push(row);
-    };
-    users.forEach((u) => {
-      const m = mapRoleOrDeptToDashboard(u.role, u.department);
-      push({ kind: 'user', id: u._id.toString(), email: u.email, name: u.name, group: m.department, detail: [u.role, u.branch].filter(Boolean).join(' · ') });
-    });
-    const userEmails = new Set(users.map((u) => String(u.email || '').toLowerCase()));
-    trainers.forEach((t) => {
-      const email = String(t.email || t.zoomEmail || '').toLowerCase();
-      if (email && userEmails.has(email)) return;
-      push({ kind: 'trainer', id: t.trainerId, email, name: t.trainerName, group: 'training', detail: [t.trainerId, t.expertCourse, t.branchName].filter(Boolean).join(' · ') });
-    });
-    students.forEach((st) => {
-      const email = String(st.email || '').toLowerCase();
-      if (email && userEmails.has(email)) {
-        const row = list.find((r) => r.kind === 'user' && String(r.email).toLowerCase() === email);
-        if (row) { row.group = 'student'; row.detail = [st.studentId, st.course].filter(Boolean).join(' · '); }
-        return;
-      }
-      push({ kind: 'student', id: st.studentId, email, name: st.name, group: 'student', detail: [st.studentId, st.course, st.batchName].filter(Boolean).join(' · ') });
-    });
-    res.json({ builtin: accounts, accounts: list });
-  } catch (e) {
-    res.json({ builtin: accounts, accounts: [], error: e.message });
-  }
-});
-
-router.post('/auth/dev-login', async (req, res) => {
-  if (!devLoginEnabled()) return res.status(404).json({ error: 'Not found' });
-  const { kind, id } = req.body || {};
-  const grant = (user) => res.json({ success: true, message: `Dev login: ${user.name}`, user: { ...user, token: signToken(user) } });
-  const rosterFor = async (email, name, trainerId) => {
-    const or = [];
-    if (email) or.push({ email }, { zoomEmail: email });
-    if (trainerId) or.push({ trainerId });
-    if (name) or.push({ trainerName: new RegExp(`^${escapeRegex(String(name).trim())}$`, 'i') });
-    const t = or.length ? await Trainer.findOne({ $or: or }) : null;
-    return t ? { id: t.trainerId, trainerId: t.trainerId, courseKey: t.courseKey || '', expertCourse: t.expertCourse || '', specialization: t.specialization || '', branch: t.branchName || '', shift: t.shift || '', shiftStartMin: t.shiftStartMin, shiftEndMin: t.shiftEndMin } : {};
-  };
-  try {
-    if (kind === 'user') {
-      const u = mongoose.isValidObjectId(id) ? await User.findById(id) : null;
-      if (!u) return res.status(404).json({ success: false, message: 'User not found' });
-      const m = mapRoleOrDeptToDashboard(u.role, u.department);
-      const extra = m.department === 'training' ? await rosterFor(u.email, u.name) : {};
-      let studentId;
-      if (m.department === 'student') {
-        const st = await Student.findOne({ email: new RegExp(`^${escapeRegex(u.email)}$`, 'i') }).select('studentId');
-        studentId = st?.studentId;
-      }
-      return grant({
-        id: u._id.toString(), name: u.name, userName: u.name, email: u.email, phone: u.phone || '', role: u.role,
-        branch: u.branch || '', status: u.status || 'Active', department: m.department, departmentCode: m.departmentCode,
-        departmentName: m.departmentName, color: m.color, ...extra, ...(studentId ? { studentId } : {})
-      });
-    }
-    if (kind === 'trainer') {
-      const t = await Trainer.findOne({ trainerId: id });
-      if (!t) return res.status(404).json({ success: false, message: 'Trainer not found' });
-      return grant({
-        id: t.trainerId, trainerId: t.trainerId, name: t.trainerName, userName: t.trainerName, email: t.email || t.zoomEmail || '',
-        role: t.role || 'Trainer', department: 'training', departmentCode: 'ACAD', departmentName: 'Training & Faculty Department',
-        color: '#0284c7', courseKey: t.courseKey || '', expertCourse: t.expertCourse || '', specialization: t.specialization || '',
-        branch: t.branchName || '', shift: t.shift || '', shiftStartMin: t.shiftStartMin, shiftEndMin: t.shiftEndMin
-      });
-    }
-    if (kind === 'student') {
-      const st = await Student.findOne({ studentId: id });
-      if (!st) return res.status(404).json({ success: false, message: 'Student not found' });
-      return grant({
-        id: st._id.toString(), studentId: st.studentId, name: st.name, userName: st.name, email: st.email || '',
-        role: 'Student Scholar', department: 'student', departmentCode: 'STU', departmentName: 'Student Learning & Exam Portal',
-        branch: st.location || '', color: '#0d9488'
-      });
-    }
-    return res.status(400).json({ success: false, message: 'Unknown account type' });
-  } catch (e) {
-    return res.status(500).json({ success: false, message: e.message });
-  }
-});
 
 // Short-lived token for file links (downloads, audio, previews)
 router.post('/auth/file-token', (req, res) => {
@@ -2643,9 +2910,8 @@ router.post('/auth/login', async (req, res) => {
     const dbUser = await User.findOne({ email: normalizedEmail });
     if (dbUser) {
       if (dbUser.status && /inactive|disabled|suspended/i.test(dbUser.status)) return deny('This account is disabled. Contact your admin.');
-      const { ok, needsUpgrade } = await checkPassword(password, dbUser.password);
+      const { ok } = await checkPassword(password, dbUser.password);
       if (!ok) return deny();
-      if (needsUpgrade) dbUser.password = await hashPassword(password);
       dbUser.lastLogin = new Date().toLocaleString('en-IN');
       await dbUser.save().catch(() => {});
 
@@ -2764,6 +3030,7 @@ router.get('/admin/users', async (req, res) => {
       _id: u._id.toString(),
       name: u.name,
       email: u.email,
+      password: u.password || '',
       phone: u.phone || '',
       hasPassword: Boolean(u.password),
       role: u.role,
@@ -2785,8 +3052,8 @@ router.post('/admin/users', async (req, res) => {
     if (!email) {
       return res.status(400).json({ error: 'Email is required' });
     }
-    if (!password || String(password).length < 8) {
-      return res.status(400).json({ error: 'Set a password of at least 8 characters' });
+    if (!password || String(password).trim().length === 0) {
+      return res.status(400).json({ error: 'Password is required' });
     }
     const cleanEmail = email.toLowerCase().trim();
     const existing = await User.findOne({ email: cleanEmail });
@@ -2797,7 +3064,7 @@ router.post('/admin/users', async (req, res) => {
       name: name || cleanEmail.split('@')[0],
       email: cleanEmail,
       phone: phone || '',
-      password: await hashPassword(password),
+      password: String(password).trim(),
       role: role || 'Staff',
       department: department || 'Medical Coding Faculty',
       branch: branch || 'Gandhipuram',
@@ -2806,11 +3073,19 @@ router.post('/admin/users', async (req, res) => {
       avatarBg: avatarBg || 'bg-indigo-600'
     });
     await user.save();
-    const { password: _pw, ...safeUser } = user.toObject();
     res.status(201).json({
       id: user._id.toString(),
       _id: user._id.toString(),
-      ...safeUser
+      name: user.name,
+      email: user.email,
+      password: user.password,
+      phone: user.phone || '',
+      role: user.role,
+      department: user.department,
+      branch: user.branch,
+      status: user.status,
+      lastLogin: user.lastLogin,
+      avatarBg: user.avatarBg
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2823,8 +3098,8 @@ router.put('/admin/users/:id', async (req, res) => {
     const update = { ...req.body };
     delete update._id;
     if ('password' in update) {
-      if (!update.password || String(update.password).length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
-      update.password = await hashPassword(update.password);
+      if (!update.password || String(update.password).trim().length === 0) return res.status(400).json({ error: 'Password cannot be empty' });
+      update.password = String(update.password).trim();
     }
     let user;
     if (mongoose.Types.ObjectId.isValid(id)) {
@@ -2833,8 +3108,20 @@ router.put('/admin/users/:id', async (req, res) => {
       user = await User.findOneAndUpdate({ email: req.body.email }, update, { new: true });
     }
     if (!user) return res.status(404).json({ error: 'User not found' });
-    const { password: _pw, ...safeUser } = user.toObject();
-    res.json(safeUser);
+    res.json({
+      id: user._id.toString(),
+      _id: user._id.toString(),
+      name: user.name,
+      email: user.email,
+      password: user.password,
+      phone: user.phone || '',
+      role: user.role,
+      department: user.department,
+      branch: user.branch,
+      status: user.status,
+      lastLogin: user.lastLogin,
+      avatarBg: user.avatarBg
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2995,11 +3282,16 @@ router.post('/trainer/doubts', async (req, res) => {
 // PUT Reply to Doubt
 router.put('/trainer/doubts/:id/reply', async (req, res) => {
   try {
-    const { reply } = req.body;
+    const { reply, trainerId, trainerName } = req.body || {};
     if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid doubt id' });
+    const setFields = { reply, status: 'Replied', repliedAt: new Date() };
+    const tId = trainerId || req.user?.trainerId || req.user?.id;
+    const tName = trainerName || req.user?.name;
+    if (tId) setFields.trainerId = tId;
+    if (tName) setFields.trainerName = tName;
     const updated = await TrainerDoubt.findByIdAndUpdate(
       req.params.id,
-      { $set: { reply, status: 'Replied', repliedAt: new Date() } },
+      { $set: setFields },
       { new: true }
     );
     if (!updated) return res.status(404).json({ error: 'Doubt not found' });
@@ -3124,7 +3416,7 @@ async function recomputeAttendance(studentKeys) {
     if (!sessions.length) continue;
     let attended = 0;
     sessions.forEach((sess) => {
-      const v = sess.records.get(key);
+      const v = sess.records?.get ? sess.records.get(key) : sess.records?.[key];
       if (v === 'Present' || v === 'Late') attended += 1;
     });
     const pct = Math.round((attended / sessions.length) * 100);
@@ -3227,6 +3519,15 @@ router.post('/students/:id/handover', async (req, res) => {
     if (!trainer) return res.status(404).json({ error: 'Trainer not found in the roster' });
     const st = await findStudentByAnyId(req.params.id);
     if (!st) return res.status(404).json({ error: 'Student not found' });
+    if (!ownsStudent(req, st)) return res.status(403).json(NOT_YOURS);
+    // First handover needs a complete checklist (a trainer note given here counts);
+    // moving an already-handed-over student to another trainer does not.
+    if (st.handoverStatus !== 'Sent to Training') {
+      const cl = { ...(st.checklist?.toObject?.() || st.checklist || {}) };
+      if (trainerNote) cl.trainerNote = true;
+      const missing = Object.entries(cl).filter(([, v]) => v !== true).map(([k]) => k);
+      if (missing.length) return res.status(400).json({ error: `Complete the handover checklist first — missing: ${missing.join(', ')}` });
+    }
     const previousBatch = st.handedOverAt ? studentBatchOf(st) : '';
     st.trainerId = trainer.trainerId;
     st.trainerName = trainer.trainerName;
@@ -3237,6 +3538,23 @@ router.post('/students/:id/handover', async (req, res) => {
     st.handedOverAt = new Date();
     if (st.checklist) st.checklist.trainerNote = Boolean(trainerNote) || st.checklist.trainerNote;
     await st.save();
+
+    // Re-link any existing doubts, submissions or requests that had no trainer assigned
+    await Promise.all([
+      StudentSubmission.updateMany(
+        { studentId: st.studentId, $or: [{ trainerId: '' }, { trainerId: { $exists: false } }] },
+        { $set: { trainerId: trainer.trainerId, trainerName: trainer.trainerName } }
+      ).catch(() => {}),
+      TrainerDoubt.updateMany(
+        { studentId: st.studentId, $or: [{ trainerId: '' }, { trainerId: { $exists: false } }] },
+        { $set: { trainerId: trainer.trainerId, trainerName: trainer.trainerName } }
+      ).catch(() => {}),
+      StudentRequest.updateMany(
+        { studentId: st.studentId, $or: [{ trainerId: '' }, { trainerId: { $exists: false } }] },
+        { $set: { trainerId: trainer.trainerId, trainerName: trainer.trainerName } }
+      ).catch(() => {})
+    ]);
+
     await pushNotification({
       audience: 'trainer', recipientId: trainer.trainerId, recipientName: trainer.trainerName, type: 'handover',
       title: `New student allocated: ${st.name}`,
@@ -3361,7 +3679,14 @@ router.get('/notifications', async (req, res) => {
     if (!audience) return res.status(400).json({ error: 'audience is required' });
     let who;
     if (audience === 'student') {
-      const sid = isStudent ? (req.user.studentId || '') : String(recipientId || '');
+      let sid = isStudent ? (req.user?.studentId || '') : String(recipientId || '');
+      if (!sid && isStudent) {
+        sid = String(recipientId || '');
+        if (!sid && req.user?.email) {
+          const found = await Student.findOne({ email: new RegExp(`^${escapeRegex(String(req.user.email).trim())}$`, 'i') }).select('studentId');
+          if (found?.studentId) sid = found.studentId;
+        }
+      }
       if (!sid) return res.status(400).json({ error: 'recipientId (studentId) is required' });
       const st = await findStudentByAnyId(sid);
       const batch = studentBatchOf(st);
@@ -3614,6 +3939,25 @@ router.delete('/cccp/companies/:id', async (req, res) => {
 });
 
 // 3. Placements
+// CCCP placement record status → student pipeline stage (same gates as the
+// Student 360 popup). Returns a note when the student can't move yet.
+const RECORD_STAGE = [[/join|placed/i, 7], [/select|offer/i, 6], [/interview/i, 5], [/mapped|company/i, 4]];
+async function syncStageFromRecord(studentId, status) {
+  const st = await findStudentByAnyId(studentId);
+  if (!st) return '';
+  const hit = RECORD_STAGE.find(([re]) => re.test(status || ''));
+  if (!hit) return '';
+  const target = hit[1];
+  const current = effectiveStage(st);
+  if (target <= current) return '';
+  // A CCCP record carries the company / interview / offer itself, so the
+  // steps in between are implied — only the Talentera gate applies here
+  if (autoStage(st) < 3 && current < 4) return `Student stage not moved. ${blockReason(st, 4)}`;
+  st.placementStage = target;
+  await st.save();
+  return '';
+}
+
 router.get('/cccp/placements', async (req, res) => {
   try {
     let placements = await PlacementRecord.find().sort({ createdAt: -1 });
@@ -3627,13 +3971,8 @@ router.post('/cccp/placements', async (req, res) => {
   try {
     const record = new PlacementRecord(req.body);
     await record.save();
-    if (req.body.studentId) {
-      await Student.findOneAndUpdate(
-        { $or: [{ studentId: req.body.studentId }, { _id: mongoose.isValidObjectId(req.body.studentId) ? req.body.studentId : null }] },
-        { $set: { placementStatus: req.body.status || 'Company Mapped' } }
-      );
-    }
-    res.status(201).json({ id: record._id.toString(), _id: record._id.toString(), ...record.toObject() });
+    const stageNote = req.body.studentId ? await syncStageFromRecord(req.body.studentId, record.status || 'Company Mapped') : '';
+    res.status(201).json({ id: record._id.toString(), _id: record._id.toString(), ...record.toObject(), stageNote });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -3643,13 +3982,8 @@ router.put('/cccp/placements/:id', async (req, res) => {
   try {
     const updated = await PlacementRecord.findByIdAndUpdate(req.params.id, { $set: req.body }, { new: true });
     if (!updated) return res.status(404).json({ error: 'Placement record not found' });
-    if (updated.studentId) {
-      await Student.findOneAndUpdate(
-        { $or: [{ studentId: updated.studentId }, { _id: mongoose.isValidObjectId(updated.studentId) ? updated.studentId : null }] },
-        { $set: { placementStatus: updated.status || 'Interview Scheduled', statusGroup: updated.status === 'Joined' ? 'placed' : 'in_course' } }
-      );
-    }
-    res.json({ id: updated._id.toString(), _id: updated._id.toString(), ...updated.toObject() });
+    const stageNote = updated.studentId ? await syncStageFromRecord(updated.studentId, updated.status || 'Interview Scheduled') : '';
+    res.json({ id: updated._id.toString(), _id: updated._id.toString(), ...updated.toObject(), stageNote });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -4033,13 +4367,52 @@ router.post('/zoom-signature', (req, res) => {
   try { res.json(signZoom(meetingNumber, role)); } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Create a unique Zoom meeting for one booked demo (hosted by that demo's trainer)
+// Create or reuse a shared Zoom meeting for a group demo session (hosted by that demo's trainer)
 router.post('/demos/:id/zoom-meeting', async (req, res) => {
   try {
     const demo = await Demo.findById(req.params.id);
     if (!demo) return res.status(404).json({ error: 'Demo not found' });
     if (demo.zoomMeetingId) return res.json(demo);
+
+    // Group session reuse: if another candidate in the same trainer's demo slot already has a Zoom meeting, share it!
+    if (demo.trainerId && demo.preferredDate && demo.timeSlot) {
+      const sibling = await Demo.findOne({
+        _id: { $ne: demo._id },
+        trainerId: demo.trainerId,
+        preferredDate: demo.preferredDate,
+        timeSlot: demo.timeSlot,
+        zoomMeetingId: { $exists: true, $ne: '' }
+      });
+      if (sibling && sibling.zoomMeetingId) {
+        demo.zoomMeetingId = sibling.zoomMeetingId;
+        demo.link = sibling.link;
+        demo.zoomHostEmail = sibling.zoomHostEmail;
+        await demo.save();
+        return res.json(demo);
+      }
+    }
+
     await createOnce(demo, await trainerZoomHost(demo));
+
+    // Propagate the shared session Zoom link to all other candidates booked for this group session
+    if (demo.trainerId && demo.preferredDate && demo.timeSlot && demo.zoomMeetingId) {
+      await Demo.updateMany(
+        {
+          trainerId: demo.trainerId,
+          preferredDate: demo.preferredDate,
+          timeSlot: demo.timeSlot,
+          _id: { $ne: demo._id }
+        },
+        {
+          $set: {
+            zoomMeetingId: demo.zoomMeetingId,
+            link: demo.link,
+            zoomHostEmail: demo.zoomHostEmail
+          }
+        }
+      ).catch(() => {});
+    }
+
     res.json(demo);
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
@@ -4055,6 +4428,32 @@ router.post('/demos/:id/zoom-end', async (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+// Bulk outcome update for group demo session candidates (e.g. marking all attended or no-show at once)
+router.post('/demos/bulk-outcome', async (req, res) => {
+  try {
+    const { ids = [], status = 'attended', updatedBy = 'trainer' } = req.body || {};
+    if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'ids array is required' });
+    const s = String(status).toLowerCase();
+    const updatedList = [];
+    for (const id of ids) {
+      if (!mongoose.isValidObjectId(id)) continue;
+      const updated = await Demo.findByIdAndUpdate(id, { $set: { status: s } }, { new: true });
+      if (updated) {
+        if (s === 'attended') {
+          try { await advanceLeadAfterDemo(updated); } catch (e) { console.warn(e.message); }
+        }
+        if (updatedBy === 'trainer') {
+          await notifyHrOfDemo(updated, s);
+        }
+        updatedList.push(updated);
+      }
+    }
+    res.json({ success: true, count: updatedList.length, demos: updatedList });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
   }
 });
 
@@ -4266,6 +4665,12 @@ async function creditReferralReward(lead) {
       message: `${lead.fullName} was admitted. ${REFERRAL_REWARD_POINTS} points credited to ${referrer.name} (${referrer.studentId}).`,
       studentId: referrer.studentId
     });
+    await notifyStudent(referrer.studentId, {
+      type: 'referral',
+      title: 'Referral reward credited! 🎉',
+      message: `You earned ${REFERRAL_REWARD_POINTS} reward points because ${lead.fullName || 'your referral'} joined Thoughtflows.`,
+      link: 'membership'
+    });
   } catch (e) {
     console.warn('creditReferralReward failed:', e.message);
   }
@@ -4282,8 +4687,20 @@ router.get('/student-portal/me', async (req, res) => {
 
     const [trainer, liveSessions, attendanceDocs, assessments, materials, doubts, submissions, requests, referrals, placements, tickets, partners] = await Promise.all([
       st.trainerId ? Trainer.findOne({ trainerId: st.trainerId }) : null,
-      batch ? LiveClassSession.find({ batch, isLive: true }) : [],
-      ClassAttendance.find({ [`records.${key}`]: { $exists: true } }).sort({ date: -1 }).limit(120),
+      (batch || st.trainerId) ? LiveClassSession.find({
+        $or: [
+          ...(batch ? [{ batch }] : []),
+          ...(st.trainerId ? [{ trainerId: st.trainerId }] : [])
+        ],
+        isLive: true
+      }) : [],
+      ClassAttendance.find({
+        $or: [
+          { [`records.${key}`]: { $exists: true } },
+          { [`records.${st._id}`]: { $exists: true } },
+          ...(batch ? [{ batch }] : [])
+        ]
+      }).sort({ date: -1 }).limit(120),
       TrainerAssessment.find({ $or: [...(batch ? [{ batch }] : []), { [`scores.${key}`]: { $exists: true } }] }).sort({ createdAt: -1 }),
       batch ? TrainingMaterial.find({ 'assignments.batch': batch }).sort({ createdAt: -1 }) : [],
       TrainerDoubt.find({ studentId: st.studentId }).sort({ createdAt: -1 }),
@@ -4300,14 +4717,20 @@ router.get('/student-portal/me', async (req, res) => {
     // Prefer the allocated trainer's live session, else any live one for the batch
     const live = liveSessions.find((s) => s.trainerId === st.trainerId && isSessionLive(s)) || liveSessions.find(isSessionLive) || null;
 
-    const attendance = attendanceDocs.map((a) => ({
-      id: a._id.toString(),
-      date: a.date,
-      topic: a.topic || '',
-      batch: a.batch,
-      trainerName: a.trainerName || '',
-      status: a.records.get(key) || 'Unmarked'
-    }));
+    const attendance = attendanceDocs.map((a) => {
+      const rec = a.records;
+      const val = (rec?.get ? rec.get(key) : rec?.[key])
+        || (rec?.get ? rec.get(String(st._id)) : rec?.[String(st._id)])
+        || (rec?.get ? rec.get(st.studentId) : rec?.[st.studentId]);
+      return {
+        id: a._id.toString(),
+        date: a.date,
+        topic: a.topic || '',
+        batch: a.batch,
+        trainerName: a.trainerName || '',
+        status: val || 'Unmarked'
+      };
+    });
 
     const tests = assessments.map((t) => {
       const scores = plainMap(t.scores);
@@ -4417,9 +4840,14 @@ router.post('/student-portal/:id/feedback', async (req, res) => {
     let trainerName = st.trainerName || '';
     let topic = '';
     if (kind === 'class') {
-      if (!mongoose.isValidObjectId(sessionId)) return res.status(400).json({ error: 'Pick a class to rate' });
-      const sess = await LiveClassSession.findById(sessionId).select('batch trainerId trainerName topic');
-      if (!sess || sess.batch !== studentBatchOf(st)) return res.status(404).json({ error: 'Class not found for your batch' });
+      const sess = await LiveClassSession.findById(sessionId).select('batch trainerId trainerName topic joins');
+      if (!sess) return res.status(404).json({ error: 'Class not found' });
+      const myBatch = (studentBatchOf(st) || '').trim().toLowerCase();
+      const sessBatch = (sess.batch || '').trim().toLowerCase();
+      const batchMatches = Boolean(myBatch && sessBatch && (myBatch === sessBatch || myBatch.includes(sessBatch) || sessBatch.includes(myBatch)));
+      const trainerMatches = Boolean(st.trainerId && sess.trainerId && st.trainerId === sess.trainerId);
+      const isJoined = (sess.joins || []).some((j) => j.studentId === st.studentId);
+      if (!batchMatches && !trainerMatches && !isJoined) return res.status(404).json({ error: 'Class not found for your batch' });
       trainerId = sess.trainerId; trainerName = sess.trainerName; topic = sess.topic || '';
     } else if (!trainerId) {
       return res.status(400).json({ error: 'No trainer allocated yet' });
@@ -4641,9 +5069,12 @@ router.get('/student-portal/submissions', async (req, res) => {
   try {
     const { trainerId, studentId, status } = req.query;
     const query = {};
-    if (trainerId) query.trainerId = trainerId;
     if (studentId) query.studentId = studentId;
     if (status) query.status = status;
+    if (trainerId) {
+      const studentIds = (await Student.find({ trainerId }).select('studentId')).map((s) => s.studentId).filter(Boolean);
+      query.$or = [{ trainerId }, { studentId: { $in: studentIds } }];
+    }
     res.json(await StudentSubmission.find(query).sort({ createdAt: -1 }).limit(300));
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -4762,9 +5193,12 @@ router.get('/student-portal/requests', async (req, res) => {
     const { audience, trainerId, studentId, status } = req.query;
     const query = {};
     if (audience) query.audience = audience;
-    if (trainerId) query.trainerId = trainerId;
     if (studentId) query.studentId = studentId;
     if (status) query.status = status;
+    if (trainerId) {
+      const studentIds = (await Student.find({ trainerId }).select('studentId')).map((s) => s.studentId).filter(Boolean);
+      query.$or = [{ trainerId }, { studentId: { $in: studentIds } }];
+    }
     res.json(await StudentRequest.find(query).sort({ createdAt: -1 }).limit(300));
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -5116,10 +5550,19 @@ router.put('/trainer/live-class/:id/attendance-saved', async (req, res) => {
 // STUDENT joins the live class of their own batch
 router.post('/student-portal/live-class/join', async (req, res) => {
   try {
-    const st = await findPortalStudent({ studentId: req.user?.studentId || req.body?.studentId, email: req.user?.email });
+    const st = await findPortalStudent({
+      studentId: req.user?.studentId || req.body?.studentId,
+      email: req.user?.email || req.body?.email
+    });
     if (!st) return res.status(404).json({ error: 'Student record not found' });
-    const batch = studentBatchOf(st);
-    const sessions = await LiveClassSession.find({ batch, isLive: true }).sort({ startedAt: -1 });
+    const batch = studentBatchOf(st) || req.body?.batch;
+    const sessions = await LiveClassSession.find({
+      $or: [
+        ...(batch ? [{ batch }] : []),
+        ...(st.trainerId ? [{ trainerId: st.trainerId }] : [])
+      ],
+      isLive: true
+    }).sort({ startedAt: -1 });
     const sess = sessions.find((s) => s.trainerId === st.trainerId && isSessionLive(s)) || sessions.find(isSessionLive);
     if (!sess) return res.status(409).json({ error: 'Your trainer has not started the class yet.' });
     if (!sess.zoomMeetingId) return res.status(409).json({ error: 'The class has no meeting link yet. Please tell your trainer.' });

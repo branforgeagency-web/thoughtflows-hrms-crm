@@ -12,21 +12,22 @@ import {
   GraduationCap,
   Calendar,
   DollarSign,
+  IndianRupee,
   Mail,
   Phone,
+  MessageSquare,
   BookOpen,
   Briefcase
 } from 'lucide-react';
-import GenerateStudentIdModal from './GenerateStudentIdModal';
-import WalkinRegistrationModal from './WalkinRegistrationModal';
 import StudentProfileModal from './StudentProfileModal';
 import CompleteRegistrationModal from './CompleteRegistrationModal';
 
-import { getStudents, createStudent, resetStudentLogin } from '../services/api';
-import { getCurrentMonthYear, getCurrentMonthName } from '../utils/dateUtils';
+import { getStudents, createStudent, updateStudent, resetStudentLogin } from '../services/api';
+import { getCurrentMonthYear, getCurrentMonthName, localDateKey } from '../utils/dateUtils';
 import { copyToClipboard } from '../utils/clipboard';
+import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 
-export default function HrAdmittedStudentsCrm({ students: propStudents, onRefreshStudents, currentUser, onStudentLogin }) {
+export default function HrAdmittedStudentsCrm({ students: propStudents, onRefreshStudents, currentUser, onStudentLogin, onCallStudent }) {
   // Show new / reset portal credentials in the persistent card owned by the HR dashboard
   const shareLogin = (st, login) => {
     if (login?.password && onStudentLogin) onStudentLogin({ name: st.name, phone: st.phone, email: login.email, password: login.password });
@@ -45,8 +46,6 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
   const [searchQuery, setSearchQuery] = useState('');
   const [toastMessage, setToastMessage] = useState(null);
   const [copiedLink, setCopiedLink] = useState(false);
-  const [showWalkinModal, setShowWalkinModal] = useState(false);
-  const [showIdGenModal, setShowIdGenModal] = useState(false);
   const [showCompleteRegModal, setShowCompleteRegModal] = useState(false);
   const [completeRegInitialData, setCompleteRegInitialData] = useState(null);
   const [selectedStudent, setSelectedStudent] = useState(null);
@@ -57,12 +56,13 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
     if (propStudents !== undefined) {
       setStudents(propStudents);
     } else {
-      const params = currentUser?.name ? { hrName: currentUser.name } : undefined;
+      const branchShort = String(currentUser?.branch || '').replace(/\s*branch\b.*$/i, '').replace(/\s*\(.*\)\s*$/, '').trim();
+      const params = currentUser?.name ? { hrName: currentUser.name, branch: branchShort } : undefined;
       getStudents(params).then(res => {
         if (Array.isArray(res)) setStudents(res);
       }).catch(err => console.error('Error fetching students:', err));
     }
-  }, [propStudents, currentUser?.name]);
+  }, [propStudents, currentUser?.name, currentUser?.branch]);
 
   const showToast = (msg) => {
     setToastMessage(msg);
@@ -197,19 +197,34 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
     }
   };
 
-  // Filter students
+  // Filter students (Supports Name, ID, Phone, Course, Email, and Txn ID / Receipt No)
   const filteredStudents = students.filter(s => {
     if (activeTabFilter === 'in_course' && s.statusGroup !== 'in_course') return false;
     if (activeTabFilter === 'placed' && s.statusGroup !== 'placed') return false;
     if (activeTabFilter === 'on_hold' && s.statusGroup !== 'on_hold') return false;
+    if (activeTabFilter === 'fee_pending') {
+      const fee = Number(s.courseFee) || 0;
+      const paid = Number(s.paidAmount) || 0;
+      const bal = (s.pendingBalance != null && !isNaN(Number(s.pendingBalance))) ? Number(s.pendingBalance) : Math.max(0, fee - paid);
+      const isPending = bal > 0 || (s.feeStatus && s.feeStatus.toLowerCase().includes('pending'));
+      if (!isPending) return false;
+    }
 
     if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      return (s.name || '').toLowerCase().includes(q) 
+      const q = searchQuery.toLowerCase().trim();
+      const basicMatch = (s.name || '').toLowerCase().includes(q) 
         || (s.studentId || s.id || '').toLowerCase().includes(q) 
         || (s.phone || '').includes(q)
         || (s.course || '').toLowerCase().includes(q)
         || (s.email || '').toLowerCase().includes(q);
+
+      if (basicMatch) return true;
+
+      const receipts = Array.isArray(s.receipts) ? s.receipts : [];
+      return receipts.some(r =>
+        (r.reference || '').toLowerCase().includes(q) ||
+        (r.receiptNo || r.id || '').toLowerCase().includes(q)
+      );
     }
     return true;
   });
@@ -236,7 +251,13 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
     const inCourse = students.filter((s) => s.statusGroup === 'in_course').length;
     const placed = students.filter((s) => s.statusGroup === 'placed').length;
     const onHold = students.filter((s) => s.statusGroup === 'on_hold').length;
-    const interviewing = students.filter((s) => (s.placementStatus || '').includes('Interviewing')).length;
+    const interviewing = students.filter((s) => /interview/i.test(s.placementStatus || '')).length;
+    const feePending = students.filter((s) => {
+      const fee = Number(s.courseFee) || 0;
+      const paid = Number(s.paidAmount) || 0;
+      const bal = (s.pendingBalance != null && !isNaN(Number(s.pendingBalance))) ? Number(s.pendingBalance) : Math.max(0, fee - paid);
+      return bal > 0 || (s.feeStatus && s.feeStatus.toLowerCase().includes('pending'));
+    }).length;
 
     return {
       total: students.length,
@@ -246,7 +267,8 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
       inCourse,
       placed,
       onHold,
-      interviewing
+      interviewing,
+      feePending
     };
   }, [students]);
 
@@ -308,11 +330,14 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
           </button>
 
           <button
-            onClick={() => setShowWalkinModal(true)}
-            className="flex items-center gap-1.5 bg-amber-400 hover:bg-amber-300 text-amber-950 font-extrabold text-xs px-4 py-2 rounded-xl transition-all shadow-sm"
+            onClick={() => {
+              setCompleteRegInitialData(null);
+              setShowCompleteRegModal(true);
+            }}
+            className="flex items-center gap-1.5 bg-amber-400 hover:bg-amber-300 text-amber-950 font-extrabold text-xs px-4 py-2 rounded-xl transition-all shadow-sm cursor-pointer"
           >
             <span>✨</span>
-            <span>Walk-In Registration</span>
+            <span>+ Add New Student (Walk-In)</span>
           </button>
 
           <button
@@ -349,11 +374,14 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
         </div>
 
         <button
-          onClick={() => setShowIdGenModal(true)}
-          className="flex-shrink-0 flex items-center gap-1.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs px-4 py-2 rounded-xl shadow-xs transition-all self-start md:self-auto"
+          onClick={() => {
+            setCompleteRegInitialData(null);
+            setShowCompleteRegModal(true);
+          }}
+          className="flex-shrink-0 flex items-center gap-1.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs px-4 py-2 rounded-xl shadow-xs transition-all self-start md:self-auto cursor-pointer"
         >
-          <Settings className="w-3.5 h-3.5" />
-          <span>Generate Student ID</span>
+          <UserPlus className="w-3.5 h-3.5" />
+          <span>Register New Student</span>
         </button>
       </div>
 
@@ -478,16 +506,33 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
               {stats.onHold}
             </span>
           </button>
+
+          <button
+            onClick={() => setActiveTabFilter('fee_pending')}
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold transition-all ${
+              activeTabFilter === 'fee_pending'
+                ? 'bg-amber-600 text-white shadow-xs'
+                : 'bg-amber-50 text-amber-900 border border-amber-200 hover:bg-amber-100/70'
+            }`}
+          >
+            <IndianRupee className="w-3 h-3" />
+            <span>Fee Pending</span>
+            <span className={`text-[10px] px-1.5 py-0.2 rounded-md ${
+              activeTabFilter === 'fee_pending' ? 'bg-white/25 text-white' : 'bg-amber-200/90 text-amber-950 font-black'
+            }`}>
+              {stats.feePending}
+            </span>
+          </button>
         </div>
 
         {/* Search Input */}
-        <div className="relative w-full sm:w-72">
+        <div className="relative w-full sm:w-80">
           <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search by name, ID, mobile, course..."
+            placeholder="Search by name, ID, mobile, txn ID / UTR..."
             className="w-full bg-white border border-slate-200 rounded-xl pl-8 pr-3 py-1.5 text-xs text-slate-800 placeholder-slate-400 outline-none focus:border-[#00897b] transition-all shadow-xs"
           />
         </div>
@@ -535,12 +580,42 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
                   {/* Name · Contact */}
                   <td className="py-3 px-3 whitespace-nowrap">
                     <div className="font-extrabold text-slate-900 group-hover:text-[#00796b] transition-colors">{s.name}</div>
-                    <div className="text-[10.5px] text-slate-400 font-mono">
+                    <div className="text-[10.5px] text-slate-400 font-mono flex items-center gap-1.5 mt-0.5">
                       <span>{s.phone}</span>
-                      {s.whatsappNumber && s.whatsappNumber !== s.phone && (
-                        <span className="text-[9.5px] text-emerald-600 block font-semibold">WA: {s.whatsappNumber}</span>
+                      {s.phone && (
+                        <div className="inline-flex items-center gap-1 opacity-75 group-hover:opacity-100 transition-opacity">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (onCallStudent) {
+                                onCallStudent(s);
+                              } else {
+                                window.location.href = `tel:${s.phone}`;
+                              }
+                            }}
+                            className="p-1 rounded-md bg-[#00897b]/10 hover:bg-[#00897b] text-[#00897b] hover:text-white transition-colors"
+                            title={`Call ${s.name} (${s.phone})`}
+                          >
+                            <Phone className="w-2.5 h-2.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              redirectToWhatsAppWeb(s.whatsappNumber || s.phone);
+                            }}
+                            className="p-1 rounded-md bg-[#25d366]/15 hover:bg-[#25d366] text-[#25d366] hover:text-white transition-colors"
+                            title={`WhatsApp ${s.name}`}
+                          >
+                            <MessageSquare className="w-2.5 h-2.5" />
+                          </button>
+                        </div>
                       )}
                     </div>
+                    {s.whatsappNumber && s.whatsappNumber !== s.phone && (
+                      <span className="text-[9.5px] text-emerald-600 block font-semibold font-mono">WA: {s.whatsappNumber}</span>
+                    )}
                   </td>
 
                   {/* Course · Branch · Obj */}
@@ -620,15 +695,30 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
                   {/* Exam Booked · Fee */}
                   <td className="py-3 px-3 whitespace-nowrap">
                     <select
-                      value={s.examStatus}
+                      value={s.examStatus || 'Not Booked'}
                       onClick={(e) => e.stopPropagation()}
-                      onChange={(e) => {
+                      onChange={async (e) => {
                         e.stopPropagation();
                         const val = e.target.value;
-                        setStudents(prev => prev.map(item => item.id === s.id ? { ...item, examStatus: val } : item));
-                        showToast(`${s.name} Exam status updated`);
+                        const studentIdentifier = s._id || s.studentId || s.id;
+                        setStudents(prev => prev.map(item => {
+                          const isMatch = (s._id && item._id === s._id) || 
+                                          (s.studentId && item.studentId === s.studentId) || 
+                                          (s.id && item.id === s.id);
+                          return isMatch ? { ...item, examStatus: val } : item;
+                        }));
+                        showToast(`✓ ${s.name} Exam status updated`);
+                        try {
+                          if (studentIdentifier) {
+                            await updateStudent(studentIdentifier, { examStatus: val });
+                            if (onRefreshStudents) onRefreshStudents();
+                          }
+                        } catch (err) {
+                          console.error('Failed to update student examStatus:', err);
+                          showToast(`⚠ Failed to save: ${err?.response?.data?.error || err.message}`);
+                        }
                       }}
-                      className="bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5 text-[10.5px] text-slate-700 outline-none"
+                      className="bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5 text-[10.5px] text-slate-700 outline-none cursor-pointer focus:border-teal-500"
                     >
                       <option value="Not Booked">Not Booked ⌵</option>
                       <option value="AAPC CPC Booked">AAPC CPC Booked</option>
@@ -652,7 +742,7 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
                     <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${
                       s.placementStatus.includes('Placed')
                         ? 'bg-emerald-100 text-emerald-800'
-                        : s.placementStatus.includes('Interviewing')
+                        : /interview/i.test(s.placementStatus)
                           ? 'bg-purple-100 text-purple-800'
                           : 'bg-slate-100 text-slate-600'
                     }`}>
@@ -662,8 +752,48 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
 
                   {/* Fee */}
                   <td className="py-3 px-3 whitespace-nowrap">
-                    <div className="font-bold text-slate-900">{s.feeStatus}</div>
-                    <div className="text-[10px] text-emerald-700 font-mono">{s.feeAmount}</div>
+                    {(() => {
+                      const courseFee = Number(s.courseFee) || 0;
+                      const paid = Number(s.paidAmount) || 0;
+                      const bal = (s.pendingBalance != null && !isNaN(Number(s.pendingBalance))) ? Number(s.pendingBalance) : Math.max(0, courseFee - paid);
+                      const today = localDateKey();
+                      const isOverdue = bal > 0 && s.nextDueDate && s.nextDueDate <= today;
+
+                      if (bal > 0) {
+                        return (
+                          <div>
+                            <span className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded-md ${
+                              isOverdue
+                                ? 'bg-rose-100 text-rose-800 border border-rose-200 font-extrabold'
+                                : 'bg-amber-100 text-amber-900 border border-amber-200'
+                            }`}>
+                              {isOverdue ? 'Overdue' : 'Due'}: ₹{bal.toLocaleString('en-IN')}
+                            </span>
+                            <div className="text-[9.5px] text-slate-500 font-mono mt-0.5">
+                              Paid: ₹{paid.toLocaleString('en-IN')} {courseFee > 0 && `of ₹${courseFee.toLocaleString('en-IN')}`}
+                            </div>
+                            {s.nextDueDate && (
+                              <div className={`text-[9px] font-bold mt-0.5 ${isOverdue ? 'text-rose-600 font-mono' : 'text-slate-400'}`}>
+                                Due: {s.nextDueDate}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div>
+                          <span className="inline-block text-[10px] font-bold px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 border border-emerald-200">
+                            {s.feeStatus || 'Paid in Full'}
+                          </span>
+                          {courseFee > 0 && (
+                            <div className="text-[9.5px] text-emerald-700 font-mono mt-0.5">
+                              ₹{courseFee.toLocaleString('en-IN')}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </td>
 
                   {/* Portal login */}
@@ -683,59 +813,17 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
         </div>
       </div>
 
-      {/* Walk-in Registration Modal */}
-      <WalkinRegistrationModal
-        isOpen={showWalkinModal}
-        onClose={() => setShowWalkinModal(false)}
-        currentUser={currentUser}
-        onRegister={async (newStudent) => {
-          try {
-            const created = await createStudent({
-              ...newStudent,
-              studentId: newStudent.id || newStudent.studentId,
-              hrName: newStudent.hrName || currentUser?.name || ''
-            });
-            setStudents(prev => [created, ...prev]);
-            if (onRefreshStudents) onRefreshStudents();
-            shareLogin(created, created?.studentLogin);
-            if (created?.studentLogin?.created) {
-              showToast(`✓ Registered ${created.name}! Login Created — Email: ${created.studentLogin.email} | Pass: ${created.studentLogin.password}`);
-            } else {
-              showToast(`✓ Registered real student: ${created.name} (${created.studentId || created.id})`);
-            }
-          } catch (err) {
-            console.error('Failed to create student in database:', err);
-            showToast('Error saving student to database');
-          }
-        }}
-      />
-
-      {/* Generate Student ID Modal */}
-      <GenerateStudentIdModal
-        isOpen={showIdGenModal}
-        existingStudents={students}
-        onClose={() => setShowIdGenModal(false)}
-        onConfirm={(id, details) => {
-          setShowIdGenModal(false);
-          setCompleteRegInitialData({
-            generatedId: id,
-            branchName: details?.branchName || 'Saravanampatti',
-            courseName: details?.courseName || 'CPC - Certified Professional Coder',
-            typeName: details?.typeName || 'Online',
-            monthName: details?.monthName || 'May',
-            yearVal: details?.yearVal || '2026',
-            serial: details?.serial || '022'
-          });
-          setShowCompleteRegModal(true);
-        }}
-      />
-
-      {/* Complete Your Registration Modal (opened after Generate and use ID) */}
-      <CompleteRegistrationModal
-        isOpen={showCompleteRegModal}
-        onClose={() => setShowCompleteRegModal(false)}
-        initialData={completeRegInitialData}
-        currentUser={currentUser}
+      {/* Complete Your Registration Modal */}
+      {showCompleteRegModal && (
+        <CompleteRegistrationModal
+          isOpen={showCompleteRegModal}
+          onClose={() => {
+            setShowCompleteRegModal(false);
+            setCompleteRegInitialData(null);
+          }}
+          initialData={completeRegInitialData}
+          currentUser={currentUser}
+          existingStudents={students}
         onSubmit={async (studentRecord) => {
           try {
             const created = await createStudent(studentRecord);
@@ -754,6 +842,7 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
           }
         }}
       />
+      )}
 
       {/* Student Profile Modal */}
       <StudentProfileModal

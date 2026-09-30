@@ -49,7 +49,7 @@ import {
 } from 'lucide-react';
 
 export default function HrLmsSection({ currentUser }) {
-  const [activeNav, setActiveNav] = useState('Counselling Scripts');
+  const [activeNav, setActiveNav] = useState('Home');
   const [activeModuleModal, setActiveModuleModal] = useState(null);
   const [toastMsg, setToastMsg] = useState(null);
   const [copiedId, setCopiedId] = useState(null);

@@ -11,7 +11,10 @@ import {
   Download,
   Sparkles,
   X,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Receipt,
+  Copy,
+  Check
 } from 'lucide-react';
 import { getCourseFeeRates, saveCourseFeeRate, getStudents, updateStudent, recordStudentPayment } from '../services/api';
 import { localDateKey } from '../utils/dateUtils';
@@ -23,6 +26,9 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
   const [showAddModal, setShowAddModal] = useState(false);
   const [showCourseRateModal, setShowCourseRateModal] = useState(false);
   const [editingCourse, setEditingCourse] = useState(null);
+  const [viewingReceiptsStudent, setViewingReceiptsStudent] = useState(null);
+  const [copiedTxnId, setCopiedTxnId] = useState(null);
+  const [feeStatusFilter, setFeeStatusFilter] = useState('all'); // 'all' | 'pending' | 'overdue' | 'cleared'
 
   const showToast = (msg) => {
     setToastMsg(msg);
@@ -35,7 +41,8 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
 
   const refreshStudents = async () => {
     try {
-      const params = currentUser?.name ? { hrName: currentUser.name } : undefined;
+      const branchShort = String(currentUser?.branch || '').replace(/\s*branch\b.*$/i, '').replace(/\s*\(.*\)\s*$/, '').trim();
+      const params = currentUser?.name ? { hrName: currentUser.name, branch: branchShort } : undefined;
       const res = await getStudents(params);
       if (Array.isArray(res)) {
         setStudents(res);
@@ -159,17 +166,54 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
     }
   };
 
-  // Filtered Students
+  // Fee status counts for quick tab counters
+  const feeStatusCounts = useMemo(() => {
+    const today = localDateKey();
+    let pending = 0;
+    let overdue = 0;
+    let cleared = 0;
+    students.forEach(s => {
+      const bal = balanceOf(s);
+      if (bal > 0) {
+        pending++;
+        if (s.nextDueDate && s.nextDueDate <= today) overdue++;
+      } else if (Number(s.courseFee) > 0) {
+        cleared++;
+      }
+    });
+    return { pending, overdue, cleared, total: students.length };
+  }, [students]);
+
+  // Filtered Students (Supports Fee Status, Student ID, Name, Phone, Course, Counsellor, Txn ID / Reference, Receipt No)
   const filteredStudents = useMemo(() => {
-    if (!searchQuery.trim()) return students;
-    const q = searchQuery.toLowerCase();
-    return students.filter(s =>
-      (s.name || '').toLowerCase().includes(q) ||
-      (s.studentId || s.id || '').toLowerCase().includes(q) ||
-      (s.course || '').toLowerCase().includes(q) ||
-      (s.counsellor || s.hrName || '').toLowerCase().includes(q)
-    );
-  }, [students, searchQuery]);
+    const today = localDateKey();
+    return students.filter(s => {
+      const bal = balanceOf(s);
+      const isOverdue = bal > 0 && s.nextDueDate && s.nextDueDate <= today;
+      if (feeStatusFilter === 'pending' && bal <= 0) return false;
+      if (feeStatusFilter === 'overdue' && !isOverdue) return false;
+      if (feeStatusFilter === 'cleared' && (bal > 0 || !(Number(s.courseFee) > 0))) return false;
+
+      if (!searchQuery.trim()) return true;
+      const q = searchQuery.toLowerCase().trim();
+      const basicMatch =
+        (s.name || '').toLowerCase().includes(q) ||
+        (s.studentId || s.id || '').toLowerCase().includes(q) ||
+        (s.phone || '').toLowerCase().includes(q) ||
+        (s.course || '').toLowerCase().includes(q) ||
+        (s.counsellor || s.hrName || '').toLowerCase().includes(q);
+
+      if (basicMatch) return true;
+
+      const receipts = Array.isArray(s.receipts) ? s.receipts : [];
+      return receipts.some(r =>
+        (r.reference || '').toLowerCase().includes(q) ||
+        (r.receiptNo || r.id || '').toLowerCase().includes(q) ||
+        (r.label || '').toLowerCase().includes(q) ||
+        (r.mode || '').toLowerCase().includes(q)
+      );
+    });
+  }, [students, searchQuery, feeStatusFilter]);
 
   // Calculations for Summary
   const { totalCourseFee, totalExamFee, grandTotal, totalPaid, totalBalance } = useMemo(() => {
@@ -326,20 +370,96 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
       </div>
 
       {/* Search & Filter Bar */}
-      <div className="flex items-center justify-between gap-3 bg-white p-2.5 rounded-xl border border-slate-200 shadow-xs">
-        <div className="relative flex-1 max-w-sm">
+      <div className="flex items-center justify-between gap-3 bg-white p-2.5 rounded-xl border border-slate-200 shadow-xs flex-wrap sm:flex-nowrap">
+        <div className="relative flex-1 min-w-[260px] max-w-md">
           <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
           <input
             type="text"
-            placeholder="Search student ID, name, or course..."
+            placeholder="Search by Student ID, Name, Txn ID / UTR, Receipt No..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full bg-slate-50 border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-900 placeholder-slate-400 outline-none focus:bg-white focus:border-[#0e6977] transition-all"
+            className="w-full bg-slate-50 border border-slate-200 rounded-lg pl-8 pr-8 py-1.5 text-xs text-slate-900 placeholder-slate-400 outline-none focus:bg-white focus:border-[#0e6977] transition-all"
           />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery('')}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer p-0.5"
+              title="Clear search"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
-        <div className="text-xs font-mono text-slate-500 font-bold">
+        <div className="text-xs font-mono text-slate-500 font-bold whitespace-nowrap">
           Showing <strong>{filteredStudents.length}</strong> admissions
         </div>
+      </div>
+
+      {/* Quick Filter Tabs for Fee Status */}
+      <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
+        <button
+          type="button"
+          onClick={() => setFeeStatusFilter('all')}
+          className={`px-3.5 py-1.5 rounded-full text-xs font-bold transition-all cursor-pointer ${
+            feeStatusFilter === 'all'
+              ? 'bg-[#0e6977] text-white shadow-xs'
+              : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
+          }`}
+        >
+          All Admissions ({feeStatusCounts.total})
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setFeeStatusFilter('pending')}
+          className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold transition-all cursor-pointer ${
+            feeStatusFilter === 'pending'
+              ? 'bg-amber-600 text-white shadow-xs'
+              : 'bg-amber-50 text-amber-900 border border-amber-200 hover:bg-amber-100/70'
+          }`}
+        >
+          <span>Pending Balance</span>
+          <span className={`text-[10px] px-1.5 py-0.2 rounded-md font-black ${
+            feeStatusFilter === 'pending' ? 'bg-white/25 text-white' : 'bg-amber-200/90 text-amber-950'
+          }`}>
+            {feeStatusCounts.pending}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setFeeStatusFilter('overdue')}
+          className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold transition-all cursor-pointer ${
+            feeStatusFilter === 'overdue'
+              ? 'bg-rose-600 text-white shadow-xs'
+              : 'bg-rose-50 text-rose-800 border border-rose-200 hover:bg-rose-100/70'
+          }`}
+        >
+          <span>Overdue Installments</span>
+          <span className={`text-[10px] px-1.5 py-0.2 rounded-md font-black ${
+            feeStatusFilter === 'overdue' ? 'bg-white/25 text-white' : 'bg-rose-200 text-rose-900'
+          }`}>
+            {feeStatusCounts.overdue}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setFeeStatusFilter('cleared')}
+          className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold transition-all cursor-pointer ${
+            feeStatusFilter === 'cleared'
+              ? 'bg-emerald-600 text-white shadow-xs'
+              : 'bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100/70'
+          }`}
+        >
+          <span>Fully Cleared</span>
+          <span className={`text-[10px] px-1.5 py-0.2 rounded-md font-black ${
+            feeStatusFilter === 'cleared' ? 'bg-white/25 text-white' : 'bg-emerald-200 text-emerald-900'
+          }`}>
+            {feeStatusCounts.cleared}
+          </span>
+        </button>
       </div>
 
       {/* TABLE 1: STUDENT FEE LEDGER */}
@@ -375,6 +495,11 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
                 const examFee = examFeeOf(stu);
                 const total = (Number(stu.courseFee) || 0) + examFee;
                 const balance = balanceOf(stu);
+                const q = searchQuery.trim().toLowerCase();
+                const matchedReceipt = q ? (stu.receipts || []).find(r =>
+                  (r.reference && r.reference.toLowerCase().includes(q)) ||
+                  ((r.receiptNo || r.id) && (r.receiptNo || r.id).toLowerCase().includes(q))
+                ) : null;
 
                 return (
                   <tr key={stu._id || stu.studentId} className="hover:bg-teal-50/30 transition-colors">
@@ -382,7 +507,16 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
                       {stu.studentId}
                     </td>
                     <td className="py-3 px-4 font-extrabold text-slate-900">
-                      {stu.name}
+                      <div>{stu.name}</div>
+                      {matchedReceipt && (
+                        <div className="mt-1 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-amber-50 border border-amber-300 text-amber-900 text-[10.5px] font-mono font-bold animate-in fade-in">
+                          <span className="text-amber-700 font-black">✓ Matched Txn:</span>
+                          <span className="bg-amber-100/90 px-1 py-0.2 rounded text-slate-900">{matchedReceipt.reference || matchedReceipt.receiptNo}</span>
+                          <span className="text-slate-400">·</span>
+                          <span className="text-emerald-700 font-black">₹{(Number(matchedReceipt.amount) || 0).toLocaleString('en-IN')}</span>
+                          {matchedReceipt.mode && <span className="text-slate-500 font-normal">({matchedReceipt.mode})</span>}
+                        </div>
+                      )}
                     </td>
                     <td className="py-3 px-4">
                       <span className="px-2.5 py-1 rounded-md bg-purple-50 text-purple-700 border border-purple-200/80 font-bold text-[10.5px]">
@@ -414,14 +548,27 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
                       {balance > 0 && stu.nextDueDate && <div className="text-[9.5px] font-semibold text-slate-400">due {stu.nextDueDate}</div>}
                     </td>
                     <td className="py-3 px-4 text-center">
-                      <button
-                        onClick={() => openPayment(stu)}
-                        disabled={balance === 0 && Number(stu.courseFee) > 0}
-                        className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-teal-50 hover:bg-teal-100 text-teal-800 font-bold text-[11px] border border-teal-200 transition-all cursor-pointer whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed"
-                      >
-                        <IndianRupee className="w-3 h-3" />
-                        <span>Record payment</span>
-                      </button>
+                      <div className="flex items-center justify-center gap-1.5">
+                        {Array.isArray(stu.receipts) && stu.receipts.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setViewingReceiptsStudent(stu)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold text-[11px] border border-indigo-200 transition-all cursor-pointer whitespace-nowrap shadow-2xs"
+                            title="View Receipts & Transaction IDs"
+                          >
+                            <Receipt className="w-3 h-3" />
+                            <span>Txn ({stu.receipts.length})</span>
+                          </button>
+                        )}
+                        <button
+                          onClick={() => openPayment(stu)}
+                          disabled={balance === 0 && Number(stu.courseFee) > 0}
+                          className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-teal-50 hover:bg-teal-100 text-teal-800 font-bold text-[11px] border border-teal-200 transition-all cursor-pointer whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          <IndianRupee className="w-3 h-3" />
+                          <span>Record payment</span>
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -771,6 +918,146 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
           }
         }}
       />
+
+      {/* Modal: View Student Receipts & Transaction IDs */}
+      {viewingReceiptsStudent && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 animate-in fade-in" onClick={() => setViewingReceiptsStudent(null)}>
+          <div className="bg-white rounded-3xl max-w-xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
+            {/* Header */}
+            <div className="bg-gradient-to-r from-[#0e6977] via-[#0a4f5a] to-[#083b43] text-white p-5 flex items-center justify-between flex-shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-white/15 flex items-center justify-center shadow-inner">
+                  <Receipt className="w-5 h-5 text-teal-200" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base text-white">Payment & Receipt Ledger</h3>
+                  <p className="text-xs text-teal-100 font-mono mt-0.5">
+                    {viewingReceiptsStudent.name} · <span className="font-bold">{viewingReceiptsStudent.studentId}</span>
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setViewingReceiptsStudent(null)}
+                className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/25 text-white flex items-center justify-center transition-all cursor-pointer"
+                title="Close"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Financial Summary Strip */}
+            <div className="bg-slate-50 border-b border-slate-200 p-4 grid grid-cols-3 gap-2.5 text-center text-xs">
+              <div className="bg-white p-2.5 rounded-xl border border-slate-200 shadow-2xs">
+                <div className="text-slate-500 font-bold text-[10.5px] uppercase tracking-wider">Total Fee</div>
+                <div className="font-mono font-black text-slate-900 text-sm mt-0.5">
+                  ₹{(Number(viewingReceiptsStudent.courseFee) || 0).toLocaleString('en-IN')}
+                </div>
+              </div>
+              <div className="bg-emerald-50 p-2.5 rounded-xl border border-emerald-200 shadow-2xs">
+                <div className="text-emerald-700 font-bold text-[10.5px] uppercase tracking-wider">Paid So Far</div>
+                <div className="font-mono font-black text-emerald-800 text-sm mt-0.5">
+                  ₹{(Number(viewingReceiptsStudent.paidAmount) || 0).toLocaleString('en-IN')}
+                </div>
+              </div>
+              <div className="bg-amber-50 p-2.5 rounded-xl border border-amber-200 shadow-2xs">
+                <div className="text-amber-700 font-bold text-[10.5px] uppercase tracking-wider">Balance</div>
+                <div className="font-mono font-black text-amber-800 text-sm mt-0.5">
+                  ₹{balanceOf(viewingReceiptsStudent).toLocaleString('en-IN')}
+                </div>
+              </div>
+            </div>
+
+            {/* Receipts List */}
+            <div className="p-4 sm:p-5 overflow-y-auto space-y-3 flex-1">
+              <div className="flex items-center justify-between text-xs text-slate-500 font-bold uppercase tracking-wider">
+                <span>Receipts & Transaction IDs</span>
+                <span className="font-mono font-bold text-[#0e6977]">{(viewingReceiptsStudent.receipts || []).length} Recorded</span>
+              </div>
+
+              {(!viewingReceiptsStudent.receipts || viewingReceiptsStudent.receipts.length === 0) ? (
+                <div className="p-8 text-center bg-slate-50 rounded-2xl border border-dashed border-slate-200 text-slate-500 text-xs">
+                  No individual receipts found for this student.
+                </div>
+              ) : (
+                viewingReceiptsStudent.receipts.map((rc, idx) => (
+                  <div
+                    key={rc.id || rc.receiptNo || idx}
+                    className="p-3.5 rounded-2xl border border-slate-200 bg-white hover:border-teal-300 shadow-2xs transition-all space-y-2.5"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <div className="font-bold text-slate-900 text-xs flex items-center gap-1.5 flex-wrap">
+                          <span>{rc.label || `Fee Instalment ${idx + 1}`}</span>
+                          <span className="text-[10px] font-mono text-teal-800 bg-teal-50 px-2 py-0.2 rounded-full border border-teal-200 font-bold">
+                            {rc.receiptNo || rc.id || `RC-${idx + 1}`}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-slate-400 mt-1 flex items-center gap-2 flex-wrap">
+                          <span>{rc.date || '—'}</span>
+                          {rc.recordedBy && <span>· By {rc.recordedBy}</span>}
+                          {rc.mode && <span className="font-semibold text-slate-600">· {rc.mode}</span>}
+                        </div>
+                      </div>
+                      <div className="font-mono font-black text-emerald-700 text-sm whitespace-nowrap bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-xl">
+                        ₹{(Number(rc.amount) || 0).toLocaleString('en-IN')}
+                      </div>
+                    </div>
+
+                    {/* Transaction Reference / UTR Number Box */}
+                    <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2 bg-slate-50/80 -mx-3.5 -mb-3.5 p-2.5 px-3.5 rounded-b-2xl">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="text-[10.5px] font-bold text-slate-500 uppercase tracking-wider whitespace-nowrap">
+                          Txn ID / Ref:
+                        </span>
+                        <span className={`text-[11.5px] font-mono font-bold truncate ${rc.reference ? 'text-slate-900' : 'text-slate-400 italic font-normal'}`}>
+                          {rc.reference || 'Not recorded'}
+                        </span>
+                      </div>
+                      {rc.reference && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (navigator.clipboard) {
+                              navigator.clipboard.writeText(rc.reference);
+                              setCopiedTxnId(rc.reference);
+                              showToast('✓ Transaction ID copied to clipboard');
+                              setTimeout(() => setCopiedTxnId(null), 2000);
+                            }
+                          }}
+                          className="inline-flex items-center gap-1 text-[10.5px] font-bold text-teal-700 hover:text-teal-900 bg-teal-50 hover:bg-teal-100 border border-teal-200/80 px-2 py-1 rounded-lg transition-all cursor-pointer whitespace-nowrap flex-shrink-0"
+                        >
+                          {copiedTxnId === rc.reference ? (
+                            <>
+                              <Check className="w-3 h-3 text-emerald-600" />
+                              <span className="text-emerald-700">Copied</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3 h-3 text-teal-600" />
+                              <span>Copy Txn</span>
+                            </>
+                          )}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="p-3.5 bg-slate-50 border-t border-slate-200 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setViewingReceiptsStudent(null)}
+                className="px-5 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold rounded-xl text-xs transition-all cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

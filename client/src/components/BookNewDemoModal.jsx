@@ -52,8 +52,13 @@ const LOCATIONS = [
   'Theni'
 ];
 
-export default function BookNewDemoModal({ isOpen, onClose, initialData, onConfirm }) {
+export default function BookNewDemoModal({ isOpen, onClose, initialData, onConfirm, currentUser }) {
   if (!isOpen) return null;
+
+  const userBranchClean = currentUser?.branch
+    ? String(currentUser.branch).replace(/\s*(branch|\(.*\)|hq)\b/gi, '').trim()
+    : '';
+  const initialLoc = initialData?.location || initialData?.branch || LOCATIONS.find(l => userBranchClean && l.toLowerCase() === userBranchClean.toLowerCase()) || userBranchClean || LOCATIONS[0];
 
   const [studentName, setStudentName] = useState(initialData?.studentName || initialData?.name || initialData?.candidateName || '');
   const [mobile, setMobile] = useState(initialData?.mobile || initialData?.phone || '');
@@ -66,7 +71,7 @@ export default function BookNewDemoModal({ isOpen, onClose, initialData, onConfi
   });
   const [timeSlot, setTimeSlot] = useState(initialData?.timeSlot || '10:00–11:30 AM');
   const [language, setLanguage] = useState(initialData?.language || 'Tamil');
-  const [location, setLocation] = useState(initialData?.location || LOCATIONS[0]);
+  const [location, setLocation] = useState(initialLoc);
   const [toastMsg, setToastMsg] = useState(null);
 
   // ------------------------------------------------------------------
@@ -97,6 +102,15 @@ export default function BookNewDemoModal({ isOpen, onClose, initialData, onConfi
       cancelled = true;
     };
   }, [language, location, preferredDate, timeSlot, course]);
+
+  useEffect(() => {
+    if (initialData?.location || initialData?.branch) {
+      setLocation(initialData.location || initialData.branch);
+    } else if (userBranchClean) {
+      const match = LOCATIONS.find(l => l.toLowerCase() === userBranchClean.toLowerCase());
+      if (match) setLocation(match);
+    }
+  }, [initialData, userBranchClean]);
 
   const eligible = preview.count > 0;
 
@@ -132,6 +146,9 @@ export default function BookNewDemoModal({ isOpen, onClose, initialData, onConfi
       timeSlot,
       language,
       location,
+      branch: location,
+      counselor: currentUser?.name || '',
+      bookedBy: currentUser?.name || '',
       status: 'booked'
     };
 

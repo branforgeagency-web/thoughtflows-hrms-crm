@@ -27,17 +27,20 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
 
   const [demos, setDemos] = useState(propDemos || []);
 
+  const branchShort = String(currentUser?.branch || '').replace(/\s*branch\b.*$/i, '').replace(/\s*\(.*\)\s*$/, '').trim();
+
   useEffect(() => {
-    if (propDemos && propDemos.length > 0) {
+    if (propDemos !== undefined) {
       setDemos(propDemos);
     } else {
-      getDemos()
+      const params = currentUser?.name ? { counselor: currentUser.name, branch: branchShort } : undefined;
+      getDemos(params)
         .then(res => {
           if (Array.isArray(res)) setDemos(res);
         })
         .catch(err => console.error('Error fetching demos:', err));
     }
-  }, [propDemos]);
+  }, [propDemos, currentUser?.name, branchShort]);
 
   const showToast = (msg) => {
     setToastMessage(msg);
@@ -227,7 +230,7 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
 
         {/* Action Button: + Book New Demo */}
         <button
-          onClick={() => setShowBookingModal(true)}
+          onClick={onBookDemoClick ? onBookDemoClick : () => setShowBookingModal(true)}
           className="flex-shrink-0 flex items-center gap-1.5 bg-[#0e6977] hover:bg-[#0a4f5a] text-white font-bold text-xs px-4 py-2 rounded-full shadow-sm transition-all hover:scale-[1.02] active:scale-95 self-start sm:self-auto"
         >
           <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
@@ -445,13 +448,15 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
       <BookNewDemoModal
         isOpen={showBookingModal}
         onClose={() => setShowBookingModal(false)}
+        currentUser={currentUser}
         initialData={{
           studentName: '',
           mobile: '',
           course: 'CPC',
           mode: 'Online (Zoom Live)',
           timeSlot: '4:00–6:00 PM',
-          language: 'Tamil'
+          language: 'Tamil',
+          location: branchShort || 'Gandhipuram'
         }}
         onConfirm={async (demoData) => {
           try {

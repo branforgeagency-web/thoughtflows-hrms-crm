@@ -58,6 +58,7 @@ import {
   getDemos,
   updateDemo,
   acknowledgeDemo,
+  updateDemosBulkOutcome,
   createDemoMeeting,
   endDemoMeeting,
   sendDemoLinkEmail,
@@ -392,6 +393,42 @@ export default function TrainingDepartmentDashboard({
     ));
   }, [demos, trainerId]);
 
+  // Group Demos into shared sessions (per date + timeSlot).
+  // A trainer takes the demo for all students in that session together (up to 6 students at a time).
+  const myDemoSessions = React.useMemo(() => {
+    const map = new Map();
+    for (const d of myExpertDemos) {
+      const date = d.preferredDate || 'TBD';
+      const slot = d.timeSlot || d.time || '10:00–11:30 AM';
+      const key = `${date}__${slot}`;
+      if (!map.has(key)) {
+        map.set(key, {
+          key,
+          preferredDate: date,
+          timeSlot: slot,
+          course: d.course,
+          mode: d.mode || 'Online (Zoom Live)',
+          language: d.language,
+          location: d.location,
+          zoomMeetingId: d.zoomMeetingId,
+          link: d.link,
+          trainerId: d.trainerId,
+          trainer: d.trainer,
+          students: []
+        });
+      }
+      const sess = map.get(key);
+      sess.students.push(d);
+      if (!sess.zoomMeetingId && d.zoomMeetingId) sess.zoomMeetingId = d.zoomMeetingId;
+      if (!sess.link && d.link) sess.link = d.link;
+    }
+    return Array.from(map.values()).sort((a, b) => {
+      const cmp = String(b.preferredDate).localeCompare(String(a.preferredDate));
+      if (cmp !== 0) return cmp;
+      return String(a.timeSlot).localeCompare(String(b.timeSlot));
+    });
+  }, [myExpertDemos]);
+
   // New demo alerts — notified to me, not yet accepted by anyone
   const newDemoAlerts = React.useMemo(() => (
     myExpertDemos.filter(d => lc(d.status) === 'booked' && !d.notificationRead && d.notificationSent === true)
@@ -627,19 +664,100 @@ export default function TrainingDepartmentDashboard({
     }
   };
 
-  // End the live demo: mark it Attended (server also moves the lead to "Demo Attended" and notifies HR) and leave Zoom
+  // End the live demo: mark all attending candidates Attended and leave Zoom
   const endDemo = async (room) => {
     try { if (room?._id) await endDemoMeeting(room._id); } catch (e) { console.warn(e); }
-    if (room?._id) await setDemoOutcome(room, 'attended');
+    const studentsToMark = (room?.sessionStudents && room.sessionStudents.length)
+      ? room.sessionStudents.filter(s => lc(s.status) !== 'missed')
+      : (room?._id ? [room] : []);
+    if (studentsToMark.length) {
+      try {
+        await updateDemosBulkOutcome(studentsToMark.map(s => s._id), 'attended');
+        setDemos(prev => prev.map(d => {
+          if (studentsToMark.some(u => u._id === d._id)) return { ...d, status: 'attended' };
+          return d;
+        }));
+      } catch (e) {
+        console.warn('endDemo bulk outcome failed:', e);
+      }
+    }
     setDemoRoom(null);
     setDemoMin(false);
+    flashDemoToast(`✓ Group demo session ended · ${studentsToMark.length} candidate(s) marked Attended`, 4000);
   };
 
-  const handleJoinDemo = async (lead) => {
+  const handleJoinDemo = async (lead, customSiblings = null) => {
     let d = lead;
     if (!d.zoomMeetingId) { d = await handleCreateDemoMeeting(lead); if (!d) return; }
+    const siblings = customSiblings || myExpertDemos.filter(s =>
+      s.preferredDate === d.preferredDate && (s.timeSlot || s.time) === (d.timeSlot || d.time)
+    );
     setDemoMin(false);
-    setDemoRoom(d);
+    setDemoRoom({
+      ...d,
+      sessionStudents: siblings.length ? siblings : [d]
+    });
+  };
+
+  const handleJoinDemoSession = async (session) => {
+    const primary = session.students.find(s => s.zoomMeetingId) || session.students[0];
+    if (!primary) return;
+    await handleJoinDemo(primary, session.students);
+  };
+
+  const handleBatchAcknowledge = async (session) => {
+    const unacknowledged = session.students.filter(s => lc(s.status) === 'booked');
+    if (!unacknowledged.length) return;
+    try {
+      await Promise.all(unacknowledged.map(s => acknowledgeDemo(s._id, { trainerId, trainerName })));
+      setDemos(prev => prev.map(d => {
+        if (unacknowledged.some(u => u._id === d._id)) {
+          return { ...d, status: 'confirmed', notificationRead: true, trainerId, trainer: trainerName };
+        }
+        return d;
+      }));
+      flashDemoToast(`✓ Accepted group demo slot for ${unacknowledged.length} candidate${unacknowledged.length > 1 ? 's' : ''}`, 4000);
+    } catch (e) {
+      flashDemoToast(e?.response?.data?.error || 'Could not accept all demo slots', 5000);
+    }
+  };
+
+  const handleMarkAllAttended = async (session) => {
+    const eligible = session.students.filter(s => lc(s.status) !== 'attended');
+    if (!eligible.length) return;
+    try {
+      await updateDemosBulkOutcome(eligible.map(s => s._id), 'attended');
+      setDemos(prev => prev.map(d => {
+        if (eligible.some(u => u._id === d._id)) {
+          return { ...d, status: 'attended' };
+        }
+        return d;
+      }));
+      flashDemoToast(`✓ All ${eligible.length} students marked Attended — HR notified`, 4000);
+    } catch (e) {
+      flashDemoToast(e?.response?.data?.error || 'Could not mark all attended', 5000);
+    }
+  };
+
+  const handleEmailAllSession = async (session) => {
+    const withEmail = session.students.filter(s => s.email);
+    if (!withEmail.length) {
+      flashDemoToast('No email addresses recorded for candidates in this session', 4000);
+      return;
+    }
+    let sample = session.students.find(s => s.zoomMeetingId) || session.students[0];
+    if (!sample.zoomMeetingId) {
+      sample = await handleCreateDemoMeeting(sample);
+      if (!sample) return;
+    }
+    let sentCount = 0;
+    for (const student of withEmail) {
+      try {
+        await sendDemoLinkEmail(student._id);
+        sentCount++;
+      } catch (_) {}
+    }
+    flashDemoToast(`✓ Zoom meeting link emailed to ${sentCount} candidate${sentCount > 1 ? 's' : ''}`, 4000);
   };
 
   // Save attendance marks to the server — updates each student's attendance %,
@@ -1089,8 +1207,12 @@ export default function TrainingDepartmentDashboard({
               <div className="fixed bottom-4 right-4 z-[80] bg-[#0f212d] text-white rounded-2xl border border-teal-500/60 shadow-2xl px-4 py-3 flex items-center gap-3">
                 <span className="relative flex h-2.5 w-2.5"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span><span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-400"></span></span>
                 <div className="leading-tight">
-                  <div className="text-xs font-bold">Demo live · {demoRoom.candidateName}</div>
-                  <div className="text-[10px] text-slate-300">Zoom still connected</div>
+                  <div className="text-xs font-bold">
+                    {demoRoom.sessionStudents?.length > 1
+                      ? `Group Demo Live · ${demoRoom.sessionStudents.length} Students`
+                      : `Demo live · ${demoRoom.candidateName}`}
+                  </div>
+                  <div className="text-[10px] text-slate-300">Zoom meeting connected</div>
                 </div>
                 <button onClick={() => setDemoMin(false)} className="px-3 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-700 text-[11px] font-bold">Expand</button>
                 <button onClick={() => endDemo(demoRoom)} className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-[11px] font-bold">End</button>
@@ -1098,18 +1220,97 @@ export default function TrainingDepartmentDashboard({
             )}
             <div className={demoMin ? 'fixed top-0 -left-[4000px] w-[1100px] pointer-events-none' : 'fixed inset-0 z-[80] bg-black/75 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 overflow-y-auto'}>
               <div className="bg-[#0f212d] rounded-2xl w-full max-w-6xl p-4 sm:p-5 space-y-3 border border-[#1b3446] shadow-2xl">
-                <div className="flex items-center justify-between gap-3 text-white">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-white border-b border-slate-700/60 pb-3">
                   <div>
-                    <div className="text-sm sm:text-base font-extrabold">Demo · {demoRoom.candidateName}</div>
-                    <div className="text-xs text-slate-300">{demoRoom.course} · {demoRoom.time || demoRoom.timeSlot}</div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm sm:text-base font-extrabold">
+                        {demoRoom.sessionStudents?.length > 1
+                          ? `Group Demo Session · ${demoRoom.course}`
+                          : `Demo · ${demoRoom.candidateName}`}
+                      </span>
+                      {demoRoom.sessionStudents?.length > 1 && (
+                        <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                          {demoRoom.sessionStudents.length} Students at a time
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs text-slate-300 mt-0.5">
+                      {[demoRoom.preferredDate, demoRoom.time || demoRoom.timeSlot].filter(Boolean).join(' · ')}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <button onClick={() => handleEmailDemoLink(demoRoom)} className="px-3 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold transition-all cursor-pointer">Email link to student</button>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {demoRoom.sessionStudents?.length > 1 ? (
+                      <button
+                        onClick={() => handleEmailAllSession({ students: demoRoom.sessionStudents })}
+                        className="px-3 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold transition-all cursor-pointer"
+                      >
+                        ✉️ Email Link to All
+                      </button>
+                    ) : (
+                      <button onClick={() => handleEmailDemoLink(demoRoom)} className="px-3 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold transition-all cursor-pointer">Email link to student</button>
+                    )}
                     <button onClick={() => setDemoMin(true)} className="px-3 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold transition-all cursor-pointer">Minimize</button>
-                    <button onClick={() => endDemo(demoRoom)} className="px-3 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-all cursor-pointer">End Demo</button>
+                    <button onClick={() => endDemo(demoRoom)} className="px-3 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-all cursor-pointer">
+                      {demoRoom.sessionStudents?.length > 1 ? 'End Session & Complete Attendance' : 'End Demo'}
+                    </button>
                   </div>
                 </div>
-                <ZoomMeeting demoId={demoRoom._id} userName={trainerName} height={580} />
+
+                {/* Candidate Roster Strip when multiple students are in the demo */}
+                {demoRoom.sessionStudents?.length > 1 && (
+                  <div className="bg-[#142937] p-3 rounded-xl border border-slate-700/60">
+                    <div className="text-[11px] font-bold text-slate-300 mb-2 flex items-center justify-between">
+                      <span>👥 Group Demo Attendees ({demoRoom.sessionStudents.length} candidates taking demo together):</span>
+                      <span className="text-[10px] text-emerald-400 font-medium">All candidates join this same Zoom room</span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                      {demoRoom.sessionStudents.map((st) => (
+                        <div key={st._id} className="p-2.5 rounded-lg bg-[#0b1720] border border-slate-700/50 flex items-center justify-between gap-2 text-xs">
+                          <div className="min-w-0">
+                            <div className="font-bold text-white truncate">{st.candidateName}</div>
+                            <div className="text-[10px] text-slate-400 truncate">{st.phone || st.email || '—'}</div>
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              onClick={async () => {
+                                await setDemoOutcome(st, 'attended');
+                                setDemoRoom(prev => prev ? {
+                                  ...prev,
+                                  sessionStudents: (prev.sessionStudents || []).map(s => s._id === st._id ? { ...s, status: 'attended' } : s)
+                                } : prev);
+                              }}
+                              className={`px-2 py-1 rounded text-[10px] font-bold transition-all cursor-pointer ${
+                                lc(st.status) === 'attended'
+                                  ? 'bg-emerald-600 text-white'
+                                  : 'bg-emerald-950 text-emerald-300 hover:bg-emerald-800'
+                              }`}
+                            >
+                              ✓ Attended
+                            </button>
+                            <button
+                              onClick={async () => {
+                                await setDemoOutcome(st, 'missed');
+                                setDemoRoom(prev => prev ? {
+                                  ...prev,
+                                  sessionStudents: (prev.sessionStudents || []).map(s => s._id === st._id ? { ...s, status: 'missed' } : s)
+                                } : prev);
+                              }}
+                              className={`px-2 py-1 rounded text-[10px] font-bold transition-all cursor-pointer ${
+                                lc(st.status) === 'missed'
+                                  ? 'bg-rose-600 text-white'
+                                  : 'bg-rose-950 text-rose-300 hover:bg-rose-800'
+                              }`}
+                            >
+                              ✕ No-show
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <ZoomMeeting demoId={demoRoom._id} userName={trainerName} height={560} />
               </div>
             </div>
           </>
@@ -1704,156 +1905,189 @@ export default function TrainingDepartmentDashboard({
                 ) : (
                   <div className="pt-2 space-y-4 animate-fadeIn">
                     {(() => {
-                      const upcoming = myExpertDemos
-                        .filter(d => lc(d.status) === 'confirmed' && (!d.trainerId || d.trainerId === trainerId))
+                      const upcomingSession = myDemoSessions
+                        .filter(s => s.students.some(d => lc(d.status) === 'confirmed' && (!d.trainerId || d.trainerId === trainerId)))
                         .sort((x, y) => String(x.preferredDate).localeCompare(String(y.preferredDate)))[0];
-                      if (!upcoming) return null;
+                      if (!upcomingSession) return null;
                       return (
-                        <div className="p-4 rounded-xl bg-teal-50/70 border border-teal-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div className="p-4 rounded-xl bg-teal-50/70 border border-teal-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
                           <div>
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs font-bold text-slate-900">Next confirmed demo · {upcoming.candidateName}</span>
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-teal-100 text-teal-800 border border-teal-200">
-                                {[upcoming.preferredDate, upcoming.timeSlot].filter(Boolean).join(' ')}
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-xs font-black text-slate-900">Next Group Demo Session · {upcomingSession.course}</span>
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-teal-100 text-teal-800 border border-teal-200 font-mono">
+                                {[upcomingSession.preferredDate, upcomingSession.timeSlot].filter(Boolean).join(' ')}
+                              </span>
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 font-mono">
+                                {upcomingSession.students.length} Student{upcomingSession.students.length > 1 ? 's' : ''} at once
                               </span>
                             </div>
-                            <div className="text-xs text-slate-600 mt-1">{upcoming.course}{upcoming.mode ? ` · ${upcoming.mode}` : ''}</div>
+                            <div className="text-xs text-slate-600 mt-1">
+                              All {upcomingSession.students.length} candidates ({upcomingSession.students.map(s => s.candidateName).join(', ')}) will join this single Zoom room together.
+                            </div>
                           </div>
-                          <button
-                            onClick={() => handleJoinDemo(upcoming)}
-                            className="px-4 py-2 rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white text-xs font-bold shadow-sm shrink-0 flex items-center gap-1.5 cursor-pointer"
-                          >
-                            <Play className="w-3.5 h-3.5 fill-current" />
-                            <span>Start Demo (Zoom)</span>
-                          </button>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <button
+                              onClick={() => handleJoinDemoSession(upcomingSession)}
+                              className="px-4 py-2 rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white text-xs font-bold shadow-sm shrink-0 flex items-center gap-1.5 cursor-pointer transition-all active:scale-95"
+                            >
+                              <Play className="w-3.5 h-3.5 fill-current" />
+                              <span>Start Group Demo (Zoom)</span>
+                            </button>
+                          </div>
                         </div>
                       );
                     })()}
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3.5 pt-2">
-                      {myExpertDemos.map((lead, idx) => (
-                        <div key={lead._id || lead.id || idx} className="p-4 rounded-xl border border-slate-200/90 bg-white hover:border-teal-400/80 transition-all text-xs space-y-2.5 shadow-2xs">
-                          <div className="flex items-center justify-between">
-                            <span className="font-extrabold text-slate-900 text-[13px]">{lead.candidateName}</span>
-                            <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-md ${
-                              lead.status?.toLowerCase() === 'attended' ? 'bg-emerald-100 text-emerald-800' :
-                              lead.status?.toLowerCase() === 'missed' ? 'bg-rose-100 text-rose-800' :
-                              lead.status?.toLowerCase() === 'confirmed' ? 'bg-teal-100 text-teal-800' :
-                              'bg-amber-100 text-amber-800'
-                            }`}>{lead.status?.toUpperCase() || 'BOOKED'}</span>
-                          </div>
-
-                          <div className="text-[11.5px] font-semibold text-slate-700">
-                            {lead.course}
-                          </div>
-
-                          <div className="text-[11px] text-slate-500 font-medium">
-                            <div>📞 <span className="font-mono text-slate-700">{lead.phone}</span></div>
-                            {lead.email && <div>✉️ <span className="text-slate-700">{lead.email}</span></div>}
-                            <div>🕒 {[lead.preferredDate, lead.timeSlot || lead.time].filter(Boolean).join(' ') || '—'}{lead.mode ? ` · ${lead.mode}` : ''}</div>
-                            {lead.language && <div>🗣 {lead.language}{lead.location ? ` · ${lead.location}` : ''}</div>}
-                            {lead.bookedBy && <div>👤 Booked by {lead.bookedBy}</div>}
-                          </div>
-
-                          <div className="text-[10.5px] text-emerald-800 font-semibold bg-emerald-50/70 p-2 rounded-lg border border-emerald-100 flex items-center gap-1">
-                            <span>🎯</span>
-                            <span>Assigned trainer: <strong className="text-slate-900">{lead.trainer || 'Awaiting acceptance'}</strong></span>
-                          </div>
-
-                          {/* Multi-Condition Notification Audit Badge */}
-                          {lead.notificationSent === true ? (
-                            <div className="text-[10px] text-emerald-900 bg-emerald-50/90 p-2 rounded-lg border border-emerald-300/80 space-y-1">
-                              <div className="flex items-center justify-between">
-                                <span className="font-extrabold flex items-center gap-1 text-emerald-800">
-                                  <span className="h-2 w-2 rounded-full bg-emerald-500 inline-block animate-pulse"></span>
-                                  <span>Notification Delivered</span>
-                                </span>
-                                <span className="text-[9px] bg-emerald-200/80 text-emerald-900 px-1.5 py-0.2 rounded font-bold">1st Priority</span>
+                    <div className="space-y-4 pt-1">
+                      {myDemoSessions.map((session) => {
+                        const hasBooked = session.students.some(s => lc(s.status) === 'booked');
+                        const allAttended = session.students.length > 0 && session.students.every(s => lc(s.status) === 'attended');
+                        return (
+                          <div key={session.key} className="rounded-2xl border border-slate-200 bg-white hover:border-teal-400 transition-all p-5 space-y-4 shadow-xs">
+                            {/* Session Header Bar */}
+                            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+                              <div className="space-y-1">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="text-sm font-extrabold text-slate-900">
+                                    Demo Session · {session.course}
+                                  </span>
+                                  <span className="px-2.5 py-0.5 rounded-md text-[11px] font-mono font-bold bg-slate-100 text-slate-700 border border-slate-200">
+                                    🕒 {[session.preferredDate, session.timeSlot].filter(Boolean).join(' · ')}
+                                  </span>
+                                  <span className="px-2.5 py-0.5 rounded-md text-[11px] font-bold bg-teal-50 text-teal-800 border border-teal-200 flex items-center gap-1">
+                                    <span>👥</span>
+                                    <span>{session.students.length} Candidates Booked (Capacity: 6 · All Taken at Once)</span>
+                                  </span>
+                                  {allAttended && (
+                                    <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                      ✓ All Attended
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-xs text-slate-500 font-medium">
+                                  {session.mode || 'Online (Zoom Live)'}{session.language ? ` · Language: ${session.language}` : ''}{session.location ? ` · Branch: ${session.location}` : ''}
+                                </div>
                               </div>
-                              <div className="text-[9.5px] text-emerald-700 flex items-center gap-1.5 flex-wrap font-semibold">
-                                <span>✓ Experienced</span>
-                                <span>•</span>
-                                <span>✓ In Shift{lead.shiftTiming ? ` (${lead.shiftTiming})` : ''}</span>
-                                <span>•</span>
-                                <span>✓ No Class Conflict</span>
-                              </div>
-                            </div>
-                          ) : (
-                            <div className="text-[10px] text-rose-900 bg-rose-50/90 p-2 rounded-lg border border-rose-300/80 space-y-1">
-                              <div className="flex items-center justify-between">
-                                <span className="font-extrabold flex items-center gap-1 text-rose-800">
-                                  <span className="h-2 w-2 rounded-full bg-rose-500 inline-block"></span>
-                                  <span>Notification Blocked</span>
-                                </span>
-                                <span className="text-[9px] bg-rose-200/80 text-rose-900 px-1.5 py-0.2 rounded font-bold">Suppressed</span>
-                              </div>
-                              <div className="text-[9.5px] text-rose-700 font-medium leading-tight">
-                                {lead.notificationBlockReason || lead.conflictReason || 'Condition not met (Class overlap or outside shift)'}
-                              </div>
-                            </div>
-                          )}
 
-                          {lc(lead.status) === 'attended' ? (
-                            <div className="mt-1 py-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] font-bold text-center">
-                              ✓ Demo Completed
+                              {/* Unified Session Action Buttons */}
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <button
+                                  onClick={() => handleJoinDemoSession(session)}
+                                  className="px-3.5 py-2 rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white text-xs font-bold shadow-sm flex items-center gap-1.5 cursor-pointer transition-all active:scale-95"
+                                >
+                                  <Play className="w-3.5 h-3.5 fill-current" />
+                                  <span>Start Group Demo (Zoom)</span>
+                                </button>
+                                <button
+                                  onClick={() => handleEmailAllSession(session)}
+                                  className="px-3 py-2 rounded-xl bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-200 text-xs font-bold transition-all cursor-pointer"
+                                  title="Send Zoom link email to all candidates who provided an email"
+                                >
+                                  ✉️ Email All ({session.students.filter(s => s.email).length})
+                                </button>
+                                {hasBooked && (
+                                  <button
+                                    onClick={() => handleBatchAcknowledge(session)}
+                                    className="px-3 py-2 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 text-xs font-bold transition-all cursor-pointer"
+                                    title="Accept all pending bookings for this session"
+                                  >
+                                    Accept Slot for All
+                                  </button>
+                                )}
+                                {!allAttended && (
+                                  <button
+                                    onClick={() => handleMarkAllAttended(session)}
+                                    className="px-3 py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold transition-all cursor-pointer"
+                                    title="Mark all candidates in this session as Attended and sync with HR"
+                                  >
+                                    ✓ Mark All Attended
+                                  </button>
+                                )}
+                              </div>
                             </div>
-                          ) : lc(lead.status) === 'missed' ? (
-                            <div className="mt-1 py-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-[11px] font-bold text-center">
-                              No-show · HR notified to reschedule
-                            </div>
-                          ) : (lead.trainerId && lead.trainerId !== trainerId && lc(lead.status) === 'confirmed') ? (
-                            <div className="mt-1 py-2 rounded-lg bg-slate-50 border border-slate-200 text-slate-600 text-[11px] font-bold text-center">
-                              Accepted by {lead.trainer}
-                            </div>
-                          ) : lc(lead.status) === 'booked' ? (
-                            <button
-                              onClick={() => handleAcknowledgeDemo(lead._id)}
-                              className="w-full py-2 rounded-lg bg-[#00897b] hover:bg-[#00796b] text-white text-[11px] font-bold cursor-pointer"
-                            >
-                              Accept Demo Slot
-                            </button>
-                          ) : (
-                            <>
-                          <div className="flex gap-1.5">
-                            <button
-                              onClick={() => handleJoinDemo(lead)}
-                              className="flex-1 py-1.5 rounded-lg bg-[#009688] hover:bg-[#00897b] text-white text-[10.5px] font-bold transition-colors cursor-pointer text-center"
-                            >
-                              ▶ Start Demo (Zoom)
-                            </button>
-                            <button
-                              onClick={() => handleEmailDemoLink(lead)}
-                              className="flex-1 py-1.5 rounded-lg bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-200 text-[10.5px] font-bold transition-colors cursor-pointer text-center"
-                            >
-                              ✉️ Email Link
-                            </button>
-                            <button
-                              onClick={() => handleSendDemoLink(lead)}
-                              title="Send via WhatsApp"
-                              className="px-2.5 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-[10.5px] font-bold transition-colors cursor-pointer"
-                            >
-                              WhatsApp
-                            </button>
-                          </div>
 
-                          <div className="flex gap-1.5 pt-1.5 border-t border-slate-100">
-                            <button
-                              onClick={() => setDemoOutcome(lead, 'attended')}
-                              className="flex-1 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-[10.5px] font-bold transition-colors cursor-pointer text-center"
-                            >
-                              Attended
-                            </button>
-                            <button
-                              onClick={() => setDemoOutcome(lead, 'missed')}
-                              className="flex-1 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-200 text-[10.5px] font-bold transition-colors cursor-pointer text-center"
-                            >
-                              No-show
-                            </button>
+                            {/* Candidate Attendees Grid */}
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                              {session.students.map((lead, idx) => (
+                                <div key={lead._id || lead.id || idx} className="p-3.5 rounded-xl border border-slate-200/90 bg-slate-50/50 hover:bg-white hover:border-teal-300 transition-all text-xs space-y-2.5">
+                                  <div className="flex items-center justify-between gap-1">
+                                    <span className="font-extrabold text-slate-900 text-[12.5px] truncate">{lead.candidateName}</span>
+                                    <span className={`text-[9.5px] font-mono font-bold px-2 py-0.5 rounded shrink-0 ${
+                                      lead.status?.toLowerCase() === 'attended' ? 'bg-emerald-100 text-emerald-800' :
+                                      lead.status?.toLowerCase() === 'missed' ? 'bg-rose-100 text-rose-800' :
+                                      lead.status?.toLowerCase() === 'confirmed' ? 'bg-teal-100 text-teal-800' :
+                                      'bg-amber-100 text-amber-800'
+                                    }`}>{lead.status?.toUpperCase() || 'BOOKED'}</span>
+                                  </div>
+
+                                  <div className="text-[11px] text-slate-500 font-medium space-y-0.5">
+                                    <div>📞 <span className="font-mono text-slate-700">{lead.phone}</span></div>
+                                    {lead.email && <div className="truncate">✉️ <span className="text-slate-700">{lead.email}</span></div>}
+                                    {lead.bookedBy && <div>👤 Booked by: {lead.bookedBy}</div>}
+                                  </div>
+
+                                  {/* Notification status */}
+                                  {lead.notificationSent === true ? (
+                                    <div className="text-[9.5px] text-emerald-700 font-semibold bg-emerald-50 p-1.5 rounded-lg border border-emerald-200 flex items-center justify-between">
+                                      <span>✓ Notification Delivered</span>
+                                      <span className="text-[9px] bg-emerald-200/70 text-emerald-900 px-1 rounded">1st Priority</span>
+                                    </div>
+                                  ) : (
+                                    <div className="text-[9.5px] text-rose-700 font-medium bg-rose-50 p-1.5 rounded-lg border border-rose-200">
+                                      {lead.notificationBlockReason || lead.conflictReason || 'Condition not met'}
+                                    </div>
+                                  )}
+
+                                  {/* Per-candidate Actions */}
+                                  <div className="pt-1.5 border-t border-slate-200/70 flex flex-col gap-1.5">
+                                    <div className="flex gap-1.5">
+                                      <button
+                                        onClick={() => handleSendDemoLink(lead)}
+                                        title="Send shared Zoom link via WhatsApp"
+                                        className="flex-1 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-[10px] font-bold transition-colors cursor-pointer text-center"
+                                      >
+                                        WhatsApp
+                                      </button>
+                                      {lead.email && (
+                                        <button
+                                          onClick={() => handleEmailDemoLink(lead)}
+                                          title="Email shared Zoom link"
+                                          className="flex-1 py-1 rounded-lg bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-200 text-[10px] font-bold transition-colors cursor-pointer text-center"
+                                        >
+                                          Email
+                                        </button>
+                                      )}
+                                    </div>
+
+                                    <div className="flex gap-1.5">
+                                      <button
+                                        onClick={() => setDemoOutcome(lead, 'attended')}
+                                        className={`flex-1 py-1 rounded-lg border text-[10.5px] font-bold transition-colors cursor-pointer text-center ${
+                                          lc(lead.status) === 'attended'
+                                            ? 'bg-emerald-600 text-white border-emerald-600'
+                                            : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-200'
+                                        }`}
+                                      >
+                                        ✓ Attended
+                                      </button>
+                                      <button
+                                        onClick={() => setDemoOutcome(lead, 'missed')}
+                                        className={`flex-1 py-1 rounded-lg border text-[10.5px] font-bold transition-colors cursor-pointer text-center ${
+                                          lc(lead.status) === 'missed'
+                                            ? 'bg-rose-600 text-white border-rose-600'
+                                            : 'bg-rose-50 hover:bg-rose-100 text-rose-800 border-rose-200'
+                                        }`}
+                                      >
+                                        ✕ No-show
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
                           </div>
-                            </>
-                          )}
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 )}

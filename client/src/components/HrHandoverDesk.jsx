@@ -35,12 +35,13 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
     if (propStudents !== undefined) {
       setStudents(propStudents);
     } else {
-      const params = currentUser?.name ? { hrName: currentUser.name } : undefined;
+      const branchShort = String(currentUser?.branch || '').replace(/\s*branch\b.*$/i, '').replace(/\s*\(.*\)\s*$/, '').trim();
+      const params = currentUser?.name ? { hrName: currentUser.name, branch: branchShort } : undefined;
       getStudents(params).then(res => {
         if (Array.isArray(res)) setStudents(res);
       }).catch(err => console.error('Error fetching students for handover:', err));
     }
-  }, [propStudents, currentUser?.name]);
+  }, [propStudents, currentUser?.name, currentUser?.branch]);
 
   const showToast = (msg) => {
     setToastMsg(msg);

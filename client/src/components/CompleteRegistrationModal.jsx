@@ -1,22 +1,35 @@
-import React, { useState, useEffect } from 'react';
-import { X, Sparkles, ArrowRight, Check, ShieldCheck } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { X, Sparkles, ArrowRight, Check, ShieldCheck, Copy, RotateCcw } from 'lucide-react';
 import { COURSE_CATEGORIES } from '../constants/courses';
+import logoImg from '../assets/thoughtflows-logo.png';
+import { 
+  BRANCH_MAP, 
+  COURSE_MAP, 
+  TYPE_MAP, 
+  MONTH_MAP, 
+  YEAR_MAP, 
+  generateStudentIdDetails 
+} from '../utils/studentIdGenerator';
+import { getStudents } from '../services/api';
 
 export default function CompleteRegistrationModal({
   isOpen,
   onClose,
   initialData,
   currentUser,
-  onSubmit
+  onSubmit,
+  existingStudents
 }) {
   if (!isOpen) return null;
 
   // Personal Details - purely empty unless provided by initialData
   const [fullName, setFullName] = useState(initialData?.fullName || initialData?.name || '');
+  const [fatherName, setFatherName] = useState(initialData?.fatherName || '');
   const [dob, setDob] = useState(initialData?.dob || '');
   const [phone, setPhone] = useState(initialData?.phone || '');
+  const [whatsappNumber, setWhatsappNumber] = useState(initialData?.whatsappNumber || initialData?.phone || '');
   const [email, setEmail] = useState(initialData?.email || '');
-  const [locationAddress, setLocationAddress] = useState(initialData?.location || '');
+  const [locationAddress, setLocationAddress] = useState(initialData?.location || initialData?.address || '');
 
   // Education & Background
   const [highestQualification, setHighestQualification] = useState(initialData?.qualification || '');
@@ -26,12 +39,12 @@ export default function CompleteRegistrationModal({
   const [leadCameFor, setLeadCameFor] = useState(initialData?.leadCameFor || 'Admission');
 
   // Course Selection
-  const [course, setCourse] = useState(initialData?.courseName || '');
-  const [branch, setBranch] = useState(initialData?.branchName || '');
-  const [courseType, setCourseType] = useState(initialData?.typeName || '');
-  const [batchTiming, setBatchTiming] = useState(initialData?.batchTiming || '');
+  const [course, setCourse] = useState(initialData?.courseName || initialData?.course || 'CPC - Certified Professional Coder');
+  const [branch, setBranch] = useState(initialData?.branchName || initialData?.branch || 'Saravanampatti');
+  const [courseType, setCourseType] = useState(initialData?.typeName || initialData?.mode || 'Online');
+  const [batchTiming, setBatchTiming] = useState(initialData?.batchTiming || '8:00–10:00 PM Weekdays');
   const [batchType, setBatchType] = useState(initialData?.batchType || 'Weekdays');
-  const [dateOfJoining, setDateOfJoining] = useState(initialData?.dateOfJoining || '');
+  const [dateOfJoining, setDateOfJoining] = useState(initialData?.dateOfJoining || new Date().toISOString().split('T')[0]);
 
   // Fee Payment
   const [totalCourseFee, setTotalCourseFee] = useState(initialData?.courseFee ? String(initialData.courseFee) : '');
@@ -41,13 +54,7 @@ export default function CompleteRegistrationModal({
   const [examBooked, setExamBooked] = useState('Not Booked');
   const [examFeePaid, setExamFeePaid] = useState('');
   const [paymentMethod, setPaymentMethod] = useState('UPI / GPay / PhonePe');
-
-  // Generated Student ID
-  const [studentId, setStudentId] = useState(initialData?.generatedId || '');
-  const [idSubtext, setIdSubtext] = useState(initialData?.idSubtext || '');
-
-  const [toastMsg, setToastMsg] = useState(null);
-  const [submitting, setSubmitting] = useState(false);
+  const [transactionId, setTransactionId] = useState(initialData?.transactionId || initialData?.paymentReference || '');
 
   // Auto calculate pending balance and fee status safely from inputs
   const numTotalFee = Number(totalCourseFee) || 0;
@@ -59,17 +66,79 @@ export default function CompleteRegistrationModal({
       ? 'Part Paid' 
       : 'Pending';
 
+  // Generated Student ID & metadata
+  const [allStudents, setAllStudents] = useState(existingStudents || []);
+  const [customMonth, setCustomMonth] = useState('');
+  const [customYear, setCustomYear] = useState('');
+  const [customSerial, setCustomSerial] = useState('');
+  const [showIdControls, setShowIdControls] = useState(false);
+  const [copiedId, setCopiedId] = useState(false);
+
+  const [studentId, setStudentId] = useState('');
+  const [idSubtext, setIdSubtext] = useState('');
+
+  const [toastMsg, setToastMsg] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  // Sync or fetch students for ID serial calculation
   useEffect(() => {
-    if (initialData?.generatedId) {
-      setStudentId(initialData.generatedId);
-      if (initialData.courseName) setCourse(initialData.courseName);
-      if (initialData.branchName) setBranch(initialData.branchName);
-      if (initialData.typeName) setCourseType(initialData.typeName);
-      if (initialData.branchName && initialData.courseName) {
-        setIdSubtext(`TF · ${initialData.branchName} · ${initialData.courseName} · ${initialData.typeName || 'Online'} · ${initialData.monthName || 'May'} · ${initialData.yearVal || '2026'} · serial ${initialData.serial || '001'}`);
-      }
+    if (!isOpen) return;
+    if (Array.isArray(existingStudents) && existingStudents.length > 0) {
+      setAllStudents(existingStudents);
+    } else {
+      getStudents()
+        .then((data) => {
+          if (Array.isArray(data)) setAllStudents(data);
+        })
+        .catch((err) => console.error('Error fetching students for ID generator:', err));
     }
-  }, [initialData]);
+  }, [isOpen, existingStudents]);
+
+  // Sync initialData changes when opening modal
+  useEffect(() => {
+    if (!isOpen || !initialData) return;
+    if (initialData.fullName || initialData.name) setFullName(initialData.fullName || initialData.name);
+    if (initialData.fatherName) setFatherName(initialData.fatherName);
+    if (initialData.dob) setDob(initialData.dob);
+    if (initialData.phone) setPhone(initialData.phone);
+    if (initialData.whatsappNumber) setWhatsappNumber(initialData.whatsappNumber);
+    if (initialData.email) setEmail(initialData.email);
+    if (initialData.location || initialData.address) setLocationAddress(initialData.location || initialData.address);
+    if (initialData.qualification || initialData.education) setHighestQualification(initialData.qualification || initialData.education);
+    if (initialData.passoutYear) setPassoutYear(initialData.passoutYear);
+    if (initialData.collegeCompany || initialData.college) setCollegeCompany(initialData.collegeCompany || initialData.college);
+    if (initialData.source || initialData.sourceName) setModeOfSource(initialData.source || initialData.sourceName);
+    if (initialData.leadCameFor) setLeadCameFor(initialData.leadCameFor);
+    if (initialData.courseName || initialData.course) setCourse(initialData.courseName || initialData.course);
+    if (initialData.branchName || initialData.branch) setBranch(initialData.branchName || initialData.branch);
+    if (initialData.typeName || initialData.mode) setCourseType(initialData.typeName || initialData.mode);
+    if (initialData.batchTiming) setBatchTiming(initialData.batchTiming);
+    if (initialData.batchType) setBatchType(initialData.batchType);
+    if (initialData.dateOfJoining) setDateOfJoining(initialData.dateOfJoining);
+    if (initialData.courseFee) setTotalCourseFee(String(initialData.courseFee));
+    if (initialData.amountPaidNow) setAmountPaidNow(String(initialData.amountPaidNow));
+    if (initialData.transactionId || initialData.paymentReference) setTransactionId(initialData.transactionId || initialData.paymentReference);
+  }, [isOpen, initialData]);
+
+  // Live computed ID metadata based on form fields
+  const currentIdDetails = useMemo(() => {
+    return generateStudentIdDetails({
+      branch: branch || 'Saravanampatti',
+      course: course || 'CPC - Certified Professional Coder',
+      courseType: courseType || 'Online',
+      date: dateOfJoining || new Date(),
+      month: customMonth || undefined,
+      year: customYear || undefined,
+      serial: customSerial || undefined,
+      existingStudents: allStudents
+    });
+  }, [branch, course, courseType, dateOfJoining, customMonth, customYear, customSerial, allStudents]);
+
+  // Keep studentId and breakdown subtext automatically in sync with form details
+  useEffect(() => {
+    setStudentId(currentIdDetails.studentId);
+    setIdSubtext(currentIdDetails.breakdownText);
+  }, [currentIdDetails]);
 
   const showToast = (msg) => {
     setToastMsg(msg);
@@ -89,10 +158,13 @@ export default function CompleteRegistrationModal({
     const studentRecord = {
       studentId: studentId.trim(),
       name: fullName.trim().toUpperCase(),
+      fatherName: fatherName.trim(),
       dob,
       phone: phone.trim(),
+      whatsappNumber: (whatsappNumber || phone).trim(),
+      alternatePhone: (whatsappNumber && whatsappNumber !== phone ? whatsappNumber : '').trim(),
       email: email.trim(),
-      location: locationAddress.split(',')[0]?.trim() || 'Coimbatore',
+      location: locationAddress.split(',')[0]?.trim() || branch || 'Coimbatore',
       address: locationAddress.trim(),
       qualification: highestQualification,
       qualTag: highestQualification.toLowerCase().includes('pharm') || highestQualification.toLowerCase().includes('bsc') ? 'Life Sci' : 'Grad',
@@ -102,6 +174,7 @@ export default function CompleteRegistrationModal({
       leadCameFor,
       course,
       branch,
+      leadBranch: initialData?.leadBranch || initialData?.branchName || branch,
       mode: courseType,
       batchTiming,
       batchType,
@@ -116,6 +189,8 @@ export default function CompleteRegistrationModal({
       examStatus: examBooked,
       examFee: Number(examFeePaid),
       paymentMethod,
+      paymentReference: transactionId.trim(),
+      transactionId: transactionId.trim(),
       hrName: counselorName,
       onboardStatus: '7/7 ✓',
       syllabusModule: 'Module 1',
@@ -166,20 +241,21 @@ export default function CompleteRegistrationModal({
             <X className="w-4 h-4" />
           </button>
 
-          {/* Logo badge */}
+          {/* ThoughtFlows Logo */}
           <div className="flex justify-center mb-3">
-            <div className="bg-white px-4 py-1.5 rounded-xl shadow-xs flex items-center gap-1.5">
-              <span className="text-[#00897b] font-black tracking-tight text-xs uppercase">ThoughtFlows</span>
-              <span className="text-[10px] text-slate-500 font-medium">· No.1 Medical Coding Academy</span>
+            <div className="bg-white px-4 py-1.5 rounded-2xl shadow-sm flex items-center justify-center">
+              <img 
+                src={logoImg} 
+                alt="ThoughtFlows" 
+                className="h-7 sm:h-8 w-auto object-contain"
+                onError={(e) => { e.currentTarget.src = '/thoughtflows-logo.png'; }}
+              />
             </div>
           </div>
 
           <h2 className="text-2xl sm:text-3xl font-extrabold text-center tracking-tight">
-            Complete Your Registration
+            Registration Form
           </h2>
-          <p className="text-center text-xs text-teal-100 font-medium mt-1 font-mono">
-            Sent by {currentUser?.name?.split(' ')[0] || 'HR'} · Auto-saves to CRM on submit
-          </p>
         </div>
 
         {/* SCROLLABLE FORM BODY */}
@@ -211,13 +287,14 @@ export default function CompleteRegistrationModal({
 
               <div>
                 <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-500 uppercase mb-1">
-                  DATE OF BIRTH
+                  FATHER'S NAME
                 </label>
                 <input
-                  type="date"
-                  value={dob}
-                  onChange={(e) => setDob(e.target.value)}
-                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all font-mono"
+                  type="text"
+                  value={fatherName}
+                  onChange={(e) => setFatherName(e.target.value)}
+                  placeholder="Father's / Guardian's name"
+                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all"
                 />
               </div>
             </div>
@@ -231,12 +308,30 @@ export default function CompleteRegistrationModal({
                   type="tel"
                   required
                   value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
+                  onChange={(e) => {
+                    setPhone(e.target.value);
+                    if (!whatsappNumber) setWhatsappNumber(e.target.value);
+                  }}
                   placeholder="10-digit mobile"
                   className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all font-mono"
                 />
               </div>
 
+              <div>
+                <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-500 uppercase mb-1">
+                  WHATSAPP NUMBER
+                </label>
+                <input
+                  type="tel"
+                  value={whatsappNumber}
+                  onChange={(e) => setWhatsappNumber(e.target.value)}
+                  placeholder="WhatsApp mobile number"
+                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all font-mono"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
               <div>
                 <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-500 uppercase mb-1">
                   EMAIL
@@ -247,6 +342,18 @@ export default function CompleteRegistrationModal({
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="student@gmail.com"
                   className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-500 uppercase mb-1">
+                  DATE OF BIRTH
+                </label>
+                <input
+                  type="date"
+                  value={dob}
+                  onChange={(e) => setDob(e.target.value)}
+                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all font-mono"
                 />
               </div>
             </div>
@@ -384,6 +491,48 @@ export default function CompleteRegistrationModal({
                   className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer"
                 >
                   <option value="">— Select course —</option>
+                  <optgroup label="AAPC Certifications">
+                    <option value="CPC - Certified Professional Coder">CPC - Certified Professional Coder (C)</option>
+                    <option value="CIC - Certified Inpatient Coder">CIC - Certified Inpatient Coder (E)</option>
+                    <option value="CPMA - Certified Professional Medical Auditor">CPMA - Certified Professional Medical Auditor (P)</option>
+                    <option value="COC - Certified Outpatient Coder">COC - Certified Outpatient Coder (B)</option>
+                    <option value="CRC - Certified Risk Adjustment Coder">CRC - Certified Risk Adjustment Coder (R)</option>
+                    <option value="CPB - Certified Professional Biller">CPB - Certified Professional Biller (PB)</option>
+                    <option value="CEDC - Certified Emergency Department Coder">CEDC - Certified Emergency Department Coder (EDC)</option>
+                    <option value="CEMC - Certified Evaluation and Management Coder">CEMC - Certified Evaluation and Management Coder (CN)</option>
+                    <option value="CDEO - Certified Documentation Expert Outpatient">CDEO - Certified Documentation Expert Outpatient (CDO)</option>
+                    <option value="CDEI - Certified Documentation Expert Inpatient">CDEI - Certified Documentation Expert Inpatient (CDEI)</option>
+                    <option value="CPPM - Certified Physician Practice Manager">CPPM - Certified Physician Practice Manager (PPM)</option>
+                  </optgroup>
+                  <optgroup label="Speciality Tracks">
+                    <option value="Surgery - Specialty Surgery Coding">Surgery - Specialty Surgery Coding (Y)</option>
+                    <option value="ED - Emergency Department Coding">ED - Emergency Department Coding (D)</option>
+                    <option value="EM - Evaluation and Management Coding">EM - Evaluation and Management Coding (N)</option>
+                    <option value="Radiology - Radiology Coding">Radiology - Radiology Coding (RD)</option>
+                    <option value="Anesthesia - Anesthesia Coding">Anesthesia - Anesthesia Coding (AN)</option>
+                    <option value="IP DRG - Inpatient DRG Coding">IP DRG - Inpatient DRG Coding (I)</option>
+                    <option value="HCC - Risk Adjustment Coding">HCC - Risk Adjustment Coding (H)</option>
+                    <option value="IVR - Interventional Radiology Coding">IVR - Interventional Radiology Coding (IVR)</option>
+                    <option value="CDI - Clinical Documentation Improvement">CDI - Clinical Documentation Improvement (CDI)</option>
+                  </optgroup>
+                  <optgroup label="AHIMA & HIMAA Certifications">
+                    <option value="CCS - Certified Coding Specialist">CCS - Certified Coding Specialist (S)</option>
+                    <option value="CCS-P - Certified Coding Specialist – Physician-based">CCS-P - Certified Coding Specialist – Physician-based (CSP)</option>
+                    <option value="RHIA - Registered Health Information Administrator">RHIA - Registered Health Information Administrator (RIA)</option>
+                    <option value="RHIT - Registered Health Information Technician">RHIT - Registered Health Information Technician (RIT)</option>
+                    <option value="CCC - Certified Clinical Coder">CCC - Certified Clinical Coder (CCC)</option>
+                    <option value="HIM - Health Information Management">HIM - Health Information Management (HIM)</option>
+                  </optgroup>
+                  <optgroup label="Foundation & Other Tracks">
+                    <option value="AMCT - Advanced Medical Coding">AMCT - Advanced Medical Coding (A)</option>
+                    <option value="AMCT Beginner">AMCT Beginner (AB)</option>
+                    <option value="AMCT Intermediate">AMCT Intermediate (AI)</option>
+                    <option value="AMCT Advanced">AMCT Advanced (AA)</option>
+                    <option value="CPC Crash Course">CPC Crash Course (F)</option>
+                    <option value="CPT Coding">CPT Coding (T)</option>
+                    <option value="ICD-10 Coding">ICD-10 Coding (Z)</option>
+                    <option value="Anatomy & Physiology">Anatomy & Physiology (O)</option>
+                  </optgroup>
                   {COURSE_CATEGORIES.map((cat) => (
                     <optgroup key={cat.category} label={cat.title}>
                       {cat.courses.map((c) => {
@@ -409,16 +558,11 @@ export default function CompleteRegistrationModal({
                   className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer"
                 >
                   <option value="">— Select branch —</option>
-                  <option value="Saravanampatti">Saravanampatti</option>
-                  <option value="Hopes (Coimbatore)">Hopes (Coimbatore)</option>
-                  <option value="Gandhipuram">Gandhipuram</option>
-                  <option value="Trichy">Trichy</option>
-                  <option value="Salem">Salem</option>
-                  <option value="Hyderabad Ameerpet">Hyderabad Ameerpet</option>
-                  <option value="Hyderabad Dilsukhnagar">Hyderabad Dilsukhnagar</option>
-                  <option value="Kochi">Kochi</option>
-                  <option value="Trivandrum">Trivandrum</option>
-                  <option value="Vizag">Vizag</option>
+                  {Object.entries(BRANCH_MAP).map(([bCode, bName]) => (
+                    <option key={bCode} value={bName}>
+                      {bName} ({bCode})
+                    </option>
+                  ))}
                 </select>
               </div>
             </div>
@@ -433,10 +577,9 @@ export default function CompleteRegistrationModal({
                   onChange={(e) => setCourseType(e.target.value)}
                   className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer"
                 >
-                  <option value="">— Select type —</option>
-                  <option value="Online">Online</option>
-                  <option value="Classroom">Classroom</option>
-                  <option value="Hybrid">Hybrid</option>
+                  <option value="Online">Online (O)</option>
+                  <option value="Classroom">Classroom (C)</option>
+                  <option value="Hybrid">Hybrid (H)</option>
                 </select>
               </div>
 
@@ -611,20 +754,35 @@ export default function CompleteRegistrationModal({
               </div>
             </div>
 
-            <div>
-              <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-500 uppercase mb-1">
-                PAYMENT METHOD
-              </label>
-              <select
-                value={paymentMethod}
-                onChange={(e) => setPaymentMethod(e.target.value)}
-                className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer"
-              >
-                <option value="UPI / GPay / PhonePe">UPI / GPay / PhonePe</option>
-                <option value="Net Banking / NEFT">Net Banking / NEFT</option>
-                <option value="Credit / Debit Card">Credit / Debit Card</option>
-                <option value="Cash at Branch">Cash at Branch</option>
-              </select>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+              <div>
+                <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-500 uppercase mb-1">
+                  PAYMENT METHOD
+                </label>
+                <select
+                  value={paymentMethod}
+                  onChange={(e) => setPaymentMethod(e.target.value)}
+                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer"
+                >
+                  <option value="UPI / GPay / PhonePe">UPI / GPay / PhonePe</option>
+                  <option value="Net Banking / NEFT">Net Banking / NEFT</option>
+                  <option value="Credit / Debit Card">Credit / Debit Card</option>
+                  <option value="Cash at Branch">Cash at Branch</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-500 uppercase mb-1">
+                  TRANSACTION ID / UPI REF / UTR
+                </label>
+                <input
+                  type="text"
+                  value={transactionId}
+                  onChange={(e) => setTransactionId(e.target.value)}
+                  placeholder="e.g. 428190384721 or IMPS..."
+                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all font-mono"
+                />
+              </div>
             </div>
 
             <p className="text-[11px] text-slate-400 font-mono pt-1 leading-relaxed">
@@ -633,20 +791,149 @@ export default function CompleteRegistrationModal({
           </div>
 
           {/* SECTION 5: Auto-Generated Student ID Box */}
-          <div className="bg-[#e6f7f6] border border-[#a2e3de] rounded-2xl p-5 space-y-2">
-            <div className="flex items-center gap-2">
-              <div className="w-1.5 h-3.5 bg-[#00897b] rounded-full" />
-              <div className="text-xs font-bold text-[#00695c]">
-                Student ID will be generated automatically
+          <div className="bg-gradient-to-br from-[#f0faf8] via-[#e6f7f5] to-[#def5f2] border-2 border-teal-400/90 rounded-2xl sm:rounded-3xl p-5 sm:p-6 space-y-3.5 shadow-sm">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div className="flex items-center gap-2">
+                <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+                <span className="text-[11px] font-mono font-bold uppercase tracking-wider text-teal-900">
+                  Student ID (Auto-Generated from Details)
+                </span>
+                <span className="bg-teal-100/90 text-teal-800 text-[10px] font-bold px-2 py-0.5 rounded-full border border-teal-300">
+                  Live Sync
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowIdControls(!showIdControls)}
+                  className="text-[11px] font-bold text-teal-700 hover:text-teal-900 bg-white/90 hover:bg-white px-2.5 py-1 rounded-lg border border-teal-200 transition-all flex items-center gap-1 cursor-pointer shadow-2xs"
+                >
+                  <Sparkles className="w-3 h-3 text-teal-600" />
+                  <span>{showIdControls ? 'Hide Controls' : 'Fine-Tune ID'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(studentId);
+                    setCopiedId(true);
+                    setTimeout(() => setCopiedId(false), 2000);
+                  }}
+                  className="text-[11px] font-bold text-teal-700 hover:text-teal-900 bg-white/90 hover:bg-white px-2.5 py-1 rounded-lg border border-teal-200 transition-all flex items-center gap-1 cursor-pointer shadow-2xs"
+                  title="Copy Student ID"
+                >
+                  {copiedId ? (
+                    <>
+                      <Check className="w-3 h-3 text-emerald-600 stroke-[3]" />
+                      <span className="text-emerald-700">Copied!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3 h-3" />
+                      <span>Copy</span>
+                    </>
+                  )}
+                </button>
               </div>
             </div>
 
-            <div className="font-mono font-black text-2xl sm:text-3xl text-[#0e6977] tracking-wider pt-1">
-              {studentId}
+            {/* Large Typography ID */}
+            <div className="flex items-center justify-center font-mono font-black tracking-wider text-3xl sm:text-4xl py-1">
+              <span className="text-slate-900">{currentIdDetails.companyPrefix}</span>
+              <span className="text-teal-600">{currentIdDetails.middleCode}</span>
+              <span className="bg-amber-100/90 text-amber-700 px-2.5 py-0.5 rounded-xl ml-1 shadow-xs border border-amber-300/80">
+                {currentIdDetails.serial}
+              </span>
             </div>
 
-            <div className="text-[11px] font-mono text-[#00695c]/80">
-              {idSubtext}
+            {/* Breakdown Subtitle with dot separators */}
+            <div className="text-[11px] font-mono text-slate-600 text-center flex items-center justify-center flex-wrap gap-x-1.5 gap-y-0.5">
+              <span>{currentIdDetails.companyPrefix}</span>
+              <span>·</span>
+              <span className="text-teal-800 font-bold">{currentIdDetails.branchName} ({currentIdDetails.branchCode})</span>
+              <span>·</span>
+              <span className="text-teal-800 font-bold">{currentIdDetails.courseName.split(' - ')[0]} ({currentIdDetails.courseCode})</span>
+              <span>·</span>
+              <span className="text-teal-800 font-bold">{currentIdDetails.typeName} ({currentIdDetails.typeCode})</span>
+              <span>·</span>
+              <span className="text-teal-800 font-bold">{currentIdDetails.monthName} ({currentIdDetails.monthCode})</span>
+              <span>·</span>
+              <span className="text-teal-800 font-bold">{currentIdDetails.yearVal} ({currentIdDetails.yearCode})</span>
+              <span>·</span>
+              <span>Serial <strong className="text-slate-900 font-bold bg-white px-1.5 py-0.5 rounded border border-slate-200">{currentIdDetails.serial}</strong></span>
+            </div>
+
+            {/* Fine-Tuning Controls (Collapsible) */}
+            {showIdControls && (
+              <div className="mt-3 pt-3 border-t border-teal-200/70 grid grid-cols-1 sm:grid-cols-3 gap-3 animate-in fade-in">
+                <div>
+                  <label className="block text-[10px] font-mono font-bold text-teal-800 uppercase mb-1">
+                    Month Code
+                  </label>
+                  <select
+                    value={customMonth || currentIdDetails.monthCode}
+                    onChange={(e) => setCustomMonth(e.target.value)}
+                    className="w-full bg-white border border-teal-300 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 outline-none focus:border-teal-500 font-sans cursor-pointer"
+                  >
+                    {Object.entries(MONTH_MAP).map(([code, mName]) => (
+                      <option key={code} value={code}>
+                        {code} - {mName}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-mono font-bold text-teal-800 uppercase mb-1">
+                    Year Code
+                  </label>
+                  <select
+                    value={customYear || currentIdDetails.yearCode}
+                    onChange={(e) => setCustomYear(e.target.value)}
+                    className="w-full bg-white border border-teal-300 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 outline-none focus:border-teal-500 font-sans cursor-pointer"
+                  >
+                    {Object.entries(YEAR_MAP).map(([code, yVal]) => (
+                      <option key={code} value={code}>
+                        {code} - {yVal}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[10px] font-mono font-bold text-teal-800 uppercase">
+                      Serial Number
+                    </label>
+                    {(customSerial || customMonth || customYear) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCustomMonth('');
+                          setCustomYear('');
+                          setCustomSerial('');
+                        }}
+                        className="text-[9.5px] text-teal-700 hover:underline cursor-pointer flex items-center gap-0.5"
+                      >
+                        <RotateCcw className="w-2.5 h-2.5" />
+                        <span>Reset</span>
+                      </button>
+                    )}
+                  </div>
+                  <input
+                    type="text"
+                    value={customSerial || currentIdDetails.serial}
+                    onChange={(e) => setCustomSerial(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                    placeholder="001"
+                    className="w-full bg-white border border-teal-300 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 outline-none focus:border-teal-500 font-mono font-bold"
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="text-[10px] font-mono text-teal-700/80 pt-1 text-center">
+              💡 ID updates automatically when you change Branch, Course, Type, or Joining Date. Serial is auto-calculated from {allStudents.length} admitted students.
             </div>
           </div>
 

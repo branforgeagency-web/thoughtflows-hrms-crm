@@ -69,6 +69,9 @@ export default function HrMyTargets({ students: propStudents, currentUser }) {
     }
   }, [propStudents]);
 
+  const normName = (v) => String(v || '').trim().replace(/\s+/g, ' ').toLowerCase();
+  const myName = normName(currentUser?.name);
+
   // Compute this month's admissions count
   const now = new Date();
   const thisMonth = now.getMonth();
@@ -77,10 +80,11 @@ export default function HrMyTargets({ students: propStudents, currentUser }) {
   const admissionsThisMonth = useMemo(() => {
     return allStudents.filter(s => {
       if (!s.createdAt) return false;
+      if (myName && normName(s.hrName) !== myName) return false;
       const d = new Date(s.createdAt);
       return d.getMonth() === thisMonth && d.getFullYear() === thisYear;
     }).length;
-  }, [allStudents, thisMonth, thisYear]);
+  }, [allStudents, thisMonth, thisYear, myName]);
 
   // Compute current slab
   const activeSlab = useMemo(() => {

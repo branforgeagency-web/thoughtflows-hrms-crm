@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { derivePlacementFields } from '../constants/placement.js';
 
 const studentSchema = new mongoose.Schema({
   studentId: {
@@ -60,6 +61,14 @@ const studentSchema = new mongoose.Schema({
     default: ''
   },
   location: {
+    type: String,
+    default: ''
+  },
+  branch: {
+    type: String,
+    default: ''
+  },
+  leadBranch: {
     type: String,
     default: ''
   },
@@ -148,6 +157,11 @@ const studentSchema = new mongoose.Schema({
     type: String,
     default: 'Pending Handover'
   },
+  // The pipeline lead this admission came from
+  leadId: {
+    type: String,
+    default: ''
+  },
   // Filled from real class attendance recorded by the trainer (ClassAttendance)
   attendancePct: {
     type: Number,
@@ -187,7 +201,7 @@ const studentSchema = new mongoose.Schema({
     course: { type: Boolean, default: true },
     branch: { type: Boolean, default: true },
     batchMode: { type: Boolean, default: true },
-    paymentStatus: { type: Boolean, default: true },
+    paymentStatus: { type: Boolean, default: false },
     studentId: { type: Boolean, default: true },
     language: { type: Boolean, default: true },
     education: { type: Boolean, default: true },
@@ -238,6 +252,25 @@ const studentSchema = new mongoose.Schema({
   }
 }, {
   timestamps: true
+});
+
+// Placement stage is always derived here, whichever route wrote the student
+studentSchema.pre('save', function (next) {
+  const changes = derivePlacementFields(this);
+  Object.entries(changes).forEach(([k, v]) => this.set(k, v));
+  next();
+});
+studentSchema.post('findOneAndUpdate', async function (res) {
+  try {
+    const doc = await this.model.findOne(this.getQuery());
+    if (!doc) return;
+    const changes = derivePlacementFields(doc);
+    if (!Object.keys(changes).length) return;
+    await this.model.updateOne({ _id: doc._id }, { $set: changes });
+    if (res && typeof res.set === 'function' && String(res._id) === String(doc._id)) res.set(changes);
+  } catch (e) {
+    console.warn('placement stage sync failed:', e.message);
+  }
 });
 
 export default mongoose.models.Student || mongoose.model('Student', studentSchema);

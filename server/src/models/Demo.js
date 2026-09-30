@@ -45,6 +45,14 @@ const demoSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  branch: {
+    type: String,
+    default: ''
+  },
+  counselor: {
+    type: String,
+    default: ''
+  },
   trainer: {
     type: String,
     default: ''
@@ -158,15 +166,8 @@ const demoSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Prevents the same trainer from ending up CONFIRMED into two demos at the
-// same date + time slot. This is enforced at the DB level (not just in the
-// route handler) so it holds even under concurrent confirmations.
-demoSchema.index(
-  { trainerId: 1, preferredDate: 1, timeSlot: 1 },
-  {
-    unique: true,
-    partialFilterExpression: { status: 'confirmed' }
-  }
-);
+// Index on trainerId, preferredDate, timeSlot for fast query lookups.
+// Demos are conducted as group sessions (up to 6 students taken together in one demo session).
+demoSchema.index({ trainerId: 1, preferredDate: 1, timeSlot: 1 });
 
 export default mongoose.models.Demo || mongoose.model('Demo', demoSchema);

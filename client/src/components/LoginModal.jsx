@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import { Eye, EyeOff } from 'lucide-react';
 
 export const TRAINER_PROFILES = [
   {
@@ -132,67 +133,22 @@ export default function LoginModal({
   const [activeDeptId, setActiveDeptId] = useState(initialDepartment);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  // Development only: built-in account passwords from the local server (.env DEV_LOGIN_AUTOFILL=true)
-  const [devAccounts, setDevAccounts] = useState({});
-  const [devList, setDevList] = useState([]);
-  const [devGroup, setDevGroup] = useState('hr');
-  const [devSearch, setDevSearch] = useState('');
-  const [devPick, setDevPick] = useState('');
-  useEffect(() => {
-    if (!isOpen) return;
-    axios.get('/api/auth/dev-accounts')
-      .then((r) => { setDevAccounts(r.data?.builtin || {}); setDevList(Array.isArray(r.data?.accounts) ? r.data.accounts : []); })
-      .catch(() => { setDevAccounts({}); setDevList([]); });
-  }, [isOpen]);
-  const devEnabled = Object.keys(devAccounts).length > 0 || devList.length > 0;
-  const DEV_GROUPS = [['hr', 'HR'], ['training', 'Trainers'], ['student', 'Students'], ['other', 'Others']];
-  const devFiltered = devList.filter((a) => {
-    const g = ['hr', 'training', 'student'].includes(a.group) ? a.group : 'other';
-    if (g !== devGroup) return false;
-    const q = devSearch.trim().toLowerCase();
-    return !q || [a.name, a.email, a.detail].some((v) => String(v || '').toLowerCase().includes(q));
-  });
-  const handleDevLogin = async () => {
-    const acc = devList.find((a) => `${a.kind}:${a.id}` === devPick);
-    if (!acc) return;
-    setLoading(true);
-    setError('');
-    try {
-      const res = await axios.post('/api/auth/dev-login', { kind: acc.kind, id: acc.id });
-      if (res.data?.success && res.data?.user) {
-        onLoginSuccess(res.data.user);
-        onClose();
-      }
-    } catch (err) {
-      setError(err.response?.data?.message || 'Dev login failed');
-    } finally {
-      setLoading(false);
-    }
-  };
-  const devPassword = (deptId) => devAccounts[deptId]?.password || '';
-  const devEmail = (dept) => devAccounts[dept.id]?.email || dept.email;
-
   // Reset inputs when modal opens or initialDepartment changes
   useEffect(() => {
     if (isOpen) {
       const dept = DEPARTMENTS.find(d => d.id === initialDepartment) || DEPARTMENTS[1];
       setActiveDeptId(dept.id);
-      setEmail('');
+      setEmail(dept.email || '');
       setPassword('');
+      setShowPassword(false);
       setError('');
     }
   }, [isOpen, initialDepartment]);
 
   const activeDept = DEPARTMENTS.find(d => d.id === activeDeptId) || DEPARTMENTS[0];
-
-  // Dev auto-fill: pre-fill the selected account as soon as the dev passwords load
-  useEffect(() => {
-    if (!isOpen || !devAccounts[activeDeptId] || email) return;
-    setEmail(devAccounts[activeDeptId].email);
-    setPassword(devAccounts[activeDeptId].password);
-  }, [devAccounts, activeDeptId, isOpen]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -290,8 +246,8 @@ export default function LoginModal({
                     type="button"
                     onClick={() => {
                       setActiveDeptId(dept.id);
-                      setEmail(devEmail(dept));
-                      setPassword(devPassword(dept.id));
+                      setEmail(dept.email || '');
+                      setPassword('');
                       setError('');
                     }}
                     className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer select-none ${
@@ -315,39 +271,6 @@ export default function LoginModal({
           </div>
         )}
 
-        {devEnabled && (
-          <div className="mb-4 p-3 rounded-2xl border-2 border-dashed border-amber-300 bg-amber-50/70 text-left space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-[10.5px] font-extrabold tracking-wider text-amber-800 uppercase">Developer quick login</span>
-              <span className="text-[10px] text-amber-700">{devList.length} accounts · dev only</span>
-            </div>
-            <div className="flex gap-1.5">
-              {DEV_GROUPS.map(([id, label]) => (
-                <button key={id} type="button" onClick={() => { setDevGroup(id); setDevPick(''); }}
-                  className={`px-2.5 py-1 rounded-full text-[11px] font-bold border ${devGroup === id ? 'bg-amber-600 text-white border-amber-600' : 'bg-white text-amber-800 border-amber-200'}`}>
-                  {label} ({devList.filter((a) => (['hr', 'training', 'student'].includes(a.group) ? a.group : 'other') === id).length})
-                </button>
-              ))}
-            </div>
-            <input value={devSearch} onChange={(e) => setDevSearch(e.target.value)} placeholder="Search name, email or ID…"
-              className="w-full px-3 py-1.5 rounded-lg border border-amber-200 bg-white text-xs" />
-            <div className="flex gap-2">
-              <select value={devPick} onChange={(e) => setDevPick(e.target.value)} className="flex-1 min-w-0 px-2 py-1.5 rounded-lg border border-amber-200 bg-white text-xs">
-                <option value="">{devFiltered.length ? 'Select an account…' : 'No accounts in this group'}</option>
-                {devFiltered.map((a) => (
-                  <option key={`${a.kind}:${a.id}`} value={`${a.kind}:${a.id}`}>
-                    {a.name}{a.email ? ` — ${a.email}` : ''}{a.detail ? ` (${a.detail})` : ''}
-                  </option>
-                ))}
-              </select>
-              <button type="button" onClick={handleDevLogin} disabled={!devPick || loading}
-                className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold disabled:opacity-50">
-                Login as
-              </button>
-            </div>
-          </div>
-        )}
-
         {error && (
           <div className="p-2.5 mb-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs text-center font-medium">
             {error}
@@ -357,22 +280,9 @@ export default function LoginModal({
         {/* Form Inputs */}
         <form onSubmit={handleSubmit} className="text-left space-y-3.5">
           <div>
-            <div className="flex items-center justify-between mb-1">
-              <label className="block text-[11px] font-extrabold tracking-wider text-[#00695c] uppercase">
-                EMAIL ADDRESS
-              </label>
-              <button
-                type="button"
-                onClick={() => {
-                  setEmail(devEmail(activeDept));
-                  setPassword(devPassword(activeDept.id));
-                  setError('');
-                }}
-                className="text-[10.5px] font-bold text-[#00897b] hover:underline cursor-pointer"
-              >
-                Auto-fill {activeDept.shortName}
-              </button>
-            </div>
+            <label className="block text-[11px] font-extrabold tracking-wider text-[#00695c] uppercase mb-1">
+              EMAIL ADDRESS
+            </label>
             <input
               type="email"
               value={email}
@@ -397,18 +307,32 @@ export default function LoginModal({
             <label className="block text-[11px] font-extrabold tracking-wider text-[#00695c] uppercase mb-1">
               PASSWORD
             </label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              placeholder="Enter your password"
-              className={`w-full px-3.5 py-2.5 text-xs text-slate-800 placeholder-slate-400 outline-none transition-all ${
-                isClay
-                  ? 'clay-input'
-                  : 'bg-[#f8fafc] border border-slate-200 rounded-xl focus:border-[#00897b] focus:bg-white font-medium'
-              }`}
-            />
+            <div className="relative">
+              <input
+                type={showPassword ? 'text' : 'password'}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                placeholder="Enter your password"
+                className={`w-full px-3.5 py-2.5 pr-10 text-xs text-slate-800 placeholder-slate-400 outline-none transition-all ${
+                  isClay
+                    ? 'clay-input'
+                    : 'bg-[#f8fafc] border border-slate-200 rounded-xl focus:border-[#00897b] focus:bg-white font-medium'
+                }`}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 focus:outline-none p-1 transition-colors cursor-pointer"
+                title={showPassword ? 'Hide password' : 'Show password'}
+              >
+                {showPassword ? (
+                  <EyeOff className="w-4 h-4" />
+                ) : (
+                  <Eye className="w-4 h-4" />
+                )}
+              </button>
+            </div>
           </div>
 
           {/* Sign in Button */}

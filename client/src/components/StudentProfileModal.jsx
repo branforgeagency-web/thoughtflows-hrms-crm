@@ -18,10 +18,12 @@ import {
   ChevronRight, 
   ChevronDown, 
   Edit2, 
-  ExternalLink 
+  ExternalLink,
+  Phone
 } from 'lucide-react';
 import { updateStudent } from '../services/api';
 import StudentTimeline from './StudentTimeline';
+import { effectiveStage, autoStage, stageChecks, blockReason, PLACEMENT_EDITORS, ATTENDANCE_MIN, MOCK_PASS } from '../utils/placement';
 
 export default function StudentProfileModal({ isOpen, onClose, student: propStudent, onUpdateStudent }) {
   if (!isOpen || !propStudent) return null;
@@ -131,55 +133,37 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
     }, 0);
   }, [interviewsList]);
 
-  const currentStageIdx = useMemo(() => {
-    if (typeof student.placementStage === 'number' && student.placementStage >= 1 && student.placementStage <= 7) {
-      return student.placementStage;
-    }
-    const s = (student.placementStatus || '').toLowerCase();
-    if (s.includes('joined') || s.includes('placed')) return 7;
-    if (s.includes('offer') || s.includes('selected')) return 6;
-    if (interviewsList.length > 0 || s.includes('interview')) return 5;
-    if (s.includes('mapped') || s.includes('company')) return 4;
-    if (s.includes('talentera') || s.includes('synced')) return 3;
-    if (s.includes('ready')) return 2;
-    return 5; // Default for active candidates with interview drives
-  }, [student.placementStage, student.placementStatus, interviewsList]);
+  // Stages 1–3 come from real data; 4–7 are set by the placement team
+  const currentStageIdx = effectiveStage(student);
+  const autoStageIdx = autoStage(student);
+  const checks = stageChecks(student);
+  const myDept = useMemo(() => {
+    try { return JSON.parse(localStorage.getItem('thoughtflows_user') || 'null')?.department || ''; } catch (_) { return ''; }
+  }, []);
+  const canEditPlacement = PLACEMENT_EDITORS.includes(myDept);
+  const stageLock = (id) => {
+    if (id <= 3) return 'Updates automatically';
+    if (!canEditPlacement) return 'Only HR / CCCP / Admin can change this';
+    if (id === currentStageIdx) return '';
+    if (id < currentStageIdx) return '';
+    return blockReason(student, id);
+  };
 
   // Stage update handler
   const handleUpdateStage = async (newStageId) => {
+    if (newStageId === currentStageIdx) return;
     const matched = basePlacementStages.find(s => s.id === newStageId);
-    const stageStatusMap = {
-      1: 'Talent Pool',
-      2: 'Placement Ready',
-      3: 'Talentera Synced',
-      4: 'Company Mapped',
-      5: 'Interview Scheduled',
-      6: 'Offer Released',
-      7: 'Placed & Joined'
-    };
-    const newStatus = stageStatusMap[newStageId] || matched?.label || 'In Progress';
-    const statusGroup = newStageId === 7 ? 'placed' : 'in_course';
-
-    const updated = {
-      ...student,
-      placementStage: newStageId,
-      placementStatus: newStatus,
-      statusGroup
-    };
-
-    setStudent(updated);
-    showToast(`✓ Placement pipeline updated to Stage ${newStageId}: ${matched?.label}`);
-
+    const lock = stageLock(newStageId);
+    if (lock) { showToast(`🔒 ${lock}`); return; }
     try {
       const studentIdentifier = student._id || student.id || student.studentId;
-      await updateStudent(studentIdentifier, {
-        placementStage: newStageId,
-        placementStatus: newStatus,
-        statusGroup
-      });
+      const saved = await updateStudent(studentIdentifier, { placementStage: newStageId });
+      const updated = { ...student, ...saved };
+      setStudent(updated);
       if (onUpdateStudent) onUpdateStudent(updated);
+      showToast(`✓ Placement pipeline moved to Stage ${newStageId}: ${matched?.label}`);
     } catch (err) {
-      console.error('Failed to update stage:', err);
+      showToast(`⚠ ${err?.response?.data?.error || 'Could not update the stage'}`);
     }
   };
 
@@ -225,28 +209,23 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
       ...interviewsList
     ];
 
+    if (currentStageIdx < 3) {
+      showToast(`🔒 ${blockReason(student, 4)}`);
+      return;
+    }
     try {
       const updated = await updateStudent(student._id || student.id, {
         interviews: updatedInterviews,
         placementCompany: newInterview.company,
         placementRole: newInterview.role,
-        placementPackage: newInterview.packageAmount,
-        placementStatus: newInterview.roundStatus.includes('Offer') ? 'Selected' : 'Interview Scheduled',
-        statusGroup: newInterview.roundStatus.includes('Offer') ? 'placed' : 'in_course'
+        placementPackage: newInterview.packageAmount
       });
-      setStudent(prev => ({
-        ...prev,
-        ...updated,
-        interviews: updatedInterviews
-      }));
+      setStudent(prev => ({ ...prev, ...updated }));
       if (onUpdateStudent) onUpdateStudent(updated);
       showToast(`✓ Logged interview round with ${newInterview.company}`);
       setShowAddInterviewModal(false);
     } catch (err) {
-      console.warn('Fallback local state update:', err);
-      setStudent(prev => ({ ...prev, interviews: updatedInterviews }));
-      showToast(`✓ Added interview with ${newInterview.company}`);
-      setShowAddInterviewModal(false);
+      showToast(`⚠ ${err?.response?.data?.error || 'Could not save the interview'}`);
     }
   };
 
@@ -326,7 +305,23 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
                 </div>
                 <InfoRow label="Student ID" value={studentId} mono />
                 <InfoRow label="Full Name" value={formattedName} />
-                <InfoRow label="Mobile" value={student.phone} mono />
+                <InfoRow 
+                  label="Mobile" 
+                  value={
+                    student.phone ? (
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="font-mono">{student.phone}</span>
+                        <a 
+                          href={`tel:${student.phone}`} 
+                          className="p-1 rounded bg-[#00897b]/10 text-[#00897b] hover:bg-[#00897b] hover:text-white transition-colors"
+                          title={`Dial ${student.phone}`}
+                        >
+                          <Phone className="w-2.5 h-2.5" />
+                        </a>
+                      </span>
+                    ) : '—'
+                  } 
+                />
                 {student.whatsappNumber && student.whatsappNumber !== student.phone && (
                   <InfoRow label="WhatsApp / Addl" value={student.whatsappNumber} mono />
                 )}
@@ -663,9 +658,7 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
                     <TrendingUp className="w-4 h-4" />
                   </div>
                   <div className="text-lg font-black text-amber-950 truncate">
-                    {student.placementStatus && student.placementStatus !== 'In course' 
-                      ? student.placementStatus 
-                      : (currentStageIdx >= 5 ? 'Interview Scheduled' : student.trainerRecommendation === 'Ready' ? 'Placement Ready' : 'In training')}
+                    {currentStageIdx >= 1 ? basePlacementStages[currentStageIdx - 1].label : 'Not in pipeline yet'}
                   </div>
                   <div className="text-[11px] text-amber-700 font-semibold mt-0.5 truncate">
                     {interviewsList[0]?.offeredPackage || student.placementPackage || 'No offer yet'}
@@ -682,8 +675,20 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
                       <span>7-Stage Corporate Career & Placement Pipeline</span>
                     </h3>
                     <p className="text-[11px] text-slate-500 mt-0.5">
-                      Click any stage below or select from dropdown to update candidate hiring progress
+                      Stages 1–3 update automatically. Stages 4–7 are set by HR / CCCP, one step at a time.
                     </p>
+                    {/* What the automatic stages are waiting on */}
+                    <div className="flex flex-wrap gap-1.5 mt-2">
+                      {[
+                        ['Handed to training', checks[1]],
+                        [`Attendance ≥ ${ATTENDANCE_MIN}%${typeof student.attendancePct === 'number' ? ` (${student.attendancePct}%)` : ''}`, checks.attendanceOk],
+                        [`Mock ≥ ${MOCK_PASS} or trainer "Ready"`, checks.mockOk],
+                      ].map(([label, ok]) => (
+                        <span key={label} className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${ok ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-50 text-slate-500 border-slate-200'}`}>
+                          {ok ? '✓' : '○'} {label}
+                        </span>
+                      ))}
+                    </div>
                     {/* Trainer-reviewed placement documents (needed before Talentera sync) */}
                     <div className="flex flex-wrap gap-1.5 mt-2">
                       {[['Resume', student.resumeStatus], ['Video intro', student.videoIntroStatus]].map(([label, status]) => (
@@ -707,11 +712,14 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
                     <select
                       value={currentStageIdx}
                       onChange={(e) => handleUpdateStage(Number(e.target.value))}
-                      className="text-xs font-bold text-[#0e6977] bg-teal-50 border border-teal-300 rounded-lg px-2.5 py-1 focus:outline-none focus:ring-2 focus:ring-teal-500 cursor-pointer"
+                      disabled={!canEditPlacement}
+                      title={canEditPlacement ? '' : 'Only HR / CCCP / Admin can change the placement stage'}
+                      className="disabled:opacity-60 disabled:cursor-not-allowed text-xs font-bold text-[#0e6977] bg-teal-50 border border-teal-300 rounded-lg px-2.5 py-1 focus:outline-none focus:ring-2 focus:ring-teal-500 cursor-pointer"
                     >
+                      {currentStageIdx === 0 && <option value={0}>Not in pipeline yet</option>}
                       {basePlacementStages.map(st => (
-                        <option key={st.id} value={st.id}>
-                          Stage {st.id}: {st.label}
+                        <option key={st.id} value={st.id} disabled={st.id !== currentStageIdx && Boolean(stageLock(st.id))}>
+                          Stage {st.id}: {st.label}{st.id <= 3 ? ' (auto)' : ''}
                         </option>
                       ))}
                     </select>
@@ -722,15 +730,17 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
                 <div className="overflow-x-auto no-scrollbar py-2">
                   <div className="flex items-start justify-between min-w-[620px] gap-2">
                     {basePlacementStages.map((st) => {
-                      const isCompleted = st.id < currentStageIdx;
                       const isCurrent = st.id === currentStageIdx;
+                      // Auto stages show their real condition, never "done" by assumption
+                      const isCompleted = !isCurrent && (st.id <= 3 ? st.id <= autoStageIdx : st.id < currentStageIdx);
+                      const lock = stageLock(st.id);
                       return (
                         <button
                           key={st.id}
                           type="button"
                           onClick={() => handleUpdateStage(st.id)}
-                          title={`Click to set stage to Stage ${st.id}: ${st.label}`}
-                          className="flex-1 flex flex-col items-center text-center relative group cursor-pointer transition-all hover:scale-105"
+                          title={lock && !isCurrent ? lock : `Set Stage ${st.id}: ${st.label}`}
+                          className={`flex-1 flex flex-col items-center text-center relative group transition-all ${lock && !isCurrent ? 'cursor-not-allowed' : 'cursor-pointer hover:scale-105'}`}
                         >
                           {/* Connector line */}
                           {st.id !== 1 && (
@@ -771,7 +781,7 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
                                 ? 'bg-amber-100 text-amber-900 border border-amber-300'
                                 : 'bg-slate-50 text-slate-400 group-hover:text-teal-700'
                           }`}>
-                            {isCompleted ? 'Completed ✓' : isCurrent ? 'Active ⚡' : 'Click to Set'}
+                            {isCompleted ? 'Completed ✓' : isCurrent ? 'Active ⚡' : st.id <= 3 ? 'Pending' : lock ? 'Locked 🔒' : 'Click to Set'}
                           </span>
                         </button>
                       );
@@ -796,7 +806,9 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
                   <button
                     type="button"
                     onClick={() => setShowAddInterviewModal(true)}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#0e6977] hover:bg-[#0a4f5a] text-white text-xs font-bold shadow-xs transition-all active:scale-95 cursor-pointer self-start sm:self-auto"
+                    disabled={!canEditPlacement || currentStageIdx < 3}
+                    title={!canEditPlacement ? 'Only HR / CCCP / Admin can log interviews' : currentStageIdx < 3 ? 'Available once the student is Talentera Synced (Stage 3)' : ''}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#0e6977] hover:bg-[#0a4f5a] text-white text-xs font-bold shadow-xs transition-all active:scale-95 cursor-pointer self-start sm:self-auto disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
                     <span>Log New Interview</span>

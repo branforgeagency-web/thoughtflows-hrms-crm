@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Sparkles, 
   CheckCircle2, 
@@ -19,9 +19,13 @@ import {
 } from 'lucide-react';
 import logoImg from '../assets/thoughtflows-logo.png';
 import { COURSE_CATEGORIES } from '../constants/courses';
-import { createStudent } from '../services/api';
+import { createStudent, getStudents } from '../services/api';
 import { getCurrentMonthYear, getCurrentMonthName } from '../utils/dateUtils';
 import { copyToClipboard } from '../utils/clipboard';
+import { 
+  BRANCH_MAP, 
+  generateStudentIdDetails 
+} from '../utils/studentIdGenerator';
 
 export default function StudentRegistrationPage({ onBack }) {
   // Query parameters parsing
@@ -60,6 +64,26 @@ export default function StudentRegistrationPage({ onBack }) {
   const [submittedData, setSubmittedData] = useState(null);
   const [errorMessage, setErrorMessage] = useState(null);
   const [copiedId, setCopiedId] = useState(false);
+
+  const [existingStudents, setExistingStudents] = useState([]);
+
+  useEffect(() => {
+    getStudents()
+      .then((data) => {
+        if (Array.isArray(data)) setExistingStudents(data);
+      })
+      .catch((err) => console.error('Error fetching students for registration page ID generator:', err));
+  }, []);
+
+  const currentIdDetails = useMemo(() => {
+    return generateStudentIdDetails({
+      branch: branch || 'Saravanampatti',
+      course,
+      courseType,
+      date: new Date(),
+      existingStudents
+    });
+  }, [branch, course, courseType, existingStudents]);
 
   const WALKIN_CATEGORIES = [
     ...COURSE_CATEGORIES.map(cat => ({
@@ -110,6 +134,7 @@ export default function StudentRegistrationPage({ onBack }) {
     const finalWhatsApp = sameAsMobile ? phone.trim() : (whatsappNumber.trim() || phone.trim());
 
     const studentRecord = {
+      studentId: currentIdDetails.studentId,
       name: name.trim().toUpperCase(),
       fatherName: fatherName.trim(),
       address: address.trim(),
@@ -637,23 +662,74 @@ export default function StudentRegistrationPage({ onBack }) {
                 </div>
               </div>
 
-              {/* CONSULTANT HR & BRANCH (IF SPECIFIED IN URL) */}
-              {(consultHr || branch) && (
+              {/* BRANCH SELECTION */}
+              <div>
+                <label className="block text-xs font-bold text-[#00695c] mb-1">
+                  Branch / Center <span className="text-rose-500">*</span>
+                </label>
+                <select
+                  value={branch}
+                  onChange={(e) => setBranch(e.target.value)}
+                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-slate-900 outline-none focus:border-[#00796b] transition-all font-medium cursor-pointer"
+                >
+                  {Object.entries(BRANCH_MAP).map(([bCode, bName]) => (
+                    <option key={bCode} value={bName}>
+                      {bName} ({bCode})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* CONSULTANT HR (IF SPECIFIED IN URL) */}
+              {consultHr && (
                 <div className="bg-slate-50 p-3 rounded-xl border border-slate-200/80 text-[11px] text-slate-600 flex flex-wrap items-center gap-4">
-                  {consultHr && (
-                    <div>
-                      <span className="text-slate-400">Assigned Counselor:</span>{' '}
-                      <strong className="text-slate-800">{consultHr}</strong>
-                    </div>
-                  )}
-                  {branch && (
-                    <div>
-                      <span className="text-slate-400">Branch:</span>{' '}
-                      <strong className="text-slate-800">{branch}</strong>
-                    </div>
-                  )}
+                  <div>
+                    <span className="text-slate-400">Assigned Counselor:</span>{' '}
+                    <strong className="text-slate-800">{consultHr}</strong>
+                  </div>
                 </div>
               )}
+
+              {/* AUTO-GENERATED STUDENT ID BANNER */}
+              <div className="bg-gradient-to-br from-[#f0faf8] via-[#e6f7f5] to-[#def5f2] border-2 border-teal-400/90 rounded-2xl p-4 sm:p-5 space-y-2.5 text-center shadow-xs">
+                <div className="flex items-center justify-center gap-2">
+                  <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+                  <span className="text-[11px] font-mono font-bold uppercase tracking-wider text-teal-900">
+                    YOUR GENERATED STUDENT ID
+                  </span>
+                  <span className="bg-teal-100/90 text-teal-800 text-[10px] font-bold px-2 py-0.5 rounded-full border border-teal-300">
+                    Live
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-center font-mono font-black tracking-wider text-3xl sm:text-4xl text-slate-900">
+                  <span>{currentIdDetails.companyPrefix}</span>
+                  <span className="text-teal-600">{currentIdDetails.middleCode}</span>
+                  <span className="bg-amber-100/90 text-amber-700 px-2.5 py-0.5 rounded-xl ml-1 shadow-xs border border-amber-300/80">
+                    {currentIdDetails.serial}
+                  </span>
+                </div>
+
+                <div className="text-[11px] font-mono text-slate-600 flex items-center justify-center flex-wrap gap-x-1.5 gap-y-0.5">
+                  <span>{currentIdDetails.companyPrefix}</span>
+                  <span>·</span>
+                  <span className="text-teal-800 font-bold">{currentIdDetails.branchName} ({currentIdDetails.branchCode})</span>
+                  <span>·</span>
+                  <span className="text-teal-800 font-bold">{currentIdDetails.courseName.split(' - ')[0]} ({currentIdDetails.courseCode})</span>
+                  <span>·</span>
+                  <span className="text-teal-800 font-bold">{currentIdDetails.typeName} ({currentIdDetails.typeCode})</span>
+                  <span>·</span>
+                  <span className="text-teal-800 font-bold">{currentIdDetails.monthName} ({currentIdDetails.monthCode})</span>
+                  <span>·</span>
+                  <span className="text-teal-800 font-bold">{currentIdDetails.yearVal} ({currentIdDetails.yearCode})</span>
+                  <span>·</span>
+                  <span>Serial <strong className="text-slate-900 font-bold bg-white px-1.5 py-0.5 rounded border border-slate-200">{currentIdDetails.serial}</strong></span>
+                </div>
+
+                <div className="text-[10px] font-mono text-teal-700/80 pt-0.5">
+                  ✨ Auto-generated based on your Branch, Course & Learning Mode.
+                </div>
+              </div>
 
               {/* SUBMIT BUTTON */}
               <div className="pt-3">

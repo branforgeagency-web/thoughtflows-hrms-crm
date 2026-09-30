@@ -17,8 +17,7 @@ import {
   ArrowRight
 } from 'lucide-react';
 
-import { getLeads, updateLead, createStudent } from '../services/api';
-import { getCurrentMonthYear } from '../utils/dateUtils';
+import { getLeads, updateLead } from '../services/api';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 
 // Classifies a lead's follow-up against real dates instead of guessing.
@@ -51,6 +50,8 @@ export default function HrPipelineView({
   leads: propLeads, 
   onRefreshLeads, 
   onAddLeadClick,
+  onAdmitLead,
+  onCallLead,
   initialViewMode = 'kanban',
   currentUser
 }) {
@@ -106,45 +107,19 @@ export default function HrPipelineView({
     const currentIdx = stageSeq.indexOf(currentStage);
     const nextStage = currentIdx >= 0 && currentIdx < stageSeq.length - 1 ? stageSeq[currentIdx + 1] : 'admitted';
 
+    const targetLead = leads.find(l => (l._id || l.id) === leadId);
+    // Admission needs the fee & payment details, so it goes through the
+    // registration form; creating the student moves the lead to Admitted.
+    if (nextStage === 'admitted') {
+      if (targetLead && onAdmitLead) onAdmitLead(targetLead);
+      return;
+    }
+
     try {
       await updateLead(leadId, { stage: nextStage });
-      const targetLead = leads.find(l => (l._id || l.id) === leadId);
-
-      // When advanced to 'admitted', auto-enroll as live Student in MongoDB
-      if (nextStage === 'admitted' && targetLead) {
-        try {
-          await createStudent({
-            name: (targetLead.fullName || targetLead.name || '').toUpperCase(),
-            phone: targetLead.phone || '',
-            whatsappNumber: targetLead.whatsappNumber || '',
-            email: targetLead.email || '',
-            course: targetLead.course || '',
-            mode: /class|off/i.test(targetLead.mode || '') ? 'Classroom' : 'Online',
-            batchDate: getCurrentMonthYear(),
-            hrName: targetLead.counselorAssigned || currentUser?.name || '',
-            batchTiming: targetLead.batchTiming || '',
-            qualification: targetLead.education || '',
-            location: targetLead.branch || targetLead.location || '',
-            source: targetLead.sourceName || targetLead.source || 'LEAD PIPELINE',
-            syllabusModule: 'Module 1',
-            mockInterview: 'Pending',
-            examStatus: 'Not Booked',
-            certified: 'Non-certified',
-            placementStatus: 'In course',
-            feeStatus: 'Pending',
-            statusGroup: 'in_course',
-            handoverStatus: 'Ready'
-          });
-        } catch (enrollErr) {
-          triggerAction(`⚠ Lead moved to admitted, but the student record was not created: ${enrollErr?.response?.data?.error || enrollErr.message}`);
-          if (onRefreshLeads) onRefreshLeads();
-          return;
-        }
-      }
-
       setLeads(prev => prev.map(l => (l._id === leadId || l.id === leadId) ? { ...l, stage: nextStage } : l));
       if (onRefreshLeads) onRefreshLeads();
-      triggerAction(`✓ Advanced lead to ${nextStage.replace('_', ' ').toUpperCase()}${nextStage === 'admitted' ? ' & Enrolled as Student' : ''}`);
+      triggerAction(`✓ Advanced lead to ${nextStage.replace('_', ' ').toUpperCase()}`);
     } catch (err) {
       console.error('Failed to advance lead stage:', err);
       triggerAction('Error updating lead stage');
@@ -237,7 +212,8 @@ export default function HrPipelineView({
           { label: (lead.sourceName || lead.source || 'LEAD').toUpperCase(), class: 'bg-indigo-50 text-indigo-700 border-indigo-200' }
         ],
         note: lead.followUpNote || lead.notes || `${lead.education || 'Graduate'} · Stage: ${(lead.stage || 'new').replace('_', ' ').toUpperCase()}`,
-        assigned: lead.counselorAssigned || ''
+        assigned: lead.counselorAssigned || '',
+        rawLead: lead
       };
     });
   }, [searchFilteredLeads]);
@@ -517,9 +493,17 @@ export default function HrPipelineView({
                               <div className="grid grid-cols-2 gap-1.5">
                                 <button
                                   type="button"
-                                  onClick={() => triggerAction(`Initiating call with ${card.name} (${card.phone})`)}
+                                  onClick={() => {
+                                    if (onCallLead) {
+                                      onCallLead(card.rawLead || card);
+                                    } else if (card.phone) {
+                                      window.location.href = `tel:${card.phone}`;
+                                    } else {
+                                      triggerAction(`No phone number for ${card.name}`);
+                                    }
+                                  }}
                                   className="bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-[11px] py-1.5 px-2 rounded-lg flex items-center justify-center gap-1 shadow-xs transition-all active:scale-95 cursor-pointer"
-                                  title="Initiate Call"
+                                  title={`Call ${card.name} (${card.phone})`}
                                 >
                                   <Phone className="w-3 h-3" />
                                   <span>Call</span>
@@ -633,9 +617,17 @@ export default function HrPipelineView({
                       <div className="grid grid-cols-2 gap-1.5">
                         <button
                           type="button"
-                          onClick={() => triggerAction(`Calling ${card.name} (${card.phone})`)}
+                          onClick={() => {
+                            if (onCallLead) {
+                              onCallLead(card.rawLead || card);
+                            } else if (card.phone) {
+                              window.location.href = `tel:${card.phone}`;
+                            } else {
+                              triggerAction(`No phone number for ${card.name}`);
+                            }
+                          }}
                           className="bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-[11px] py-1.5 px-2 rounded-lg flex items-center justify-center gap-1.5 shadow-xs transition-all active:scale-95 cursor-pointer"
-                          title="Initiate Call"
+                          title={`Call ${card.name} (${card.phone})`}
                         >
                           <Phone className="w-3 h-3" />
                           <span>Call</span>

@@ -212,8 +212,8 @@ export const sendLeadWhatsAppMessage = async (id, data) => {
 };
 
 // Demos API
-export const getDemos = async () => {
-  const res = await api.get('/demos');
+export const getDemos = async (params) => {
+  const res = await api.get('/demos', { params });
   return res.data;
 };
 
@@ -344,6 +344,12 @@ export const getMyDemos = async (email) => {
 
 export const acknowledgeDemo = async (id, data) => {
   const res = await api.put(`/demos/${id}/acknowledge`, data || {});
+  notifyDataUpdate('demos');
+  return res.data;
+};
+
+export const updateDemosBulkOutcome = async (ids, status) => {
+  const res = await api.post('/demos/bulk-outcome', { ids, status, updatedBy: 'trainer' });
   notifyDataUpdate('demos');
   return res.data;
 };
@@ -915,8 +921,9 @@ export const markLiveClassAttendanceSaved = async (sessionId) => {
 };
 
 // Student joins the live class of their batch (logged for attendance)
-export const joinStudentLiveClass = async () => {
-  const res = await api.post('/student-portal/live-class/join');
+export const joinStudentLiveClass = async (data = {}) => {
+  const payload = typeof data === 'object' && data !== null ? data : {};
+  const res = await api.post('/student-portal/live-class/join', payload);
   return res.data;
 };
 

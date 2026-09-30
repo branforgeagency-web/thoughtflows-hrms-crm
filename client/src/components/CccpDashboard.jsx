@@ -49,6 +49,7 @@ import {
   createCccpFollowUp, 
   onDataUpdate 
 } from '../services/api';
+import { effectiveStage } from '../utils/placement';
 import { COURSE_CATEGORIES } from '../constants/courses';
 import NotificationBell from './NotificationBell';
 
@@ -268,7 +269,7 @@ export default function CccpDashboard({
       setPlacementStudents(prev => [created, ...prev.filter(p => p.studentId !== candidateTfId)]);
       setIsMapStudentOpen(false);
       setMapForm({ studentId: '', company: '', role: 'Medical Coder', interviewDate: '' });
-      showToast(`✓ Mapped ${candidateName} to ${newRecord.company}`);
+      showToast(created?.stageNote ? `✓ Mapped ${candidateName} · ⚠ ${created.stageNote}` : `✓ Mapped ${candidateName} to ${newRecord.company}`);
     } catch (err) {
       showToast('Error saving placement mapping');
     }
@@ -1193,6 +1194,7 @@ export default function CccpDashboard({
                         }`}>
                           {item.label}
                         </span>
+                        <span className="text-[10px] font-mono text-slate-500">{item.count} students</span>
                       </div>
                       {idx < arr.length - 1 && (
                         <div className={`h-0.5 flex-1 select-none -mt-5 mx-0.5 rounded-full ${
@@ -1430,8 +1432,9 @@ export default function CccpDashboard({
                                     {stage === 'Certified' && (
                                       <button
                                         onClick={() => {
-                                          handleUpdateStudentPlacement(st._id || st.studentId, 'Interviewing (Omega Health)', 'placed');
+                                          // Stage moves are gated (Talentera sync first) — map the student from the Placement desk
                                           setActiveNav('placement');
+                                          setIsMapStudentOpen(true);
                                         }}
                                         className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200 transition-all active:scale-95 cursor-pointer"
                                       >
@@ -1800,14 +1803,18 @@ export default function CccpDashboard({
               <div className="bg-white/95 backdrop-blur-md rounded-2xl border border-slate-200/80 p-5 shadow-[0_4px_20px_-4px_rgba(15,23,42,0.03)]">
                 <div className="flex items-center justify-between max-w-4xl mx-auto overflow-x-auto py-1">
                   {[
-                    { step: 1, label: 'Pool', completed: true },
-                    { step: 2, label: 'Placement Ready', completed: true },
-                    { step: 3, label: 'Talentera Synced', completed: true },
-                    { step: 4, label: 'Company Mapped', completed: true },
-                    { step: 5, label: 'Interview', completed: true },
-                    { step: 6, label: 'Selected', completed: false },
-                    { step: 7, label: 'Joined', completed: false }
-                  ].map((item, idx, arr) => (
+                    { step: 1, label: 'Pool' },
+                    { step: 2, label: 'Placement Ready' },
+                    { step: 3, label: 'Talentera Synced' },
+                    { step: 4, label: 'Company Mapped' },
+                    { step: 5, label: 'Interview' },
+                    { step: 6, label: 'Offer' },
+                    { step: 7, label: 'Joined' }
+                  ].map((item) => {
+                    // Live count of students currently at this stage
+                    const count = students.filter((s) => effectiveStage(s) === item.step).length;
+                    return { ...item, count, completed: count > 0 };
+                  }).map((item, idx, arr) => (
                     <React.Fragment key={item.step}>
                       <div className="flex flex-col items-center min-w-[80px]">
                         <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all ${

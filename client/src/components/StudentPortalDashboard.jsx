@@ -200,7 +200,7 @@ const Stars = ({ value = 0, onRate, disabled, size = 'text-xl' }) => (
   </div>
 );
 // Notification type → portal section
-const NOTIF_NAV = { payment: 'payments', doubt: 'trainers', handover: 'trainers', assessment: 'lms', score: 'lms', material: 'lms', submission: 'lms', live: 'classes', attendance: 'classes', ticket: 'help', syllabus: 'placement-prep', request: 'dashboard' };
+const NOTIF_NAV = { payment: 'payments', doubt: 'trainers', handover: 'trainers', assessment: 'lms', score: 'lms', material: 'lms', submission: 'lms', live: 'classes', attendance: 'classes', ticket: 'help', syllabus: 'placement-prep', recommendation: 'placement-prep', referral: 'membership', request: 'dashboard' };
 
 // ============================================================================
 export default function StudentPortalDashboard({ onClose, currentUser, onLogout }) {
@@ -316,9 +316,8 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
     const topics = [];
     [...attendance].reverse().forEach((a) => { if (a.topic && !topics.includes(a.topic)) topics.push(a.topic); });
 
-    // Placement pipeline only starts once training hands the student to CCCP
-    const inPlacement = st.syllabusCompleted || st.trainerRecommendation === 'Ready' || /cccp|placed|talentera|interview|offer|joined|mapped/i.test(st.placementStatus || '') || (st.interviews || []).length > 0 || placements.length > 0;
-    const placementStage = inPlacement ? Math.min(7, Math.max(1, Number(st.placementStage) || 1)) : 0;
+    // Stage is kept by the server (1–3 automatic, 4–7 set by the placement team)
+    const placementStage = Math.min(7, Math.max(0, Number(st.placementStage) || 0));
 
     const joined = referrals.filter((r) => r.stage === 'admitted').length;
     const tierIdx = TIERS.reduce((idx, t, i) => (joined >= t.min ? i : idx), 0);
@@ -1481,7 +1480,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
               <>
                 <ZoomMeeting
                   key={live.sessionId}
-                  getJoinDetails={joinStudentLiveClass}
+                  getJoinDetails={(reset) => joinStudentLiveClass({ studentId: st.studentId, email: st.email, batch: d.batch, reset })}
                   studentEmail={st.email || undefined}
                   userName={d.name}
                   isTrainerHost={false}

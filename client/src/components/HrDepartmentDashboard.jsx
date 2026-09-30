@@ -46,7 +46,8 @@ import { Inbox as InboxIcon } from 'lucide-react';
 import LeadCallModal from './LeadCallModal';
 import BookNewDemoModal from './BookNewDemoModal';
 import AddLeadModal from './AddLeadModal';
-import { getStudents, getLeads, createLead, updateLead, getDemos, createDemo, getRecordings, getTodayClosure, saveDailyClosure, onDataUpdate, getNotifications, markNotificationRead, markNotificationsRead, getStudentRequests, getStudentTickets, getMyAttendance, setMyAttendance, logCall, getTodayCallLog } from '../services/api';
+import CompleteRegistrationModal from './CompleteRegistrationModal';
+import { getStudents, getLeads, createLead, updateLead, updateStudent, getDemos, createDemo, createStudent, getRecordings, getTodayClosure, saveDailyClosure, onDataUpdate, getNotifications, markNotificationRead, markNotificationsRead, getStudentRequests, getStudentTickets, getMyAttendance, setMyAttendance, logCall, getTodayCallLog, getHrTargets } from '../services/api';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 
 export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, onSwitchDepartment, theme = 'classic' }) {
@@ -73,22 +74,30 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   const userKey = String(userName || 'anon').trim().toLowerCase().replace(/\s+/g, '_');
   const breakStartKey = `thoughtflows_break_start_${userKey}`;
   const userFirstName = userName.split(' ')[0] || 'there';
-  const branchName = currentUser?.branch || 'Saravanampatti Branch (CBE)';
+  const branchName = currentUser?.branch || '';
+  const branchShort = String(branchName).replace(/\s*branch\b.*$/i, '').replace(/\s*\(.*\)\s*$/, '').trim();
 
-  // Current Day Date Key for Daily Reset (e.g. '2026-09-24')
-  const todayKey = useMemo(() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  // Current Day Date Key for Daily Reset (e.g. '2026-09-24'); re-checked every
+  // minute so a dashboard left open overnight rolls over to the new day
+  const [todayKey, setTodayKey] = useState(() => localDateKey());
+  const [hourNow, setHourNow] = useState(() => new Date().getHours());
+  useEffect(() => {
+    const t = setInterval(() => {
+      setTodayKey(localDateKey());
+      setHourNow(new Date().getHours());
+    }, 60000);
+    return () => clearInterval(t);
   }, []);
+  const greeting = hourNow < 12 ? 'Good morning' : hourNow < 17 ? 'Good afternoon' : 'Good evening';
 
   const todayDisplay = useMemo(() => {
-    return new Date().toLocaleDateString('en-IN', {
+    return new Date(`${todayKey}T00:00:00`).toLocaleDateString('en-IN', {
       weekday: 'short',
       day: 'numeric',
       month: 'short',
       year: 'numeric'
     });
-  }, []);
+  }, [todayKey]);
 
   // Helper: check if a date string/Date object is from today
   const isToday = (dateInput) => {
@@ -306,9 +315,9 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       const dKey = localDateKey();
 
       const [stRes, ldRes, dmRes, recRes, closureRes] = await Promise.all([
-        getStudents(shouldFilterOnServer ? { hrName: counselorFilter } : undefined),
+        getStudents(shouldFilterOnServer ? { hrName: counselorFilter, branch: branchShort } : undefined),
         getLeads(shouldFilterOnServer ? { counselor: counselorFilter } : undefined),
-        getDemos(),
+        getDemos(shouldFilterOnServer ? { counselor: counselorFilter, branch: branchShort } : undefined),
         getRecordings(shouldFilterOnServer ? { counselor: counselorFilter } : undefined).catch(() => []),
         (counselorFilter ? getTodayClosure(counselorFilter, dKey) : Promise.resolve(null)).catch(() => null)
       ]);
@@ -368,7 +377,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       }
     });
     return unsub;
-  }, [scopeMode, currentUser?.name]);
+  }, [scopeMode, currentUser?.name, todayKey]);
 
   const handleAddLeadSubmit = async (leadData) => {
     try {
@@ -404,43 +413,75 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     }
   };
 
-  // Counselor Scoping: Strictly filter leads, students, and demos for the logged-in counselor
+  // Counselor Scoping: Strictly filter leads, students, and demos for the logged-in counselor.
+  // Names are compared whole (so "Ram" never picks up "Ramesh"), and a record with
+  // no owner belongs to nobody — it never shows up in every counsellor's list.
+  const normName = (v) => String(v || '').trim().replace(/\s+/g, ' ').toLowerCase();
+  const myName = normName(currentUser?.name);
   const scopedLeads = useMemo(() => {
     if (scopeMode === 'all' && isElevatedUser) return leads;
-    const target = (currentUser?.name || '').trim().toLowerCase();
-    if (!target) return leads;
-    return leads.filter(l => {
-      const assigned = (l.counselorAssigned || l.allocatedTo || '').trim().toLowerCase();
-      return assigned === target || assigned.includes(target) || target.includes(assigned);
-    });
-  }, [leads, scopeMode, isElevatedUser, currentUser?.name]);
+    if (!myName) return leads;
+    return leads.filter(l => normName(l.counselorAssigned || l.allocatedTo) === myName);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leads, scopeMode, isElevatedUser, myName]);
 
   const scopedStudents = useMemo(() => {
     if (scopeMode === 'all' && isElevatedUser) return students;
-    const target = (currentUser?.name || '').trim().toLowerCase();
-    if (!target) return students;
+    if (!myName && !branchShort) return students;
+    const bClean = (v) => String(v || '').toLowerCase().replace(/\s*(branch|\(.*\)|hq)\b/gi, '').replace(/[^a-z0-9]/g, '');
+    const myB = bClean(branchShort);
     return students.filter(s => {
-      const hr = (s.hrName || '').trim().toLowerCase();
-      return hr === target || hr.includes(target) || target.includes(hr);
+      const isMyAdmission = myName && normName(s.hrName) === myName;
+      const isMyBranch = myB && (bClean(s.branch).includes(myB) || bClean(s.location).includes(myB) || bClean(s.leadBranch).includes(myB));
+      return isMyAdmission || isMyBranch;
     });
-  }, [students, scopeMode, isElevatedUser, currentUser?.name]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [students, scopeMode, isElevatedUser, myName, branchShort]);
 
   const scopedDemos = useMemo(() => {
     if (scopeMode === 'all' && isElevatedUser) return demos;
-    const target = (currentUser?.name || '').trim().toLowerCase();
+    if (!myName && !branchShort) return demos;
+    const bClean = (v) => String(v || '').toLowerCase().replace(/\s*(branch|\(.*\)|hq)\b/gi, '').replace(/[^a-z0-9]/g, '');
+    const myB = bClean(branchShort);
     const leadPhones = new Set(
       scopedLeads.map(l => (l.phone || '').replace(/\D/g, '').slice(-10)).filter(Boolean)
     );
     return demos.filter(d => {
       const ph = (d.phone || '').replace(/\D/g, '').slice(-10);
-      const isLeadCandidate = leadPhones.has(ph);
-      const isTrainerOrCounselor = target && (
-        (d.counselor || '').toLowerCase().includes(target) ||
-        (d.bookedBy || '').toLowerCase().includes(target)
-      );
-      return isLeadCandidate || isTrainerOrCounselor;
+      const isLeadCandidate = ph.length === 10 && leadPhones.has(ph);
+      const isMine = myName && (normName(d.counselor) === myName || normName(d.bookedBy) === myName);
+      const isMyBranch = myB && (bClean(d.location).includes(myB) || bClean(d.branch).includes(myB));
+      return isMine || isMyBranch || isLeadCandidate;
     });
-  }, [demos, scopedLeads, scopeMode, isElevatedUser, currentUser?.name]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [demos, scopedLeads, scopeMode, isElevatedUser, myName, branchShort]);
+
+  // Monthly admissions target set by the Head of HR (falls back to 25 if none is set)
+  const [monthlyTarget, setMonthlyTarget] = useState({ value: 25, fromHead: false });
+  useEffect(() => {
+    let alive = true;
+    const load = () => getHrTargets({ period: 'month' })
+      .then((rows) => {
+        if (!alive || !Array.isArray(rows)) return;
+        const admissionRows = rows.filter(t => /admission|enrol/i.test(t.title || ''));
+        const pick = admissionRows.find(t => normName(t.assignedTo) === myName)
+          || admissionRows.find(t => /^all\b/i.test(String(t.assignedTo || '').trim()));
+        setMonthlyTarget(pick && Number(pick.target) > 0 ? { value: Number(pick.target), fromHead: true } : { value: 25, fromHead: false });
+      })
+      .catch(() => {});
+    load();
+    const off = onDataUpdate((entity) => { if (entity === 'targets') load(); });
+    return () => { alive = false; off(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myName]);
+
+  const monthPrefix = todayKey.slice(0, 7);
+  const admissionsThisMonth = useMemo(() => scopedStudents.filter(s => {
+    if (myName && normName(s.hrName) !== myName) return false;
+    const d = new Date(s.admissionDate || s.createdAt);
+    return !isNaN(d.getTime()) && localDateKey(d).slice(0, 7) === monthPrefix;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }).length, [scopedStudents, monthPrefix, myName]);
 
   // Dynamic priorities for tomorrow
   const overdueCount = useMemo(() => {
@@ -453,23 +494,26 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
 
   // End of day numbers (strictly calculated for TODAY - resets each day)
   const computedDailyMetrics = useMemo(() => {
-    // 1. Calls made TODAY (recordings created today, leads with lastCallTime today, or logged session calls today)
-    const leadCallsTodayCount = scopedLeads.filter(l => isToday(l.lastCallTime)).length;
-    const recordingsTodayCount = callRecordings.filter(r => isToday(r.createdAt)).length;
-    const sessionCallsCount = todayCallLogs.length;
-    const callsMadeToday = Math.max(leadCallsTodayCount, recordingsTodayCount, sessionCallsCount);
+    // 1. Calls made TODAY — the server call log is the record (every call saved
+    //    from the call modal writes one row). Uploaded recordings only count if
+    //    they outnumber it, e.g. calls made outside the modal.
+    const recordingsToday = callRecordings.filter(r => isToday(r.createdAt));
+    const callsMadeToday = Math.max(todayCallLogs.length, recordingsToday.length);
 
-    // 2. Connected calls TODAY
-    const sessionConnected = todayCallLogs.filter(c => c.connected).length;
-    const recordingsConnected = callRecordings.filter(r => isToday(r.createdAt) && r.outcome !== 'Not Reachable').length;
-    const leadsConnected = scopedLeads.filter(l => isToday(l.lastCallTime) && l.stage !== 'new').length;
-    const connectedToday = Math.max(sessionConnected, recordingsConnected, leadsConnected);
+    // 2. Connected calls TODAY (same sources, same rule)
+    const connectedToday = Math.max(
+      todayCallLogs.filter(c => c.connected).length,
+      recordingsToday.filter(r => r.outcome && r.outcome !== 'Not Reachable').length
+    );
 
-    // 3. Demos booked TODAY
-    const demosBookedToday = scopedDemos.filter(d => isToday(d.createdAt) || (d.preferredDate && d.preferredDate === todayKey)).length;
+    // 3. Demos BOOKED today (not demos that merely take place today)
+    const demosBookedToday = scopedDemos.filter(d => isToday(d.createdAt)).length;
 
-    // 4. Admissions TODAY
-    const todayAdmissions = scopedStudents.filter(s => isToday(s.createdAt) || isToday(s.admissionDate));
+    // 4. Admissions TODAY (strictly admissions closed by this counselor)
+    const todayAdmissions = scopedStudents.filter(s => {
+      if (myName && normName(s.hrName) !== myName) return false;
+      return isToday(s.createdAt) || isToday(s.admissionDate);
+    });
     const admissionsToday = todayAdmissions.length;
 
     // 5. Fees collected TODAY = receipts dated today (admission payments + instalments).
@@ -527,7 +571,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       const payload = {
         counselorName: userName,
         counselorEmail: currentUser?.email || '',
-        branch: branchName || 'Saravanampatti Branch (CBE)',
+        branch: branchName,
         date: todayKey,
         callsMade: closureMetrics.callsMade,
         connected: closureMetrics.connected,
@@ -536,7 +580,16 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         feesCollected: closureMetrics.rawFeesCollected,
         pendingFus: closureMetrics.pendingFus,
         status: 'submitted',
-        notes: `Daily closure submitted by ${userName} on ${todayKey}`
+        notes: `Daily closure submitted by ${userName} on ${todayKey}`,
+        // What the system counted — managers see which numbers were hand-corrected
+        systemMetrics: {
+          callsMade: computedDailyMetrics.callsMade,
+          connected: computedDailyMetrics.connected,
+          demosBooked: computedDailyMetrics.demosBooked,
+          admissions: computedDailyMetrics.admissions,
+          feesCollected: computedDailyMetrics.rawFeesCollected,
+          pendingFus: computedDailyMetrics.pendingFus
+        }
       };
       await saveDailyClosure(payload);
       setMyAttendance('out', currentUser?.branch).catch(() => {});
@@ -552,11 +605,9 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       } catch (e) {}
       showToast(`✓ Today's closure (${todayKey}) submitted to Command Center!`);
     } catch (err) {
+      // Not saved — leave it unsubmitted so the counsellor can retry
       console.error('Failed to submit daily closure:', err);
-      setClosureSubmitted(true);
-      const timeStr = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
-      setClosureSubmittedAt(timeStr);
-      showToast(`✓ Today's closure saved locally for ${todayKey}`);
+      showToast(`⚠ Closure NOT submitted: ${err?.response?.data?.error || err.message}. Please try again.`);
     }
   };
 
@@ -581,6 +632,21 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   }, [userName]);
 
   // Dynamic Navigation Tabs with real database counts
+  const pendingFeesStats = useMemo(() => {
+    let count = 0;
+    let totalBal = 0;
+    scopedStudents.forEach(s => {
+      const fee = Number(s.courseFee) || 0;
+      const paid = Number(s.paidAmount) || 0;
+      const bal = (s.pendingBalance != null && !isNaN(Number(s.pendingBalance))) ? Number(s.pendingBalance) : Math.max(0, fee - paid);
+      if (bal > 0) {
+        count++;
+        totalBal += bal;
+      }
+    });
+    return { count, totalBal };
+  }, [scopedStudents]);
+
   const NAV_TABS = useMemo(() => {
     const pipelineCount = scopedLeads.length.toString();
     const followUpCount = scopedLeads.filter(l => l.stage !== 'admitted' && l.stage !== 'closed').length.toString();
@@ -596,71 +662,214 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       { name: 'My Targets', badge: null, icon: Target, iconBg: 'bg-rose-500', color: 'pink' },
       { name: 'My Schedule', badge: null, icon: Calendar, iconBg: 'bg-blue-500', color: 'blue' },
       { name: 'LMS', badge: 'Learn', isPillBadge: true, icon: BookOpen, iconBg: 'bg-yellow-700', color: 'green' },
-      { name: 'Fees', badge: null, icon: IndianRupee, iconBg: 'bg-teal-600', color: 'teal' },
+      { name: 'Fees', badge: pendingFeesStats.count > 0 ? String(pendingFeesStats.count) : null, badgeBg: 'bg-amber-500', icon: IndianRupee, iconBg: 'bg-teal-600', color: 'teal' },
       { name: 'Handover', badge: handoverCount, icon: Repeat, iconBg: 'bg-orange-600', badgeBg: 'bg-orange-500', color: 'orange' },
       { name: 'Student Requests', badge: studentInboxCount > 0 ? String(studentInboxCount) : null, icon: InboxIcon, iconBg: 'bg-indigo-600', badgeBg: 'bg-rose-500', color: 'indigo' },
     ];
-  }, [scopedLeads, scopedStudents, scopedDemos, studentInboxCount]);
+  }, [scopedLeads, scopedStudents, scopedDemos, studentInboxCount, pendingFeesStats.count]);
 
-  // Dynamic Priority Queue from real leads
+  // Today's Priority Queue: overdue follow-ups first, then today's, then
+  // fee-due admitted students, then fee-stage leads, then brand-new leads.
   const priorityQueue = useMemo(() => {
-    if (scopedLeads.length === 0) return [];
-    return scopedLeads.slice(0, 6).map((lead, idx) => {
-      const isNow = idx === 0 || lead.followUpTime === 'NOW';
-      let actionText = 'CALL NOW';
-      let actionStyle = 'bg-white border-2 border-slate-900 text-slate-900 hover:bg-slate-900 hover:text-white font-extrabold';
-      if (lead.stage === 'demo_booked') {
-        actionText = 'DEMO TODAY';
-        actionStyle = 'bg-purple-50 text-purple-700 border border-purple-200 font-bold';
-      } else if (lead.stage === 'demo_attended' || lead.stage === 'fee_followup') {
-        actionText = 'FEE PITCH';
-        actionStyle = 'bg-amber-50 text-amber-800 border border-amber-200 font-bold';
-      }
-      return {
-        id: lead._id || lead.id,
-        time: lead.followUpTime || (idx === 0 ? 'NOW' : `${10 + idx}:00`),
-        isNow,
-        name: `${lead.fullName || lead.name} — ${lead.stage === 'new' ? 'First Call' : lead.stage.replace('_', ' ').toUpperCase()}`,
-        details: `${lead.sourceName || lead.source || 'Direct'} • ${lead.category || 'Candidate'} • ${lead.gender?.[0] || 'F'} • ${lead.location || 'Coimbatore'}`,
-        leadData: lead,
-        actionText,
-        actionStyle
-      };
-    });
-  }, [scopedLeads]);
+    // Admitted students with pending / overdue fee installments
+    const feeDueItems = scopedStudents
+      .filter(s => {
+        const fee = Number(s.courseFee) || 0;
+        const paid = Number(s.paidAmount) || 0;
+        const bal = (s.pendingBalance != null && !isNaN(Number(s.pendingBalance))) ? Number(s.pendingBalance) : Math.max(0, fee - paid);
+        return bal > 0 && s.nextDueDate && s.nextDueDate <= todayKey;
+      })
+      .map(s => {
+        const fee = Number(s.courseFee) || 0;
+        const paid = Number(s.paidAmount) || 0;
+        const bal = (s.pendingBalance != null && !isNaN(Number(s.pendingBalance))) ? Number(s.pendingBalance) : Math.max(0, fee - paid);
+        const isOverdue = s.nextDueDate < todayKey;
+        return {
+          id: s._id || s.studentId,
+          time: isOverdue ? 'DUE OVERDUE' : 'DUE TODAY',
+          isNow: false,
+          isOverdue,
+          name: `${s.name} — Fee Due (₹${bal.toLocaleString('en-IN')})`,
+          details: [s.studentId, s.course, `Due: ${s.nextDueDate}`, `Paid so far: ₹${paid.toLocaleString('en-IN')}`].filter(Boolean).join(' • '),
+          studentData: s,
+          isFeeDue: true,
+          actionText: 'COLLECT FEE',
+          actionStyle: 'bg-amber-100 text-amber-900 border border-amber-300 hover:bg-amber-600 hover:text-white font-black'
+        };
+      });
 
-  // Dynamic Real Activity Feed
+    const rankOf = (l) => {
+      if (l.followUpDate && l.followUpDate < todayKey) return 0;
+      if (l.followUpDate === todayKey) return 1;
+      if (l.followUpDate && l.followUpDate > todayKey) return 9;
+      if (l.stage === 'fee_followup' || l.stage === 'demo_attended') return 2;
+      if (l.stage === 'new' && !(l.callCount > 0)) return 3;
+      return 4;
+    };
+    const leadItems = scopedLeads
+      .filter(l => l.stage !== 'admitted' && l.stage !== 'closed')
+      .map(l => ({ lead: l, rank: rankOf(l) }))
+      .filter(x => x.rank < 9)
+      .sort((a, b) => a.rank - b.rank
+        || String(a.lead.followUpDate || '').localeCompare(String(b.lead.followUpDate || ''))
+        || String(a.lead.followUpTime || '99').localeCompare(String(b.lead.followUpTime || '99'))
+        || new Date(a.lead.createdAt || 0) - new Date(b.lead.createdAt || 0))
+      .slice(0, 6)
+      .map(({ lead, rank }, idx) => {
+        const stage = lead.stage || 'new';
+        let actionText = 'CALL NOW';
+        let actionStyle = 'bg-white border-2 border-slate-900 text-slate-900 hover:bg-slate-900 hover:text-white font-extrabold';
+        if (stage === 'demo_booked') {
+          actionText = 'VIEW DEMO';
+          actionStyle = 'bg-purple-50 text-purple-700 border border-purple-200 font-bold';
+        } else if (stage === 'demo_attended' || stage === 'fee_followup') {
+          actionText = 'FEE PITCH';
+          actionStyle = 'bg-amber-50 text-amber-800 border border-amber-200 font-bold';
+        }
+        return {
+          id: lead._id || lead.id,
+          time: rank === 0 ? 'OVERDUE' : rank === 1 ? (lead.followUpTime || 'TODAY') : stage === 'new' ? 'NEW' : '—',
+          isNow: idx === 0,
+          isOverdue: rank === 0,
+          name: `${lead.fullName || lead.name} — ${stage === 'new' ? 'First Call' : stage.replace(/_/g, ' ').toUpperCase()}`,
+          details: [lead.sourceName || lead.source, lead.course, lead.location, lead.followUpNote].filter(Boolean).join(' • ') || lead.phone || '',
+          leadData: lead,
+          actionText,
+          actionStyle
+        };
+      });
+
+    return [...feeDueItems, ...leadItems].slice(0, 8);
+  }, [scopedLeads, scopedStudents, todayKey]);
+
+  // Recent Activity: real events with their real timestamps, newest first
   const recentActivities = useMemo(() => {
     const list = [];
-    scopedStudents.slice(0, 3).forEach((s, idx) => {
-      list.push({
-        time: `1${5 - idx}:${42 - idx * 10}`,
-        primary: `${s.name} enrolled${s.feeAmount ? ` (${s.feeAmount})` : ''}`,
-        secondary: `${s.course} • ID: ${s.studentId}`,
-        tag: 'ADMITTED',
-        tagStyle: 'bg-emerald-50 text-emerald-700 border-emerald-200'
+    const push = (at, e) => { const d = new Date(at); if (!isNaN(d.getTime())) list.push({ ...e, at: d }); };
+    scopedStudents.forEach(s => {
+      push(s.createdAt, {
+        primary: `${s.name} admitted`,
+        secondary: [s.course, s.studentId && `ID: ${s.studentId}`].filter(Boolean).join(' • '),
+        tag: 'ADMITTED', tagStyle: 'bg-emerald-50 text-emerald-700 border-emerald-200'
       });
+      (Array.isArray(s.receipts) ? s.receipts : []).forEach(r => push(r.at || r.date, {
+        primary: `₹${(Number(r.amount) || 0).toLocaleString('en-IN')} received from ${s.name}`,
+        secondary: [r.receiptNo, r.mode].filter(Boolean).join(' • '),
+        tag: 'FEE', tagStyle: 'bg-teal-50 text-teal-700 border-teal-200'
+      }));
     });
-    scopedDemos.slice(0, 2).forEach((d, idx) => {
-      list.push({
-        time: `1${4 - idx}:${18 - idx * 8}`,
-        primary: `${d.candidateName} demo ${d.status}`,
-        secondary: `${d.course} with ${d.trainer}`,
-        tag: 'DEMO',
-        tagStyle: 'bg-blue-50 text-blue-700 border-blue-200'
-      });
+    scopedDemos.forEach(d => push(d.updatedAt || d.createdAt, {
+      primary: `${d.candidateName} demo ${d.status || 'booked'}`,
+      secondary: [d.course, d.trainer && `with ${d.trainer}`, d.preferredDate].filter(Boolean).join(' • '),
+      tag: 'DEMO', tagStyle: 'bg-blue-50 text-blue-700 border-blue-200'
+    }));
+    scopedLeads.forEach(l => push(l.createdAt, {
+      primary: `New lead: ${l.fullName || l.name}`,
+      secondary: [l.sourceName || l.source, l.course].filter(Boolean).join(' • '),
+      tag: 'NEW LEAD', tagStyle: 'bg-cyan-50 text-cyan-700 border-cyan-200'
+    }));
+    const leadName = new Map(scopedLeads.map(l => [String(l._id || l.id), l.fullName || l.name]));
+    todayCallLogs.forEach(c => push(c.time, {
+      primary: `Called ${leadName.get(String(c.id)) || 'a lead'}`,
+      secondary: [c.outcome, c.duration ? `${Math.round(c.duration)}s` : ''].filter(Boolean).join(' • '),
+      tag: 'CALL', tagStyle: 'bg-slate-50 text-slate-700 border-slate-200'
+    }));
+    return list
+      .sort((a, b) => b.at - a.at)
+      .slice(0, 8)
+      .map(e => ({
+        ...e,
+        time: localDateKey(e.at) === todayKey
+          ? e.at.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false })
+          : e.at.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })
+      }));
+  }, [scopedStudents, scopedDemos, scopedLeads, todayCallLogs, todayKey]);
+
+  // Header search across my leads, students and demos
+  const searchInputRef = React.useRef(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        setSearchOpen(true);
+      } else if (e.key === 'Escape') {
+        setSearchOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+  const searchResults = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (q.length < 2) return [];
+    const qDigits = q.replace(/\D/g, '');
+    const hit = (...vals) => vals.some(v => {
+      const str = String(v || '');
+      return str.toLowerCase().includes(q) || (qDigits.length >= 4 && str.replace(/\D/g, '').includes(qDigits));
     });
-    scopedLeads.slice(0, 2).forEach((l, idx) => {
-      list.push({
-        time: `1${2 - idx}:${52 - idx * 7}`,
-        primary: `New Lead: ${l.fullName || l.name}`,
-        secondary: `${l.sourceName || l.source || 'Direct'} • ${l.category || 'General'}`,
-        tag: 'NEW LEAD',
-        tagStyle: 'bg-cyan-50 text-cyan-700 border-cyan-200'
-      });
+    const out = [];
+    scopedLeads.forEach(l => {
+      if (hit(l.fullName, l.name, l.phone, l.email, l.course)) out.push({ kind: 'Lead', key: `l-${l._id}`, title: l.fullName || l.name, sub: [l.phone, (l.stage || '').replace(/_/g, ' '), l.course].filter(Boolean).join(' • '), lead: l });
     });
-    return list;
-  }, [scopedStudents, scopedDemos, scopedLeads]);
+    scopedStudents.forEach(st => {
+      if (hit(st.name, st.studentId, st.phone, st.email, st.course)) out.push({ kind: 'Student', key: `s-${st._id}`, title: st.name, sub: [st.studentId, st.course, st.feeStatus].filter(Boolean).join(' • '), student: st });
+    });
+    scopedDemos.forEach(d => {
+      if (hit(d.candidateName, d.phone, d.email, d.course)) out.push({ kind: 'Demo', key: `d-${d._id}`, title: d.candidateName, sub: [d.course, d.preferredDate, d.status].filter(Boolean).join(' • '), demo: d });
+    });
+    return out.slice(0, 12);
+  }, [searchQuery, scopedLeads, scopedStudents, scopedDemos]);
+  const openSearchResult = (r) => {
+    setSearchOpen(false);
+    setSearchQuery('');
+    if (r.lead) {
+      if (r.lead.stage === 'admitted' || r.lead.stage === 'closed') { handleTabChange('Pipeline & Follow-ups'); return; }
+      openCallFor(r.lead);
+    } else if (r.student) {
+      handleTabChange(r.student.feeStatus && r.student.feeStatus !== 'Fully Paid' ? 'Fees' : 'Admitted Students');
+    } else if (r.demo) {
+      handleTabChange('Demo Desk');
+    }
+  };
+
+  // Open the call modal for a lead or student (priority queue, pipeline, search, admitted CRM)
+  const openCallFor = (lead, isStudent = false) => {
+    if (!lead) return;
+    setSelectedCallLead({
+      id: lead._id || lead.id || lead.studentId,
+      _id: lead._id || lead.id || lead.studentId,
+      name: lead.fullName || lead.name,
+      details: [lead.sourceName || lead.source, lead.course, lead.location].filter(Boolean).join(' • '),
+      phone: lead.phone || '',
+      whatsappNumber: lead.whatsappNumber || '',
+      source: lead.sourceName || lead.source || (isStudent ? 'Enrolled Student' : 'Direct'),
+      stage: lead.stage || (isStudent ? 'admitted' : 'new'),
+      callCount: lead.callCount || 0,
+      counselorAssigned: lead.counselorAssigned || lead.hrName,
+      leadData: lead,
+      isStudent
+    });
+  };
+
+  // Lead → Student: registration form pre-filled from the lead. Creating the
+  // student links it to the lead and moves the lead to Admitted (server side).
+  const [admittingLead, setAdmittingLead] = useState(null);
+  const handleAdmitSubmit = async (studentRecord) => {
+    const lead = admittingLead;
+    let created;
+    try {
+      created = await createStudent({ ...studentRecord, leadId: lead?._id || lead?.id || '' });
+    } catch (err) {
+      // The form shows this message (e.g. "already admitted as TF…")
+      throw new Error(err?.response?.data?.error || err.message);
+    }
+    setAdmittingLead(null);
+    loadAllData(true);
+    if (created?.studentLogin?.password) setStudentLogin({ name: created.name, phone: created.phone, ...created.studentLogin });
+    showToast(`✓ ${created?.name || 'Student'} admitted (${created?.studentId || ''}) — lead moved to Admitted`);
+  };
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-[#f0faf8] font-sans text-slate-800 animate-fadeIn">
@@ -718,10 +927,14 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
               barTheme === 'clay' ? 'text-teal-600' : barTheme === 'turquoise' ? 'text-[#1e606a]' : 'text-slate-400'
             }`} />
             <input
+              ref={searchInputRef}
               type="text"
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search leads, students..."
+              onChange={(e) => { setSearchQuery(e.target.value); setSearchOpen(true); }}
+              onFocus={() => setSearchOpen(true)}
+              onBlur={() => setTimeout(() => setSearchOpen(false), 150)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && searchResults[0]) openSearchResult(searchResults[0]); }}
+              placeholder="Search leads, students, demos..."
               className={`w-full rounded-xl pl-8 pr-12 py-1.5 text-xs outline-none transition-all ${
                 barTheme === 'clay'
                   ? 'clay-input text-[#073138] placeholder-[#1e606a]/70'
@@ -743,8 +956,28 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
                     ? 'bg-slate-200 text-slate-600'
                     : 'bg-white/10 text-white/80'
             }`}>
-              ⌘K
+              {/Mac/i.test(navigator.platform || '') ? '⌘K' : 'Ctrl K'}
             </span>
+            {searchOpen && searchQuery.trim().length >= 2 && (
+              <div className="absolute left-0 right-0 top-full mt-2 max-h-80 overflow-y-auto bg-white rounded-xl border border-slate-200 shadow-2xl z-50 text-left">
+                {searchResults.length === 0 ? (
+                  <div className="px-4 py-4 text-xs text-slate-400 text-center">No leads, students or demos match “{searchQuery.trim()}”.</div>
+                ) : searchResults.map((r) => (
+                  <button
+                    key={r.key}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => openSearchResult(r)}
+                    className="w-full text-left px-3 py-2 border-b border-slate-50 hover:bg-slate-50 flex items-center gap-2"
+                  >
+                    <span className={`px-1.5 py-0.5 rounded text-[9px] font-extrabold uppercase flex-shrink-0 ${r.kind === 'Lead' ? 'bg-purple-50 text-purple-700' : r.kind === 'Student' ? 'bg-emerald-50 text-emerald-700' : 'bg-blue-50 text-blue-700'}`}>{r.kind}</span>
+                    <span className="min-w-0">
+                      <span className="block text-xs font-bold text-slate-900 truncate">{r.title}</span>
+                      <span className="block text-[11px] text-slate-500 truncate">{r.sub}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           <button 
@@ -881,7 +1114,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
                       : 'text-slate-400'
               }`}>
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                SARAVANAMPATTI
+                {(branchShort || currentUser?.department || 'HR').toUpperCase()}
               </div>
             </div>
           </div>
@@ -1054,6 +1287,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             onRefreshStudents={loadAllData} 
             currentUser={currentUser} 
             onStudentLogin={setStudentLogin}
+            onCallStudent={(st) => openCallFor(st, true)}
           />
         ) : activeTab === 'Call Recordings' ? (
           <HrCallRecordingsTable currentUser={currentUser} />
@@ -1069,6 +1303,8 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             leads={scopedLeads} 
             onRefreshLeads={loadAllData} 
             onAddLeadClick={() => setShowAddLeadModal(true)} 
+            onAdmitLead={setAdmittingLead}
+            onCallLead={(lead) => openCallFor(lead, false)}
             initialViewMode={activeTab === 'Follow-up Board' ? 'followup' : 'kanban'}
             currentUser={currentUser}
           />
@@ -1099,10 +1335,10 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <div>
               <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
-                Good afternoon, <span className="text-[#0e6977]">{userFirstName}</span>
+                {greeting}, <span className="text-[#0e6977]">{userFirstName}</span>
               </h1>
               <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
-                {todayDisplay} • {branchName} • You have <strong className="text-slate-800 font-semibold">{closureMetrics.pendingFus} pending follow-ups</strong> in your pipeline
+                {[todayDisplay, branchName].filter(Boolean).join(' • ')} • You have <strong className="text-slate-800 font-semibold">{closureMetrics.pendingFus} pending follow-ups</strong> in your pipeline
               </p>
             </div>
             {/* Scoping status pill */}
@@ -1144,33 +1380,46 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             </div>
             <div>
               <span className="text-[10px] font-extrabold tracking-wider uppercase text-amber-800 bg-amber-200/60 px-2 py-0.5 rounded-full border border-amber-300/50">
-                MONTHLY TARGET • CURRENT CYCLE
+                MONTHLY TARGET • {new Date(`${todayKey}T00:00:00`).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' }).toUpperCase()}
               </span>
               <h3 className="text-base sm:text-lg font-bold text-slate-900 mt-1">
-                Target 25 admissions • {scopedStudents.length} closed
+                Target {monthlyTarget.value} admissions • {admissionsThisMonth} closed this month
               </h3>
               <p className="text-xs text-amber-900/80">
-                {scopedStudents.length >= 25 
-                  ? `Goal achieved! ${scopedStudents.length - 25} surplus admissions qualify for performance incentive.` 
-                  : `${25 - scopedStudents.length} more to hit your target — then each extra admission earns incentive.`}
+                {admissionsThisMonth >= monthlyTarget.value
+                  ? `Goal achieved! ${admissionsThisMonth - monthlyTarget.value} surplus admissions qualify for performance incentive.`
+                  : `${monthlyTarget.value - admissionsThisMonth} more to hit your target — then each extra admission earns incentive.`}
+                {!monthlyTarget.fromHead && ' (Default target — no monthly admissions target set by the Head of HR.)'}
               </p>
             </div>
           </div>
 
           <div className="w-full sm:w-64 flex flex-col items-end">
             <div className="flex items-center justify-between w-full text-xs font-extrabold text-slate-800 mb-1">
-              <span>{scopedStudents.length} / 25</span>
-              <span className="text-amber-700">{Math.min(100, Math.round((scopedStudents.length / 25) * 100))}%</span>
+              <span>{admissionsThisMonth} / {monthlyTarget.value}</span>
+              <span className="text-amber-700">{Math.min(100, Math.round((admissionsThisMonth / monthlyTarget.value) * 100))}%</span>
             </div>
             <div className="w-full h-2.5 bg-amber-200/60 rounded-full overflow-hidden">
               <div 
                 className="h-full bg-gradient-to-r from-amber-400 to-[#73C1CC] rounded-full transition-all duration-500" 
-                style={{ width: `${Math.min(100, Math.round((scopedStudents.length / 25) * 100))}%` }}
+                style={{ width: `${Math.min(100, Math.round((admissionsThisMonth / monthlyTarget.value) * 100))}%` }}
               />
             </div>
-            <span className="text-[10px] font-bold text-amber-800 mt-1 uppercase tracking-wider">
-              FEES COLLECTED: <strong className="text-emerald-700">{closureMetrics.feesCollected}</strong>
-            </span>
+            <div className="flex items-center justify-between w-full mt-1.5 flex-wrap gap-2">
+              <span className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">
+                COLLECTED TODAY: <strong className="text-emerald-700">{closureMetrics.feesCollected}</strong>
+              </span>
+              <button
+                type="button"
+                onClick={() => handleTabChange('Fees')}
+                className="text-[10px] font-bold text-slate-700 hover:text-[#00897b] transition-colors cursor-pointer flex items-center gap-1"
+                title="View Pending Dues in Fees CRM"
+              >
+                <span>PENDING DUES:</span>
+                <strong className="text-amber-800 font-mono">₹{pendingFeesStats.totalBal.toLocaleString('en-IN')}</strong>
+                <span className="text-slate-500">({pendingFeesStats.count})</span>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -1201,7 +1450,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
               </div>
             </div>
             <div className="text-3xl font-extrabold text-amber-600">{closureMetrics.pendingFus}</div>
-            <div className="text-xs text-rose-500 mt-1 font-bold">Active in pipeline</div>
+            <div className="text-xs text-rose-500 mt-1 font-bold">{overdueCount} overdue · due today or earlier</div>
           </div>
 
           {/* Card 3 */}
@@ -1229,15 +1478,15 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
           <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs hover:border-[#73C1CC]/70 transition-all flex flex-col justify-between text-left">
             <div className="flex items-center justify-between mb-3">
               <span className="text-[11px] font-extrabold tracking-wider text-slate-500 uppercase">
-                ADMISSIONS • LIVE
+                ADMISSIONS • THIS MONTH
               </span>
               <div className="w-7 h-7 rounded-full bg-[#e6f7f9] text-[#0e6977] flex items-center justify-center">
                 <CheckCircle2 className="w-3.5 h-3.5" />
               </div>
             </div>
-            <div className="text-3xl font-extrabold text-[#0e6977]">{scopedStudents.length}</div>
+            <div className="text-3xl font-extrabold text-[#0e6977]">{admissionsThisMonth}</div>
             <div className="text-xs text-[#0e6977] mt-1 font-bold flex items-center gap-1">
-              <TrendingUp className="w-3 h-3" /> Live Enrolled Students
+              <TrendingUp className="w-3 h-3" /> {scopedStudents.length} enrolled in total
             </div>
           </div>
         </div>
@@ -1274,9 +1523,11 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
                     >
                       <div className="flex items-center gap-3 min-w-0">
                         <span className={`px-2 py-0.5 rounded-md text-[11px] font-extrabold flex-shrink-0 ${
-                          item.isNow 
-                            ? 'bg-[#0e6977] text-white' 
-                            : 'bg-slate-200/70 text-slate-700'
+                          item.isOverdue
+                            ? 'bg-rose-600 text-white'
+                            : item.isNow
+                              ? 'bg-[#0e6977] text-white'
+                              : 'bg-slate-200/70 text-slate-700'
                         }`}>
                           {item.time}
                         </span>
@@ -1292,27 +1543,9 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
 
                       <button
                         onClick={() => {
-                          const rawName = item.name.split('—')[0].trim();
-                          if (item.actionText.includes('DEMO')) {
-                            setBookDemoInitialData({
-                              studentName: rawName,
-                              mobile: item.leadData?.phone || '',
-                              course: item.leadData?.course || 'CPC',
-                              mode: item.actionText.includes('CLOSE') ? 'Classroom (Saravanampatti)' : 'Online'
-                            });
-                            setShowBookDemoModal(true);
-                          } else {
-                            setSelectedCallLead({
-                              id: item.leadData?._id || item.leadData?.id,
-                              name: rawName,
-                              details: item.details,
-                              phone: item.leadData?.phone || '',
-                              source: item.leadData?.sourceName || 'Direct',
-                              stage: item.leadData?.stage,
-                              callCount: item.leadData?.callCount || 0,
-                              counselorAssigned: item.leadData?.counselorAssigned
-                            });
-                          }
+                          if (item.isFeeDue) handleTabChange('Fees');
+                          else if (item.leadData?.stage === 'demo_booked') handleTabChange('Demo Desk');
+                          else openCallFor(item.leadData);
                         }}
                         className={`px-3 py-1 rounded-full text-[10.5px] tracking-wide flex-shrink-0 transition-all cursor-pointer active:scale-95 ${item.actionStyle}`}
                       >
@@ -1612,13 +1845,13 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             </div>
             <div className="flex items-center justify-center gap-3 pt-2">
               <button
-                onClick={() => setActiveTab('Pipeline & Follow-ups')}
+                onClick={() => handleTabChange('Pipeline & Follow-ups')}
                 className="px-4 py-2 rounded-xl bg-[#7c3aed] text-white text-xs font-bold shadow-xs hover:bg-[#6d28d9] transition-all"
               >
                 Open Pipeline & Follow-ups ({scopedLeads.length} Leads)
               </button>
               <button
-                onClick={() => setActiveTab('Home')}
+                onClick={() => handleTabChange('Home')}
                 className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-all"
               >
                 Back to Home Dashboard
@@ -1637,39 +1870,57 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         onSave={async (data) => {
           const leadId = selectedCallLead?._id || selectedCallLead?.id;
           if (!leadId) {
-            showToast('Could not save — this lead has no database record yet.');
+            showToast('Could not save — this record has no database ID.');
             return;
           }
-          const update = {
-            callCount: (selectedCallLead.callCount || 0) + 1,
-            lastCallTime: new Date().toISOString(),
-            notes: data.notes || undefined,
-            followUpNote: data.notes || undefined,
-            followUpDate: data.followUpDate || undefined,
-            followUpTime: data.followUpTime || undefined,
-            ...(data.leadForm ? {
-              fullName: data.leadForm.name,
-              name: data.leadForm.name,
-              phone: data.leadForm.phone,
-              whatsappNumber: data.leadForm.whatsappNumber,
-              age: data.leadForm.age,
-              gender: data.leadForm.gender,
-              education: data.leadForm.education,
-              currentRole: data.leadForm.currentRole,
-              experienceYrs: data.leadForm.experienceYrs,
-              location: data.leadForm.location,
-              course: data.leadForm.course,
-              budget: data.leadForm.budget,
-              batchTiming: data.leadForm.batchTiming,
-              decisionStatus: data.leadForm.decisionStatus,
-            } : {})
-          };
-          if (data.stage) update.stage = data.stage;
-          // Strip undefined keys so we never overwrite real saved values with nothing
-          Object.keys(update).forEach((k) => update[k] === undefined && delete update[k]);
+          const isStudent = Boolean(selectedCallLead.isStudent);
+          let updatedLead = null;
 
-          const updated = await updateLead(leadId, update);
-          setLeads((prev) => prev.map((l) => ((l._id || l.id) === leadId ? updated : l)));
+          if (isStudent) {
+            try {
+              const updatedStudent = await updateStudent(leadId, {
+                phone: data.leadForm?.phone,
+                whatsappNumber: data.leadForm?.whatsappNumber,
+                notes: data.notes
+              });
+              setStudents((prev) => prev.map((s) => ((s._id || s.id || s.studentId) === leadId ? { ...s, ...updatedStudent } : s)));
+            } catch (err) {
+              console.warn('Student update notice:', err.message);
+            }
+          } else {
+            // Latest copy of the lead, so two calls in a row both count
+            const freshLead = leads.find((l) => (l._id || l.id) === leadId) || selectedCallLead.leadData || {};
+            const update = {
+              callCount: (freshLead.callCount ?? selectedCallLead.callCount ?? 0) + 1,
+              lastCallTime: new Date().toISOString(),
+              notes: data.notes || undefined,
+              followUpNote: data.notes || undefined,
+              followUpDate: data.followUpDate || undefined,
+              followUpTime: data.followUpTime || undefined,
+              ...(data.leadForm ? {
+                fullName: data.leadForm.name,
+                name: data.leadForm.name,
+                phone: data.leadForm.phone,
+                whatsappNumber: data.leadForm.whatsappNumber,
+                age: data.leadForm.age,
+                gender: data.leadForm.gender,
+                education: data.leadForm.education,
+                currentRole: data.leadForm.currentRole,
+                experienceYrs: data.leadForm.experienceYrs,
+                location: data.leadForm.location,
+                course: data.leadForm.course,
+                budget: data.leadForm.budget,
+                batchTiming: data.leadForm.batchTiming,
+                decisionStatus: data.leadForm.decisionStatus,
+              } : {})
+            };
+            if (data.stage) update.stage = data.stage;
+            // Strip undefined keys so we never overwrite real saved values with nothing
+            Object.keys(update).forEach((k) => update[k] === undefined && delete update[k]);
+
+            updatedLead = await updateLead(leadId, update);
+            setLeads((prev) => prev.map((l) => ((l._id || l.id) === leadId ? updatedLead : l)));
+          }
 
           // Record call into today's local log for instant daily closure reactivity
           const newCallEntry = {
@@ -1681,17 +1932,48 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
           };
           setTodayCallLogs((prev) => [newCallEntry, ...prev]);
           logCall({ leadId, leadName: data.leadForm?.name || selectedCallLead?.name || '', outcome: data.outcome, durationSeconds: data.durationSeconds || 0 })
-            .catch(() => showToast('⚠ Call saved on the lead, but the daily call counter could not be updated'));
+            .catch(() => showToast('⚠ Call saved on the record, but the daily call counter could not be updated'));
 
-          showToast(`✓ Call outcome saved for ${data.leadForm?.name || selectedCallLead.name} (${data.outcome}, ${Math.round(data.durationSeconds)}s)`);
+          showToast(`✓ Call outcome saved for ${data.leadForm?.name || selectedCallLead.name} (${data.outcome}, ${Math.round(data.durationSeconds || 0)}s)`);
+
+          // "Will Join" → straight into registration, pre-filled from the lead
+          if (String(data.outcome || '').startsWith('Will Join') && updatedLead?.stage !== 'admitted') {
+            setSelectedCallLead(null);
+            setAdmittingLead(updatedLead);
+          }
         }}
       />
+
+      {/* Lead → Student registration (pipeline "Admit", call outcome "Will Join") */}
+      {admittingLead && (
+        <CompleteRegistrationModal
+          key={admittingLead._id || admittingLead.id}
+          isOpen
+          onClose={() => setAdmittingLead(null)}
+          currentUser={currentUser}
+          existingStudents={students}
+          initialData={{
+            fullName: admittingLead.fullName || admittingLead.name || '',
+            phone: admittingLead.phone || '',
+            email: admittingLead.email || '',
+            location: admittingLead.location || '',
+            qualification: admittingLead.education || '',
+            source: admittingLead.sourceName || admittingLead.source || '',
+            courseName: admittingLead.course || '',
+            branchName: admittingLead.branch || branchShort || '',
+            leadBranch: admittingLead.branch || '',
+            batchTiming: admittingLead.batchTiming || ''
+          }}
+          onSubmit={handleAdmitSubmit}
+        />
+      )}
 
       {/* Book New Demo Modal */}
       <BookNewDemoModal
         isOpen={showBookDemoModal}
         onClose={() => setShowBookDemoModal(false)}
-        initialData={bookDemoInitialData}
+        currentUser={currentUser}
+        initialData={bookDemoInitialData || { location: branchShort || 'Gandhipuram' }}
         onConfirm={handleBookDemoSubmit}
       />
 

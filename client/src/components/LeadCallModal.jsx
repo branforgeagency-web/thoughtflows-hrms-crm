@@ -2,8 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import useFileToken from '../hooks/useFileToken';
 import {
   Phone,
-  PhoneCall,
-  PhoneOff,
   Edit2,
   Clock,
   Calendar,
@@ -14,8 +12,6 @@ import {
   CheckCircle2,
   Sparkles,
   X,
-  AlertCircle,
-  Zap,
   HelpCircle,
   FileText,
   Mic,
@@ -29,7 +25,7 @@ import {
 } from 'lucide-react';
 
 import BookNewDemoModal from './BookNewDemoModal';
-import { createDemo, dialCall, getCallStatus, hangupCall, getRecordings, saveRecording, recordingUrl } from '../services/api';
+import { createDemo, getRecordings, saveRecording, recordingUrl } from '../services/api';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 import { copyToClipboard } from '../utils/clipboard';
 import { COURSE_CATEGORIES } from '../constants/courses';
@@ -46,29 +42,17 @@ const OUTCOME_STAGE = {
 
 const NEEDS_FOLLOW_UP_DATE = ['Follow-up Needed', 'Call Back Later'];
 
-// Real Exotel terminal call statuses
-const TERMINAL_STATUSES = ['completed', 'failed', 'busy', 'no-answer', 'canceled'];
-
 const STATUS_LABEL = {
-  idle: 'NOT DIALED',
-  connecting: 'CONNECTING…',
-  queued: 'CONNECTING…',
-  ringing: 'RINGING…',
+  idle: 'READY',
   'in-progress': 'ON CALL',
-  completed: 'CALL ENDED',
-  failed: 'CALL FAILED',
-  busy: 'LINE BUSY',
-  'no-answer': 'NO ANSWER',
-  canceled: 'CALL ENDED'
+  completed: 'CALL ENDED'
 };
 
 export default function LeadCallModal({ isOpen, onClose, leadData, onSave, currentUser }) {
   useFileToken(); // keeps file links (downloads / audio) signed with a fresh short-lived token
-  // Call state
+  // Call state (Direct device / Phone Link call)
   const [callStatus, setCallStatus] = useState('idle');
-  const [callSid, setCallSid] = useState(null);
   const [callSeconds, setCallSeconds] = useState(0);
-  const [callError, setCallError] = useState(null);
   const [selectedOutcome, setSelectedOutcome] = useState('Follow-up Needed');
   const [followUpDate, setFollowUpDate] = useState('');
   const [followUpTime, setFollowUpTime] = useState('');
@@ -81,7 +65,6 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
   const [isRecording, setIsRecording] = useState(false);
   const [recordedAudioBlob, setRecordedAudioBlob] = useState(null);
   const [recordedAudioUrl, setRecordedAudioUrl] = useState(null);
-  const [exotelRecordingUrl, setExotelRecordingUrl] = useState(null);
   const [uploadedFileName, setUploadedFileName] = useState('');
   const [leadRecordings, setLeadRecordings] = useState([]);
   const [loadingRecordings, setLoadingRecordings] = useState(false);
@@ -90,7 +73,6 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
   const audioChunksRef = useRef([]);
   const streamRef = useRef(null);
   const fileInputRef = useRef(null);
-  const pollRef = useRef(null);
   const timerRef = useRef(null);
   const hasBeenAnsweredRef = useRef(false);
 
@@ -137,10 +119,6 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
   };
 
   const clearTimers = () => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
@@ -162,11 +140,17 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
     }
   };
 
-  // Start in-browser audio recording
+  // Start in-browser audio recording with Voice Isolation (Noise Suppression & Echo Cancellation)
   const startAudioRecording = async () => {
     try {
       audioChunksRef.current = [];
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
       streamRef.current = stream;
       const mediaRecorder = new MediaRecorder(stream);
       mediaRecorderRef.current = mediaRecorder;
@@ -183,7 +167,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
           setRecordedAudioBlob(blob);
           const url = URL.createObjectURL(blob);
           setRecordedAudioUrl(url);
-          setUploadedFileName('mic_call_recording.webm');
+          setUploadedFileName('mic_voice_recording.webm');
         }
         setIsRecording(false);
         if (streamRef.current) {
@@ -195,7 +179,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
       mediaRecorder.start(250);
       setIsRecording(true);
     } catch (err) {
-      console.warn('Microphone permission not granted:', err);
+      console.warn('Microphone permission not granted or audio constraint error:', err);
       setIsRecording(false);
     }
   };
@@ -211,15 +195,19 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
     setIsRecording(false);
   };
 
+  const handleClearRecording = () => {
+    setRecordedAudioBlob(null);
+    setRecordedAudioUrl(null);
+    setUploadedFileName('');
+    showToast('Recorded audio removed');
+  };
+
   // Reset & load form state when leadData changes
   useEffect(() => {
     setCallStatus('idle');
-    setCallSid(null);
     setCallSeconds(0);
-    setCallError(null);
     setRecordedAudioBlob(null);
     setRecordedAudioUrl(null);
-    setExotelRecordingUrl(null);
     setUploadedFileName('');
     hasBeenAnsweredRef.current = false;
     clearTimers();
@@ -277,87 +265,25 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
     }, 1000);
   };
 
-  // Poll Exotel for call status
-  const startPolling = (sid) => {
-    if (pollRef.current) clearInterval(pollRef.current);
-    pollRef.current = setInterval(async () => {
-      try {
-        const data = await getCallStatus(sid);
-        setCallStatus(data.status);
-        if (data.recordingUrl) {
-          setExotelRecordingUrl(data.recordingUrl);
-        }
-        if (data.status === 'in-progress' && !hasBeenAnsweredRef.current) {
-          hasBeenAnsweredRef.current = true;
-          startTimer();
-        }
-        if (TERMINAL_STATUSES.includes(data.status)) {
-          clearTimers();
-          stopAudioRecording();
-          if (data.status !== 'completed') {
-            showToast(`Call ${data.status.replace('-', ' ')}.`);
-          }
-        }
-      } catch (e) {
-        console.warn('Call status poll failed:', e.message);
-      }
-    }, 2000);
-  };
-
-  const handleDial = async () => {
+  // Direct dial via mobile / desktop default dialer (Windows Phone Link, native phone dialer)
+  const handleCall = () => {
     if (!leadForm.phone) {
-      showToast('This lead has no phone number on file.');
+      showToast('This student has no phone number on file.');
       return;
     }
-    setCallError(null);
-    setCallStatus('connecting');
-    setRecordedAudioBlob(null);
-    setRecordedAudioUrl(null);
-    setExotelRecordingUrl(null);
-
-    try {
-      const res = await dialCall({ leadPhone: leadForm.phone, agentPhone: currentUser?.phone, leadId: leadData?._id || leadData?.id, leadName: leadForm.name || leadData?.fullName });
-      setCallSid(res.callSid);
-      setCallStatus(res.status || 'queued');
-      // Start audio recording when dial succeeds
-      startAudioRecording();
-      showToast(`Dialing ${leadForm.name} via Exotel…`);
-      startPolling(res.callSid);
-    } catch (err) {
-      const errorMsg = err?.response?.data?.error || err.message || 'Could not place the call.';
-      console.error('Dial error:', errorMsg);
-      setCallStatus('failed');
-      setCallError(errorMsg);
-      stopAudioRecording();
-      clearTimers();
-      showToast(`✗ Call not placed: ${errorMsg}`);
-    }
-  };
-
-  // Direct dial via mobile / desktop default dialer
-  const handleDirectDial = () => {
-    if (!leadForm.phone) return;
     const cleanPhone = leadForm.phone.replace(/[^\d+]/g, '');
     window.open(`tel:${cleanPhone}`, '_self');
     setCallStatus('in-progress');
     hasBeenAnsweredRef.current = true;
     startTimer();
     startAudioRecording();
-    showToast(`Opening phone dialer for ${leadForm.phone}… Recording started.`);
+    showToast(`Calling ${leadForm.phone} via Phone / Phone Link… Call timer started.`);
   };
 
-  const handleEndCall = async () => {
+  const handleEndCall = () => {
     clearTimers();
     stopAudioRecording();
-    const activeStates = ['connecting', 'queued', 'ringing', 'in-progress'];
-    if (callSid && activeStates.includes(callStatus)) {
-      try {
-        await hangupCall(callSid);
-      } catch (e) {
-        console.warn('Hangup notice:', e.message);
-      }
-    }
-    setCallStatus((prev) => (TERMINAL_STATUSES.includes(prev) ? prev : 'completed'));
+    setCallStatus('completed');
     showToast('✓ Call ended. Audio recording ready.');
   };
 
@@ -402,7 +328,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
       }
     }
 
-    if (audioBase64 || exotelRecordingUrl) {
+    if (audioBase64) {
       try {
         await saveRecording({
           leadId: leadData?._id || leadData?.id,
@@ -410,13 +336,11 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
           leadPhone: leadForm.phone,
           counselorName: currentUser?.name || '',
           counselorPhone: currentUser?.phone || '',
-          callSid: callSid || '',
           durationSeconds: callSeconds,
           outcome: selectedOutcome,
           notes: leadForm.notes,
           audioBase64,
-          audioUrl: exotelRecordingUrl || undefined,
-          source: exotelRecordingUrl ? 'exotel' : 'browser_mic'
+          source: uploadedFileName ? 'phone_upload' : 'browser_mic'
         });
         await fetchLeadRecordings(leadForm.phone);
       } catch (err) {
@@ -428,7 +352,6 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
       outcome: selectedOutcome,
       stage: OUTCOME_STAGE[selectedOutcome],
       notes: leadForm.notes,
-      callSid,
       durationSeconds: callSeconds,
       wasAnswered: hasBeenAnsweredRef.current,
       followUpDate: NEEDS_FOLLOW_UP_DATE.includes(selectedOutcome) ? followUpDate : '',
@@ -503,15 +426,17 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
           </div>
 
           {/* Right Action Buttons */}
-          <div className="flex items-center gap-2.5 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Direct Device Call - Windows Phone Link / Mobile native dialer */}
             <button
               type="button"
-              onClick={handleDial}
-              disabled={isCallActive || !leadForm.phone}
-              className="bg-[#00b894] hover:bg-[#00a383] disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-xs px-4 py-2 rounded-full flex items-center gap-1.5 shadow-sm active:scale-95 transition-all cursor-pointer"
+              onClick={handleCall}
+              disabled={!leadForm.phone}
+              className="bg-[#00897b] hover:bg-[#00796b] disabled:opacity-50 disabled:cursor-not-allowed text-white font-extrabold text-xs px-4 py-2 rounded-full flex items-center gap-1.5 shadow-sm active:scale-95 transition-all cursor-pointer"
+              title="Call directly via Phone or Windows Phone Link"
             >
-              <PhoneCall className="w-3.5 h-3.5" />
-              <span>DIAL NOW</span>
+              <Phone className="w-3.5 h-3.5" />
+              <span>{callStatus === 'in-progress' ? 'RE-DIAL' : 'CALL VIA PHONE'}</span>
             </button>
 
             <div className="bg-white/10 border border-white/15 px-3 py-1.5 rounded-full text-xs font-bold text-white flex items-center gap-2">
@@ -533,30 +458,6 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
             </button>
           </div>
         </header>
-
-        {callError && (
-          <div className="mx-5 mt-3 p-3.5 rounded-2xl bg-amber-50 border border-amber-300 text-amber-950 text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
-            <div className="flex items-start gap-2.5">
-              <AlertCircle className="w-5 h-5 text-amber-600 mt-0.5 shrink-0" />
-              <div>
-                <div className="font-extrabold text-amber-950">
-                  Exotel Notice: {callError}
-                </div>
-                <div className="text-[11px] text-amber-800 mt-0.5">
-                  Complete business KYC in your Exotel dashboard (my.exotel.com) to activate outbound calls on virtual number 08047289115. Meanwhile, you can call directly from your device:
-                </div>
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={handleDirectDial}
-              className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-3.5 py-2 rounded-xl flex items-center gap-1.5 shrink-0 transition-all shadow-xs cursor-pointer"
-            >
-              <PhoneCall className="w-3.5 h-3.5" />
-              <span>Call via Phone ({leadForm.phone})</span>
-            </button>
-          </div>
-        )}
 
         {/* ── SCROLLABLE MODAL BODY ────────────────────────────────────── */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 text-xs text-slate-800">
@@ -985,19 +886,29 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
 
             {/* Audio Preview if audio recorded or uploaded */}
             {recordedAudioUrl && (
-              <div className="mt-3 p-3 bg-emerald-50 border border-emerald-200 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+              <div className="mt-3 p-3 bg-emerald-50 border border-emerald-200 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-3 text-xs shadow-xs">
                 <div className="flex items-center gap-2.5">
                   <div className="w-8 h-8 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-800 font-bold shrink-0">
                     <Volume2 className="w-4 h-4" />
                   </div>
                   <div>
                     <div className="font-extrabold text-emerald-950">
-                      {uploadedFileName ? `Audio: ${uploadedFileName}` : `Call Audio (${formatTimer(callSeconds)})`}
+                      {uploadedFileName ? `Audio: ${uploadedFileName}` : `Mic Audio (${formatTimer(callSeconds)})`}
                     </div>
                     <div className="text-[10.5px] text-emerald-700">Ready to save with call record</div>
                   </div>
                 </div>
-                <audio controls src={recordedAudioUrl} className="h-8 max-w-xs w-full accent-[#0e6977]" />
+                <div className="flex items-center gap-2 w-full sm:w-auto">
+                  <audio controls src={recordedAudioUrl} className="h-8 max-w-xs w-full accent-[#0e6977]" />
+                  <button
+                    type="button"
+                    onClick={handleClearRecording}
+                    className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer shrink-0"
+                    title="Remove this recording"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
             )}
           </div>

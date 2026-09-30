@@ -4,6 +4,7 @@ import logoImg from '../assets/thoughtflows-logo.png';
 import { COURSE_CATEGORIES } from '../constants/courses';
 
 import { getCurrentMonthYear, getCurrentMonthName } from '../utils/dateUtils';
+import { generateStudentIdDetails } from '../utils/studentIdGenerator';
 
 export default function WalkinRegistrationModal({ isOpen, onClose, onRegister, currentUser }) {
   if (!isOpen) return null;
@@ -76,8 +77,16 @@ export default function WalkinRegistrationModal({ isOpen, onClose, onRegister, c
 
     const finalWhatsApp = sameAsMobile ? phone.trim() : (whatsappNumber.trim() || phone.trim());
 
+    const idInfo = generateStudentIdDetails({
+      branch: branch || currentUser?.branch || 'Saravanampatti',
+      course,
+      courseType,
+      date: new Date()
+    });
+
     const newStudent = {
-      id: `TF${name.slice(0, 2).toUpperCase()}${Date.now().toString().slice(-4)}`,
+      id: idInfo.studentId,
+      studentId: idInfo.studentId,
       name: name.toUpperCase(),
       fatherName,
       address,

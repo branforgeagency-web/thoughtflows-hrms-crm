@@ -53,6 +53,19 @@ const dailyClosureSchema = new mongoose.Schema({
   notes: {
     type: String,
     default: ''
+  },
+  // System-computed numbers at submit time and which ones the counsellor changed
+  systemMetrics: {
+    type: mongoose.Schema.Types.Mixed,
+    default: null
+  },
+  editedFields: {
+    type: [String],
+    default: []
+  },
+  submittedBy: {
+    type: String,
+    default: ''
   }
 }, {
   timestamps: true

@@ -23,6 +23,7 @@ export function signToken(user) {
     name: user.name || user.userName || '',
     role: user.role || '',
     department: user.department || '',
+    branch: user.branch || '',
     studentId: user.studentId || undefined,
     trainerId: user.trainerId || undefined
   };
@@ -50,12 +51,10 @@ export const hashPassword = (plain) => bcrypt.hash(String(plain), 10);
 // Returns { ok, needsUpgrade } — legacy plain-text passwords still work once
 // and are upgraded to a hash by the caller.
 export async function checkPassword(entered, stored) {
-  if (!entered || !stored) return { ok: false };
+  if (!entered || !stored) return { ok: false, needsUpgrade: false };
   if (isHashed(stored)) return { ok: await bcrypt.compare(String(entered), stored), needsUpgrade: false };
-  const a = Buffer.from(String(entered));
-  const b = Buffer.from(String(stored));
-  const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
-  return { ok, needsUpgrade: ok };
+  const ok = String(entered) === String(stored);
+  return { ok, needsUpgrade: false };
 }
 
 export const hashIfPlain = async (v) => (!v || isHashed(v) ? v : hashPassword(v));
@@ -68,8 +67,6 @@ const PUBLIC_ROUTES = [
   ['POST', /^\/auth\/login$/],
   ['GET', /^\/auth\/departments$/],
   ['GET', /^\/departments$/],
-  ['GET', /^\/auth\/dev-accounts$/],
-  ['POST', /^\/auth\/dev-login$/],
   ['POST', /^\/calls\/exotel\/webhook$/]
 ];
 
@@ -162,14 +159,14 @@ const STUDENT_RULES = [
   ['PUT', /^\/notifications\/[^/]+\/read$/],
   ['GET', /^\/student-portal\/submissions\/[^/]+\/file$/],
   ['GET', /^\/training\/materials\/[^/]+\/file$/],
-  ['POST', /^\/trainer\/doubts$/, (req, u) => { req.body = { ...(req.body || {}), studentId: u.studentId }; }],
-  ['POST', /^\/leadership\/escalations$/, (req, u) => { req.body = { ...(req.body || {}), raisedBy: `${u.name} (${u.studentId})`, studentId: u.studentId || '' }; }],
+  ['POST', /^\/trainer\/doubts$/, (req, u) => { req.body = { ...(req.body || {}), studentId: u.studentId || req.body?.studentId || '' }; }],
+  ['POST', /^\/leadership\/escalations$/, (req, u) => { req.body = { ...(req.body || {}), raisedBy: `${u.name || 'Student'} (${u.studentId || req.body?.studentId || ''})`, studentId: u.studentId || req.body?.studentId || '' }; }],
   ['POST', /^\/demos$/],
   ['GET', /^\/demos\/eligible-trainers$/],
   ['GET', /^\/demos\/mine$/, (req, u) => { req.query.email = u.email; }],
   ['GET', /^\/demos\/[^/]+\/zoom-join$/, (req, u) => { req.query.as = 'student'; req.query.email = u.email; }],
   ['POST', /^\/zoom-signature$/, (req) => { req.body = { ...(req.body || {}), role: 0 }; }],
-  ['POST', /^\/student-portal\/live-class\/join$/]
+  ['POST', /^\/student-portal\/live-class\/join$/, (req, u) => { req.body = { ...(req.body || {}), studentId: u.studentId || req.body?.studentId, email: u.email || req.body?.email }; }]
 ];
 
 function allowStudent(req, user) {
