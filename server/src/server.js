@@ -27,14 +27,30 @@ const PORT = process.env.PORT || 5001;
 connectDB();
 
 // Middleware
-// Only our own frontends may call the API from a browser (comma-separated CLIENT_URL)
-const allowedOrigins = [
-  ...String(process.env.CLIENT_URL || '').split(',').map((o) => o.trim()).filter(Boolean),
-  'http://localhost:5173'
-];
+// Enable CORS for all frontends (Vercel, Render, Thoughtflows domains, local dev, or specified via CLIENT_URL)
+const configuredOrigins = String(process.env.CLIENT_URL || '')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+
 app.use(cors({
-  origin: (origin, cb) => cb(null, !origin || allowedOrigins.includes(origin))
+  origin: (origin, cb) => {
+    // Non-browser or same-origin requests (mobile native, server-to-server, curl)
+    if (!origin) return cb(null, true);
+
+    // If explicit strict origins are configured in production without wildcard
+    if (process.env.CLIENT_URL_STRICT === 'true' && configuredOrigins.length > 0 && !configuredOrigins.includes('*')) {
+      return cb(null, configuredOrigins.includes(origin));
+    }
+
+    // Default: allow incoming request origin (reflects origin, allows Vercel, Render, localhost, etc.)
+    return cb(null, true);
+  },
+  credentials: true,
+  methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin']
 }));
+app.options('*', cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(morgan('dev'));
