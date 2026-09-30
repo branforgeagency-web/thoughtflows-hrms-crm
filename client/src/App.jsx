@@ -59,10 +59,18 @@ export default function App() {
     { id: 'admin', title: 'Admin & Management', status: '3 ALERTS', description: "Founders' command bridge · back-office operations · strategy, red-line alerts & administration" }
   ];
 
-  // Persistent user state across page refresh
+  // Clear any old long-lived localStorage auth so past sessions cannot leak across window close
+  useEffect(() => {
+    try {
+      localStorage.removeItem('thoughtflows_user');
+      localStorage.removeItem('thoughtflows_dashboard');
+    } catch (_) {}
+  }, []);
+
+  // Session-scoped user state: automatically cleared by the browser when the window/tab is closed
   const [currentUser, setCurrentUser] = useState(() => {
     try {
-      const saved = localStorage.getItem('thoughtflows_user');
+      const saved = sessionStorage.getItem('thoughtflows_user');
       return saved ? JSON.parse(saved) : null;
     } catch {
       return null;
@@ -71,7 +79,7 @@ export default function App() {
 
   const [selectedDashboard, setSelectedDashboard] = useState(() => {
     try {
-      const userSaved = localStorage.getItem('thoughtflows_user');
+      const userSaved = sessionStorage.getItem('thoughtflows_user');
       if (userSaved) {
         const u = JSON.parse(userSaved);
         let dept = u.department;
@@ -79,7 +87,7 @@ export default function App() {
         const matched = DEPT_CARDS.find(c => c.id === dept);
         if (matched) return matched;
       }
-      const saved = localStorage.getItem('thoughtflows_dashboard');
+      const saved = sessionStorage.getItem('thoughtflows_dashboard');
       if (saved) return JSON.parse(saved);
       return null;
     } catch {
@@ -89,8 +97,8 @@ export default function App() {
 
   const [isDashboardOpen, setIsDashboardOpen] = useState(() => {
     try {
-      const userSaved = localStorage.getItem('thoughtflows_user');
-      // If user is logged in, remain in dashboard on page refresh
+      const userSaved = sessionStorage.getItem('thoughtflows_user');
+      // If user is actively logged in within this tab session, remain open across refreshes
       return !!userSaved;
     } catch {
       return false;
@@ -116,12 +124,12 @@ export default function App() {
 
   const handleSelectDashboard = (card) => {
     setSelectedDashboard(card);
-    localStorage.setItem('thoughtflows_dashboard', JSON.stringify(card));
-    // If user is already authenticated (or is admin), grant immediate seamless access
+    sessionStorage.setItem('thoughtflows_dashboard', JSON.stringify(card));
+    // If user is already authenticated in this session, grant immediate access
     if (currentUser) {
       setIsDashboardOpen(true);
     } else {
-      // Require department-specific login (no 7 options selector for these individual cards)
+      // Require department-specific login
       setLoginDepartment(card.id);
       setShowLoginDeptSelector(false);
       setIsLoginOpen(true);
@@ -130,7 +138,11 @@ export default function App() {
 
   const handleLoginSuccess = (user) => {
     setCurrentUser(user);
-    localStorage.setItem('thoughtflows_user', JSON.stringify(user));
+    sessionStorage.setItem('thoughtflows_user', JSON.stringify(user));
+    try {
+      localStorage.removeItem('thoughtflows_user');
+      localStorage.removeItem('thoughtflows_dashboard');
+    } catch (_) {}
     setIsLoginOpen(false);
 
     // Open dashboard corresponding to the authenticated department
@@ -138,14 +150,18 @@ export default function App() {
     if (!targetDept || targetDept === 'Medical Coding Faculty') targetDept = 'training';
     const matchedCard = DEPT_CARDS.find(c => c.id === targetDept) || DEPT_CARDS[0];
     setSelectedDashboard(matchedCard);
-    localStorage.setItem('thoughtflows_dashboard', JSON.stringify(matchedCard));
+    sessionStorage.setItem('thoughtflows_dashboard', JSON.stringify(matchedCard));
     setIsDashboardOpen(true);
   };
 
   const handleSignOut = () => {
-    localStorage.removeItem('thoughtflows_user');
-    localStorage.removeItem('thoughtflows_dashboard');
-    localStorage.removeItem('thoughtflows_hr_active_tab');
+    sessionStorage.removeItem('thoughtflows_user');
+    sessionStorage.removeItem('thoughtflows_dashboard');
+    try {
+      localStorage.removeItem('thoughtflows_user');
+      localStorage.removeItem('thoughtflows_dashboard');
+      localStorage.removeItem('thoughtflows_hr_active_tab');
+    } catch (_) {}
     setCurrentUser(null);
     setSelectedDashboard(null);
     setIsDashboardOpen(false);
@@ -165,7 +181,7 @@ export default function App() {
     if (targetDeptId) {
       const matchedCard = DEPT_CARDS.find(c => c.id === targetDeptId) || { id: targetDeptId, title: targetDeptId };
       setSelectedDashboard(matchedCard);
-      localStorage.setItem('thoughtflows_dashboard', JSON.stringify(matchedCard));
+      sessionStorage.setItem('thoughtflows_dashboard', JSON.stringify(matchedCard));
       setIsDashboardOpen(true);
       return;
     }
@@ -305,9 +321,7 @@ export default function App() {
 
       <DashboardModal
         isOpen={isDashboardOpen}
-        onClose={() => {
-          setIsDashboardOpen(false);
-        }}
+        onClose={handleSignOut}
         selectedDashboard={selectedDashboard}
         currentUser={currentUser}
         onSwitchDepartment={handleSwitchDepartment}

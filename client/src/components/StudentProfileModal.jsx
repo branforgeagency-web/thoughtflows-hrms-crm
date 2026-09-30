@@ -138,7 +138,12 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
   const autoStageIdx = autoStage(student);
   const checks = stageChecks(student);
   const myDept = useMemo(() => {
-    try { return JSON.parse(localStorage.getItem('thoughtflows_user') || 'null')?.department || ''; } catch (_) { return ''; }
+    try {
+      const raw = sessionStorage.getItem('thoughtflows_user') || localStorage.getItem('thoughtflows_user');
+      return JSON.parse(raw || 'null')?.department || '';
+    } catch (_) {
+      return '';
+    }
   }, []);
   const canEditPlacement = PLACEMENT_EDITORS.includes(myDept);
   const stageLock = (id) => {

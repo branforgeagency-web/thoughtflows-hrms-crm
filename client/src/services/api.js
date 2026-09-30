@@ -21,7 +21,8 @@ const api = axios.create({
 // ---------------------------------------------------------------------------
 export const getAuthToken = () => {
   try {
-    const u = JSON.parse(localStorage.getItem('thoughtflows_user') || 'null');
+    const raw = sessionStorage.getItem('thoughtflows_user') || localStorage.getItem('thoughtflows_user');
+    const u = JSON.parse(raw || 'null');
     return u?.token || '';
   } catch (_) {
     return '';
@@ -91,6 +92,8 @@ const handleAuthError = (error) => {
   if (error?.response?.status === 401 && (code === 'AUTH_EXPIRED' || code === 'AUTH_REQUIRED') && getAuthToken() && !sessionExpiredHandled) {
     sessionExpiredHandled = true;
     try {
+      sessionStorage.removeItem('thoughtflows_user');
+      sessionStorage.removeItem('thoughtflows_dashboard');
       localStorage.removeItem('thoughtflows_user');
       localStorage.removeItem('thoughtflows_dashboard');
     } catch (_) {}
