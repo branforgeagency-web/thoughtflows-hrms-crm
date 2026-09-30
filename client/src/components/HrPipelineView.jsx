@@ -23,10 +23,16 @@ import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 // Classifies a lead's follow-up against real dates instead of guessing.
 function classifyFollowUp(lead) {
   const raw = (lead.followUpDate || '').trim();
-  const parsed = raw ? new Date(raw) : null;
-  const hasValidDate = parsed && !isNaN(parsed.getTime());
+  let target = null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const [y, m, d] = raw.split('-').map(Number);
+    target = new Date(y, m - 1, d);
+  } else if (raw) {
+    const parsed = new Date(raw);
+    if (!isNaN(parsed.getTime())) target = parsed;
+  }
 
-  if (!hasValidDate) {
+  if (!target) {
     if (lead.stage === 'new') {
       return { isOverdue: true, isToday: false, isTomorrow: false, timeframe: 'overdue', hasDate: false };
     }
@@ -35,7 +41,6 @@ function classifyFollowUp(lead) {
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const target = new Date(parsed);
   target.setHours(0, 0, 0, 0);
   const diffDays = Math.round((target - today) / (1000 * 60 * 60 * 24));
 

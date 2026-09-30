@@ -51,10 +51,10 @@ import { getStudents, getLeads, createLead, updateLead, updateStudent, getDemos,
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 
 export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, onSwitchDepartment, theme = 'classic' }) {
-  // Persist active tab across browser refresh
+  // Persist active tab across browser refresh within this session
   const [activeTab, setActiveTab] = useState(() => {
     try {
-      return localStorage.getItem('thoughtflows_hr_active_tab') || 'Home';
+      return sessionStorage.getItem('thoughtflows_hr_active_tab') || 'Home';
     } catch {
       return 'Home';
     }
@@ -63,9 +63,10 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   const handleTabChange = (tabName) => {
     setActiveTab(tabName);
     try {
-      localStorage.setItem('thoughtflows_hr_active_tab', tabName);
+      sessionStorage.setItem('thoughtflows_hr_active_tab', tabName);
+      localStorage.removeItem('thoughtflows_hr_active_tab');
     } catch (e) {
-      console.warn('Could not save active tab to localStorage', e);
+      console.warn('Could not save active tab to sessionStorage', e);
     }
   };
 
