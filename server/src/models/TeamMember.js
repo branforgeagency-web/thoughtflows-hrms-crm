@@ -9,7 +9,7 @@ const teamMemberSchema = new mongoose.Schema(
     assigned: { type: Number, default: 0 },
     completed: { type: Number, default: 0 },
     pending: { type: Number, default: 0 },
-    quality: { type: Number, default: 80 },
+    quality: { type: Number, default: null },
     available: { type: Boolean, default: true },
     shift: { type: String, default: 'general' },
     weeklySchedule: { type: mongoose.Schema.Types.Mixed, default: null }

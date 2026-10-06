@@ -574,6 +574,8 @@ export const createApproval = async (approvalData) => {
 export const decideApproval = async (id, action) => {
   const res = await api.patch(`/leadership/approvals/${id}/decision`, { action });
   notifyDataUpdate('approvals');
+  // A creative's approval also changes the creative on the Marketing desk
+  if (res.data?.refType === 'creative') notifyDataUpdate('creatives');
   return res.data;
 };
 
@@ -588,8 +590,8 @@ export const createEscalation = async (escalationData) => {
   return res.data;
 };
 
-export const updateEscalationStatus = async (id, action) => {
-  const res = await api.patch(`/leadership/escalations/${id}/status`, { action });
+export const updateEscalationStatus = async (id, action, response) => {
+  const res = await api.patch(`/leadership/escalations/${id}/status`, { action, ...(response ? { response } : {}) });
   notifyDataUpdate('escalations');
   return res.data;
 };
@@ -599,8 +601,10 @@ export const getTeam = async (params) => {
   return res.data;
 };
 
-export const setTeamMemberShift = async (id, shift) => {
-  const res = await api.patch(`/leadership/team/${id}/shift`, { shift });
+// `update` is a shift name, or { shift, weeklySchedule, available, name }
+export const setTeamMemberShift = async (id, update) => {
+  const body = update && typeof update === 'object' ? update : { shift: update };
+  const res = await api.patch(`/leadership/team/${id}/shift`, body);
   notifyDataUpdate('team');
   return res.data;
 };
@@ -815,6 +819,7 @@ export const createCreative = async (data) => {
 export const updateCreative = async (id, data) => {
   const res = await api.put(`/marketing/creatives/${id}`, data);
   notifyDataUpdate('creatives');
+  notifyDataUpdate('approvals');
   return res.data;
 };
 
@@ -826,6 +831,147 @@ export const deleteCreative = async (id) => {
 
 export const getMarketingSources = async () => {
   const res = await api.get('/marketing/sources');
+  return res.data;
+};
+
+// Content calendar
+export const getContentPieces = async () => {
+  const res = await api.get('/marketing/content');
+  return res.data;
+};
+
+export const createContentPiece = async (data) => {
+  const res = await api.post('/marketing/content', data);
+  notifyDataUpdate('content');
+  return res.data;
+};
+
+export const updateContentPiece = async (id, data) => {
+  const res = await api.put(`/marketing/content/${id}`, data);
+  notifyDataUpdate('content');
+  return res.data;
+};
+
+export const deleteContentPiece = async (id) => {
+  const res = await api.delete(`/marketing/content/${id}`);
+  notifyDataUpdate('content');
+  return res.data;
+};
+
+// Branch lead demand (branches ask Marketing for leads)
+export const getLeadDemands = async () => {
+  const res = await api.get('/marketing/demands');
+  return res.data;
+};
+
+export const createLeadDemand = async (data) => {
+  const res = await api.post('/marketing/demands', data);
+  notifyDataUpdate('demands');
+  return res.data;
+};
+
+export const updateLeadDemand = async (id, data) => {
+  const res = await api.put(`/marketing/demands/${id}`, data);
+  notifyDataUpdate('demands');
+  return res.data;
+};
+
+export const deleteLeadDemand = async (id) => {
+  const res = await api.delete(`/marketing/demands/${id}`);
+  notifyDataUpdate('demands');
+  return res.data;
+};
+
+// ==========================================
+// Org master data, shared settings & SOPs
+// ==========================================
+export const createBranch = async (data) => {
+  const res = await api.post('/branches', data);
+  notifyDataUpdate('branches');
+  return res.data;
+};
+
+export const updateBranch = async (id, data) => {
+  const res = await api.put(`/branches/${id}`, data);
+  notifyDataUpdate('branches');
+  return res.data;
+};
+
+export const deleteBranch = async (id) => {
+  const res = await api.delete(`/branches/${id}`);
+  notifyDataUpdate('branches');
+  return res.data;
+};
+
+export const getPipeline = async () => {
+  const res = await api.get('/leads/pipeline');
+  return res.data;
+};
+
+export const getTeamTasks = async (params) => {
+  const res = await api.get('/leadership/tasks', { params });
+  return res.data;
+};
+
+export const createTeamTask = async (data) => {
+  const res = await api.post('/leadership/tasks', data);
+  notifyDataUpdate('tasks');
+  return res.data;
+};
+
+export const updateTeamTaskStatus = async (id, status) => {
+  const res = await api.patch(`/leadership/tasks/${id}`, { status });
+  notifyDataUpdate('tasks');
+  return res.data;
+};
+
+export const reviewDailyClosure = async (id) => {
+  const res = await api.patch(`/closures/${id}/review`);
+  notifyDataUpdate('closures');
+  return res.data;
+};
+
+export const sendStaffReminder = async ({ name, departmentCode, message }) => {
+  const res = await api.post('/notifications/remind', { name, departmentCode, message });
+  return res.data;
+};
+
+export const getSetting = async (key) => {
+  const res = await api.get(`/settings/${key}`);
+  return res.data;
+};
+
+export const saveSetting = async (key, value) => {
+  const res = await api.put(`/settings/${key}`, { value });
+  notifyDataUpdate('settings');
+  return res.data;
+};
+
+export const getSops = async (params) => {
+  const res = await api.get('/sops', { params });
+  return res.data;
+};
+
+export const createSop = async (data) => {
+  const res = await api.post('/sops', data);
+  notifyDataUpdate('sops');
+  return res.data;
+};
+
+export const updateSop = async (id, data) => {
+  const res = await api.put(`/sops/${id}`, data);
+  notifyDataUpdate('sops');
+  return res.data;
+};
+
+export const deleteSop = async (id) => {
+  const res = await api.delete(`/sops/${id}`);
+  notifyDataUpdate('sops');
+  return res.data;
+};
+
+export const assignSop = async (id) => {
+  const res = await api.post(`/sops/${id}/assign`);
   return res.data;
 };
 

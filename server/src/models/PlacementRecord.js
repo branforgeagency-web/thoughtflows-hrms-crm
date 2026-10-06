@@ -12,21 +12,21 @@ const placementRecordSchema = new mongoose.Schema({
   },
   company: {
     type: String,
-    default: 'Partner Company'
+    default: ''
   },
   role: {
     type: String,
-    default: 'Medical Coder'
+    default: ''
   },
   interview: String,
   interviewDate: Date,
   readiness: {
     type: String,
-    default: '85%'
+    default: ''
   },
   trainerRec: {
     type: String,
-    default: 'Ready'
+    default: ''
   },
   status: {
     type: String,

@@ -75,7 +75,7 @@ export default function HrMySchedule({
   const loadScheduleData = async () => {
     try {
       const [aData, tData] = await Promise.all([
-        getApprovals({ departmentCode: 'DEP-HR-001' }).catch(() => []),
+        userName ? getApprovals({ departmentCode: 'DEP-HR-001', requestedBy: userName }).catch(() => []) : Promise.resolve([]),
         getTeam({ departmentCode: 'DEP-HR-001' }).catch(() => [])
       ]);
 
@@ -126,18 +126,10 @@ export default function HrMySchedule({
 
   // Compute weekly shift days (Read-only, updated by HR Head)
   const shiftDays = useMemo(() => {
-    const uName = userName.toLowerCase();
-    let savedLocal = null;
-    try { savedLocal = uName ? localStorage.getItem(`thoughtflows_weekly_roster_${uName}`) : null; } catch (_) {}
-
-    // Server roster (set by Leadership in Team Roster) wins; the browser cache is
-    // only a fallback for this same user. Never show someone else's roster.
-    let customSchedule = null;
-    if (teamRosterData?.weeklySchedule && Array.isArray(teamRosterData.weeklySchedule)) {
-      customSchedule = teamRosterData.weeklySchedule;
-    } else if (savedLocal) {
-      try { customSchedule = JSON.parse(savedLocal); } catch (e) {}
-    }
+    // Roster set by the Head of HR in Leadership → Team Roster (server record)
+    const customSchedule = Array.isArray(teamRosterData?.weeklySchedule) && teamRosterData.weeklySchedule.length
+      ? teamRosterData.weeklySchedule
+      : null;
 
     const baseDays = customSchedule || getCurrentWeekScheduleDays();
 
@@ -213,7 +205,7 @@ export default function HrMySchedule({
         priority: 'medium',
         status: 'pending',
         departmentCode: 'DEP-HR-001',
-        branchName: currentUser?.branch || 'Saravanampatti Branch (CBE)',
+        branchName: currentUser?.branch || '',
         requestedBy: userName
       });
       setLeaveRequests(prev => [createdLocal, ...prev]);

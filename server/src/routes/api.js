@@ -44,6 +44,12 @@ import LiveClassSession from '../models/LiveClassSession.js';
 import StudentSubmission from '../models/StudentSubmission.js';
 import { PLACEMENT_EDITORS, autoStage, effectiveStage, blockReason, stageChecks } from '../constants/placement.js';
 import StudentRequest, { TRAINER_REQUEST_TYPES } from '../models/StudentRequest.js';
+import AppSetting from '../models/AppSetting.js';
+import ContentPiece from '../models/ContentPiece.js';
+import BranchLeadDemand from '../models/BranchLeadDemand.js';
+import SopDocument from '../models/SopDocument.js';
+import TeamTask from '../models/TeamTask.js';
+import { BRANCH_MASTER, DEPARTMENT_MASTER, DEPT_CODE_BY_DASHBOARD } from '../constants/org.js';
 
 const router = express.Router();
 
@@ -319,6 +325,7 @@ router.post('/recordings', async (req, res) => {
       notes,
       audioBase64,
       audioUrl: directAudioUrl,
+      fileName,
       source
     } = req.body;
 
@@ -328,11 +335,15 @@ router.post('/recordings', async (req, res) => {
 
     let audioUrl = directAudioUrl || '';
 
-    // If an audioBase64 string was sent (from in-browser MediaRecorder)
+    // If an audioBase64 string was sent (in-browser MediaRecorder or a file uploaded from the phone)
     if (audioBase64) {
-      const match = audioBase64.match(/^data:audio\/(webm|mp3|wav|ogg|mpeg);base64,(.+)$/i);
-      const ext = match ? (match[1] === 'mpeg' ? 'mp3' : match[1]) : 'webm';
-      const base64Data = match ? match[2] : audioBase64.replace(/^data:[^;]+;base64,/, '');
+      const AUDIO_EXTS = ['webm', 'mp3', 'wav', 'ogg', 'opus', 'm4a', 'mp4', 'aac', 'amr', '3gp', 'flac'];
+      const MIME_EXT = { mpeg: 'mp3', 'x-m4a': 'm4a', mp4: 'm4a', 'x-wav': 'wav', wave: 'wav', '3gpp': '3gp', 'x-aac': 'aac', 'x-flac': 'flac' };
+      const mime = (audioBase64.match(/^data:audio\/([\w.+-]+)(?:;[^,]*)?;base64,/i) || [])[1]?.toLowerCase();
+      const nameExt = path.extname(String(fileName || '')).slice(1).toLowerCase();
+      const mimeExt = mime ? (MIME_EXT[mime] || mime) : '';
+      const ext = AUDIO_EXTS.includes(nameExt) ? nameExt : (AUDIO_EXTS.includes(mimeExt) ? mimeExt : 'webm');
+      const base64Data = audioBase64.replace(/^data:[^,]*,/, '');
       const buffer = Buffer.from(base64Data, 'base64');
 
       const filename = `call_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.${ext}`;
@@ -449,7 +460,7 @@ router.post('/closures', async (req, res) => {
           admissions: Number(admissions) || 0,
           feesCollected: Number(feesCollected) || 0,
           pendingFus: Number(pendingFus) || 0,
-          branch: branch || 'Saravanampatti Branch (CBE)',
+          branch: branch || req.user?.branch || '',
           status: 'submitted',
           submittedAt: new Date(),
           notes: notes || '',
@@ -468,6 +479,22 @@ router.post('/closures', async (req, res) => {
     res.status(200).json(closure);
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Head of HR marks an EOD closure as reviewed (visible to every manager)
+router.patch('/closures/:id/review', async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Closure not found' });
+    const updated = await DailyClosure.findByIdAndUpdate(
+      req.params.id,
+      { reviewedBy: req.user?.name || '', reviewedAt: new Date() },
+      { new: true }
+    );
+    if (!updated) return res.status(404).json({ error: 'Closure not found' });
+    res.json(updated);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
   }
 });
 
@@ -508,7 +535,7 @@ router.post('/hr/targets', async (req, res) => {
       unit: unit || 'Count',
       period: period || 'today',
       assignedTo: assignedTo || 'All HR',
-      assignedBy: assignedBy || 'Head of HR'
+      assignedBy: assignedBy || req.user?.name || ''
     });
     res.status(201).json(newTarget);
   } catch (err) {
@@ -536,307 +563,289 @@ router.delete('/hr/targets/:id', async (req, res) => {
 });
 
 // Portal Statistics Overview (Live Calculated from DB)
+// ==========================================
+// ORGANISATION DATA — branches, departments & staff roster.
+// Master records hold identity only; every count is computed live from the
+// Student, StudentLead, User and TeamMember collections.
+// ==========================================
+const monthStartIST = () => {
+  const now = new Date(Date.now() + 330 * 60000);
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1) - 330 * 60000);
+};
+const LEAD_FUNNEL = ['new', 'contacted', 'demo_booked', 'demo_attended', 'fee_followup', 'admitted'];
+const funnelIdx = (stage) => LEAD_FUNNEL.indexOf(stage);
+const isStaffUser = (u) => u && !/inactive|disabled|suspended/i.test(u.status || '') && dashboardOf(u) !== 'student';
+const dashboardOf = (u) => mapRoleOrDeptToDashboard(u?.role, u?.department).department;
+
+// Master data is inserted once (tracked in AppSetting) — after that Admin owns
+// it, so a branch Admin deletes is not re-created on the next request.
+async function seedOnce(key, fn) {
+  const done = await AppSetting.findOne({ key }).lean();
+  if (done) return;
+  await fn();
+  await AppSetting.updateOne({ key }, { $set: { value: true } }, { upsert: true });
+}
+
+let branchCache = { at: 0, list: [] };
+async function branchList() {
+  if (Date.now() - branchCache.at < 30000 && branchCache.list.length) return branchCache.list;
+  await seedOnce('seed_branch_master', async () => {
+    const have = new Set((await Branch.find().select('name').lean()).map((b) => b.name.toLowerCase()));
+    const missing = BRANCH_MASTER.filter((b) => !have.has(b.name.toLowerCase()));
+    if (missing.length) await Branch.insertMany(missing, { ordered: false });
+  });
+  const list = await Branch.find().sort({ name: 1 }).lean();
+  branchCache = { at: Date.now(), list };
+  return list;
+}
+const invalidateBranches = () => { branchCache = { at: 0, list: [] }; };
+
+// Which branch a free-text branch / location value refers to (null if none).
+// Records spell branches many ways: "Saravanampatti (CBE)", "SVM", "Kolhapur".
+const wordRx = (w) => new RegExp(`(^|[^a-z0-9])${escapeRegex(String(w).toLowerCase())}([^a-z0-9]|$)`);
+function matchBranch(value, list) {
+  const v = String(value || '').toLowerCase();
+  if (!v.trim()) return null;
+  return list.find((b) => [b.name, b.code, ...(b.aliases || [])].filter(Boolean).some((k) => wordRx(k).test(v))) || null;
+}
+const studentBranchText = (s) => s?.branch || s?.leadBranch || s?.location || '';
+
+async function departmentList() {
+  await seedOnce('seed_department_master', async () => {
+    const have = new Set((await Department.find().select('code').lean()).map((d) => d.code));
+    const missing = DEPARTMENT_MASTER.filter((d) => !have.has(d.code));
+    if (missing.length) await Department.insertMany(missing, { ordered: false });
+  });
+  return Department.find().sort({ name: 1 }).lean();
+}
+
+// Head of a department = the staff account whose role says so
+const HEAD_ROLE_RX = /dept head|head of|department head|operational head|management|founder|director/i;
+
 router.get('/stats', async (req, res) => {
   try {
-    const deptCount = await Department.countDocuments();
-    const branchCount = await Branch.countDocuments();
-    const studentCount = await Student.countDocuments();
-    const leadCount = await StudentLead.countDocuments();
-    const placedCount = await Student.countDocuments({ 
-      $or: [
-        { statusGroup: 'placed' },
-        { placementStatus: { $regex: /placed/i } }
-      ]
-    });
-
-    let grossRevenue = 0;
-    const revenueAgg = await Student.aggregate([
-      { $match: { feeStatus: { $ne: 'Pending' } } },
-      { $group: { _id: null, total: { $sum: "$courseFee" } } }
+    const [deptCount, branchCount, students, leadCount, users] = await Promise.all([
+      Department.countDocuments(),
+      Branch.countDocuments(),
+      Student.find().select('statusGroup placementStatus placementStage paidAmount receipts').lean(),
+      StudentLead.countDocuments({ stage: { $nin: ['admitted', 'closed'] } }),
+      User.find().select('role department status').lean()
     ]);
-    if (revenueAgg[0]?.total) {
-      grossRevenue = revenueAgg[0].total;
-    }
+    const placedCount = students.filter((s) => s.statusGroup === 'placed' || /placed/i.test(s.placementStatus || '') || Number(s.placementStage) >= 7).length;
+    const totalCollected = students.reduce((sum, s) => sum + (Number(s.paidAmount) || 0), 0);
+    const monthStart = monthStartIST();
+    const mtdRevenue = students.reduce((sum, s) => sum + (s.receipts || [])
+      .filter((r) => new Date(r.at || r.date) >= monthStart)
+      .reduce((a, r) => a + (Number(r.amount) || 0), 0), 0);
 
     res.json({
-      academyName: "Thoughtflows Medical Coding Academy",
-      tagline: "Where thoughts flow into action",
-      portalVersion: "V2.0 • LIVE",
       branchesCount: branchCount,
       teamsCount: deptCount,
-      activeStudents: studentCount,
+      activeStudents: students.length,
       activeLeads: leadCount,
       placedStudents: placedCount,
-      placementRate: studentCount > 0 ? `${((placedCount / studentCount) * 100).toFixed(1)}%` : "0.0%",
-      grossRevenue
+      placementRate: students.length > 0 ? `${((placedCount / students.length) * 100).toFixed(1)}%` : '0.0%',
+      activeStaff: users.filter(isStaffUser).length,
+      // Fees actually collected (sum of receipts), all-time and this month
+      grossRevenue: totalCollected,
+      mtdRevenue
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-// Departments Endpoint
+// Departments — public list for the landing page; staff counts and the head's
+// name are added only for a signed-in caller.
 router.get('/departments', async (req, res) => {
   try {
-    let depts = await Department.find();
-    return res.json(depts);
+    const depts = await departmentList();
+    if (!req.user) return res.json(depts.map(({ head, ...d }) => d));
+    const staff = (await User.find().select('name role department status').lean()).filter(isStaffUser);
+    res.json(depts.map((d) => {
+      const members = staff.filter((u) => dashboardOf(u) === d.dashboard);
+      const headUser = members.find((u) => HEAD_ROLE_RX.test(u.role || ''));
+      return { ...d, memberCount: members.length, head: headUser?.name || d.head || '' };
+    }));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-// Branches Endpoint (14 Official Academy Branches)
+// Branches with live student / lead / staff counts
 router.get('/branches', async (req, res) => {
   try {
-    let branches = await Branch.find();
-    return res.json(branches);
+    const [list, students, leads, users] = await Promise.all([
+      branchList(),
+      Student.find().select('branch leadBranch location statusGroup createdAt').lean(),
+      StudentLead.find().select('branch stage createdAt').lean(),
+      User.find().select('name role department branch status').lean()
+    ]);
+    const monthStart = monthStartIST();
+    const stats = new Map(list.map((b) => [String(b._id), {
+      activeStudents: 0, admissionsThisMonth: 0, leadCount: 0, openLeads: 0, admittedLeads: 0, staffCount: 0, managers: []
+    }]));
+    for (const s of students) {
+      const b = matchBranch(studentBranchText(s), list);
+      if (!b) continue;
+      const x = stats.get(String(b._id));
+      if (s.statusGroup !== 'on_hold') x.activeStudents += 1;
+      if (s.createdAt && new Date(s.createdAt) >= monthStart) x.admissionsThisMonth += 1;
+    }
+    for (const l of leads) {
+      const b = matchBranch(l.branch, list);
+      if (!b) continue;
+      const x = stats.get(String(b._id));
+      x.leadCount += 1;
+      if (l.stage === 'admitted') x.admittedLeads += 1;
+      else if (l.stage !== 'closed') x.openLeads += 1;
+    }
+    for (const u of users) {
+      if (!isStaffUser(u)) continue;
+      const b = matchBranch(u.branch, list);
+      if (!b) continue;
+      const x = stats.get(String(b._id));
+      x.staffCount += 1;
+      if (/branch manager/i.test(u.role || '')) x.managers.push(u.name);
+    }
+    res.json(list.map((b) => {
+      const { managers, ...x } = stats.get(String(b._id));
+      return {
+        ...b,
+        ...x,
+        manager: managers[0] || b.manager || '',
+        conversionPct: x.leadCount ? Math.round((x.admittedLeads / x.leadCount) * 100) : null
+      };
+    }));
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+const BRANCH_FIELDS = ['name', 'code', 'city', 'state', 'aliases', 'manager', 'phone', 'image', 'capacity', 'status'];
+const pickBranch = (body = {}) => Object.fromEntries(Object.entries(body).filter(([k]) => BRANCH_FIELDS.includes(k)));
+
+router.post('/branches', async (req, res) => {
+  try {
+    const data = pickBranch(req.body);
+    if (!data.name || !data.city) return res.status(400).json({ error: 'Branch name and city are required' });
+    const created = await Branch.create(data);
+    invalidateBranches();
+    res.status(201).json(created);
+  } catch (e) {
+    res.status(400).json({ error: e.code === 11000 ? 'A branch with this name already exists' : e.message });
+  }
+});
+
+router.put('/branches/:id', async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Branch not found' });
+    const updated = await Branch.findByIdAndUpdate(req.params.id, { $set: pickBranch(req.body) }, { new: true });
+    if (!updated) return res.status(404).json({ error: 'Branch not found' });
+    invalidateBranches();
+    res.json(updated);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.delete('/branches/:id', async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Branch not found' });
+    await Branch.findByIdAndDelete(req.params.id);
+    invalidateBranches();
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
   }
 });
 
 // ==========================================
 // LEADERSHIP HUB — Approvals, Escalations, Team & Attendance
 // ==========================================
-// Org-wide summary for the Operational Head command view
-const SEEDED_8_APPROVALS = [
-  {
-    _id: '66f3e001a1b2c3d4e5f60001',
-    id: 'APR-LV-2026-0915',
-    title: 'Leave Request: Sick Leave (SL) (Half day)',
-    description: 'Sick Leave (SL) · Half day · Due to stomach pain i need half day leave (2026-09-15)',
-    kind: 'Leave Approval',
-    priority: 'medium',
-    status: 'pending',
-    departmentCode: 'DEP-HR-001',
-    branchName: 'Saravanampatti Branch (CBE)',
-    requestedBy: 'Kavitha N.',
-    createdAt: new Date().toISOString()
-  },
-  {
-    _id: '66f3e001a1b2c3d4e5f60002',
-    id: 'APR-TF-2026-1031',
-    title: 'Discount approval',
-    description: 'Lead L-TF-CBE-2026-0188 — ₹4,000 discount on CPC',
-    kind: 'Discount Approval',
-    priority: 'high',
-    status: 'pending',
-    departmentCode: 'DEP-HR-001',
-    branchName: 'Saravanampatti Branch (CBE)',
-    requestedBy: 'Kavitha N.',
-    createdAt: new Date().toISOString()
-  },
-  {
-    _id: '66f3e001a1b2c3d4e5f60003',
-    id: 'APR-ADM-2026-0042',
-    title: 'Admission approval',
-    description: 'TF-CBE-2026-CPC-0042 — Docs verified, ready to enrol',
-    kind: 'Admission Approval',
-    priority: 'medium',
-    status: 'pending',
-    departmentCode: 'DEP-HR-001',
-    branchName: 'Saravanampatti Branch (CBE)',
-    requestedBy: 'Reshma S.',
-    createdAt: new Date().toISOString()
-  },
-  {
-    _id: '66f3e001a1b2c3d4e5f60004',
-    id: 'APR-LV-2026-0928',
-    title: 'Leave Request: Casual Leave (CL) (Full day)',
-    description: 'Casual Leave (CL) · Full day · Family emergency requiring leave on Friday (2026-09-28)',
-    kind: 'Leave Approval',
-    priority: 'medium',
-    status: 'pending',
-    departmentCode: 'DEP-HR-001',
-    branchName: 'Saravanampatti Branch (CBE)',
-    requestedBy: 'Anitha R.',
-    createdAt: new Date().toISOString()
-  },
-  {
-    _id: '66f3e001a1b2c3d4e5f60005',
-    id: 'APR-SHF-2026-0105',
-    title: 'Shift Change Request: 12-9 PM to 9-6 PM',
-    description: 'Requesting shift change from 12-9 PM to 9-6 PM shift for next week roster',
-    kind: 'Shift Change',
-    priority: 'low',
-    status: 'pending',
-    departmentCode: 'DEP-HR-001',
-    branchName: 'Saravanampatti Branch (CBE)',
-    requestedBy: 'Karthik M.',
-    createdAt: new Date().toISOString()
-  },
-  {
-    _id: '66f3e001a1b2c3d4e5f60006',
-    id: 'APR-BGT-2026-0012',
-    title: 'Training Material Printing Budget',
-    description: '₹12,500 budget request for CPC training workbook printing (150 copies)',
-    kind: 'Budget Approval',
-    priority: 'high',
-    status: 'pending',
-    departmentCode: 'DEP-HR-001',
-    branchName: 'Saravanampatti Branch (CBE)',
-    requestedBy: 'Priyanka K.',
-    createdAt: new Date().toISOString()
-  },
-  {
-    _id: '66f3e001a1b2c3d4e5f60007',
-    id: 'APR-CMP-2026-0020',
-    title: 'Compensatory Off (Comp-Off) Request',
-    description: 'Worked on Sunday medical coding workshop (2026-09-20), requesting Comp-Off approval',
-    kind: 'Comp-Off Approval',
-    priority: 'low',
-    status: 'pending',
-    departmentCode: 'DEP-HR-001',
-    branchName: 'Saravanampatti Branch (CBE)',
-    requestedBy: 'Suresh V.',
-    createdAt: new Date().toISOString()
-  },
-  {
-    _id: '66f3e001a1b2c3d4e5f60008',
-    id: 'APR-REQ-2026-0088',
-    title: 'New Hiring Requisition: Junior HR Executive',
-    description: 'Replacement hire requisition for Saravanampatti Branch HR recruitment team',
-    kind: 'Hiring Requisition',
-    priority: 'high',
-    status: 'pending',
-    departmentCode: 'DEP-HR-001',
-    branchName: 'Saravanampatti Branch (CBE)',
-    requestedBy: 'Jasmin',
-    createdAt: new Date().toISOString()
-  }
-];
-
-let mockApprovalsStore = [...SEEDED_8_APPROVALS];
+const OPEN_ESCALATION = { status: { $nin: ['resolved', 'closed'] } };
 
 router.get('/leadership/summary', async (req, res) => {
   try {
-    if (mongoose.connection.readyState === 1) {
-      const [pendingApprovals, openEscalations] = await Promise.all([
-        Approval.countDocuments({ status: { $regex: /^pending$/i } }),
-        Escalation.countDocuments({ status: { $nin: ['resolved', 'closed', 'RESOLVED', 'CLOSED'] } })
-      ]);
-      return res.json({ pendingApprovals, openEscalations });
-    }
-  } catch (e) {}
-
-  const pendingApprovals = mockApprovalsStore.filter(a => (a.status || '').toLowerCase() === 'pending').length;
-  res.json({ pendingApprovals, openEscalations: 1 });
+    const [pendingApprovals, openEscalations] = await Promise.all([
+      Approval.countDocuments({ status: 'pending' }),
+      Escalation.countDocuments(OPEN_ESCALATION)
+    ]);
+    res.json({ pendingApprovals, openEscalations });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
-// Approvals
+// HR's approvals were saved under 'DEP-HR-001' and, in older records, 'HR' or no code
+const deptCodeQuery = (code) => {
+  const upper = String(code || '').toUpperCase();
+  if (upper === 'DEP-HR-001' || upper === 'HR') {
+    return { $or: [{ departmentCode: { $regex: /^(DEP-HR-001|HR)$/i } }, { departmentCode: { $in: ['', null] } }] };
+  }
+  return { departmentCode: new RegExp(`^${escapeRegex(code)}$`, 'i') };
+};
+
 router.get('/leadership/approvals', async (req, res) => {
   try {
-    const { departmentCode, branchName, status } = req.query;
-
-    if (mongoose.connection.readyState === 1) {
-      const count = await Approval.countDocuments();
-      if (count < 8) {
-        for (const seed of SEEDED_8_APPROVALS) {
-          const exists = await Approval.findOne({ $or: [{ title: seed.title }, { _id: seed._id }] });
-          if (!exists) {
-            await Approval.create(seed);
-          }
-        }
-      }
-
-      const query = {};
-      if (departmentCode) {
-        const codeUpper = departmentCode.toUpperCase();
-        if (codeUpper === 'DEP-HR-001' || codeUpper === 'HR') {
-          query.$or = [
-            { departmentCode: { $regex: /^(DEP-HR-001|HR)$/i } },
-            { departmentCode: { $exists: false } },
-            { departmentCode: null },
-            { departmentCode: '' }
-          ];
-        } else {
-          query.departmentCode = { $regex: new RegExp(`^${departmentCode}$`, 'i') };
-        }
-      }
-      if (branchName) query.branchName = { $regex: new RegExp(`^${branchName}$`, 'i') };
-      if (status) query.status = { $regex: new RegExp(`^${status}$`, 'i') };
-
-      const dbApprovals = await Approval.find(query).sort({ createdAt: -1 });
-      if (dbApprovals && dbApprovals.length > 0) {
-        return res.json(dbApprovals);
-      }
-    }
+    const { departmentCode, branchName, status, requestedBy } = req.query;
+    const query = departmentCode ? deptCodeQuery(departmentCode) : {};
+    if (branchName) query.branchName = new RegExp(`^${escapeRegex(branchName)}$`, 'i');
+    if (status) query.status = String(status).toLowerCase();
+    if (requestedBy) query.requestedBy = exactNameRx(requestedBy);
+    res.json(await Approval.find(query).sort({ createdAt: -1 }));
   } catch (e) {
-    console.warn('[Leadership Approvals API] MongoDB query skipped/failed, using fallback store:', e.message);
+    res.status(500).json({ error: e.message });
   }
-
-  let filtered = [...mockApprovalsStore];
-  if (req.query.status) {
-    const st = req.query.status.toLowerCase();
-    filtered = filtered.filter(a => (a.status || '').toLowerCase() === st);
-  }
-  res.json(filtered);
 });
 
 router.post('/leadership/approvals', async (req, res) => {
   try {
-    const payload = { ...req.body };
+    const payload = { ...req.body, status: 'pending' };
+    delete payload._id;
     if (!payload.departmentCode) {
-      payload.departmentCode = payload.branchName ? 'ADM' : 'DEP-HR-001';
+      payload.departmentCode = DEPT_CODE_BY_DASHBOARD[req.user?.department] || 'ADM';
     }
-    const newId = `APR-${Date.now().toString(36).toUpperCase()}`;
-    const newApproval = {
-      _id: newId,
-      id: newId,
-      status: 'pending',
-      priority: 'medium',
-      createdAt: new Date().toISOString(),
-      ...payload
-    };
-    mockApprovalsStore.unshift(newApproval);
-
-    if (mongoose.connection.readyState === 1) {
-      try {
-        const created = await Approval.create(payload);
-        return res.status(201).json(created);
-      } catch (e) {}
-    }
-    res.status(201).json(newApproval);
+    if (!payload.requestedBy) payload.requestedBy = req.user?.name || '';
+    const created = await Approval.create(payload);
+    res.status(201).json(created);
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
 });
 
+// Write an approval decision back to the record it is about
+const CREATIVE_STATUS_BY_DECISION = { approved: 'Approved', rejected: 'Needs Correction', pending: 'Submitted', forwarded: 'Submitted' };
+async function applyApprovalDecision(approval) {
+  if (approval.refType === 'creative' && approval.refId && mongoose.isValidObjectId(approval.refId)) {
+    await MarketingCreative.findByIdAndUpdate(approval.refId, { status: CREATIVE_STATUS_BY_DECISION[approval.status] || 'Submitted' });
+  }
+  // Tell an HR requester (leave, discount, shift change …) the outcome
+  if (approval.requestedBy && approval.status !== 'pending' && /^(DEP-HR-001|HR)$/i.test(approval.departmentCode || '')) {
+    await pushNotification({
+      audience: 'hr', recipientName: approval.requestedBy, type: 'approval',
+      title: `${approval.title} — ${approval.status}`,
+      message: `${approval.decidedBy ? `Decided by ${approval.decidedBy}` : 'Decision recorded'}${approval.description ? ` · ${String(approval.description).slice(0, 140)}` : ''}`,
+      createdBy: approval.decidedBy || ''
+    });
+  }
+}
+
 router.patch('/leadership/approvals/:id/decision', async (req, res) => {
   try {
-    const { action, decidedBy } = req.body;
-    const targetId = req.params.id;
-
-    mockApprovalsStore = mockApprovalsStore.map(item => {
-      if (item._id === targetId || item.id === targetId) {
-        return { ...item, status: action, decidedBy: decidedBy || 'Head of HR', decidedAt: new Date().toISOString() };
-      }
-      return item;
-    });
-
-    if (mongoose.connection.readyState === 1) {
-      try {
-        let updated = null;
-        if (mongoose.Types.ObjectId.isValid(targetId)) {
-          updated = await Approval.findByIdAndUpdate(
-            targetId,
-            { status: action, decidedBy: decidedBy || 'Head of HR', decidedAt: new Date() },
-            { new: true }
-          );
-        }
-        if (!updated) {
-          updated = await Approval.findOneAndUpdate(
-            { $or: [{ _id: targetId }, { id: targetId }] },
-            { status: action, decidedBy: decidedBy || 'Head of HR', decidedAt: new Date() },
-            { new: true }
-          );
-        }
-        if (updated) return res.json(updated);
-      } catch (e) {}
+    const { action } = req.body || {};
+    if (!['pending', 'approved', 'rejected', 'forwarded'].includes(action)) {
+      return res.status(400).json({ error: 'Decision must be approved, rejected, forwarded or pending' });
     }
-
-    const updatedMock = mockApprovalsStore.find(item => item._id === targetId || item.id === targetId);
-    res.json(updatedMock || { _id: targetId, id: targetId, status: action });
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Approval not found' });
+    const decidedBy = req.user?.name || req.body?.decidedBy || '';
+    const update = action === 'pending'
+      ? { status: 'pending', decidedBy: '', decidedAt: null }
+      : { status: action, decidedBy, decidedAt: new Date() };
+    const updated = await Approval.findByIdAndUpdate(req.params.id, update, { new: true });
+    if (!updated) return res.status(404).json({ error: 'Approval not found' });
+    await applyApprovalDecision(updated);
+    res.json(updated);
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -846,8 +855,7 @@ router.patch('/leadership/approvals/:id/decision', async (req, res) => {
 router.get('/leadership/escalations', async (req, res) => {
   try {
     const { departmentCode, branchName, status } = req.query;
-    const query = {};
-    if (departmentCode) query.departmentCode = departmentCode;
+    const query = departmentCode ? deptCodeQuery(departmentCode) : {};
     if (branchName) query.branchName = branchName;
     if (status) query.status = status;
     // HR desk: student tickets of one counsellor (hrName) or all student tickets (studentsOnly=1)
@@ -871,6 +879,7 @@ router.post('/leadership/escalations', async (req, res) => {
         ? 'ACAD'
         : 'ADM';
     }
+    if (!payload.raisedBy && req.user?.name) payload.raisedBy = req.user.name;
     // Student ticket → also routed to the student's HR counsellor
     if (req.user?.department === 'student' && req.user.studentId) {
       const st = await findStudentByAnyId(req.user.studentId);
@@ -920,26 +929,95 @@ router.patch('/leadership/escalations/:id/status', async (req, res) => {
   }
 });
 
-// Team / Roster
+// Team / Roster — one TeamMember per active staff account (User collection).
+// The TeamMember row only keeps what Leadership edits (shift, weekly roster,
+// availability); department, role and branch always follow the User record.
+let teamSyncAt = 0;
+async function syncTeamFromUsers(force = false) {
+  if (!force && Date.now() - teamSyncAt < 30000) return;
+  teamSyncAt = Date.now();
+  const [users, members, branches] = await Promise.all([
+    User.find().select('name role department branch status').lean(),
+    TeamMember.find().lean(),
+    branchList()
+  ]);
+  const staff = users.filter(isStaffUser);
+  const byName = new Map(members.map((m) => [normName(m.name), m]));
+  const keep = new Set();
+  for (const u of staff) {
+    const key = normName(u.name);
+    if (!key || keep.has(key)) continue;
+    keep.add(key);
+    const departmentCode = DEPT_CODE_BY_DASHBOARD[dashboardOf(u)] || 'ADM';
+    const branchName = matchBranch(u.branch, branches)?.name || u.branch || 'Unassigned';
+    const role = u.role || 'Staff';
+    const m = byName.get(key);
+    if (!m) {
+      await TeamMember.create({ name: u.name, role, departmentCode, branchName });
+    } else if (m.role !== role || m.departmentCode !== departmentCode || m.branchName !== branchName) {
+      await TeamMember.updateOne({ _id: m._id }, { $set: { role, departmentCode, branchName } });
+    }
+  }
+  // Rows with no staff account behind them (deleted users, old placeholder rows)
+  const orphanIds = members.filter((m) => !keep.has(normName(m.name))).map((m) => m._id);
+  if (orphanIds.length) await TeamMember.deleteMany({ _id: { $in: orphanIds } });
+}
+
+// Live workload & quality for each team member:
+//  HR        — assigned leads, admissions, follow-ups due; quality = % of
+//              assigned leads actually worked (called or moved past "new")
+//  Training  — assigned students, syllabus completed, unanswered doubts;
+//              quality = average student rating (1–5) as a percentage
+async function teamMetrics(members) {
+  const today = todayStr();
+  const [leads, students, doubts, feedback] = await Promise.all([
+    StudentLead.find().select('counselorAssigned allocatedTo stage followUpDate callCount').lean(),
+    Student.find().select('trainerName syllabusCompleted').lean(),
+    TrainerDoubt.find({ status: { $ne: 'Replied' } }).select('trainerName').lean(),
+    ClassFeedback.aggregate([{ $group: { _id: { $toLower: '$trainerName' }, avg: { $avg: '$rating' }, count: { $sum: 1 } } }])
+  ]);
+  const rating = new Map(feedback.map((f) => [normName(f._id), f]));
+  return members.map((m) => {
+    const name = normName(m.name);
+    const base = typeof m.toObject === 'function' ? m.toObject() : m;
+    if (m.departmentCode === 'ACAD') {
+      const mine = students.filter((s) => normName(s.trainerName) === name);
+      const fb = rating.get(name);
+      return {
+        ...base,
+        assigned: mine.length,
+        completed: mine.filter((s) => s.syllabusCompleted).length,
+        pending: doubts.filter((d) => normName(d.trainerName) === name).length,
+        quality: fb ? Math.round((fb.avg / 5) * 100) : null,
+        qualityBasis: fb ? `Avg student rating ${fb.avg.toFixed(1)}/5 (${fb.count})` : 'No student ratings yet',
+        workLabel: { assigned: 'students', completed: 'syllabus done', pending: 'open doubts' }
+      };
+    }
+    const mine = leads.filter((l) => normName(leadOwner(l)) === name);
+    const open = mine.filter((l) => !['admitted', 'closed'].includes(l.stage));
+    const worked = mine.filter((l) => l.stage !== 'new' || (l.callCount || 0) > 0).length;
+    return {
+      ...base,
+      assigned: mine.length,
+      completed: mine.filter((l) => l.stage === 'admitted').length,
+      pending: open.filter((l) => l.followUpDate && l.followUpDate <= today).length,
+      quality: mine.length ? Math.round((worked / mine.length) * 100) : null,
+      qualityBasis: mine.length ? `${worked} of ${mine.length} leads worked` : 'No leads assigned yet',
+      workLabel: { assigned: 'leads', completed: 'admitted', pending: 'follow-ups due' }
+    };
+  });
+}
+
 router.get('/leadership/team', async (req, res) => {
   try {
+    await syncTeamFromUsers();
     const { departmentCode, branchName } = req.query;
-    const query = {};
-    if (departmentCode) query.departmentCode = departmentCode;
+    const query = departmentCode ? deptCodeQuery(departmentCode) : {};
     if (branchName) query.branchName = branchName;
-    let team = await TeamMember.find(query).sort({ quality: -1 });
-
-    if (team.length === 0) {
-      const defaultMembers = [
-        { name: 'Kavitha N.', role: 'Senior Recruiter', departmentCode: 'DEP-HR-001', branchName: 'Saravanampatti Branch (CBE)', assigned: 14, pending: 2, available: true },
-        { name: 'R Priyadharshini', role: 'Team Lead', departmentCode: 'DEP-HR-001', branchName: 'Saravanampatti Branch (CBE)', assigned: 18, pending: 1, available: true },
-        { name: 'Guru Vigneshwar S', role: 'Team Lead', departmentCode: 'DEP-HR-001', branchName: 'Saravanampatti Branch (CBE)', assigned: 15, pending: 3, available: true },
-        { name: 'Deepika S.', role: 'Recruiter', departmentCode: 'DEP-HR-001', branchName: 'Saravanampatti Branch (CBE)', assigned: 10, pending: 2, available: true },
-        { name: 'Srinidhi B.', role: 'Recruiter', departmentCode: 'DEP-HR-001', branchName: 'Saravanampatti Branch (CBE)', assigned: 11, pending: 1, available: false }
-      ];
-      team = await TeamMember.insertMany(defaultMembers);
-    }
-    res.json(team);
+    const team = await TeamMember.find(query).sort({ name: 1 });
+    const withMetrics = await teamMetrics(team);
+    withMetrics.sort((a, b) => (b.quality ?? -1) - (a.quality ?? -1));
+    res.json(withMetrics);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -947,7 +1025,7 @@ router.get('/leadership/team', async (req, res) => {
 
 router.patch('/leadership/team/:id/shift', async (req, res) => {
   try {
-    const { shift, weeklySchedule, available, name, role } = req.body;
+    const { shift, weeklySchedule, available, name } = req.body || {};
     const updateData = {};
     if (shift !== undefined) updateData.shift = shift;
     if (weeklySchedule !== undefined) updateData.weeklySchedule = weeklySchedule;
@@ -957,28 +1035,67 @@ router.patch('/leadership/team/:id/shift', async (req, res) => {
     if (mongoose.Types.ObjectId.isValid(req.params.id)) {
       updated = await TeamMember.findByIdAndUpdate(req.params.id, updateData, { new: true });
     }
-
-    if (!updated && (name || req.params.id)) {
-      const searchName = name || req.params.id;
-      const cleanName = searchName.replace(/[^a-zA-Z0-9]/g, '.*');
-      updated = await TeamMember.findOneAndUpdate(
-        { name: new RegExp(cleanName, 'i') },
-        updateData,
-        { new: true }
-      );
+    if (!updated && name) {
+      updated = await TeamMember.findOneAndUpdate({ name: exactNameRx(name) }, updateData, { new: true });
     }
+    if (!updated) return res.status(404).json({ error: 'Team member not found — staff appear here once Admin creates their account.' });
+    res.json(updated);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
 
-    if (!updated) {
-      updated = await TeamMember.create({
-        name: name || req.params.id || 'Kavitha N.',
-        role: role || 'Senior Recruiter',
-        departmentCode: 'DEP-HR-001',
-        branchName: 'Saravanampatti Branch (CBE)',
-        ...updateData
+// Daily team tasks (Head of HR → counsellors). The assignee is notified.
+router.get('/leadership/tasks', async (req, res) => {
+  try {
+    const query = { date: req.query.date || todayStr() };
+    if (req.query.departmentCode) Object.assign(query, deptCodeQuery(req.query.departmentCode));
+    if (req.query.assignedTo) query.assignedTo = exactNameRx(req.query.assignedTo);
+    res.json(await TeamTask.find(query).sort({ createdAt: -1 }));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.post('/leadership/tasks', async (req, res) => {
+  try {
+    const { title, assignedTo, dueTime = '', priority = 'medium', departmentCode = 'DEP-HR-001' } = req.body || {};
+    if (!String(title || '').trim() || !String(assignedTo || '').trim()) return res.status(400).json({ error: 'Task title and owner are required' });
+    const task = await TeamTask.create({
+      title: String(title).trim(), assignedTo: String(assignedTo).trim(), dueTime, priority, departmentCode,
+      date: todayStr(), createdBy: req.user?.name || ''
+    });
+    const audience = AUDIENCE_BY_DEPT_CODE[departmentCode];
+    if (audience) {
+      await pushNotification({
+        audience, recipientName: task.assignedTo, type: 'task',
+        title: `New task: ${task.title}`,
+        message: [task.dueTime, `${task.priority} priority`, task.createdBy && `from ${task.createdBy}`].filter(Boolean).join(' · '),
+        createdBy: task.createdBy
       });
     }
+    res.status(201).json(task);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
 
+router.patch('/leadership/tasks/:id', async (req, res) => {
+  try {
+    const { status } = req.body || {};
+    if (!['not-started', 'in-progress', 'completed', 'delayed'].includes(status)) return res.status(400).json({ error: 'Invalid status' });
+    const updated = await TeamTask.findByIdAndUpdate(req.params.id, { status }, { new: true });
+    if (!updated) return res.status(404).json({ error: 'Task not found' });
     res.json(updated);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.delete('/leadership/tasks/:id', async (req, res) => {
+  try {
+    await TeamTask.findByIdAndDelete(req.params.id);
+    res.json({ success: true });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -1957,18 +2074,23 @@ router.post('/leads/:id/whatsapp', async (req, res) => {
 // Legacy pipeline route for backwards compatibility
 router.get('/leads/pipeline', async (req, res) => {
   try {
-    const leads = await StudentLead.find();
+    // First call → placement, counted from the real lead and student records
+    const [openLeads, students] = await Promise.all([
+      StudentLead.countDocuments({ stage: { $nin: ['admitted', 'closed'] } }),
+      Student.find().select('handoverStatus syllabusCompleted certified statusGroup placementStatus placementStage').lean()
+    ]);
+    const certified = (s) => /certified/i.test(s.certified || '') && !/non/i.test(s.certified || '');
+    const placed = (s) => s.statusGroup === 'placed' || /placed/i.test(s.placementStatus || '') || Number(s.placementStage) >= 7;
     const stages = [
-      { key: 'first_call', label: '1. First Call & Counseling', count: leads.filter(l => l.stage === 'new').length, color: '#14b8a6' },
-      { key: 'enrolled', label: '2. Enrolled & Onboarded', count: leads.filter(l => l.stage === 'admitted').length, color: '#06b6d4' },
-      { key: 'in_training', label: '3. Medical Coding & Anatomy', count: 0, color: '#3b82f6' },
-      { key: 'cpc_exam_passed', label: '4. AAPC CPC Certified', count: 0, color: '#10b981' },
-      { key: 'placed', label: '5. Campus Placement Secured', count: 0, color: '#8b5cf6' },
-      { key: 'first_paycheck', label: '6. First Paycheck Milestone', count: 0, color: '#ec4899' }
+      { key: 'first_call', label: '1. First Call & Counseling', count: openLeads, color: '#14b8a6' },
+      { key: 'enrolled', label: '2. Enrolled & Onboarded', count: students.length, color: '#06b6d4' },
+      { key: 'in_training', label: '3. In Training', count: students.filter((s) => s.handoverStatus === 'Sent to Training' && !s.syllabusCompleted).length, color: '#3b82f6' },
+      { key: 'cpc_exam_passed', label: '4. Certified', count: students.filter(certified).length, color: '#10b981' },
+      { key: 'placed', label: '5. Placed & Joined', count: students.filter(placed).length, color: '#8b5cf6' }
     ];
     res.json({ stages });
   } catch (err) {
-    res.json({ stages: [] });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -2673,8 +2795,8 @@ const DEPARTMENT_PORTALS = {
     title: 'HR Department Portal',
     defaultEmail: 'hr@thoughtflows.in',
     role: 'HR & Academic Counselling Lead',
-    userName: 'Kavitha N.',
-    branch: 'Saravanampatti Branch (CBE)',
+    userName: 'HR Department Desk',
+    branch: '',
     color: '#ef4444',
     description: 'Academic counsellors, lead capture, calls, follow-ups & admissions'
   },
@@ -2685,8 +2807,8 @@ const DEPARTMENT_PORTALS = {
     title: 'Training Department Portal',
     defaultEmail: 'training@thoughtflows.in',
     role: 'Faculty Lead & Chief Trainer',
-    userName: 'Dr. Vikram C.',
-    branch: 'Chennai - Guindy (HQ)',
+    userName: 'Training Department Desk',
+    branch: '',
     color: '#0284c7',
     description: '12-branch trainer coordination, batches, daily attendance & mastery tracking'
   },
@@ -2697,8 +2819,8 @@ const DEPARTMENT_PORTALS = {
     title: 'CCCP 3-Cell Portal',
     defaultEmail: 'cccp@thoughtflows.in',
     role: 'Placements & Corporate Relations Head',
-    userName: 'Meenakshi R.',
-    branch: 'Bangalore - Indiranagar',
+    userName: 'CCCP Desk',
+    branch: '',
     color: '#059669',
     description: 'Placement Cell · Examination Cell · College & Company Cell'
   },
@@ -2709,8 +2831,8 @@ const DEPARTMENT_PORTALS = {
     title: 'Marketing Department Portal',
     defaultEmail: 'marketing@thoughtflows.in',
     role: 'Head of Growth & Lead Generation',
-    userName: 'Priya R.',
-    branch: 'Hyderabad - Madhapur',
+    userName: 'Marketing Department Desk',
+    branch: '',
     color: '#9333ea',
     description: 'Digital campaigns, Meta/Google ads, outdoor billboards & lead conversion'
   },
@@ -2721,8 +2843,8 @@ const DEPARTMENT_PORTALS = {
     title: 'Leadership Hub Portal',
     defaultEmail: 'leadership@thoughtflows.in',
     role: 'Regional Operations & Branch Director',
-    userName: 'Ganesh N.',
-    branch: 'All 12 Hubs (HQ Overseer)',
+    userName: 'Leadership Desk',
+    branch: '',
     color: '#ea580c',
     description: 'Operational, Department, Regional & Branch heads oversight'
   },
@@ -2733,8 +2855,8 @@ const DEPARTMENT_PORTALS = {
     title: 'Student Portal Login',
     defaultEmail: 'student@thoughtflows.in',
     role: 'AAPC CPC Scholar (Student)',
-    userName: 'Pooja J.',
-    branch: 'Chennai - Anna Nagar',
+    userName: 'Student Portal',
+    branch: '',
     color: '#0d9488',
     description: 'Syllabus, attendance tracking, mock exam bookings & campus placements'
   },
@@ -2745,8 +2867,8 @@ const DEPARTMENT_PORTALS = {
     title: 'Admin Command Bridge',
     defaultEmail: 'admin@thoughtflows.in',
     role: 'Executive Managing Director (Founder)',
-    userName: 'Executive Founders Desk',
-    branch: 'Thoughtflows Group HQ',
+    userName: 'Admin Desk',
+    branch: '',
     color: '#4338ca',
     description: 'Founders command bridge, back-office operations, strategy & administration'
   }
@@ -3014,7 +3136,14 @@ router.get('/admin/audit-logs', async (req, res) => {
 
 router.post('/admin/audit-logs', async (req, res) => {
   try {
-    const log = new AuditLog(req.body);
+    // Who and where come from the request itself, never from the browser
+    const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    const { id, _id, timestamp, ip, ...body } = req.body || {};
+    const log = new AuditLog({
+      ...body,
+      user: req.user?.name || body.user || 'Unknown',
+      ip: forwarded || req.ip || ''
+    });
     await log.save();
     res.status(201).json(log);
   } catch (e) {
@@ -3067,7 +3196,7 @@ router.post('/admin/users', async (req, res) => {
       password: String(password).trim(),
       role: role || 'Staff',
       department: department || 'Medical Coding Faculty',
-      branch: branch || 'Gandhipuram',
+      branch: branch || '',
       status: status || 'Active',
       lastLogin: 'Never',
       avatarBg: avatarBg || 'bg-indigo-600'
@@ -3723,6 +3852,27 @@ async function markNotificationsRead(ids, req) {
   return out;
 }
 
+// Leadership / Admin → a staff member's notification bell (Team Performance "Remind")
+const AUDIENCE_BY_DEPT_CODE = { 'DEP-HR-001': 'hr', ACAD: 'trainer', CCCP: 'cccp' };
+router.post('/notifications/remind', async (req, res) => {
+  try {
+    const { name, departmentCode, message } = req.body || {};
+    const audience = AUDIENCE_BY_DEPT_CODE[departmentCode];
+    if (!name || !String(message || '').trim()) return res.status(400).json({ error: 'Recipient and message are required' });
+    if (!audience) return res.status(400).json({ error: 'This department has no notification inbox yet' });
+    const created = await pushNotification({
+      audience, recipientName: name, type: 'reminder',
+      title: `Reminder from ${req.user?.name || 'Leadership'}`,
+      message: String(message).trim().slice(0, 500),
+      createdBy: req.user?.name || ''
+    });
+    if (!created) return res.status(500).json({ error: 'Could not send the reminder' });
+    res.status(201).json(created);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 router.put('/notifications/read-all', async (req, res) => {
   try {
     const ids = Array.isArray(req.body?.ids) ? req.body.ids.filter((i) => mongoose.isValidObjectId(i)) : [];
@@ -4060,20 +4210,63 @@ router.post('/cccp/followups', async (req, res) => {
 // ==========================================
 // REAL MARKETING (CAMPAIGNS, CREATIVES, SOURCES) API
 // ==========================================
+// ==========================================
+// MARKETING — campaigns, creatives, content calendar, branch lead demand
+// and lead-source tracking. Lead / admission / revenue figures are always
+// counted from StudentLead and Student; only spend & budget are typed in.
+// ==========================================
+const campaignView = (c, leads, revenueByLead) => {
+  const o = typeof c.toObject === 'function' ? c.toObject() : c;
+  const mine = leads.filter((l) => (l.campaignCode && l.campaignCode === o.code) || (!l.campaignCode && l.sourceName && l.sourceName === o.name));
+  const admitted = mine.filter((l) => l.stage === 'admitted');
+  const revenue = admitted.reduce((s, l) => s + (revenueByLead.get(String(l._id)) || 0), 0);
+  const spent = Number(o.spent) || 0;
+  const cpl = mine.length && spent ? Math.round(spent / mine.length) : null;
+  return {
+    id: String(o._id),
+    _id: String(o._id),
+    ...o,
+    leads: mine.length,
+    admissions: admitted.length,
+    revenue,
+    cpl,
+    costPerAdmission: admitted.length && spent ? Math.round(spent / admitted.length) : null,
+    roi: spent ? `${Math.round(((revenue - spent) / spent) * 100)}%` : null,
+    overTargetCpl: Boolean(cpl && o.targetCpl && cpl > o.targetCpl)
+  };
+};
+
+// Fees collected from each admitted lead (Student.leadId → paidAmount)
+async function revenueByLeadId() {
+  const students = await Student.find({ leadId: { $nin: ['', null] } }).select('leadId paidAmount').lean();
+  return new Map(students.map((s) => [String(s.leadId), Number(s.paidAmount) || 0]));
+}
+const LEAD_FIELDS_FOR_MARKETING = 'campaignCode sourceName source stage phone branch course callCount createdAt';
+
 router.get('/marketing/campaigns', async (req, res) => {
   try {
-    let campaigns = await MarketingCampaign.find().sort({ createdAt: -1 });
-    res.json(campaigns.map(c => ({ id: c._id.toString(), _id: c._id.toString(), ...c.toObject() })));
+    const [campaigns, leads, revenue] = await Promise.all([
+      MarketingCampaign.find().sort({ createdAt: -1 }),
+      StudentLead.find().select(LEAD_FIELDS_FOR_MARKETING).lean(),
+      revenueByLeadId()
+    ]);
+    res.json(campaigns.map((c) => campaignView(c, leads, revenue)));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
+// Only planning inputs are editable — results are computed
+const CAMPAIGN_FIELDS = ['code', 'name', 'status', 'channel', 'branch', 'course', 'dailyBudget', 'spent', 'budget', 'targetCpl', 'ctr'];
+const pickCampaign = (body = {}) => Object.fromEntries(Object.entries(body).filter(([k]) => CAMPAIGN_FIELDS.includes(k)));
+
 router.post('/marketing/campaigns', async (req, res) => {
   try {
-    const campaign = new MarketingCampaign(req.body);
-    await campaign.save();
-    res.status(201).json({ id: campaign._id.toString(), _id: campaign._id.toString(), ...campaign.toObject() });
+    const data = pickCampaign(req.body);
+    if (!data.name) return res.status(400).json({ error: 'Campaign name is required' });
+    if (!data.code) data.code = `CAM-TF-${new Date().getFullYear()}-${Date.now().toString(36).toUpperCase()}`;
+    const campaign = await MarketingCampaign.create(data);
+    res.status(201).json(campaignView(campaign, [], new Map()));
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -4081,9 +4274,10 @@ router.post('/marketing/campaigns', async (req, res) => {
 
 router.put('/marketing/campaigns/:id', async (req, res) => {
   try {
-    const updated = await MarketingCampaign.findByIdAndUpdate(req.params.id, { $set: req.body }, { new: true });
+    const updated = await MarketingCampaign.findByIdAndUpdate(req.params.id, { $set: pickCampaign(req.body) }, { new: true });
     if (!updated) return res.status(404).json({ error: 'Campaign not found' });
-    res.json({ id: updated._id.toString(), _id: updated._id.toString(), ...updated.toObject() });
+    const [leads, revenue] = await Promise.all([StudentLead.find().select(LEAD_FIELDS_FOR_MARKETING).lean(), revenueByLeadId()]);
+    res.json(campaignView(updated, leads, revenue));
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -4107,25 +4301,30 @@ router.get('/marketing/creatives', async (req, res) => {
   }
 });
 
+// A submitted creative goes to Leadership's Marketing approvals; the decision
+// there updates the creative (see applyApprovalDecision)
 router.post('/marketing/creatives', async (req, res) => {
   try {
-    const creative = new MarketingCreative(req.body);
+    const payload = { ...req.body };
+    if (!payload.code) payload.code = `CR-TF-${new Date().getFullYear()}-${Date.now().toString(36).toUpperCase()}`;
+    if (!payload.author) payload.author = req.user?.name || '';
+    payload.status = 'Submitted';
+    const creative = new MarketingCreative(payload);
     await creative.save();
     try {
       await Approval.create({
         title: `${creative.format}: ${creative.title}`,
+        description: [creative.campaignCode && `Campaign ${creative.campaignCode}`, creative.branch, creative.specs].filter(Boolean).join(' · '),
+        kind: 'Creative Release',
+        priority: ['low', 'medium', 'high'].includes(creative.priority) ? creative.priority : 'medium',
         departmentCode: 'MKT',
-        departmentName: 'Growth & Marketing',
         branchName: creative.branch || 'All Branches',
         requestedBy: creative.author || 'Marketing Team',
-        type: 'creative',
-        category: 'Creative Release',
-        amount: 0,
-        status: 'pending',
-        justification: `Creative for ${creative.campaignCode || 'Campaign'}. ${creative.specs || ''}`
+        refType: 'creative',
+        refId: String(creative._id)
       });
     } catch (appErr) {
-      console.warn('Could not auto-create leadership approval for creative:', appErr.message);
+      console.warn('Could not create leadership approval for creative:', appErr.message);
     }
     res.status(201).json({ id: creative._id.toString(), _id: creative._id.toString(), ...creative.toObject() });
   } catch (e) {
@@ -4133,10 +4332,21 @@ router.post('/marketing/creatives', async (req, res) => {
   }
 });
 
+// Marketing's own decision on a creative closes the matching Leadership approval
+const APPROVAL_BY_CREATIVE_STATUS = { Approved: 'approved', 'Needs Correction': 'rejected', Submitted: 'pending' };
 router.put('/marketing/creatives/:id', async (req, res) => {
   try {
     const updated = await MarketingCreative.findByIdAndUpdate(req.params.id, { $set: req.body }, { new: true });
     if (!updated) return res.status(404).json({ error: 'Creative not found' });
+    const decision = APPROVAL_BY_CREATIVE_STATUS[updated.status];
+    if (decision && req.body?.status) {
+      await Approval.updateMany(
+        { refType: 'creative', refId: String(updated._id) },
+        decision === 'pending'
+          ? { status: 'pending', decidedBy: '', decidedAt: null }
+          : { status: decision, decidedBy: req.user?.name || '', decidedAt: new Date() }
+      );
+    }
     res.json({ id: updated._id.toString(), _id: updated._id.toString(), ...updated.toObject() });
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -4146,54 +4356,266 @@ router.put('/marketing/creatives/:id', async (req, res) => {
 router.delete('/marketing/creatives/:id', async (req, res) => {
   try {
     await MarketingCreative.findByIdAndDelete(req.params.id);
+    await Approval.deleteMany({ refType: 'creative', refId: req.params.id, status: 'pending' });
     res.json({ success: true });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
 });
 
-router.get('/marketing/sources', async (req, res) => {
+// Content calendar
+const CONTENT_FIELDS = ['title', 'channel', 'category', 'dueDate', 'author', 'status', 'description', 'format', 'targetBranch', 'caption'];
+const pickContent = (body = {}) => Object.fromEntries(Object.entries(body).filter(([k]) => CONTENT_FIELDS.includes(k)));
+
+router.get('/marketing/content', async (req, res) => {
   try {
-    const leads = await StudentLead.find();
-    const sourceMap = {};
-
-    leads.forEach(l => {
-      const src = l.sourceName || l.source || 'Website / Direct';
-      if (!sourceMap[src]) {
-        sourceMap[src] = {
-          source: src,
-          leads: 0,
-          valid: 0,
-          dup: 0,
-          connected: 0,
-          demos: 0,
-          adm: 0,
-          cpl: '₹180',
-          quality: 'Medium Quality',
-          qualityClass: 'bg-[#fffbeb] text-[#b45309] border border-[#fef3c7]'
-        };
-      }
-      sourceMap[src].leads++;
-      if (l.stage !== 'new') sourceMap[src].connected++;
-      if (l.stage === 'demo_booked' || l.stage === 'demo_attended') sourceMap[src].demos++;
-      if (l.stage === 'admitted') sourceMap[src].adm++;
-      sourceMap[src].valid = Math.max(1, sourceMap[src].leads - sourceMap[src].dup);
-    });
-
-    const sourcesArray = Object.values(sourceMap);
-    if (sourcesArray.length > 0) {
-      return res.json(sourcesArray);
-    }
-
-    res.json([
-      { source: 'Instagram Ads', leads: 142, valid: 118, dup: 14, connected: 96, demos: 31, adm: 9, cpl: '₹200', quality: 'High Quality', qualityClass: 'bg-[#ecfdf5] text-[#059669] border border-[#a7f3d0]' },
-      { source: 'YouTube Ads', leads: 89, valid: 80, dup: 5, connected: 64, demos: 22, adm: 6, cpl: '₹217', quality: 'Medium Quality', qualityClass: 'bg-[#fffbeb] text-[#b45309] border border-[#fef3c7]' },
-      { source: 'Facebook Ads', leads: 39, valid: 24, dup: 9, connected: 15, demos: 4, adm: 2, cpl: '₹379', quality: 'Low Quality', qualityClass: 'bg-[#fef2f2] text-[#dc2626] border border-[#fee2e2]' },
-      { source: 'WhatsApp Campaign', leads: 61, valid: 55, dup: 3, connected: 48, demos: 14, adm: 4, cpl: '₹52', quality: 'High Quality', qualityClass: 'bg-[#ecfdf5] text-[#059669] border border-[#a7f3d0]' },
-      { source: 'Website / Landing', leads: 47, valid: 43, dup: 2, connected: 38, demos: 12, adm: 5, cpl: '—', quality: 'High Quality', qualityClass: 'bg-[#ecfdf5] text-[#059669] border border-[#a7f3d0]' }
-    ]);
+    res.json(await ContentPiece.find().sort({ dueDate: 1, createdAt: -1 }));
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+router.post('/marketing/content', async (req, res) => {
+  try {
+    const data = pickContent(req.body);
+    if (!data.title) return res.status(400).json({ error: 'Title is required' });
+    const created = await ContentPiece.create({
+      ...data,
+      code: `CNT-TF-${new Date().getFullYear()}-${Date.now().toString(36).toUpperCase()}`,
+      author: data.author || req.user?.name || '',
+      createdBy: req.user?.name || ''
+    });
+    res.status(201).json(created);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.put('/marketing/content/:id', async (req, res) => {
+  try {
+    const updated = await ContentPiece.findByIdAndUpdate(req.params.id, { $set: pickContent(req.body) }, { new: true });
+    if (!updated) return res.status(404).json({ error: 'Content item not found' });
+    res.json(updated);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.delete('/marketing/content/:id', async (req, res) => {
+  try {
+    await ContentPiece.findByIdAndDelete(req.params.id);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Branch lead demand — delivered = leads for that branch & course created
+// since the request was raised
+const DEMAND_FIELDS = ['branch', 'course', 'targetLeads', 'priority', 'requester', 'language', 'deadline', 'status', 'campaignCode', 'notes'];
+const pickDemand = (body = {}) => Object.fromEntries(Object.entries(body).filter(([k]) => DEMAND_FIELDS.includes(k)));
+const courseKeyOf = (v) => String(v || '').toLowerCase().split(/[\s—–-]/)[0];
+
+async function demandViews(demands) {
+  const [leads, branches] = await Promise.all([StudentLead.find().select('branch course createdAt campaignCode').lean(), branchList()]);
+  return demands.map((d) => {
+    const o = typeof d.toObject === 'function' ? d.toObject() : d;
+    const target = matchBranch(o.branch, branches);
+    const since = new Date(o.createdAt || 0);
+    const delivered = leads.filter((l) => {
+      if (new Date(l.createdAt) < since) return false;
+      if (o.campaignCode && l.campaignCode === o.campaignCode) return true;
+      const lb = matchBranch(l.branch, branches);
+      const sameBranch = target ? lb && String(lb._id) === String(target._id) : String(l.branch || '').toLowerCase().includes(String(o.branch || '').toLowerCase());
+      return sameBranch && (!o.course || courseKeyOf(l.course) === courseKeyOf(o.course));
+    }).length;
+    return { ...o, id: String(o._id), deliveredLeads: delivered, gap: Math.max(0, (o.targetLeads || 0) - delivered) };
+  });
+}
+
+router.get('/marketing/demands', async (req, res) => {
+  try {
+    res.json(await demandViews(await BranchLeadDemand.find().sort({ createdAt: -1 })));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.post('/marketing/demands', async (req, res) => {
+  try {
+    const data = pickDemand(req.body);
+    if (!data.branch || !(Number(data.targetLeads) > 0)) return res.status(400).json({ error: 'Branch and a target above 0 are required' });
+    const created = await BranchLeadDemand.create({ ...data, requester: data.requester || req.user?.name || '' });
+    res.status(201).json((await demandViews([created]))[0]);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.put('/marketing/demands/:id', async (req, res) => {
+  try {
+    const updated = await BranchLeadDemand.findByIdAndUpdate(req.params.id, { $set: pickDemand(req.body) }, { new: true });
+    if (!updated) return res.status(404).json({ error: 'Demand not found' });
+    res.json((await demandViews([updated]))[0]);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.delete('/marketing/demands/:id', async (req, res) => {
+  try {
+    await BranchLeadDemand.findByIdAndDelete(req.params.id);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Lead sources: volume, duplicates and funnel per source, from StudentLead.
+// CPL is shown only where a campaign with recorded spend owns the leads.
+router.get('/marketing/sources', async (req, res) => {
+  try {
+    const [leads, campaigns] = await Promise.all([
+      StudentLead.find().select(LEAD_FIELDS_FOR_MARKETING).lean(),
+      MarketingCampaign.find().select('code name spent').lean()
+    ]);
+    const phoneKey = (p) => String(p || '').replace(/\D/g, '').slice(-10);
+    const phoneCount = new Map();
+    leads.forEach((l) => { const k = phoneKey(l.phone); if (k) phoneCount.set(k, (phoneCount.get(k) || 0) + 1); });
+
+    const map = new Map();
+    for (const l of leads) {
+      const src = l.sourceName || l.source || 'Unspecified';
+      if (!map.has(src)) map.set(src, { source: src, leads: 0, dup: 0, connected: 0, demos: 0, adm: 0, campaignCodes: new Set() });
+      const row = map.get(src);
+      row.leads += 1;
+      if ((phoneCount.get(phoneKey(l.phone)) || 0) > 1) row.dup += 1;
+      if (l.stage !== 'new' || (l.callCount || 0) > 0) row.connected += 1;
+      if (funnelIdx(l.stage) >= funnelIdx('demo_booked')) row.demos += 1;
+      if (l.stage === 'admitted') row.adm += 1;
+      if (l.campaignCode) row.campaignCodes.add(l.campaignCode);
+    }
+
+    const rows = [...map.values()].map(({ campaignCodes, ...r }) => {
+      const spend = campaigns
+        .filter((c) => campaignCodes.has(c.code) || c.name === r.source)
+        .reduce((s, c) => s + (Number(c.spent) || 0), 0);
+      const admRate = r.leads ? r.adm / r.leads : 0;
+      const demoRate = r.leads ? r.demos / r.leads : 0;
+      const quality = r.leads < 5 ? 'Too few leads'
+        : admRate >= 0.05 || demoRate >= 0.25 ? 'High Quality'
+        : r.connected / r.leads >= 0.5 ? 'Medium Quality' : 'Low Quality';
+      return {
+        ...r,
+        valid: r.leads - r.dup,
+        dupHighlight: r.leads > 0 && r.dup / r.leads > 0.1,
+        spend,
+        cpl: spend && r.leads ? `₹${Math.round(spend / r.leads).toLocaleString('en-IN')}` : '—',
+        quality,
+        qualityClass: quality === 'High Quality' ? 'bg-[#ecfdf5] text-[#059669] border border-[#a7f3d0]'
+          : quality === 'Medium Quality' ? 'bg-[#fffbeb] text-[#b45309] border border-[#fef3c7]'
+          : quality === 'Low Quality' ? 'bg-[#fef2f2] text-[#dc2626] border border-[#fee2e2]'
+          : 'bg-slate-100 text-slate-500 border border-slate-200'
+      };
+    }).sort((a, b) => b.leads - a.leads);
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ==========================================
+// SHARED SETTINGS & SOP HUB
+// ==========================================
+// Org-wide settings read by several dashboards (e.g. Admin's incentive policy
+// drives HR's target banner)
+const SETTING_KEYS = ['incentive_policy'];
+router.get('/settings/:key', async (req, res) => {
+  try {
+    if (!SETTING_KEYS.includes(req.params.key)) return res.status(404).json({ error: 'Unknown setting' });
+    const doc = await AppSetting.findOne({ key: req.params.key }).lean();
+    res.json({ key: req.params.key, value: doc?.value ?? null, updatedBy: doc?.updatedBy || '', updatedAt: doc?.updatedAt || null });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.put('/settings/:key', async (req, res) => {
+  try {
+    if (!SETTING_KEYS.includes(req.params.key)) return res.status(404).json({ error: 'Unknown setting' });
+    const doc = await AppSetting.findOneAndUpdate(
+      { key: req.params.key },
+      { $set: { value: req.body?.value ?? null, updatedBy: req.user?.name || '' } },
+      { upsert: true, new: true }
+    );
+    res.json({ key: doc.key, value: doc.value, updatedBy: doc.updatedBy, updatedAt: doc.updatedAt });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+const SOP_FIELDS = ['department', 'title', 'subtitle', 'category', 'content'];
+const pickSop = (body = {}) => Object.fromEntries(Object.entries(body).filter(([k]) => SOP_FIELDS.includes(k)));
+
+router.get('/sops', async (req, res) => {
+  try {
+    const query = req.query.department ? { department: new RegExp(`^${escapeRegex(req.query.department)}$`, 'i') } : {};
+    res.json(await SopDocument.find(query).sort({ category: 1, title: 1 }));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.post('/sops', async (req, res) => {
+  try {
+    const data = pickSop(req.body);
+    if (!data.title) return res.status(400).json({ error: 'Title is required' });
+    res.status(201).json(await SopDocument.create({ ...data, version: 1, updatedBy: req.user?.name || '' }));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Every edit bumps the version
+router.put('/sops/:id', async (req, res) => {
+  try {
+    const updated = await SopDocument.findByIdAndUpdate(
+      req.params.id,
+      { $set: { ...pickSop(req.body), updatedBy: req.user?.name || '' }, $inc: { version: 1 } },
+      { new: true }
+    );
+    if (!updated) return res.status(404).json({ error: 'SOP not found' });
+    res.json(updated);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.delete('/sops/:id', async (req, res) => {
+  try {
+    await SopDocument.findByIdAndDelete(req.params.id);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Send an SOP to every staff member of its department (their notification bell)
+router.post('/sops/:id/assign', async (req, res) => {
+  try {
+    const sop = await SopDocument.findById(req.params.id);
+    if (!sop) return res.status(404).json({ error: 'SOP not found' });
+    const audience = AUDIENCE_BY_DEPT_CODE[sop.department];
+    if (!audience) return res.status(400).json({ error: 'This department has no notification inbox yet' });
+    await pushNotification({
+      audience, type: 'sop',
+      title: `SOP: ${sop.title} (v${sop.version})`,
+      message: `${sop.subtitle ? `${sop.subtitle} — ` : ''}${String(sop.content || '').replace(/\s+/g, ' ').slice(0, 400)}`,
+      createdBy: req.user?.name || ''
+    });
+    res.json({ success: true, audience });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
   }
 });
 

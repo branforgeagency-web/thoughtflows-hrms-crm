@@ -43,7 +43,7 @@ const callRecordingSchema = new mongoose.Schema({
   },
   source: {
     type: String,
-    enum: ['exotel', 'browser_mic', 'uploaded'],
+    enum: ['exotel', 'browser_mic', 'uploaded', 'phone_upload'],
     default: 'browser_mic'
   }
 }, {

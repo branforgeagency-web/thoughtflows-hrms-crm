@@ -54,7 +54,8 @@ import {
 } from 'lucide-react';
 import axios from 'axios';
 import TeamPerformanceBoard from './TeamPerformanceBoard';
-import { onDataUpdate, getStats, getAdminSlabs, updateAdminSlabs, getAuditLogs, createAuditLog } from '../services/api';
+import { onDataUpdate, notifyDataUpdate, getCompanies, getStats, getAuditLogs, createAuditLog, getSetting, saveSetting, getBranches, updateBranch, getStudents } from '../services/api';
+import { progressiveIncentive } from '../utils/incentive';
 import { COURSE_CATEGORIES, ALL_COURSES, TRAINER_COURSES } from '../constants/courses';
 import TrainerScheduleEditor from './TrainerScheduleEditor';
 
@@ -100,353 +101,36 @@ const timeToMinutes = (hhmm) => {
   return (h || 0) * 60 + (m || 0);
 };
 
-// Progressive Incentive Policy (Matches Exact User Reference Screenshot)
-const DEFAULT_INCENTIVE_POLICY = {
-  defaultTarget: 25,
+/// Starting point for a brand-new incentive policy (nothing is applied to HR
+// until Admin saves it — HR reads only the saved policy from the server)
+const NEW_POLICY_TEMPLATE = {
+  defaultTarget: 0,
   bands: [
-    { id: 'b1', label: '1–5 past target', upTo: 5, rate: 500 },
-    { id: 'b2', label: '6–10 past target', upTo: 10, rate: 750 },
-    { id: 'b3', label: '11–15 past target', upTo: 15, rate: 1000 }
-  ],
-  demoTarget: 25,
-  demoClosed: 23
+    { id: 'b1', label: '1–5 past target', upTo: 5, rate: 0 }
+  ]
 };
 
-// Calculate progressive incentive
-const calculateProgressiveIncentive = (closed, target, bands) => {
-  const pastTarget = Math.max(0, (Number(closed) || 0) - (Number(target) || 0));
-  if (pastTarget <= 0 || !Array.isArray(bands) || bands.length === 0) return 0;
-
-  let earned = 0;
-  let prevUpTo = 0;
-
-  for (const band of bands) {
-    const upTo = Number(band.upTo) || 0;
-    const bandCapacity = upTo - prevUpTo;
-    if (bandCapacity <= 0) continue;
-
-    if (pastTarget > prevUpTo) {
-      const leadsInBand = Math.min(pastTarget - prevUpTo, bandCapacity);
-      earned += leadsInBand * (Number(band.rate) || 0);
-    }
-    prevUpTo = upTo;
-  }
-  return earned;
+// Employee directory grouping (styling only — people come from User accounts)
+const DIRECTORY_GROUPS = [
+  { key: 'leadership', label: 'Leadership & Management', borderAccent: 'border-l-4 border-l-purple-600', avatarBg: 'bg-[#7c3aed]' },
+  { key: 'hr', label: 'HR & Admissions', borderAccent: 'border-l-4 border-l-emerald-600', avatarBg: 'bg-[#059669]' },
+  { key: 'training', label: 'Training & Faculty', borderAccent: 'border-l-4 border-l-blue-600', avatarBg: 'bg-[#2563eb]' },
+  { key: 'cccp', label: 'CCCP — Placement', borderAccent: 'border-l-4 border-l-teal-500', avatarBg: 'bg-[#0d9488]' },
+  { key: 'marketing', label: 'Marketing', borderAccent: 'border-l-4 border-l-amber-500', avatarBg: 'bg-[#ea580c]' }
+];
+// Same role/department → dashboard mapping the server uses at login
+const dashboardOfUser = (u) => {
+  const r = String(u?.role || '').toLowerCase();
+  const d = String(u?.department || '').toLowerCase();
+  if (r.includes('trainer') || r.includes('faculty') || d.includes('faculty') || d.includes('training')) return 'training';
+  if (r.includes('admin') || d.includes('admin')) return 'leadership';
+  if (r.includes('counsel') || r.includes('advisor') || d.includes('counsel') || d.includes('admission') || d === 'hr') return 'hr';
+  if (r.includes('placement') || d.includes('placement') || d.includes('cccp')) return 'cccp';
+  if (r.includes('growth') || r.includes('marketing') || d.includes('marketing')) return 'marketing';
+  if (r.includes('student') || r.includes('scholar') || d.includes('student')) return 'student';
+  return 'leadership';
 };
-
-// Default initial incentive slabs (for backward compatibility)
-const DEFAULT_SLABS = [
-  { id: 'slab_1', slab: 'Slab 1', range: '1 – 10 Admissions', min: 1, max: 10, rate: 500, labelRate: '₹500 / admission', status: 'Base Tier', note: 'Standard counselor qualification' },
-  { id: 'slab_2', slab: 'Slab 2', range: '11 – 20 Admissions', min: 11, max: 20, rate: 700, labelRate: '₹700 / admission', status: 'Active Tier', note: 'Accelerated conversion bonus', isCurrent: true },
-  { id: 'slab_3', slab: 'Slab 3', range: '21 – 25 Admissions', min: 21, max: 25, rate: 1000, labelRate: '₹1,000 / admission', status: 'High Performer', note: 'Top quartile counselor bonus' },
-  { id: 'slab_4', slab: 'Slab 4', range: '26+ Admissions', min: 26, max: 999, rate: 1500, labelRate: '₹1,500 / admission + ₹8,000 Milestone Bonus', milestoneBonus: 8000, status: 'Super Performer', note: 'Executive milestone tier' }
-];
-
-// Initial user accounts
-// Accounts come only from the database (passwords are never sent to the browser)
-const INITIAL_USERS = [];
-
-// 14 Official Academy Branches matching User Reference (South India Zone + Pune, Kollapur, Theni)
-const ACADEMY_BRANCHES = [
-  { 
-    id: 'saravanampatti',
-    code: 'CBE-SVM', 
-    name: 'Saravanampatti', 
-    city: 'Coimbatore', 
-    state: 'Tamil Nadu', 
-    head: 'Gayathri B', 
-    role: 'Branch Manager of SVM',
-    capacity: 90, 
-    activeStudents: 430, 
-    staffCount: 28, 
-    status: 'Operational',
-    image: '/branches/saravanampatti.png'
-  },
-  { 
-    id: 'gandhipuram',
-    code: 'CBE-GPM', 
-    name: 'Gandhipuram', 
-    city: 'Coimbatore', 
-    state: 'Tamil Nadu', 
-    head: 'Sindhu S', 
-    role: 'Process Coach / Branch Manager Of GPM',
-    capacity: 85, 
-    activeStudents: 410, 
-    staffCount: 26, 
-    status: 'Operational',
-    image: '/branches/gandhipuram.png'
-  },
-  { 
-    id: 'hopes',
-    code: 'CBE-HPS', 
-    name: 'Hopes', 
-    city: 'Coimbatore', 
-    state: 'Tamil Nadu', 
-    head: 'Sruthi G', 
-    role: 'Branch Manager Of Hopes',
-    capacity: 75, 
-    activeStudents: 340, 
-    staffCount: 22, 
-    status: 'Operational',
-    image: '/branches/hopes.png'
-  },
-  { 
-    id: 'ameerpet',
-    code: 'HYD-AMP', 
-    name: 'Ameerpet', 
-    city: 'Hyderabad', 
-    state: 'Telangana', 
-    head: 'A. Lokesh Babu', 
-    role: 'Regional / Marketing Head',
-    capacity: 80, 
-    activeStudents: 380, 
-    staffCount: 24, 
-    status: 'Operational',
-    image: '/branches/ameerpet.png'
-  },
-  { 
-    id: 'dilsukhnagar',
-    code: 'HYD-DSN', 
-    name: 'Dilsukhnagar', 
-    city: 'Hyderabad', 
-    state: 'Telangana', 
-    head: 'Srikanth V.', 
-    role: 'Branch Operations Lead',
-    capacity: 70, 
-    activeStudents: 310, 
-    staffCount: 19, 
-    status: 'Operational',
-    image: '/branches/dilsukhnagar.png'
-  },
-  { 
-    id: 'kochi',
-    code: 'KER-KOC', 
-    name: 'Kochi', 
-    city: 'Kochi', 
-    state: 'Kerala', 
-    head: 'Anand S.', 
-    role: 'Kerala Operations Lead',
-    capacity: 65, 
-    activeStudents: 290, 
-    staffCount: 18, 
-    status: 'Operational',
-    image: '/branches/kochi.png'
-  },
-  { 
-    id: 'trivandrum',
-    code: 'KER-TRV', 
-    name: 'Trivandrum', 
-    city: 'Trivandrum', 
-    state: 'Kerala', 
-    head: 'Sujith M.', 
-    role: 'Branch Coordinator',
-    capacity: 55, 
-    activeStudents: 240, 
-    staffCount: 15, 
-    status: 'Operational',
-    image: '/branches/trivandrum.png'
-  },
-  { 
-    id: 'salem',
-    code: 'TND-SLM', 
-    name: 'Salem', 
-    city: 'Salem', 
-    state: 'Tamil Nadu', 
-    head: 'Saravanan M.', 
-    role: 'Branch Principal',
-    capacity: 60, 
-    activeStudents: 260, 
-    staffCount: 16, 
-    status: 'Operational',
-    image: '/branches/salem.png'
-  },
-  { 
-    id: 'trichy',
-    code: 'TND-TRY', 
-    name: 'Trichy', 
-    city: 'Trichy', 
-    state: 'Tamil Nadu', 
-    head: 'Deepa T.', 
-    role: 'Branch Lead',
-    capacity: 60, 
-    activeStudents: 275, 
-    staffCount: 17, 
-    status: 'Operational',
-    image: '/branches/trichy.png'
-  },
-  { 
-    id: 'tirupati',
-    code: 'AND-TPT', 
-    name: 'Tirupati', 
-    city: 'Tirupati', 
-    state: 'Andhra Pradesh', 
-    head: 'Ravi Teja B.', 
-    role: 'Branch Lead',
-    capacity: 55, 
-    activeStudents: 235, 
-    staffCount: 14, 
-    status: 'Operational',
-    image: '/branches/tirupati.png'
-  },
-  { 
-    id: 'vizag',
-    code: 'AND-VZG', 
-    name: 'Vizag', 
-    city: 'Visakhapatnam', 
-    state: 'Andhra Pradesh', 
-    head: 'Kalyan K.', 
-    role: 'AP Operations Lead',
-    capacity: 70, 
-    activeStudents: 310, 
-    staffCount: 20, 
-    status: 'Operational',
-    image: '/branches/vizag.png'
-  },
-  { 
-    id: 'kollapur',
-    code: 'MAH-KLP', 
-    name: 'Kollapur', 
-    city: 'Kolhapur', 
-    state: 'Maharashtra', 
-    head: 'Sachin D.', 
-    role: 'Branch Operations Lead',
-    capacity: 55, 
-    activeStudents: 230, 
-    staffCount: 14, 
-    status: 'Operational',
-    image: '/branches/kollapur.png'
-  },
-  { 
-    id: 'pune',
-    code: 'MAH-PUN', 
-    name: 'Pune', 
-    city: 'Pune', 
-    state: 'Maharashtra', 
-    head: 'Amol K.', 
-    role: 'Regional Manager - MH',
-    capacity: 70, 
-    activeStudents: 310, 
-    staffCount: 19, 
-    status: 'Operational',
-    image: '/branches/pune.png'
-  },
-  { 
-    id: 'theni',
-    code: 'TND-THN', 
-    name: 'Theni', 
-    city: 'Theni', 
-    state: 'Tamil Nadu', 
-    head: 'Muthu K.', 
-    role: 'Branch Coordinator',
-    capacity: 50, 
-    activeStudents: 215, 
-    staffCount: 13, 
-    status: 'Operational',
-    image: '/branches/theni.png'
-  }
-];
-
-// Initial Staff Directory
-const INITIAL_STAFF = [
-  { id: 'stf_01', name: 'Pooja J.', dept: 'Admissions & Counseling', role: 'Lead Counselor', branch: 'Chennai - Guindy', email: 'pooja.j@thoughtflows.in', phone: '+91 98401 22334', status: 'On Duty' },
-  { id: 'stf_02', name: 'Kavitha N.', dept: 'Admissions & Counseling', role: 'Senior Admissions Manager', branch: 'Coimbatore - Gandhipuram', email: 'kavitha.n@thoughtflows.in', phone: '+91 97891 44556', status: 'On Duty' },
-  { id: 'stf_03', name: 'Kalaiselvi M.', dept: 'Admissions & Counseling', role: 'Tele-Counselor', branch: 'Chennai - Anna Nagar', email: 'kalaiselvi@thoughtflows.in', phone: '+91 94432 11223', status: 'On Duty' },
-  { id: 'stf_04', name: 'Dr. Vikram C.', dept: 'Medical Coding Faculty', role: 'Chief CPC Faculty & AAPC Trainer', branch: 'Chennai - Guindy', email: 'vikram.c@thoughtflows.in', phone: '+91 98840 99887', status: 'In Lecture' },
-  { id: 'stf_05', name: 'Faith A.', dept: 'Medical Coding Faculty', role: 'ICD-10 & CPT Specialist Trainer', branch: 'Bangalore - Indiranagar', email: 'faith.a@thoughtflows.in', phone: '+91 98450 77665', status: 'On Duty' },
-  { id: 'stf_06', name: 'Suresh V.', dept: 'CPC Examination Cell', role: 'Exam Cell Controller', branch: 'Chennai - Guindy', email: 'suresh.v@thoughtflows.in', phone: '+91 99400 33445', status: 'On Duty' },
-  { id: 'stf_07', name: 'Meenakshi R.', dept: 'Corporate Placements', role: 'Head of Corporate Placements', branch: 'Bangalore - Indiranagar', email: 'meenakshi.r@thoughtflows.in', phone: '+91 96112 55667', status: 'Meeting' },
-  { id: 'stf_08', name: 'Balaji R.', dept: 'HR & Talent Acquisition', role: 'HR Operations Manager', branch: 'Chennai - Guindy', email: 'balaji.r@thoughtflows.in', phone: '+91 98409 66778', status: 'On Duty' },
-  { id: 'stf_09', name: 'Dinesh P.', dept: 'IT Infrastructure & LMS', role: 'Systems & Security Architect', branch: 'Bangalore - Marathahalli', email: 'dinesh.p@thoughtflows.in', phone: '+91 98860 88990', status: 'On Duty' },
-  { id: 'stf_10', name: 'Kavitha V.', dept: 'Finance & Branch Operations', role: 'Finance Controller', branch: 'Chennai - Guindy', email: 'kavitha.v@thoughtflows.in', phone: '+91 99620 44556', status: 'On Duty' },
-  { id: 'stf_11', name: 'Subha M.', dept: 'Leadership & Operations', role: 'Branch Principal', branch: 'Chennai - Anna Nagar', email: 'subha.m@thoughtflows.in', phone: '+91 98402 77889', status: 'On Duty' },
-  { id: 'stf_12', name: 'Ganesh N.', dept: 'Leadership & Operations', role: 'Regional Operations Director', branch: 'Thoughtflows Group HQ', email: 'ganesh.n@thoughtflows.in', phone: '+91 99401 88990', status: 'On Duty' }
-];
-
-// Initial Audit Logs
-const INITIAL_AUDIT_LOGS = [
-  { id: 'log_01', timestamp: '2026-09-16 09:38:12', user: 'Executive Admin', action: 'Incentive Slabs Verified', category: 'Policy', severity: 'Info', ip: '192.168.1.104', details: 'Slab 2 target set to 11–20 admissions at ₹700/adm' },
-  { id: 'log_02', timestamp: '2026-09-16 09:24:45', user: 'Kavitha N. (HR)', action: 'Student Admission Confirmed', category: 'CRM', severity: 'Success', ip: '192.168.2.45', details: 'Enrolled Keerthana R. into Batch TF-CBE-CPC-07' },
-  { id: 'log_03', timestamp: '2026-09-16 08:55:10', user: 'System (Automated)', action: 'Nightly Database Sync', category: 'System', severity: 'Info', ip: '10.0.0.1', details: 'Synced 3,970 active students & 487 leads' },
-  { id: 'log_04', timestamp: '2026-09-16 08:12:30', user: 'Executive Admin', action: 'User Session Initiated', category: 'Auth', severity: 'Info', ip: '192.168.1.104', details: 'Admin login via admin@thoughtflows.in' },
-  { id: 'log_05', timestamp: '2026-09-15 18:40:19', user: 'Finance Controller', action: 'Course Fee Rate Updated', category: 'Finance', severity: 'Warning', ip: '192.168.1.112', details: 'Updated CPC training fee to ₹21,000' }
-];
-
-// Official HR Roster (Exact 38 team members grouped across 5 departments matching User Reference)
-const OFFICIAL_HR_ROSTER = [
-  {
-    department: 'Leadership',
-    borderAccent: 'border-l-4 border-l-purple-600',
-    avatarBg: 'bg-[#7c3aed]',
-    members: [
-      { name: 'Kartheeswari K', role: 'Operational Head', empId: '-', initials: 'KK' },
-      { name: 'Aswanth V K', role: 'Regional head', empId: 'TFB8683', initials: 'AK' }
-    ]
-  },
-  {
-    department: 'HR Leadership',
-    borderAccent: 'border-l-4 border-l-teal-500',
-    avatarBg: 'bg-[#0d9488]',
-    members: [
-      { name: 'Jasmin', role: 'Head of HR Department', empId: 'TFB8561', initials: 'J' },
-      { name: 'A. Lokesh Babu', role: 'Head of HR /Digital Marketing', empId: 'TFB8559', initials: 'AB' }
-    ]
-  },
-  {
-    department: 'Branch Management',
-    borderAccent: 'border-l-4 border-l-blue-600',
-    avatarBg: 'bg-[#2563eb]',
-    members: [
-      { name: 'Gayathri B', role: 'Branch Manager of SVM', empId: 'TFB8558', initials: 'GB' },
-      { name: 'Sruthi G', role: 'Branch Manager Of Hopes', empId: 'TFB8578', initials: 'SG' },
-      { name: 'Sindhu S', role: 'Process Coach / Branch Manager Of GPM', empId: 'TFB8588', initials: 'SS' }
-    ]
-  },
-  {
-    department: 'HR — Team Leads',
-    borderAccent: 'border-l-4 border-l-amber-500',
-    avatarBg: 'bg-[#ea580c]',
-    members: [
-      { name: 'Kalaiselvi C', role: 'Team Lead', empId: 'TFB8591', initials: 'KC' },
-      { name: 'Punitha', role: 'Team Lead', empId: 'TFB8593', initials: 'P' },
-      { name: 'R Priyadharshini', role: 'Team Lead', empId: 'TFB8783', initials: 'RP' },
-      { name: 'Guru Vigneshwar S', role: 'Team Lead', empId: 'TFB8697', initials: 'GS' },
-      { name: 'Sindhuja Erothu', role: 'Team Lead', empId: 'TFB8637', initials: 'SE' },
-      { name: 'Anakha Suresh M', role: 'Team Lead', empId: 'TFB8575', initials: 'AM' },
-      { name: 'Peemuthannagari Supraja', role: 'Team Lead', empId: 'TFB8643', initials: 'PS' }
-    ]
-  },
-  {
-    department: 'HR — Counsellors',
-    borderAccent: 'border-l-4 border-l-emerald-600',
-    avatarBg: 'bg-[#059669]',
-    members: [
-      { name: 'Sangavi', role: 'HR Executive', empId: 'TFB8711', initials: 'S' },
-      { name: 'Reshma V Jenifer', role: 'HR Executive', empId: 'TFB8687', initials: 'RJ' },
-      { name: 'Pavithra N', role: 'HR Executive', empId: 'TFB8678', initials: 'PN' },
-      { name: 'Prabhu M', role: 'HR Executive', empId: 'TFB8653', initials: 'PM' },
-      { name: 'Julie Arokiam', role: 'HR Executive', empId: 'TFB8702', initials: 'JA' },
-      { name: 'K.V.K.Kanchana', role: 'HR Executive', empId: 'TFB8685', initials: 'K' },
-      { name: 'Dhivya S', role: 'HR Executive', empId: '-', initials: 'DS' },
-      { name: 'Deepthi G', role: 'HR Executive', empId: '-', initials: 'DG' },
-      { name: 'Dharshini', role: 'HR Executive', empId: 'TFB8642', initials: 'D' },
-      { name: 'Subiksha M', role: 'HR Executive', empId: 'TFB8689', initials: 'SM' },
-      { name: 'Kannan S', role: 'HR Executive', empId: '-', initials: 'KS' },
-      { name: 'Keerthiga M', role: 'HR Executive', empId: '-', initials: 'KM' },
-      { name: 'Dubba Manjula', role: 'HR Executive', empId: 'TFB8788', initials: 'DM' },
-      { name: 'Divya Kannuri', role: 'HR Executive', empId: 'TFB8718', initials: 'DK' },
-      { name: 'Bonda Likitha', role: 'HR Executive', empId: '-', initials: 'BL' },
-      { name: 'Gayathri Uppara', role: 'HR Executive', empId: 'TFB8662', initials: 'GU' },
-      { name: 'G.Vishnupriya', role: 'HR Executive', empId: 'TFB8728', initials: 'G' },
-      { name: 'Nidanakavi Rahul', role: 'HR Executive & OM', empId: 'TFB8722', initials: 'NR' },
-      { name: 'Anitha', role: 'HR Executive', empId: 'TFV858', initials: 'A' },
-      { name: 'Sai Deepthi', role: 'HR Executive', empId: 'TFV866', initials: 'SD' },
-      { name: 'Bhanu Priyanka', role: 'HR Executive', empId: 'TFV867', initials: 'BP' },
-      { name: 'Vishnupriya Dev', role: 'HR Executive', empId: 'TFB8784', initials: 'VD' },
-      { name: 'SREELEKHA P C', role: 'HR Executive', empId: 'TFB8618', initials: 'SC' },
-      { name: 'ARYASREE A', role: 'HR Executive', empId: 'TFB8647', initials: 'AA' }
-    ]
-  }
-];
+const initialsOf = (name) => String(name || '?').trim().split(/\s+/).map((p) => p[0]).join('').slice(0, 2).toUpperCase();
 
 export default function AdminManagementDashboard({ 
   onClose, 
@@ -461,94 +145,96 @@ export default function AdminManagementDashboard({
   const [toastMessage, setToastMessage] = useState(null);
   const [dashboardsMenuOpen, setDashboardsMenuOpen] = useState(false);
 
-  // Live Executive Stats
-  const [executiveStats, setExecutiveStats] = useState({
-    grossRevenue: 9240000,
-    activeStudents: 3970,
-    placementRate: '98.4%',
-    activeStaff: 280,
-    activeLeads: 48,
-    placedStudents: 156
-  });
+  // Live Executive Stats (null until loaded — no placeholder figures)
+  const [executiveStats, setExecutiveStats] = useState(null);
 
   const fetchLiveExecutiveStats = async () => {
     try {
       const stats = await getStats();
-      if (stats) {
-        setExecutiveStats(prev => ({
-          ...prev,
-          grossRevenue: stats.grossRevenue || prev.grossRevenue,
-          activeStudents: stats.activeStudents || prev.activeStudents,
-          placementRate: stats.placementRate || prev.placementRate,
-          activeLeads: stats.activeLeads || prev.activeLeads,
-          placedStudents: stats.placedStudents || prev.placedStudents
-        }));
-      }
+      if (stats) setExecutiveStats(stats);
     } catch (err) {
       console.warn('Live executive stats fetch notice:', err.message);
     }
   };
 
+  // Branches with live student / staff / lead counts
+  const [branchesList, setBranchesList] = useState([]);
+  const fetchBranches = async () => {
+    try {
+      const data = await getBranches();
+      setBranchesList(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.warn('Branches fetch notice:', err.message);
+    }
+  };
+
   useEffect(() => {
     fetchLiveExecutiveStats();
-
+    fetchBranches();
     const unsub = onDataUpdate((entity) => {
       fetchLiveExecutiveStats();
+      if (['branches', 'students', 'leads', 'users'].includes(entity)) fetchBranches();
     });
     return () => unsub();
   }, []);
 
-  // Live State
-  const [incentivePolicy, setIncentivePolicy] = useState(() => {
-    try {
-      const saved = localStorage.getItem('thoughtflows_incentive_policy');
-      return saved ? JSON.parse(saved) : DEFAULT_INCENTIVE_POLICY;
-    } catch {
-      return DEFAULT_INCENTIVE_POLICY;
-    }
-  });
+  // Incentive policy — saved on the server, read by every HR dashboard
+  const [incentivePolicy, setIncentivePolicy] = useState(NEW_POLICY_TEMPLATE);
+  const [policySaved, setPolicySaved] = useState(null); // { updatedBy, updatedAt } of the saved version
+  const [auditLogs, setAuditLogs] = useState([]);
 
-  const [slabs, setSlabs] = useState(DEFAULT_SLABS);
-
-  // Live Slabs and Audit Logs from DB
   useEffect(() => {
     let isMounted = true;
-    const fetchSlabsAndLogs = async () => {
-      try {
-        const [slabsData, logsData] = await Promise.all([
-          getAdminSlabs().catch(() => null),
-          getAuditLogs().catch(() => null)
-        ]);
-        if (!isMounted) return;
-        if (Array.isArray(slabsData) && slabsData.length > 0) {
-          setSlabs(slabsData);
-        }
-        if (Array.isArray(logsData) && logsData.length > 0) {
-          setAuditLogs(logsData);
-        }
-      } catch (err) {
-        console.warn('Admin slabs/logs fetch error:', err.message);
+    const fetchPolicyAndLogs = async () => {
+      const [policyDoc, logsData] = await Promise.all([
+        getSetting('incentive_policy').catch(() => null),
+        getAuditLogs().catch(() => null)
+      ]);
+      if (!isMounted) return;
+      if (policyDoc?.value && Array.isArray(policyDoc.value.bands)) {
+        setIncentivePolicy(policyDoc.value);
+        setPolicySaved({ updatedBy: policyDoc.updatedBy, updatedAt: policyDoc.updatedAt });
       }
+      if (Array.isArray(logsData)) setAuditLogs(logsData);
     };
-
-    fetchSlabsAndLogs();
-
+    fetchPolicyAndLogs();
     const unsub = onDataUpdate((entity) => {
-      if (['slabs', 'audit_logs'].includes(entity)) {
-        fetchSlabsAndLogs();
-      }
+      if (['settings', 'audit_logs'].includes(entity)) fetchPolicyAndLogs();
     });
-
     return () => {
       isMounted = false;
       unsub();
     };
   }, []);
 
+  // Admissions per counsellor this month — drives the policy preview
+  const [monthAdmissions, setMonthAdmissions] = useState({});
+  const [allStudents, setAllStudents] = useState([]);
+  const [partnerCount, setPartnerCount] = useState(null);
+  useEffect(() => {
+    getCompanies().then((list) => setPartnerCount(Array.isArray(list) ? list.length : 0)).catch(() => setPartnerCount(null));
+  }, []);
+  const [previewHr, setPreviewHr] = useState('');
+  useEffect(() => {
+    const load = () => getStudents().then((list) => {
+      const now = new Date();
+      const counts = {};
+      setAllStudents(Array.isArray(list) ? list : []);
+      (Array.isArray(list) ? list : []).forEach((s) => {
+        const d = new Date(s.admissionDate || s.createdAt);
+        if (!s.hrName || d.getMonth() !== now.getMonth() || d.getFullYear() !== now.getFullYear()) return;
+        counts[s.hrName] = (counts[s.hrName] || 0) + 1;
+      });
+      setMonthAdmissions(counts);
+    }).catch(() => {});
+    load();
+    return onDataUpdate((entity) => { if (entity === 'students') load(); });
+  }, []);
+
   const [users, setUsers] = useState(() => {
     // Older builds cached every account password in the browser — wipe it
     try { localStorage.removeItem('thoughtflows_admin_users'); } catch (_) {}
-    return INITIAL_USERS;
+    return [];
   });
 
   // Password visibility controls
@@ -566,24 +252,19 @@ export default function AdminManagementDashboard({
   useEffect(() => {
     axios.get('/api/admin/users')
       .then(res => {
-        if (Array.isArray(res.data) && res.data.length > 0) {
-          setUsers(res.data);
-        }
+        if (Array.isArray(res.data)) setUsers(res.data);
       })
       .catch(err => {
         console.warn('Backend users notice:', err.message);
       });
   }, []);
 
-  const [staffList, setStaffList] = useState(INITIAL_STAFF);
-  const [branchesList, setBranchesList] = useState(ACADEMY_BRANCHES);
-  const [auditLogs, setAuditLogs] = useState(INITIAL_AUDIT_LOGS);
+  const hrUsers = users.filter((u) => dashboardOfUser(u) === 'hr' && !/inactive|disabled|suspended/i.test(u.status || ''));
   const [courseRates, setCourseRates] = useState([]);
   const [loadingRates, setLoadingRates] = useState(false);
 
   // Modals for Actions
   const [showAddUserModal, setShowAddUserModal] = useState(false);
-  const [editingSlab, setEditingSlab] = useState(null);
   const [isRoleDropdownOpen, setIsRoleDropdownOpen] = useState(false);
   const [newUserForm, setNewUserForm] = useState({
     name: '',
@@ -591,7 +272,7 @@ export default function AdminManagementDashboard({
     phone: '',
     role: 'HR',
     department: 'Admissions & Counseling',
-    branch: 'Saravanampatti',
+    branch: '',
     password: '',
     // Trainer-only fields — shown when role === 'Trainer' and used to
     // seed the Trainer roster (Demo Booking eligibility engine)
@@ -646,40 +327,14 @@ export default function AdminManagementDashboard({
       });
   }, []);
 
+  // The server stamps the user and IP on every audit entry
   const logAdminAction = async (logData) => {
     try {
-      await createAuditLog(logData);
+      const saved = await createAuditLog(logData);
+      setAuditLogs(prev => [saved || logData, ...prev]);
     } catch (e) {
       console.warn('Audit log write notice:', e.message);
     }
-    setAuditLogs(prev => [logData, ...prev]);
-  };
-
-  // Save Slabs
-  const handleSaveSlab = async (updatedSlab) => {
-    const updated = slabs.map(s => (s.id === updatedSlab.id || (s._id && s._id === updatedSlab._id)) ? updatedSlab : s);
-    setSlabs(updated);
-    try {
-      await updateAdminSlabs(updated);
-    } catch (e) {
-      console.warn('Failed to save slabs to API', e);
-    }
-    
-    // Append to audit log
-    const newLog = {
-      id: `log_${Date.now()}`,
-      timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
-      user: currentUser?.name || 'Executive Admin',
-      action: 'Incentive Slab Updated',
-      category: 'Policy',
-      severity: 'Info',
-      ip: '192.168.1.104',
-      details: `${updatedSlab.slab}: Rate set to ₹${updatedSlab.rate} for ${updatedSlab.range}`
-    };
-    logAdminAction(newLog);
-
-    setEditingSlab(null);
-    showToast(`✓ ${updatedSlab.slab} successfully updated! HR Target Banner synced.`);
   };
 
   // Add a new progressive incentive band
@@ -692,7 +347,7 @@ export default function AdminManagementDashboard({
       id: `b_${Date.now()}`,
       label: `${prevUpTo + 1}–${nextUpTo} past target`,
       upTo: nextUpTo,
-      rate: lastBand ? Number(lastBand.rate) + 250 : 500
+      rate: lastBand ? Number(lastBand.rate) : 0
     };
     setIncentivePolicy(prev => ({
       ...prev,
@@ -721,40 +376,34 @@ export default function AdminManagementDashboard({
     }));
   };
 
-  // Save policy and update HR banner
-  const handleSaveIncentivePolicy = (e) => {
+  // Save policy on the server — every HR target banner reads it from there
+  const handleSaveIncentivePolicy = async (e) => {
     if (e) e.preventDefault();
-    try {
-      localStorage.setItem('thoughtflows_incentive_policy', JSON.stringify(incentivePolicy));
-      // Sync legacy slabs format for HrMyTargets compatibility
-      const syncedSlabs = (incentivePolicy.bands || []).map((b, idx) => ({
-        id: `slab_${idx + 1}`,
-        slab: `Tier ${idx + 1}`,
-        range: b.label,
-        rate: Number(b.rate),
-        labelRate: `₹${b.rate} / lead`,
-        status: idx === 0 ? 'Active Tier' : 'Higher Tier',
-        isCurrent: idx === 0
-      }));
-      localStorage.setItem('thoughtflows_admin_slabs', JSON.stringify(syncedSlabs));
-      setSlabs(syncedSlabs);
-    } catch (err) {
-      console.warn('Failed to save policy', err);
+    if (!(Number(incentivePolicy.defaultTarget) > 0)) {
+      showToast('⚠️ Set a default monthly target above 0 first.');
+      return;
     }
-
-    const newLog = {
-      id: `log_${Date.now()}`,
-      timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
-      user: currentUser?.name || 'Executive Admin',
+    const policy = {
+      defaultTarget: Number(incentivePolicy.defaultTarget),
+      bands: (incentivePolicy.bands || [])
+        .map((b) => ({ id: b.id, label: b.label, upTo: Number(b.upTo) || 0, rate: Number(b.rate) || 0 }))
+        .sort((a, b) => a.upTo - b.upTo)
+    };
+    try {
+      const saved = await saveSetting('incentive_policy', policy);
+      setIncentivePolicy(policy);
+      setPolicySaved({ updatedBy: saved.updatedBy, updatedAt: saved.updatedAt });
+    } catch (err) {
+      showToast(`⚠ ${err?.response?.data?.error || 'Could not save the policy'}`);
+      return;
+    }
+    logAdminAction({
       action: 'Incentive Policy Saved',
       category: 'Policy',
       severity: 'Success',
-      ip: '192.168.1.104',
-      details: `Default Target: ${incentivePolicy.defaultTarget}, ${incentivePolicy.bands.length} bands updated`
-    };
-    logAdminAction(newLog);
-
-    showToast('✓ Incentive policy saved! HR Target banner updated.');
+      details: `Default target ${policy.defaultTarget}, ${policy.bands.length} band(s): ${policy.bands.map((b) => `≤${b.upTo} @ ₹${b.rate}`).join(', ')}`
+    });
+    showToast('✓ Incentive policy saved — HR target banners updated.');
   };
 
   // Add New User
@@ -819,25 +468,16 @@ export default function AdminManagementDashboard({
       }
     }
 
-    const nextUsers = [newUser, ...users];
-    setUsers(nextUsers);
-    try {
-      localStorage.setItem('thoughtflows_admin_users', JSON.stringify(nextUsers));
-    } catch (e) {
-      console.warn('Failed to save user', e);
-    }
+    setUsers([newUser, ...users]);
+    // New staff appear in Leadership's team roster / branch counts
+    notifyDataUpdate('users');
 
-    const newLog = {
-      id: `log_${Date.now()}`,
-      timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
-      user: currentUser?.name || 'Executive Admin',
+    logAdminAction({
       action: 'User Account Created',
       category: 'Auth',
       severity: 'Success',
-      ip: '192.168.1.104',
       details: `Created login for ${newUser.name} (${newUser.email}) - Role: ${newUser.role}`
-    };
-    logAdminAction(newLog);
+    });
 
     setShowAddUserModal(false);
     setIsRoleDropdownOpen(false);
@@ -847,7 +487,7 @@ export default function AdminManagementDashboard({
       phone: '',
       role: 'HR',
       department: 'Admissions & Counseling',
-      branch: 'Saravanampatti',
+      branch: '',
       password: '',
       trainerId: '',
       zoomEmail: '',
@@ -860,21 +500,34 @@ export default function AdminManagementDashboard({
     showToast(`✓ Account created for ${newUser.name}`);
   };
 
+  // Branch master edits (counts are always live — only these fields are typed in)
+  const handleEditBranch = async (b) => {
+    const capacity = prompt(`Seat capacity for ${b.name}:`, b.capacity || '');
+    if (capacity === null) return;
+    const manager = prompt(`Branch manager for ${b.name} (leave blank to use the account with role "Branch Manager"):`, b.manager || '');
+    if (manager === null) return;
+    try {
+      await updateBranch(b._id, { capacity: Math.max(0, parseInt(capacity, 10) || 0), manager: manager.trim() });
+      fetchBranches();
+      logAdminAction({ action: 'Branch Updated', category: 'Operations', severity: 'Info', details: `${b.name}: capacity ${capacity || 0}, manager ${manager.trim() || '—'}` });
+      showToast(`✓ ${b.name} updated`);
+    } catch (err) {
+      showToast(`⚠ ${err?.response?.data?.error || 'Could not update the branch'}`);
+    }
+  };
+
   // Delete User
   const handleDeleteUser = async (id, name, email) => {
     if (confirm(`Remove account for ${name}?`)) {
       try {
         await axios.delete(`/api/admin/users/${id}?email=${encodeURIComponent(email || '')}`);
       } catch (err) {
-        console.warn('Backend user delete notice', err.message);
+        showToast(`⚠ ${err?.response?.data?.error || 'Could not remove the user'}`);
+        return;
       }
-      const next = users.filter(u => u.id !== id && u._id !== id);
-      setUsers(next);
-      try {
-        localStorage.setItem('thoughtflows_admin_users', JSON.stringify(next));
-      } catch (e) {
-        console.warn('Failed to save users', e);
-      }
+      setUsers(users.filter(u => u.id !== id && u._id !== id));
+      notifyDataUpdate('users');
+      logAdminAction({ action: 'User Account Removed', category: 'Auth', severity: 'Warning', details: `Removed login for ${name} (${email || ''})` });
       showToast(`User ${name} removed.`);
     }
   };
@@ -924,7 +577,7 @@ export default function AdminManagementDashboard({
                 </span>
               </div>
               <p className="text-[11px] text-slate-500 hidden md:block">
-                Academy Policy Engine • Incentive Slabs & Governance • 12 Hubs Connected
+                Academy Policy Engine • Incentive Policy & Governance
               </p>
             </div>
           </div>
@@ -983,29 +636,29 @@ export default function AdminManagementDashboard({
         {/* Top Executive Stats Strip */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5">
           <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-2xs">
-            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 font-mono">Gross Revenue MTD</div>
-            <div className="text-2xl font-black text-slate-900 mt-1">₹{(executiveStats.grossRevenue || 9240000).toLocaleString('en-IN')}</div>
+            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 font-mono">Fees Collected MTD</div>
+            <div className="text-2xl font-black text-slate-900 mt-1">{executiveStats ? `₹${(executiveStats.mtdRevenue || 0).toLocaleString('en-IN')}` : '…'}</div>
             <div className="text-[10.5px] font-bold text-emerald-600 mt-1 flex items-center gap-1">
-              <TrendingUp className="w-3 h-3" /> Live MTD Tracking
+              <TrendingUp className="w-3 h-3" /> {executiveStats ? `₹${(executiveStats.grossRevenue || 0).toLocaleString('en-IN')} collected all-time` : 'Loading…'}
             </div>
           </div>
 
           <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-2xs">
             <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 font-mono">Enrolled Students</div>
-            <div className="text-2xl font-black text-indigo-700 mt-1">{executiveStats.activeStudents.toLocaleString()}</div>
-            <div className="text-[10.5px] font-medium text-slate-500 mt-1">Across 12 Campus Hubs</div>
+            <div className="text-2xl font-black text-indigo-700 mt-1">{executiveStats ? executiveStats.activeStudents.toLocaleString() : '…'}</div>
+            <div className="text-[10.5px] font-medium text-slate-500 mt-1">{executiveStats ? `Across ${executiveStats.branchesCount} branches · ${executiveStats.activeLeads} open leads` : 'Loading…'}</div>
           </div>
 
           <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-2xs">
             <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 font-mono">Placement Success</div>
-            <div className="text-2xl font-black text-emerald-600 mt-1">{executiveStats.placementRate}</div>
-            <div className="text-[10.5px] font-medium text-slate-500 mt-1">{executiveStats.placedStudents || 156} Verified Placed</div>
+            <div className="text-2xl font-black text-emerald-600 mt-1">{executiveStats ? executiveStats.placementRate : '…'}</div>
+            <div className="text-[10.5px] font-medium text-slate-500 mt-1">{executiveStats ? `${executiveStats.placedStudents} placed` : 'Loading…'}</div>
           </div>
 
           <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-2xs">
             <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 font-mono">Active Staff & Faculty</div>
-            <div className="text-2xl font-black text-slate-900 mt-1">{executiveStats.activeStaff}+</div>
-            <div className="text-[10.5px] font-bold text-indigo-600 mt-1">8 Operating Divisions</div>
+            <div className="text-2xl font-black text-slate-900 mt-1">{executiveStats ? executiveStats.activeStaff : '…'}</div>
+            <div className="text-[10.5px] font-bold text-indigo-600 mt-1">{executiveStats ? `${executiveStats.teamsCount} departments` : 'Loading…'}</div>
           </div>
         </div>
 
@@ -1215,7 +868,7 @@ export default function AdminManagementDashboard({
                       Employee Directory
                     </h3>
                     <p className="text-[12.5px] text-[#64748b] font-medium mt-1 leading-relaxed">
-                      All 38 members across 5 groups
+                      {users.filter((u) => dashboardOfUser(u) !== 'student').length} staff accounts
                     </p>
                   </div>
                   <div className="mt-4 pt-2 flex items-center justify-between">
@@ -1337,7 +990,7 @@ export default function AdminManagementDashboard({
                 </div>
                 <div>
                   <div className="text-xs font-bold uppercase tracking-wider text-slate-400">Active HR Incentive Policy</div>
-                  <div className="text-base font-black text-slate-900 mt-0.5">Slab 2: ₹700/adm (11–20)</div>
+                  <div className="text-base font-black text-slate-900 mt-0.5">{policySaved ? `Target ${incentivePolicy.defaultTarget} · ${incentivePolicy.bands.length} band(s)` : 'Not set yet'}</div>
                   <p className="text-xs text-slate-500 mt-1">
                     Directly drives the target banner and counsellor earnings calculations.
                   </p>
@@ -1352,7 +1005,7 @@ export default function AdminManagementDashboard({
                   <div className="text-xs font-bold uppercase tracking-wider text-slate-400">Authentication & Security</div>
                   <div className="text-base font-black text-slate-900 mt-0.5">{users.length} Registered Accounts</div>
                   <p className="text-xs text-slate-500 mt-1">
-                    Role-segregated credentials across 7 unique department views.
+                    Role-segregated credentials across department dashboards.
                   </p>
                 </div>
               </div>
@@ -1363,9 +1016,9 @@ export default function AdminManagementDashboard({
                 </div>
                 <div>
                   <div className="text-xs font-bold uppercase tracking-wider text-slate-400">Campus Infrastructure</div>
-                  <div className="text-base font-black text-slate-900 mt-0.5">12 Hubs Connected</div>
+                  <div className="text-base font-black text-slate-900 mt-0.5">{branchesList.length} Branches</div>
                   <p className="text-xs text-slate-500 mt-1">
-                    TN, Karnataka, Telangana, Kerala & AP campuses linked in real-time.
+                    {[...new Set(branchesList.map((b) => b.state).filter(Boolean))].join(', ') || 'Loading branches…'}
                   </p>
                 </div>
               </div>
@@ -1381,14 +1034,16 @@ export default function AdminManagementDashboard({
         {/* 2. INCENTIVE SLABS CONFIGURATION (MATCHING USER SCREENSHOT) */}
         {/* ========================================================================= */}
         {activeModule === 'slabs' && (() => {
-          const target = Number(incentivePolicy.demoTarget) || 25;
-          const closed = Number(incentivePolicy.demoClosed) || 0;
+          // Preview against a real counsellor's admissions this month
+          const previewName = previewHr || hrUsers[0]?.name || '';
+          const target = Number(incentivePolicy.defaultTarget) || 0;
+          const closed = previewName ? (monthAdmissions[previewName] || 0) : 0;
           const pastTarget = Math.max(0, closed - target);
           const percent = target > 0 ? Math.round((closed / target) * 100) : 0;
           const barWidth = Math.min(100, percent);
-          const earned = calculateProgressiveIncentive(closed, target, incentivePolicy.bands);
+          const earned = progressiveIncentive(closed, target, incentivePolicy.bands);
           const currentMonth = new Date().toLocaleString('en-US', { month: 'short' }).toUpperCase();
-          const firstBandRate = incentivePolicy.bands?.[0]?.rate || 500;
+          const firstBandRate = incentivePolicy.bands?.[0]?.rate || 0;
 
           return (
             <div className="max-w-2xl mx-auto bg-white rounded-3xl p-6 sm:p-9 shadow-[0_4px_25px_rgba(0,0,0,0.04)] border border-slate-200/90 text-slate-900 transition-all space-y-6">
@@ -1497,41 +1152,32 @@ export default function AdminManagementDashboard({
                 </div>
               </div>
 
-              {/* 3. DEMO HR · KAVITHA */}
+              {/* 3. PREVIEW COUNSELLOR */}
               <div className="space-y-2">
                 <div className="text-slate-400 font-bold text-[10.5px] font-mono tracking-wider uppercase">
-                  DEMO HR · KAVITHA · used for the preview &amp; banner
+                  PREVIEW FOR A COUNSELLOR · their real admissions this month
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                  <div>
-                    <label className="text-[10px] font-mono font-bold tracking-wider uppercase text-slate-400 block mb-1">
-                      KAVITHA&apos;S TARGET (BRANCH-HEAD OVERRIDE)
-                    </label>
-                    <input
-                      type="number"
-                      value={incentivePolicy.demoTarget}
-                      onChange={(e) => setIncentivePolicy({ ...incentivePolicy, demoTarget: parseInt(e.target.value, 10) || 0 })}
-                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-xs font-bold text-slate-800 focus:outline-none focus:border-blue-500 shadow-2xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[10px] font-mono font-bold tracking-wider uppercase text-slate-400 block mb-1">
-                      ADMISSIONS CLOSED (THIS MONTH)
-                    </label>
-                    <input
-                      type="number"
-                      value={incentivePolicy.demoClosed}
-                      onChange={(e) => setIncentivePolicy({ ...incentivePolicy, demoClosed: parseInt(e.target.value, 10) || 0 })}
-                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-xs font-bold text-slate-800 focus:outline-none focus:border-blue-500 shadow-2xs"
-                    />
-                  </div>
-                </div>
+                {hrUsers.length === 0 ? (
+                  <p className="text-xs text-slate-500">No HR counsellor accounts yet — create one in User Accounts to preview the banner.</p>
+                ) : (
+                  <select
+                    value={previewName}
+                    onChange={(e) => setPreviewHr(e.target.value)}
+                    className="w-full sm:w-80 px-4 py-2.5 rounded-xl border border-slate-200 text-xs font-bold text-slate-800 focus:outline-none focus:border-blue-500 shadow-2xs"
+                  >
+                    {hrUsers.map((u) => <option key={u.id || u._id} value={u.name}>{u.name} · {monthAdmissions[u.name] || 0} admissions</option>)}
+                  </select>
+                )}
+                {policySaved && (
+                  <p className="text-[11px] text-slate-400">Last saved by {policySaved.updatedBy || '—'} · {policySaved.updatedAt ? new Date(policySaved.updatedAt).toLocaleString() : ''}</p>
+                )}
+                {!policySaved && <p className="text-[11px] text-amber-600 font-semibold">Not saved yet — HR dashboards show “no target set” until you save.</p>}
               </div>
 
               {/* 4. LIVE PREVIEW */}
               <div className="space-y-2">
                 <div className="text-slate-400 font-bold text-[10.5px] font-mono tracking-wider uppercase">
-                  LIVE PREVIEW · how Kavitha&apos;s HR banner will look
+                  LIVE PREVIEW · how {previewName || 'a counsellor'}&apos;s HR banner will look
                 </div>
 
                 <div className="rounded-2xl p-5 sm:p-6 bg-[#fde047] text-amber-950 border border-amber-300 shadow-sm space-y-3">
@@ -1543,7 +1189,7 @@ export default function AdminManagementDashboard({
                       Target {target} admissions · {closed} closed
                     </h4>
                     <p className="text-xs text-[#78350f] font-medium mt-0.5">
-                      {closed < target ? (
+                      {!target ? 'Set a default monthly target above to activate the banner' : closed < target ? (
                         `${target - closed} more to hit target — then incentive starts (from ₹${firstBandRate}/lead)`
                       ) : (
                         `Target achieved! ${pastTarget} leads past target — earned ₹${earned.toLocaleString('en-IN')} incentive!`
@@ -1875,20 +1521,17 @@ export default function AdminManagementDashboard({
         {/* ========================================================================= */}
         {activeModule === 'directory' && (() => {
           const query = directorySearchQuery.trim().toLowerCase();
-          const filteredGroups = OFFICIAL_HR_ROSTER.map((group) => {
-            const matchingMembers = group.members.filter((m) => {
-              if (!query) return true;
-              return (
-                m.name.toLowerCase().includes(query) ||
-                (m.empId && m.empId.toLowerCase().includes(query)) ||
-                m.role.toLowerCase().includes(query)
-              );
-            });
-            return {
-              ...group,
-              members: matchingMembers
-            };
-          }).filter((group) => group.members.length > 0);
+          // Staff accounts (User collection), grouped by the dashboard they log into
+          const staffUsers = users.filter((u) => dashboardOfUser(u) !== 'student');
+          const filteredGroups = DIRECTORY_GROUPS.map((group) => ({
+            department: group.label,
+            borderAccent: group.borderAccent,
+            avatarBg: group.avatarBg,
+            members: staffUsers
+              .filter((u) => dashboardOfUser(u) === group.key)
+              .filter((u) => !query || [u.name, u.role, u.branch, u.email].some((v) => String(v || '').toLowerCase().includes(query)))
+              .map((u) => ({ name: u.name, role: u.role, empId: [u.branch, u.email].filter(Boolean).join(' · '), initials: initialsOf(u.name), inactive: /inactive|disabled|suspended/i.test(u.status || '') }))
+          })).filter((group) => group.members.length > 0);
 
           return (
             <div className="bg-white rounded-2xl sm:rounded-3xl p-6 sm:p-8 border border-slate-200/90 shadow-2xs space-y-6 max-w-4xl mx-auto">
@@ -1899,7 +1542,7 @@ export default function AdminManagementDashboard({
                   <h2 className="text-lg font-bold text-slate-900 tracking-tight">Employee Directory</h2>
                 </div>
                 <p className="text-xs text-slate-500 font-medium mt-1">
-                  All 38 team members, grouped by department — from the official HR roster. Search by name, ID, or role.
+                  {staffUsers.length} staff accounts, grouped by department — from User Accounts. Search by name, role, branch or email.
                 </p>
               </div>
 
@@ -1907,7 +1550,7 @@ export default function AdminManagementDashboard({
               <div className="relative">
                 <input
                   type="text"
-                  placeholder="Search name, employee ID, or role..."
+                  placeholder="Search name, role, branch or email..."
                   value={directorySearchQuery}
                   onChange={(e) => setDirectorySearchQuery(e.target.value)}
                   className="w-full bg-[#f8fafc] hover:bg-slate-50 focus:bg-white border border-slate-200 focus:border-indigo-500 rounded-xl px-4 py-2.5 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 transition-all font-medium"
@@ -1928,7 +1571,7 @@ export default function AdminManagementDashboard({
                 <div className="text-center py-12 border border-dashed border-slate-200 rounded-2xl">
                   <p className="text-sm font-semibold text-slate-600">No team members found</p>
                   <p className="text-xs text-slate-400 mt-1">
-                    No results for "{directorySearchQuery}". Search by name, role, or ID.
+                    {directorySearchQuery ? `No results for "${directorySearchQuery}".` : 'No staff accounts yet — create them in User Accounts.'}
                   </p>
                   <button
                     onClick={() => setDirectorySearchQuery('')}
@@ -2005,9 +1648,9 @@ export default function AdminManagementDashboard({
             const matchesQuery = !q || 
               b.name.toLowerCase().includes(q) || 
               b.city.toLowerCase().includes(q) || 
-              b.state.toLowerCase().includes(q) || 
-              b.code.toLowerCase().includes(q) ||
-              (b.head && b.head.toLowerCase().includes(q));
+              String(b.state || '').toLowerCase().includes(q) || 
+              String(b.code || '').toLowerCase().includes(q) ||
+              (b.manager && b.manager.toLowerCase().includes(q));
             const matchesState = selectedBranchState === 'All' || b.state === selectedBranchState;
             return matchesQuery && matchesState;
           });
@@ -2016,7 +1659,7 @@ export default function AdminManagementDashboard({
           const totalStudents = branchesList.reduce((acc, b) => acc + (b.activeStudents || 0), 0);
           const totalStaff = branchesList.reduce((acc, b) => acc + (b.staffCount || 0), 0);
 
-          const states = ['All', 'Tamil Nadu', 'Telangana', 'Kerala', 'Andhra Pradesh', 'Maharashtra'];
+          const states = ['All', ...new Set(branchesList.map((b) => b.state).filter(Boolean))];
 
           return (
             <div className="space-y-6">
@@ -2027,11 +1670,11 @@ export default function AdminManagementDashboard({
                     <span className="text-2xl">🏢</span>
                     <h3 className="text-lg font-black text-sky-950">Academy Branches & Campus Network</h3>
                     <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-sky-600 text-white uppercase tracking-wider">
-                      14 Official Hubs
+                      {branchesList.length} Branches
                     </span>
                   </div>
                   <p className="text-xs text-sky-900/80 mt-1 font-medium">
-                    Official network of 14 operational training hubs across Tamil Nadu, Telangana, Andhra Pradesh, Kerala, and Maharashtra.
+                    {branchesList.length} branches across {states.length - 1} states · student, staff and lead counts are live.
                   </p>
                 </div>
 
@@ -2056,11 +1699,11 @@ export default function AdminManagementDashboard({
                       <span>📸</span> Official Campus Network
                     </h4>
                     <p className="text-xs text-slate-500 font-medium mt-0.5">
-                      Real campus photos and headquarters across 5 key states
+                      Campus photos across {states.length - 1} states
                     </p>
                   </div>
                   <span className="text-xs font-bold text-sky-700 bg-sky-50 border border-sky-200 px-3 py-1 rounded-full">
-                    14 Campuses
+                    {branchesList.length} Campuses
                   </span>
                 </div>
 
@@ -2070,7 +1713,7 @@ export default function AdminManagementDashboard({
                     const isSelected = branchSearchQuery.toLowerCase() === b.name.toLowerCase();
                     return (
                       <button
-                        key={b.code}
+                        key={b._id || b.name}
                         type="button"
                         onClick={() => {
                           if (branchSearchQuery.toLowerCase() === b.name.toLowerCase()) {
@@ -2139,7 +1782,7 @@ export default function AdminManagementDashboard({
                           : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                       }`}
                     >
-                      {state === 'All' ? 'All States (14)' : state}
+                      {state === 'All' ? `All States (${branchesList.length})` : state}
                     </button>
                   ))}
                 </div>
@@ -2164,7 +1807,7 @@ export default function AdminManagementDashboard({
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                   {filteredBranches.map((b) => (
                     <div
-                      key={b.code}
+                      key={b._id || b.name}
                       className="p-5 rounded-3xl bg-white border border-slate-200/90 shadow-2xs hover:shadow-md transition-all flex flex-col justify-between"
                     >
                       <div>
@@ -2196,7 +1839,7 @@ export default function AdminManagementDashboard({
                         <div className="mt-3.5 p-2.5 rounded-xl bg-slate-50/80 border border-slate-100 flex items-center justify-between text-xs">
                           <span className="text-slate-500 font-medium">Head:</span>
                           <span className="font-bold text-slate-900 truncate ml-2">
-                            {b.head} {b.role ? `· ${b.role}` : ''}
+                            {b.manager || 'Not assigned'}
                           </span>
                         </div>
 
@@ -2204,7 +1847,7 @@ export default function AdminManagementDashboard({
                         <div className="grid grid-cols-3 gap-2 mt-3 text-center">
                           <div className="p-2.5 rounded-2xl bg-slate-50 border border-slate-200/60">
                             <div className="text-[10px] text-slate-400 font-medium">Capacity</div>
-                            <div className="text-sm font-black text-slate-900 mt-0.5">{b.capacity}</div>
+                            <div className="text-sm font-black text-slate-900 mt-0.5">{b.capacity || '—'}</div>
                           </div>
                           <div className="p-2.5 rounded-2xl bg-slate-50 border border-slate-200/60">
                             <div className="text-[10px] text-slate-400 font-medium">Students</div>
@@ -2218,12 +1861,14 @@ export default function AdminManagementDashboard({
                       </div>
 
                       <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
-                        <span className="text-[11px] text-slate-400 font-medium">Smart Classroom Ready</span>
+                        <span className="text-[11px] text-slate-400 font-medium">
+                          {b.leadCount} leads · {b.admissionsThisMonth} admitted this month{b.conversionPct !== null && b.conversionPct !== undefined ? ` · ${b.conversionPct}% conv.` : ''}
+                        </span>
                         <button
-                          onClick={() => showToast(`Hub settings for ${b.name} (${b.code}) configured.`)}
+                          onClick={() => handleEditBranch(b)}
                           className="text-sky-600 hover:text-sky-800 font-bold text-xs cursor-pointer"
                         >
-                          Hub Details →
+                          Edit →
                         </button>
                       </div>
                     </div>
@@ -2300,81 +1945,98 @@ export default function AdminManagementDashboard({
         {/* ========================================================================= */}
         {/* 7. FOUNDERS DASHBOARD (KPIs & REVENUE) */}
         {/* ========================================================================= */}
-        {activeModule === 'founders' && (
+        {activeModule === 'founders' && (() => {
+          // Everything here is computed from student fee receipts, branches and partners
+          const now = new Date();
+          const mKey = (d) => { const x = new Date(d); return isNaN(x.getTime()) ? '' : `${x.getFullYear()}-${x.getMonth()}`; };
+          const thisM = mKey(now);
+          const lastM = mKey(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+          const receiptsIn = (st, key) => (st.receipts || []).filter((r) => mKey(r.at || r.date) === key).reduce((acc, r) => acc + (Number(r.amount) || 0), 0);
+          const mtd = allStudents.reduce((sum, st) => sum + receiptsIn(st, thisM), 0);
+          const lastMonth = allStudents.reduce((sum, st) => sum + receiptsIn(st, lastM), 0);
+          const change = lastMonth ? Math.round(((mtd - lastMonth) / lastMonth) * 100) : null;
+          const certified = allStudents.filter((st) => /certified/i.test(st.certified || '') && !/non/i.test(st.certified || '')).length;
+          const certRate = allStudents.length ? `${((certified / allStudents.length) * 100).toFixed(1)}%` : '—';
+          const branchText = (st) => String(st.branch || st.leadBranch || st.location || '').toLowerCase();
+          const leaderboard = branchesList
+            .map((b) => ({
+              ...b,
+              revenueMtd: allStudents.filter((st) => branchText(st).includes(b.name.toLowerCase())).reduce((sum, st) => sum + receiptsIn(st, thisM), 0)
+            }))
+            .sort((x, y) => y.revenueMtd - x.revenueMtd || (y.admissionsThisMonth || 0) - (x.admissionsThisMonth || 0))
+            .slice(0, 4);
+          const tones = [
+            ['bg-rose-50/60 border-rose-200', 'text-rose-900'],
+            ['bg-purple-50/60 border-purple-200', 'text-purple-900'],
+            ['bg-amber-50/60 border-amber-200', 'text-amber-900'],
+            ['bg-sky-50/60 border-sky-200', 'text-sky-900']
+          ];
+          const inr = (n) => `₹${(Number(n) || 0).toLocaleString('en-IN')}`;
+          return (
           <div className="space-y-6">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-6 rounded-3xl bg-rose-500/10 border border-rose-200">
               <div>
                 <div className="flex items-center gap-2">
                   <span className="text-2xl">📊</span>
-                  <h3 className="text-lg font-black text-rose-950">Founders Executive Command & Revenue P&L</h3>
+                  <h3 className="text-lg font-black text-rose-950">Founders Executive Command & Revenue</h3>
                   <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-600 text-white uppercase tracking-wider">
                     Executive Desk
                   </span>
                 </div>
                 <p className="text-xs text-rose-900/80 mt-1 font-medium">
-                  Consolidated academy revenue, admission conversions, branch performance, and placement metrics.
+                  Fees collected, admissions, certification and placement — live from student records.
                 </p>
               </div>
               <div className="text-right">
-                <div className="text-xs text-slate-500 font-medium">Current Month Target</div>
-                <div className="text-lg font-black text-rose-700">₹1.20 Cr (77% Achieved)</div>
+                <div className="text-xs text-slate-500 font-medium">Last month collected</div>
+                <div className="text-lg font-black text-rose-700">{inr(lastMonth)}</div>
               </div>
             </div>
 
-            {/* 4 Big KPI Cards */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
               <div className="p-5 rounded-3xl bg-white border border-slate-200/90 shadow-2xs">
-                <div className="text-xs font-bold text-slate-400 uppercase">Gross Revenue MTD</div>
-                <div className="text-2xl font-black text-emerald-700 mt-1">₹92,40,000</div>
+                <div className="text-xs font-bold text-slate-400 uppercase">Fees Collected MTD</div>
+                <div className="text-2xl font-black text-emerald-700 mt-1">{inr(mtd)}</div>
                 <div className="text-[11px] text-emerald-700 font-bold mt-1 flex items-center gap-1">
-                  <TrendingUp className="w-3.5 h-3.5" /> +18.4% vs last month
+                  <TrendingUp className="w-3.5 h-3.5" /> {change === null ? 'No collections last month' : `${change >= 0 ? '+' : ''}${change}% vs last month`}
                 </div>
               </div>
               <div className="p-5 rounded-3xl bg-white border border-slate-200/90 shadow-2xs">
-                <div className="text-xs font-bold text-slate-400 uppercase">Total Enrolled Scholars</div>
-                <div className="text-2xl font-black text-slate-900 mt-1">3,970</div>
-                <div className="text-[11px] text-teal-700 font-semibold mt-1">Across 12 Campuses</div>
+                <div className="text-xs font-bold text-slate-400 uppercase">Total Enrolled Students</div>
+                <div className="text-2xl font-black text-slate-900 mt-1">{allStudents.length.toLocaleString('en-IN')}</div>
+                <div className="text-[11px] text-teal-700 font-semibold mt-1">Across {branchesList.length} branches</div>
               </div>
               <div className="p-5 rounded-3xl bg-white border border-slate-200/90 shadow-2xs">
-                <div className="text-xs font-bold text-slate-400 uppercase">AAPC Certification Rate</div>
-                <div className="text-2xl font-black text-amber-700 mt-1">94.8%</div>
-                <div className="text-[11px] text-amber-800 font-bold mt-1">National Benchmark: 72%</div>
+                <div className="text-xs font-bold text-slate-400 uppercase">Certification Rate</div>
+                <div className="text-2xl font-black text-amber-700 mt-1">{certRate}</div>
+                <div className="text-[11px] text-amber-800 font-bold mt-1">{certified} certified students</div>
               </div>
               <div className="p-5 rounded-3xl bg-white border border-slate-200/90 shadow-2xs">
-                <div className="text-xs font-bold text-slate-400 uppercase">Corporate Placements</div>
-                <div className="text-2xl font-black text-purple-700 mt-1">98.4%</div>
-                <div className="text-[11px] text-purple-700 font-bold mt-1">140+ Partner Healthcare MNCs</div>
+                <div className="text-xs font-bold text-slate-400 uppercase">Placement Rate</div>
+                <div className="text-2xl font-black text-purple-700 mt-1">{executiveStats ? executiveStats.placementRate : '…'}</div>
+                <div className="text-[11px] text-purple-700 font-bold mt-1">{partnerCount === null ? '—' : `${partnerCount} partner companies`}</div>
               </div>
             </div>
 
-            {/* Branch Revenue Leaderboard */}
             <div className="p-6 rounded-3xl bg-white border border-slate-200/90 shadow-2xs space-y-4">
-              <h4 className="text-sm font-extrabold text-slate-900">Branch Revenue Leaderboard (Top 4 Hubs)</h4>
-              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3.5 text-xs">
-                <div className="p-4 rounded-2xl bg-rose-50/60 border border-rose-200">
-                  <div className="text-rose-900 font-black">1. Chennai - Guindy (HQ)</div>
-                  <div className="text-base font-black text-slate-900 mt-1">₹28,60,000</div>
-                  <div className="text-[11px] text-slate-500 font-medium">124 admissions MTD</div>
+              <h4 className="text-sm font-extrabold text-slate-900">Branch Leaderboard — fees collected this month</h4>
+              {leaderboard.length === 0 ? (
+                <p className="text-xs text-slate-400">No branch data yet.</p>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-4 gap-3.5 text-xs">
+                  {leaderboard.map((b, i) => (
+                    <div key={b._id || b.name} className={`p-4 rounded-2xl border ${tones[i][0]}`}>
+                      <div className={`font-black ${tones[i][1]}`}>{i + 1}. {b.name}</div>
+                      <div className="text-base font-black text-slate-900 mt-1">{inr(b.revenueMtd)}</div>
+                      <div className="text-[11px] text-slate-500 font-medium">{b.admissionsThisMonth || 0} admissions MTD</div>
+                    </div>
+                  ))}
                 </div>
-                <div className="p-4 rounded-2xl bg-purple-50/60 border border-purple-200">
-                  <div className="text-purple-900 font-black">2. Bangalore - Indiranagar</div>
-                  <div className="text-base font-black text-slate-900 mt-1">₹22,40,000</div>
-                  <div className="text-[11px] text-slate-500 font-medium">96 admissions MTD</div>
-                </div>
-                <div className="p-4 rounded-2xl bg-amber-50/60 border border-amber-200">
-                  <div className="text-amber-900 font-black">3. Coimbatore - Gandhipuram</div>
-                  <div className="text-base font-black text-slate-900 mt-1">₹17,80,000</div>
-                  <div className="text-[11px] text-slate-500 font-medium">78 admissions MTD</div>
-                </div>
-                <div className="p-4 rounded-2xl bg-sky-50/60 border border-sky-200">
-                  <div className="text-sky-900 font-black">4. Hyderabad - Madhapur</div>
-                  <div className="text-base font-black text-slate-900 mt-1">₹14,20,000</div>
-                  <div className="text-[11px] text-slate-500 font-medium">62 admissions MTD</div>
-                </div>
-              </div>
+              )}
             </div>
           </div>
-        )}
+          );
+        })()}
 
         {/* ========================================================================= */}
         {/* 8. AUDIT & ACCESS LOGS */}
@@ -2396,7 +2058,17 @@ export default function AdminManagementDashboard({
               </div>
 
               <button
-                onClick={() => showToast('Audit logs exported as CSV.')}
+                onClick={() => {
+                  const cell = (v) => { const t = v === null || v === undefined ? '' : String(v); return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
+                  const rows = [['Timestamp', 'User', 'Action', 'Category', 'Severity', 'Details', 'IP'], ...auditLogs.map((l) => [l.timestamp, l.user, l.action, l.category, l.severity, l.details, l.ip])];
+                  const url = URL.createObjectURL(new Blob([`\uFEFF${rows.map((r) => r.map(cell).join(',')).join('\n')}`], { type: 'text/csv;charset=utf-8' }));
+                  const link = document.createElement('a');
+                  link.href = url;
+                  link.download = `audit-logs-${new Date().toISOString().slice(0, 10)}.csv`;
+                  link.click();
+                  URL.revokeObjectURL(url);
+                  showToast(`Exported ${auditLogs.length} audit entries`);
+                }}
                 className="px-4 py-2 rounded-xl text-xs font-bold bg-white hover:bg-slate-50 text-slate-800 border border-slate-200 transition-all flex items-center gap-1.5 shadow-2xs"
               >
                 <Download className="w-3.5 h-3.5" /> Export Logs
@@ -2418,8 +2090,11 @@ export default function AdminManagementDashboard({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 font-mono text-[11.5px]">
+                    {auditLogs.length === 0 && (
+                      <tr><td colSpan={6} className="p-6 text-center font-sans text-slate-400">No audit entries yet.</td></tr>
+                    )}
                     {auditLogs.map((log) => (
-                      <tr key={log.id} className="hover:bg-slate-50/70 transition-colors">
+                      <tr key={log._id || log.id} className="hover:bg-slate-50/70 transition-colors">
                         <td className="p-4 text-slate-500">{log.timestamp}</td>
                         <td className="p-4 font-sans font-bold text-slate-900">{log.user}</td>
                         <td className="p-4 font-sans font-semibold text-indigo-700">{log.action}</td>
@@ -2440,94 +2115,6 @@ export default function AdminManagementDashboard({
         )}
 
       </main>
-
-      {/* MODAL: Edit Slab */}
-      {editingSlab && (
-        <div className="fixed inset-0 z-60 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl p-6 sm:p-7 max-w-md w-full shadow-2xl border border-amber-300 text-slate-900 space-y-4 animate-in fade-in zoom-in-95">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div className="flex items-center gap-2">
-                <span className="text-xl">🏆</span>
-                <h3 className="font-extrabold text-base">Edit {editingSlab.slab}</h3>
-              </div>
-              <button
-                onClick={() => setEditingSlab(null)}
-                className="w-7 h-7 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 flex items-center justify-center text-xs font-bold"
-              >
-                ✕
-              </button>
-            </div>
-
-            <div className="space-y-3 text-xs">
-              <div>
-                <label className="font-bold text-slate-700 block mb-1">Tier Title</label>
-                <input
-                  type="text"
-                  value={editingSlab.slab}
-                  onChange={(e) => setEditingSlab({ ...editingSlab, slab: e.target.value })}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-300 focus:outline-none focus:border-amber-500 font-semibold"
-                />
-              </div>
-
-              <div>
-                <label className="font-bold text-slate-700 block mb-1">Admission Range Display</label>
-                <input
-                  type="text"
-                  value={editingSlab.range}
-                  onChange={(e) => setEditingSlab({ ...editingSlab, range: e.target.value })}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-300 focus:outline-none focus:border-amber-500 font-semibold"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="font-bold text-slate-700 block mb-1">Commission Rate (₹)</label>
-                  <input
-                    type="number"
-                    value={editingSlab.rate}
-                    onChange={(e) => setEditingSlab({ ...editingSlab, rate: parseInt(e.target.value, 10) || 0 })}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-300 focus:outline-none focus:border-amber-500 font-bold text-emerald-700"
-                  />
-                </div>
-                <div>
-                  <label className="font-bold text-slate-700 block mb-1">Milestone Bonus (₹)</label>
-                  <input
-                    type="number"
-                    value={editingSlab.milestoneBonus || 0}
-                    onChange={(e) => setEditingSlab({ ...editingSlab, milestoneBonus: parseInt(e.target.value, 10) || 0 })}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-300 focus:outline-none focus:border-amber-500 font-bold text-amber-700"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="font-bold text-slate-700 block mb-1">Operational Policy Note</label>
-                <input
-                  type="text"
-                  value={editingSlab.note}
-                  onChange={(e) => setEditingSlab({ ...editingSlab, note: e.target.value })}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-300 focus:outline-none focus:border-amber-500 text-slate-600"
-                />
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2 pt-2">
-              <button
-                onClick={() => setEditingSlab(null)}
-                className="flex-1 py-2.5 rounded-xl border border-slate-300 font-bold text-xs text-slate-700 hover:bg-slate-50 transition-all"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => handleSaveSlab(editingSlab)}
-                className="flex-1 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 font-bold text-xs text-slate-950 transition-all"
-              >
-                Save & Sync HR
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* MODAL: Create User Account (Exact Screenshot Style) */}
       {showAddUserModal && (
@@ -2682,8 +2269,9 @@ export default function AdminManagementDashboard({
                     onChange={(e) => setNewUserForm({ ...newUserForm, branch: e.target.value })}
                     className="w-full px-4 py-2.5 pr-10 rounded-xl border border-slate-200 hover:border-slate-300 focus:border-blue-500 bg-white text-slate-800 focus:outline-none text-sm shadow-2xs font-medium appearance-none cursor-pointer transition-all"
                   >
+                    <option value="">Select branch</option>
                     {branchesList.map(b => (
-                      <option key={b.code} value={b.name}>{b.name}</option>
+                      <option key={b._id || b.name} value={b.name}>{b.name}</option>
                     ))}
                   </select>
                   <ChevronDown className="w-4 h-4 text-slate-500 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none stroke-[2.5]" />

@@ -1,566 +1,83 @@
-import React, { useState, useMemo } from 'react';
-import { 
-  BarChart2, 
-  Search, 
-  Send, 
-  CheckCircle2, 
-  Clock, 
-  AlertCircle, 
-  UserCheck, 
-  BellRing, 
-  X, 
-  Sparkles,
-  Filter,
-  ArrowUpDown,
-  RefreshCw
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import {
+  Search,
+  Send,
+  CheckCircle2,
+  X
 } from 'lucide-react';
+import { getTeam, sendStaffReminder, onDataUpdate } from '../services/api';
 
-// Official HR Roster
-const INITIAL_TEAM_MEMBERS = [];
-const OLD_MOCK = []; /*
-  {
-    id: 'tp_01',
-    name: 'A.Lokesh Babu',
-    role: 'Head of HR /Digital Marketing',
-    empId: 'TFBB559',
-    doneCount: 11,
-    totalCount: 13,
-    pendingCount: 2,
-    qualityScore: 87,
-    status: 'Good',
-    isOff: false,
-    initial: 'A',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'HR Leadership',
-    phone: '+91 98765 43210'
-  },
-  {
-    id: 'tp_02',
-    name: 'R Priyadharshini',
-    role: 'Team Lead',
-    empId: 'TFBB703',
-    doneCount: 5,
-    totalCount: 6,
-    pendingCount: 1,
-    qualityScore: 87,
-    status: 'Good',
-    isOff: false,
-    initial: 'R',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'HR — Team Leads',
-    phone: '+91 98765 43211'
-  },
-  {
-    id: 'tp_03',
-    name: 'Guru Vigneshwar S',
-    role: 'Team Lead',
-    empId: 'TFBB697',
-    doneCount: 7,
-    totalCount: 8,
-    pendingCount: 1,
-    qualityScore: 82,
-    status: 'Good',
-    isOff: false,
-    initial: 'G',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'HR — Team Leads',
-    phone: '+91 98765 43212'
-  },
-  {
-    id: 'tp_04',
-    name: 'Kalaiselvi C',
-    role: 'Team Lead',
-    empId: 'TFBB591',
-    doneCount: 7,
-    totalCount: 9,
-    pendingCount: 2,
-    qualityScore: 88,
-    status: 'Good',
-    isOff: true, // Red dot . off
-    initial: 'K',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'HR — Team Leads',
-    phone: '+91 98765 43213'
-  },
-  {
-    id: 'tp_05',
-    name: 'Punitha',
-    role: 'Team Lead',
-    empId: 'TFBB593',
-    doneCount: 9,
-    totalCount: 11,
-    pendingCount: 2,
-    qualityScore: 79,
-    status: 'Average',
-    isOff: false,
-    initial: 'P',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'HR — Team Leads',
-    phone: '+91 98765 43214'
-  },
-  {
-    id: 'tp_06',
-    name: 'Sindhuja Erothu',
-    role: 'Team Lead',
-    empId: 'TFBB637',
-    doneCount: 6,
-    totalCount: 7,
-    pendingCount: 1,
-    qualityScore: 80,
-    status: 'Average',
-    isOff: false,
-    initial: 'S',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'HR — Team Leads',
-    phone: '+91 98765 43215'
-  },
-  {
-    id: 'tp_07',
-    name: 'Jasmin',
-    role: 'Head of HR Department',
-    empId: 'TFBB561',
-    doneCount: 14,
-    totalCount: 15,
-    pendingCount: 1,
-    qualityScore: 95,
-    status: 'Excellent',
-    isOff: false,
-    initial: 'J',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'HR Leadership',
-    phone: '+91 98765 43216'
-  },
-  {
-    id: 'tp_08',
-    name: 'Kartheeswari K',
-    role: 'Operational Head',
-    empId: 'TFBB501',
-    doneCount: 18,
-    totalCount: 19,
-    pendingCount: 1,
-    qualityScore: 96,
-    status: 'Excellent',
-    isOff: false,
-    initial: 'K',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'Leadership',
-    phone: '+91 98765 43217'
-  },
-  {
-    id: 'tp_09',
-    name: 'Aswanth V K',
-    role: 'Regional head',
-    empId: 'TFBB683',
-    doneCount: 12,
-    totalCount: 13,
-    pendingCount: 1,
-    qualityScore: 92,
-    status: 'Excellent',
-    isOff: false,
-    initial: 'A',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'Leadership',
-    phone: '+91 98765 43218'
-  },
-  {
-    id: 'tp_10',
-    name: 'Anakha Suresh M',
-    role: 'Team Lead',
-    empId: 'TFBB575',
-    doneCount: 10,
-    totalCount: 11,
-    pendingCount: 1,
-    qualityScore: 91,
-    status: 'Excellent',
-    isOff: false,
-    initial: 'A',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'HR — Team Leads',
-    phone: '+91 98765 43219'
-  },
-  {
-    id: 'tp_11',
-    name: 'Peemuthannagari Supraja',
-    role: 'Team Lead',
-    empId: 'TFBB643',
-    doneCount: 11,
-    totalCount: 12,
-    pendingCount: 1,
-    qualityScore: 90,
-    status: 'Excellent',
-    isOff: false,
-    initial: 'P',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'HR — Team Leads',
-    phone: '+91 98765 43220'
-  },
-  {
-    id: 'tp_12',
-    name: 'Gayathri B',
-    role: 'Branch Manager Of SVM',
-    empId: 'TFBB558',
-    doneCount: 9,
-    totalCount: 10,
-    pendingCount: 1,
-    qualityScore: 89,
-    status: 'Good',
-    isOff: false,
-    initial: 'G',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'Branch Management',
-    phone: '+91 98765 43221'
-  },
-  {
-    id: 'tp_13',
-    name: 'Sindhu S',
-    role: 'Process Coach / Branch Manager',
-    empId: 'TFBB588',
-    doneCount: 11,
-    totalCount: 13,
-    pendingCount: 2,
-    qualityScore: 88,
-    status: 'Good',
-    isOff: false,
-    initial: 'S',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'Branch Management',
-    phone: '+91 98765 43222'
-  },
-  {
-    id: 'tp_14',
-    name: 'Sangavi',
-    role: 'HR Executive',
-    empId: 'TFBB711',
-    doneCount: 14,
-    totalCount: 16,
-    pendingCount: 2,
-    qualityScore: 87,
-    status: 'Good',
-    isOff: false,
-    initial: 'S',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'HR — Counsellors',
-    phone: '+91 98765 43223'
-  },
-  {
-    id: 'tp_15',
-    name: 'Sruthi G',
-    role: 'Branch Manager Of Hopes',
-    empId: 'TFBB578',
-    doneCount: 8,
-    totalCount: 10,
-    pendingCount: 2,
-    qualityScore: 86,
-    status: 'Good',
-    isOff: false,
-    initial: 'S',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'Branch Management',
-    phone: '+91 98765 43224'
-  },
-  {
-    id: 'tp_16',
-    name: 'Nivetha P',
-    role: 'Academic Counsellor',
-    empId: 'TFBB715',
-    doneCount: 12,
-    totalCount: 13,
-    pendingCount: 1,
-    qualityScore: 93,
-    status: 'Excellent',
-    isOff: false,
-    initial: 'N',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'HR — Counsellors',
-    phone: '+91 98765 43225'
-  },
-  {
-    id: 'tp_17',
-    name: 'Reshma V Jenifer',
-    role: 'HR Executive',
-    empId: 'TFBB687',
-    doneCount: 10,
-    totalCount: 12,
-    pendingCount: 2,
-    qualityScore: 83,
-    status: 'Good',
-    isOff: false,
-    initial: 'R',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'HR — Counsellors',
-    phone: '+91 98765 43226'
-  },
-  {
-    id: 'tp_18',
-    name: 'Pavithra N',
-    role: 'HR Executive',
-    empId: 'TFBB678',
-    doneCount: 8,
-    totalCount: 10,
-    pendingCount: 2,
-    qualityScore: 81,
-    status: 'Good',
-    isOff: false,
-    initial: 'P',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'HR — Counsellors',
-    phone: '+91 98765 43227'
-  },
-  {
-    id: 'tp_19',
-    name: 'Prabhu M',
-    role: 'HR Executive',
-    empId: 'TFBB653',
-    doneCount: 7,
-    totalCount: 9,
-    pendingCount: 2,
-    qualityScore: 78,
-    status: 'Average',
-    isOff: false,
-    initial: 'P',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'HR — Counsellors',
-    phone: '+91 98765 43228'
-  },
-  {
-    id: 'tp_20',
-    name: 'Julie Arokiam',
-    role: 'HR Executive',
-    empId: 'TFBB702',
-    doneCount: 6,
-    totalCount: 8,
-    pendingCount: 2,
-    qualityScore: 77,
-    status: 'Average',
-    isOff: false,
-    initial: 'J',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'HR — Counsellors',
-    phone: '+91 98765 43229'
-  },
-  {
-    id: 'tp_21',
-    name: 'K.V.K.Kanchana',
-    role: 'HR Executive',
-    empId: 'TFBB685',
-    doneCount: 9,
-    totalCount: 12,
-    pendingCount: 3,
-    qualityScore: 76,
-    status: 'Average',
-    isOff: false,
-    initial: 'K',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'HR — Counsellors',
-    phone: '+91 98765 43230'
-  },
-  {
-    id: 'tp_22',
-    name: 'Dhivya S',
-    role: 'HR Executive',
-    empId: 'TFBB690',
-    doneCount: 8,
-    totalCount: 11,
-    pendingCount: 3,
-    qualityScore: 75,
-    status: 'Average',
-    isOff: true, // Red dot . off
-    initial: 'D',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'HR — Counsellors',
-    phone: '+91 98765 43231'
-  },
-  {
-    id: 'tp_23',
-    name: 'Deepthi G',
-    role: 'HR Executive',
-    empId: 'TFBB694',
-    doneCount: 5,
-    totalCount: 7,
-    pendingCount: 2,
-    qualityScore: 74,
-    status: 'Average',
-    isOff: false,
-    initial: 'D',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'HR — Counsellors',
-    phone: '+91 98765 43232'
-  },
-  {
-    id: 'tp_24',
-    name: 'Kavitha N',
-    role: 'Senior Counsellor',
-    empId: 'TFBB720',
-    doneCount: 15,
-    totalCount: 16,
-    pendingCount: 1,
-    qualityScore: 94,
-    status: 'Excellent',
-    isOff: false,
-    initial: 'K',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'HR — Counsellors',
-    phone: '+91 98765 43233'
-  },
-  {
-    id: 'tp_25',
-    name: 'Deepa R',
-    role: 'Academic Counsellor',
-    empId: 'TFBB722',
-    doneCount: 11,
-    totalCount: 12,
-    pendingCount: 1,
-    qualityScore: 91,
-    status: 'Excellent',
-    isOff: false,
-    initial: 'D',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'HR — Counsellors',
-    phone: '+91 98765 43234'
-  },
-  {
-    id: 'tp_26',
-    name: 'Suresh M',
-    role: 'Academic Counsellor',
-    empId: 'TFBB725',
-    doneCount: 13,
-    totalCount: 14,
-    pendingCount: 1,
-    qualityScore: 92,
-    status: 'Excellent',
-    isOff: false,
-    initial: 'S',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'HR — Counsellors',
-    phone: '+91 98765 43235'
-  },
-  {
-    id: 'tp_27',
-    name: 'Meena K',
-    role: 'Junior Counsellor',
-    empId: 'TFBB729',
-    doneCount: 7,
-    totalCount: 9,
-    pendingCount: 2,
-    qualityScore: 84,
-    status: 'Good',
-    isOff: false,
-    initial: 'M',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'HR — Counsellors',
-    phone: '+91 98765 43236'
-  },
-  {
-    id: 'tp_28',
-    name: 'Priya V',
-    role: 'Senior Counsellor',
-    empId: 'TFBB733',
-    doneCount: 10,
-    totalCount: 11,
-    pendingCount: 1,
-    qualityScore: 89,
-    status: 'Good',
-    isOff: false,
-    initial: 'P',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'HR — Counsellors',
-    phone: '+91 98765 43237'
-  },
-  {
-    id: 'tp_29',
-    name: 'Saritha B',
-    role: 'HR Specialist',
-    empId: 'TFBB738',
-    doneCount: 6,
-    totalCount: 8,
-    pendingCount: 2,
-    qualityScore: 79,
-    status: 'Average',
-    isOff: false,
-    initial: 'S',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'HR — Counsellors',
-    phone: '+91 98765 43238'
-  },
-  {
-    id: 'tp_30',
-    name: 'Venkatesh R',
-    role: 'Placement Officer',
-    empId: 'TFBB742',
-    doneCount: 14,
-    totalCount: 15,
-    pendingCount: 1,
-    qualityScore: 92,
-    status: 'Excellent',
-    isOff: false,
-    initial: 'V',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'CCCP Cell',
-    phone: '+91 98765 43239'
-  },
-  {
-    id: 'tp_31',
-    name: 'Swetha K',
-    role: 'Training Lead',
-    empId: 'TFBB748',
-    doneCount: 11,
-    totalCount: 12,
-    pendingCount: 1,
-    qualityScore: 90,
-    status: 'Excellent',
-    isOff: false,
-    initial: 'S',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'Training Department',
-    phone: '+91 98765 43240'
-  },
-  {
-    id: 'tp_32',
-    name: 'Vignesh P',
-    role: 'Lead Developer',
-    empId: 'TFBB750',
-    doneCount: 9,
-    totalCount: 11,
-    pendingCount: 2,
-    qualityScore: 82,
-    status: 'Good',
-    isOff: true, // Red dot . off
-    initial: 'V',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'Tech & Development',
-    phone: '+91 98765 43241'
-  },
-  {
-    id: 'tp_33',
-    name: 'Monika T',
-    role: 'Digital Marketing Lead',
-    empId: 'TFBB755',
-    doneCount: 8,
-    totalCount: 10,
-    pendingCount: 2,
-    qualityScore: 81,
-    status: 'Good',
-    isOff: false,
-    initial: 'M',
-    avatarBg: 'bg-[#7c3aed]',
-    department: 'Marketing Department',
-    phone: '+91 98765 43242'
-  }
-*/;
+// Only these departments have a notification inbox a reminder can reach
+const REMINDABLE = ['DEP-HR-001', 'ACAD', 'CCCP'];
 
-export default function TeamPerformanceBoard({ 
-  customMembers = null, 
+const statusOf = (quality) => {
+  if (typeof quality !== 'number') return 'No data';
+  if (quality >= 90) return 'Excellent';
+  if (quality >= 75) return 'Good';
+  return 'Average';
+};
+
+// Live team roster: one row per staff account, with workload & quality
+// computed by the server from leads (HR) or students & ratings (Training)
+const toRow = (m) => ({
+  id: m._id || m.id,
+  name: m.name,
+  role: m.role || 'Staff',
+  branchName: m.branchName || 'Unassigned',
+  departmentCode: m.departmentCode,
+  doneCount: m.completed || 0,
+  totalCount: m.assigned || 0,
+  pendingCount: m.pending || 0,
+  qualityScore: typeof m.quality === 'number' ? m.quality : null,
+  qualityBasis: m.qualityBasis || '',
+  workLabel: m.workLabel || { assigned: 'assigned', completed: 'done', pending: 'pending' },
+  status: statusOf(m.quality),
+  isOff: m.available === false,
+  initial: (m.name || '?').trim()[0]?.toUpperCase() || '?'
+});
+
+export default function TeamPerformanceBoard({
+  customMembers = null,
   title = "Team Performance",
   showSearch = true,
-  onRemind = null 
+  departmentCode = '',
+  branchName = '',
+  onRemind = null
 }) {
   const [members, setMembers] = useState(customMembers || []);
+  const [loading, setLoading] = useState(!customMembers);
+  const [loadError, setLoadError] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
   const [remindedIds, setRemindedIds] = useState({});
   const [remindModalMember, setRemindModalMember] = useState(null);
   const [toastMessage, setToastMessage] = useState(null);
   const [customNote, setCustomNote] = useState('');
+  const [sending, setSending] = useState(false);
+
+  const load = useCallback(async () => {
+    if (customMembers) return;
+    try {
+      const params = {};
+      if (departmentCode) params.departmentCode = departmentCode;
+      if (branchName) params.branchName = branchName;
+      const data = await getTeam(params);
+      setMembers(Array.isArray(data) ? data.map(toRow) : []);
+      setLoadError('');
+    } catch (e) {
+      setLoadError(e?.response?.data?.error || 'Could not load the team');
+    } finally {
+      setLoading(false);
+    }
+  }, [customMembers, departmentCode, branchName]);
+
+  useEffect(() => {
+    if (customMembers) { setMembers(customMembers); return undefined; }
+    load();
+    return onDataUpdate((entity) => {
+      if (['team', 'leads', 'students', 'feedback', 'users'].includes(entity)) load();
+    });
+  }, [customMembers, load]);
 
   // Auto-clear toast
   const showToast = (msg) => {
@@ -570,45 +87,45 @@ export default function TeamPerformanceBoard({
     }, 4000);
   };
 
-  // Filtered & Sorted Members by Quality Score (descending)
+  // Filtered & Sorted Members by Quality Score (descending, no-data last)
   const filteredMembers = useMemo(() => {
+    const q = searchQuery.toLowerCase();
     return members
       .filter(m => {
-        const matchSearch = 
-          m.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          m.role.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          m.empId.toLowerCase().includes(searchQuery.toLowerCase());
-        
+        const matchSearch =
+          m.name.toLowerCase().includes(q) ||
+          m.role.toLowerCase().includes(q) ||
+          String(m.branchName || '').toLowerCase().includes(q);
         if (statusFilter === 'All') return matchSearch;
-        if (statusFilter === 'Good') return matchSearch && m.status === 'Good';
-        if (statusFilter === 'Average') return matchSearch && m.status === 'Average';
-        if (statusFilter === 'Excellent') return matchSearch && m.status === 'Excellent';
         if (statusFilter === 'Off') return matchSearch && m.isOff;
-        return matchSearch;
+        return matchSearch && m.status === statusFilter;
       })
-      .sort((a, b) => b.qualityScore - a.qualityScore);
+      .sort((a, b) => (b.qualityScore ?? -1) - (a.qualityScore ?? -1));
   }, [members, searchQuery, statusFilter]);
 
   const handleOpenRemindModal = (member) => {
     setRemindModalMember(member);
-    setCustomNote(`Hi ${member.name}, you have ${member.pendingCount} pending task(s). Please complete them at your earliest convenience.`);
+    setCustomNote(`Hi ${member.name}, you have ${member.pendingCount} ${member.workLabel.pending}. Please complete them at your earliest convenience.`);
   };
 
-  const handleSendReminder = (e) => {
+  const handleSendReminder = async (e) => {
     e?.preventDefault();
     if (!remindModalMember) return;
-
-    setRemindedIds(prev => ({
-      ...prev,
-      [remindModalMember.id]: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    }));
-
-    if (onRemind) {
-      onRemind(remindModalMember, customNote);
+    setSending(true);
+    try {
+      await sendStaffReminder({ name: remindModalMember.name, departmentCode: remindModalMember.departmentCode, message: customNote });
+      setRemindedIds(prev => ({
+        ...prev,
+        [remindModalMember.id]: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      }));
+      if (onRemind) onRemind(remindModalMember, customNote);
+      showToast(`Reminder delivered to ${remindModalMember.name}'s notifications`);
+      setRemindModalMember(null);
+    } catch (err) {
+      showToast(err?.response?.data?.error || 'Could not send the reminder');
+    } finally {
+      setSending(false);
     }
-
-    showToast(`Reminder sent successfully to ${remindModalMember.name} (${remindModalMember.empId})`);
-    setRemindModalMember(null);
   };
 
   return (
@@ -642,7 +159,7 @@ export default function TeamPerformanceBoard({
             </h3>
           </div>
           <p className="text-xs sm:text-sm text-slate-400 font-mono mt-1 font-medium pl-0.5">
-            {members.length} members &nbsp;&middot;&nbsp; sorted by quality score
+            {loading ? 'Loading…' : `${members.length} members`} &nbsp;&middot;&nbsp; sorted by quality score
           </p>
         </div>
 
@@ -671,7 +188,7 @@ export default function TeamPerformanceBoard({
 
             {/* Filter Pills */}
             <div className="flex items-center gap-1 bg-slate-100/80 p-1 rounded-xl border border-slate-200/60 text-xs">
-              {['All', 'Good', 'Average', 'Excellent'].map((f) => (
+              {['All', 'Excellent', 'Good', 'Average', 'No data'].map((f) => (
                 <button
                   key={f}
                   onClick={() => setStatusFilter(f)}
@@ -691,9 +208,16 @@ export default function TeamPerformanceBoard({
 
       {/* List of Team Performance Rows (Exact Screenshot Aesthetics) */}
       <div className="space-y-3">
-        {filteredMembers.length === 0 ? (
+        {loadError ? (
+          <div className="text-center py-10 bg-rose-50 rounded-2xl border border-rose-200 text-xs font-semibold text-rose-700">{loadError}</div>
+        ) : !loading && members.length === 0 ? (
           <div className="text-center py-12 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
-            <p className="text-xs font-semibold text-slate-500">No team members match the current search filter.</p>
+            <p className="text-xs font-semibold text-slate-500">No staff accounts yet.</p>
+            <p className="text-[11px] text-slate-400 mt-1">Team members appear here once Admin creates their login in User Accounts.</p>
+          </div>
+        ) : filteredMembers.length === 0 ? (
+          <div className="text-center py-12 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+            <p className="text-xs font-semibold text-slate-500">{loading ? 'Loading team…' : 'No team members match the current search filter.'}</p>
             <button 
               onClick={() => { setSearchQuery(''); setStatusFilter('All'); }}
               className="mt-2 text-xs text-purple-600 hover:underline font-bold"
@@ -736,21 +260,21 @@ export default function TeamPerformanceBoard({
                     <div className="text-xs text-slate-400 font-medium mt-0.5 flex items-center gap-1.5 flex-wrap">
                       <span>{m.role}</span>
                       <span className="text-slate-300 font-bold">&middot;</span>
-                      <span className="font-mono text-slate-500">{m.empId}</span>
+                      <span className="font-mono text-slate-500">{m.branchName}</span>
                     </div>
 
                     {/* Bottom Row: Done / Pending / Quality Stats */}
                     <div className="text-xs text-slate-500 font-medium mt-1.5 flex items-center gap-2 flex-wrap">
                       <span className="text-slate-800 font-semibold">
-                        Done <span className="font-bold text-slate-900">{m.doneCount}/{m.totalCount}</span>
+                        {m.workLabel.completed} <span className="font-bold text-slate-900">{m.doneCount}/{m.totalCount}</span> {m.workLabel.assigned}
                       </span>
                       <span className="text-slate-300 font-bold">&middot;</span>
                       <span>
-                        Pending <span className="font-semibold text-slate-700">{m.pendingCount}</span>
+                        <span className="font-semibold text-slate-700">{m.pendingCount}</span> {m.workLabel.pending}
                       </span>
                       <span className="text-slate-300 font-bold">&middot;</span>
                       <span>
-                        Quality <span className="font-bold text-slate-900">{m.qualityScore}%</span>
+                        <span title={m.qualityBasis}>Quality <span className="font-bold text-slate-900">{m.qualityScore !== null ? `${m.qualityScore}%` : "—"}</span></span>
                       </span>
                     </div>
                   </div>
@@ -775,12 +299,19 @@ export default function TeamPerformanceBoard({
                         Excellent
                       </span>
                     )}
+                    {m.status === 'No data' && (
+                      <span title={m.qualityBasis} className="inline-block bg-slate-100 text-slate-500 border border-slate-200 text-[11px] sm:text-xs font-semibold px-3 py-0.5 rounded-full tracking-wide">
+                        No data
+                      </span>
+                    )}
                   </div>
 
                   {/* Remind Button */}
                   <button
                     onClick={() => handleOpenRemindModal(m)}
-                    className={`border text-xs font-semibold px-3.5 py-1.5 rounded-lg shadow-2xs transition-all cursor-pointer active:scale-95 flex items-center gap-1.5 ${
+                    disabled={!REMINDABLE.includes(m.departmentCode)}
+                    title={REMINDABLE.includes(m.departmentCode) ? 'Send to their notification bell' : 'This department has no notification inbox'}
+                    className={`border text-xs font-semibold px-3.5 py-1.5 rounded-lg shadow-2xs transition-all cursor-pointer active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5 ${
                       isReminded
                         ? 'border-emerald-300 bg-emerald-50 text-emerald-700 font-bold'
                         : 'border-slate-300/90 hover:border-slate-400 bg-white text-slate-700 hover:bg-slate-50'
@@ -824,7 +355,7 @@ export default function TeamPerformanceBoard({
                   Send Task Reminder
                 </h4>
                 <p className="text-xs text-slate-500">
-                  To {remindModalMember.name} &middot; {remindModalMember.empId}
+                  To {remindModalMember.name} &middot; {remindModalMember.branchName}
                 </p>
               </div>
             </div>
@@ -835,9 +366,9 @@ export default function TeamPerformanceBoard({
                   Pending Task Overview
                 </label>
                 <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600 space-y-1">
-                  <div><strong>Pending Count:</strong> {remindModalMember.pendingCount} task(s)</div>
-                  <div><strong>Current Quality:</strong> {remindModalMember.qualityScore}% ({remindModalMember.status})</div>
-                  <div><strong>Execution Status:</strong> {remindModalMember.doneCount}/{remindModalMember.totalCount} completed</div>
+                  <div><strong>Pending:</strong> {remindModalMember.pendingCount} {remindModalMember.workLabel.pending}</div>
+                  <div><strong>Quality:</strong> {remindModalMember.qualityScore !== null ? `${remindModalMember.qualityScore}%` : "—"} ({remindModalMember.qualityBasis || remindModalMember.status})</div>
+                  <div><strong>Progress:</strong> {remindModalMember.doneCount}/{remindModalMember.totalCount} {remindModalMember.workLabel.assigned} {remindModalMember.workLabel.completed}</div>
                 </div>
               </div>
 
@@ -864,10 +395,11 @@ export default function TeamPerformanceBoard({
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-xl text-xs font-bold bg-purple-600 hover:bg-purple-700 text-white shadow-md flex items-center gap-1.5 transition-all"
+                  disabled={sending}
+                  className="px-5 py-2 rounded-xl text-xs font-bold bg-purple-600 hover:bg-purple-700 disabled:opacity-60 text-white shadow-md flex items-center gap-1.5 transition-all"
                 >
                   <Send className="w-3.5 h-3.5" />
-                  <span>Send Reminder</span>
+                  <span>{sending ? 'Sending…' : 'Send Reminder'}</span>
                 </button>
               </div>
             </form>

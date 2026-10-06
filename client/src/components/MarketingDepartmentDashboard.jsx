@@ -23,7 +23,7 @@ import BranchLeadDemandBoard from './BranchLeadDemandBoard';
 import ContentCalendarBoard from './ContentCalendarBoard';
 import CreativeApprovalDesk from './CreativeApprovalDesk';
 import RoiReportsBoard from './RoiReportsBoard';
-import { getLeads, createLead, getApprovals, decideApproval, onDataUpdate, getCampaigns, getMarketingSources } from '../services/api';
+import { getLeads, createLead, onDataUpdate, getCampaigns, createCampaign, updateCampaign, getMarketingSources, getLeadDemands, getCreatives, updateCreative } from '../services/api';
 
 export default function MarketingDepartmentDashboard({
   onClose,
@@ -35,423 +35,153 @@ export default function MarketingDepartmentDashboard({
   // Navigation Tabs: matching the user's reference image
   const [activeTab, setActiveTab] = useState('command-center');
   
-  // Pending approvals state (starts with 2 as in screenshot badge)
-  const [pendingApprovals, setPendingApprovals] = useState([
-    {
-      id: 'app-1',
-      title: 'Hyderabad job drive poster',
-      type: 'Poster (1080x1350)',
-      branch: 'Hyderabad - Madhapur & Ameerpet',
-      submittedBy: 'Kavya M. (Graphic Designer)',
-      submittedAt: 'Today, 09:30 AM',
-      previewColor: 'from-blue-600 to-indigo-900',
-      tagline: 'Mega Healthcare Job Fair • 40+ RCM Recruiters',
-      specs: 'Dimensions: 1080x1350 • Format: PNG • Size: 2.4 MB'
-    },
-    {
-      id: 'app-2',
-      title: 'Placement proof reel v2',
-      type: 'Instagram Reel (9:16)',
-      branch: 'All Branches (Coimbatore HQ)',
-      submittedBy: 'Arun V. (Video Editor)',
-      submittedAt: 'Yesterday, 06:15 PM',
-      previewColor: 'from-purple-600 to-pink-600',
-      tagline: 'Student Journey: From Life Science Graduate to CPC Certified Analyst',
-      specs: 'Duration: 38s • 1080x1920 • 60fps • 4K Audio'
-    }
-  ]);
-
-  // Needs Action items state (7 items matching the screenshot)
-  const [needsActionItems, setNeedsActionItems] = useState([
-    {
-      id: 'act-1',
-      type: 'HIGH CPL',
-      badgeClass: 'bg-rose-50 text-rose-600 border-rose-200',
-      title: 'Medical Coding Awareness — Coimbatore — ₹379/lead',
-      campaignId: 'cmp-1',
-      details: {
-        metric: 'CPL ₹379',
-        target: '₹160/lead',
-        issue: 'Fatigue in Meta Audience creative #3. Daily spend ₹2,200.',
-        remedy: 'Rotate ad creative or tighten age demographic (20-25 yrs)'
-      }
-    },
-    {
-      id: 'act-2',
-      type: 'LEAD GAP',
-      badgeClass: 'bg-amber-50 text-amber-700 border-amber-200',
-      title: 'Hyderabad needs 8 more CPC leads',
-      branch: 'Hyderabad - Ameerpet',
-      course: 'CPC',
-      gap: 8,
-      target: 65,
-      achieved: 57
-    },
-    {
-      id: 'act-3',
-      type: 'LEAD GAP',
-      badgeClass: 'bg-amber-50 text-amber-700 border-amber-200',
-      title: 'Coimbatore needs 21 more Medical Billing leads',
-      branch: 'Coimbatore - Gandhipuram',
-      course: 'Medical Billing (CPB)',
-      gap: 21,
-      target: 70,
-      achieved: 49
-    },
-    {
-      id: 'act-4',
-      type: 'LEAD GAP',
-      badgeClass: 'bg-amber-50 text-amber-700 border-amber-200',
-      title: 'Salem needs 19 more CPC leads',
-      branch: 'Salem Main',
-      course: 'CPC',
-      gap: 19,
-      target: 45,
-      achieved: 26
-    },
-    {
-      id: 'act-5',
-      type: 'LEAD GAP',
-      badgeClass: 'bg-amber-50 text-amber-700 border-amber-200',
-      title: 'Kochi needs 50 more CPC leads',
-      branch: 'Kochi - MG Road',
-      course: 'CPC',
-      gap: 50,
-      target: 90,
-      achieved: 40
-    },
-    {
-      id: 'act-6',
-      type: 'APPROVAL',
-      badgeClass: 'bg-amber-50 text-amber-700 border-amber-200',
-      title: 'Hyderabad job drive poster',
-      approvalId: 'app-1'
-    },
-    {
-      id: 'act-7',
-      type: 'APPROVAL',
-      badgeClass: 'bg-amber-50 text-amber-700 border-amber-200',
-      title: 'Placement proof reel v2',
-      approvalId: 'app-2'
-    }
-  ]);
+  // Live marketing data — every figure below is computed from these records
+  const [leads, setLeads] = useState([]);
+  const [campaignRows, setCampaignRows] = useState([]);
+  const [leadSourceRows, setLeadSourceRows] = useState([]);
+  const [demands, setDemands] = useState([]);
+  const [creatives, setCreatives] = useState([]);
+  const [loaded, setLoaded] = useState(false);
 
   // Interactive Action Modal State
   const [selectedAction, setSelectedAction] = useState(null);
   const [toastMessage, setToastMessage] = useState(null);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
-  const [totalLeadsCount, setTotalLeadsCount] = useState(377);
   const [generatedLeadModal, setGeneratedLeadModal] = useState(null);
-
-  // Campaign Desk specific campaigns (Matching reference screenshot)
-  const [campaignDeskList, setCampaignDeskList] = useState([
-    {
-      id: 'cam-1',
-      code: 'CAM-TF-2026-1001',
-      name: 'CPC Weekend Job Drive — Hyderabad',
-      status: 'Live',
-      statusClass: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-      channel: 'Instagram Ads',
-      branch: 'Hyderabad',
-      course: 'CPC',
-      spent: '28,400',
-      budget: '35,000',
-      leads: 142,
-      cpl: 200,
-      admissions: 9,
-      roi: '565%'
-    },
-    {
-      id: 'cam-2',
-      code: 'CAM-TF-2026-1002',
-      name: 'Placement Proof Reels',
-      status: 'High Performing',
-      statusClass: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-      channel: 'YouTube Ads',
-      branch: 'All',
-      course: 'CPC',
-      spent: '19,100',
-      budget: '20,000',
-      leads: 89,
-      cpl: 217,
-      admissions: 6,
-      roi: '560%'
-    },
-    {
-      id: 'cam-3',
-      code: 'CAM-TF-2026-1003',
-      name: 'Medical Coding Awareness — Coimbatore',
-      status: 'Underperforming',
-      statusClass: 'bg-rose-50 text-rose-600 border-rose-200',
-      channel: 'Facebook Ads',
-      branch: 'Coimbatore',
-      course: 'Medical Billing',
-      spent: '14,800',
-      budget: '15,000',
-      leads: 39,
-      cpl: 379,
-      admissions: 2,
-      roi: '184%'
-    },
-    {
-      id: 'cam-4',
-      code: 'CAM-TF-2026-1004',
-      name: 'Free Workshop — Salem College',
-      status: 'Live',
-      statusClass: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-      channel: 'WhatsApp Campaign',
-      branch: 'Salem',
-      course: 'CPC',
-      spent: '3,200',
-      budget: '5,000',
-      leads: 61,
-      cpl: 52,
-      admissions: 4,
-      roi: '2525%'
-    }
-  ]);
-
-  // Live Campaigns State
-  const [campaigns, setCampaigns] = useState([
-    {
-      id: 'cmp-1',
-      name: 'Medical Coding Awareness — Coimbatore',
-      platform: 'Meta Ads (IG / FB)',
-      status: 'Underperforming',
-      statusColor: 'bg-rose-50 text-rose-700 border-rose-200',
-      dailyBudget: 2200,
-      spendMonth: 24800,
-      leads: 65,
-      cpl: 379,
-      targetCpl: 160,
-      ctr: '1.2%'
-    },
-    {
-      id: 'cmp-2',
-      name: 'CPC Certification Super FastTrack 2026',
-      platform: 'Google Search & YouTube',
-      status: 'Live',
-      statusColor: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-      dailyBudget: 3500,
-      spendMonth: 28400,
-      leads: 198,
-      cpl: 143,
-      targetCpl: 175,
-      ctr: '4.8%'
-    },
-    {
-      id: 'cmp-3',
-      name: 'Life Science Freshers High-Pay Careers',
-      platform: 'Meta Ads (Reels Video)',
-      status: 'Live',
-      statusColor: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-      dailyBudget: 1500,
-      spendMonth: 12800,
-      leads: 114,
-      cpl: 112,
-      targetCpl: 150,
-      ctr: '3.6%'
-    }
-  ]);
-
-  // Lead Source Tracker Rows (Exact match to user reference screenshot)
-  const [leadSourceRows, setLeadSourceRows] = useState([
-    {
-      source: 'Instagram',
-      leads: 142,
-      valid: 118,
-      dup: 14,
-      dupHighlight: true,
-      connected: 96,
-      demos: 31,
-      adm: 9,
-      cpl: '₹200',
-      quality: 'Medium Quality',
-      qualityClass: 'bg-[#fffbeb] text-[#b45309] border border-[#fef3c7]'
-    },
-    {
-      source: 'YouTube',
-      leads: 89,
-      valid: 80,
-      dup: 5,
-      dupHighlight: false,
-      connected: 64,
-      demos: 22,
-      adm: 6,
-      cpl: '₹217',
-      quality: 'Medium Quality',
-      qualityClass: 'bg-[#fffbeb] text-[#b45309] border border-[#fef3c7]'
-    },
-    {
-      source: 'Facebook',
-      leads: 39,
-      valid: 24,
-      dup: 9,
-      dupHighlight: false,
-      connected: 15,
-      demos: 4,
-      adm: 2,
-      cpl: '₹379',
-      quality: 'Low Quality',
-      qualityClass: 'bg-[#fef2f2] text-[#dc2626] border border-[#fee2e2]'
-    },
-    {
-      source: 'WhatsApp Campaign',
-      leads: 61,
-      valid: 55,
-      dup: 3,
-      dupHighlight: false,
-      connected: 48,
-      demos: 14,
-      adm: 4,
-      cpl: '₹52',
-      quality: 'High Quality',
-      qualityClass: 'bg-[#ecfdf5] text-[#059669] border border-[#a7f3d0]'
-    },
-    {
-      source: 'Website / Landing',
-      leads: 47,
-      valid: 43,
-      dup: 2,
-      dupHighlight: false,
-      connected: 38,
-      demos: 12,
-      adm: 5,
-      cpl: '—',
-      quality: 'High Quality',
-      qualityClass: 'bg-[#ecfdf5] text-[#059669] border border-[#a7f3d0]'
-    }
-  ]);
-
+  const [leadFormCampaign, setLeadFormCampaign] = useState(null);
+  const [leadForm, setLeadForm] = useState({ fullName: '', phone: '', email: '', location: '', branch: '', course: '' });
+  const [savingLead, setSavingLead] = useState(false);
   const [selectedSourceDetail, setSelectedSourceDetail] = useState(null);
 
-  // Live Leads, Campaigns, Sources, and Cross-Dashboard Sync
   useEffect(() => {
     let isMounted = true;
     const fetchLiveMarketingData = async () => {
-      try {
-        const [leadsData, campaignsData, sourcesData] = await Promise.all([
-          getLeads().catch(() => null),
-          getCampaigns().catch(() => null),
-          getMarketingSources().catch(() => null)
-        ]);
-
-        if (!isMounted) return;
-
-        if (leadsData && Array.isArray(leadsData.leads) && leadsData.leads.length > 0) {
-          setTotalLeadsCount(leadsData.leads.length);
-        }
-
-        if (Array.isArray(campaignsData) && campaignsData.length > 0) {
-          setCampaignDeskList(campaignsData.map(c => ({
-            id: c.id || c._id,
-            code: c.code,
-            name: c.name,
-            status: c.status,
-            statusClass: c.status === 'Underperforming' ? 'bg-rose-50 text-rose-600 border-rose-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200',
-            channel: c.channel,
-            branch: c.branch,
-            course: c.course,
-            spent: typeof c.spent === 'number' ? c.spent.toLocaleString() : c.spent,
-            budget: typeof c.budget === 'number' ? c.budget.toLocaleString() : c.budget,
-            leads: c.leads,
-            cpl: c.cpl,
-            admissions: c.admissions,
-            roi: c.roi
-          })));
-
-          setCampaigns(campaignsData.map(c => ({
-            id: c.id || c._id,
-            name: c.name,
-            platform: c.channel,
-            status: c.status,
-            statusColor: c.status === 'Underperforming' ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200',
-            dailyBudget: Math.round((c.budget || 25000) / 30),
-            spendMonth: typeof c.spent === 'number' ? c.spent : 20000,
-            leads: c.leads,
-            cpl: c.cpl,
-            targetCpl: 160,
-            ctr: '3.8%'
-          })));
-        }
-
-        if (Array.isArray(sourcesData) && sourcesData.length > 0) {
-          setLeadSourceRows(sourcesData);
-        }
-      } catch (err) {
-        console.warn('Marketing live data fetch notice:', err.message);
-      }
+      const [leadsData, campaignsData, sourcesData, demandsData, creativesData] = await Promise.all([
+        getLeads().catch(() => null),
+        getCampaigns().catch(() => null),
+        getMarketingSources().catch(() => null),
+        getLeadDemands().catch(() => null),
+        getCreatives().catch(() => null)
+      ]);
+      if (!isMounted) return;
+      if (leadsData && Array.isArray(leadsData.leads)) setLeads(leadsData.leads);
+      if (Array.isArray(campaignsData)) setCampaignRows(campaignsData);
+      if (Array.isArray(sourcesData)) setLeadSourceRows(sourcesData);
+      if (Array.isArray(demandsData)) setDemands(demandsData);
+      if (Array.isArray(creativesData)) setCreatives(creativesData);
+      setLoaded(true);
     };
-
     fetchLiveMarketingData();
-
     const unsub = onDataUpdate((entity) => {
-      if (['leads', 'approvals', 'students', 'campaigns', 'marketing_campaigns'].includes(entity)) {
+      if (['leads', 'approvals', 'students', 'campaigns', 'marketing_campaigns', 'demands', 'creatives'].includes(entity)) {
         fetchLiveMarketingData();
       }
     });
-
     return () => {
       isMounted = false;
       unsub();
     };
   }, []);
 
-  const handleGenerateLead = async (campaign) => {
-    const randomNum = Math.floor(1000 + Math.random() * 9000);
-    const leadId = `L-TF-2026-${randomNum}`;
-    
-    const sampleStudents = {
-      'Hyderabad': { name: 'K. Sai Teja', phone: '+91 98480 23145', qual: 'B.Sc Biotechnology' },
-      'All': { name: 'Pooja Sundaram', phone: '+91 98410 76543', qual: 'B.Pharm' },
-      'Coimbatore': { name: 'M. Vignesh Kumar', phone: '+91 97892 11098', qual: 'B.Sc Microbiology' },
-      'Salem': { name: 'R. Soundarya', phone: '+91 94432 89012', qual: 'B.Sc Biochemistry' }
-    };
-    
-    const candidate = sampleStudents[campaign.branch] || { name: 'A. Rahul', phone: '+91 99401 55678', qual: 'B.Sc Life Sciences' };
-    
-    const newLead = {
-      id: leadId,
-      leadId: leadId,
-      fullName: candidate.name,
-      name: candidate.name,
-      phone: candidate.phone,
-      qualification: candidate.qual,
-      course: campaign.course || 'CPC',
-      branch: campaign.branch === 'All' ? 'Hyderabad - Ameerpet' : `${campaign.branch} Main`,
-      source: campaign.name,
-      sourceName: campaign.name,
-      campaignCode: campaign.code,
-      channel: campaign.channel,
-      status: 'New Lead',
-      stage: 'new',
-      createdAt: new Date().toISOString(),
-      counselorAssigned: null
-    };
+  const inr = (n) => `₹${(Number(n) || 0).toLocaleString('en-IN')}`;
+  const now = new Date();
+  const leadsThisMonth = leads.filter((l) => {
+    const d = new Date(l.createdAt);
+    return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+  }).length;
+  const totalSpend = campaignRows.reduce((s, c) => s + (Number(c.spent) || 0), 0);
+  const campaignLeads = campaignRows.reduce((s, c) => s + (c.leads || 0), 0);
+  const campaignAdmissions = campaignRows.reduce((s, c) => s + (c.admissions || 0), 0);
+  const blendedCpl = totalSpend && campaignLeads ? Math.round(totalSpend / campaignLeads) : null;
+  const isUnderperforming = (c) => c.status === 'Underperforming' || (c.overTargetCpl && c.status !== 'Paused');
+  const statusClassOf = (c) => (c.status === 'Paused'
+    ? 'bg-slate-100 text-slate-600 border-slate-200'
+    : isUnderperforming(c) ? 'bg-rose-50 text-rose-600 border-rose-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200');
 
+  const campaignDeskList = campaignRows.map((c) => ({
+    ...c,
+    statusClass: statusClassOf(c),
+    spentLabel: (Number(c.spent) || 0).toLocaleString('en-IN'),
+    budgetLabel: (Number(c.budget) || 0).toLocaleString('en-IN')
+  }));
+  const campaigns = campaignRows.map((c) => ({
+    id: c.id || c._id,
+    name: c.name,
+    platform: c.channel || '—',
+    status: isUnderperforming(c) ? 'Underperforming' : c.status,
+    statusColor: statusClassOf(c),
+    dailyBudget: Number(c.dailyBudget) || 0,
+    spendMonth: Number(c.spent) || 0,
+    leads: c.leads || 0,
+    cpl: c.cpl,
+    targetCpl: c.targetCpl
+  }));
+  const pendingCreatives = creatives.filter((c) => c.status === 'Submitted');
+
+  // "Needs Action": over-target CPL, open branch lead gaps, creatives awaiting sign-off
+  const needsActionItems = [
+    ...campaignRows.filter((c) => c.status !== 'Paused' && c.overTargetCpl).map((c) => ({
+      id: `cpl-${c._id}`,
+      type: 'HIGH CPL',
+      badgeClass: 'bg-rose-50 text-rose-600 border-rose-200',
+      title: `${c.name} — ${inr(c.cpl)}/lead`,
+      campaignId: c._id,
+      cpl: c.cpl,
+      targetCpl: c.targetCpl,
+      dailyBudget: c.dailyBudget
+    })),
+    ...demands.filter((d) => d.gap > 0 && d.status !== 'Closed').map((d) => ({
+      id: `gap-${d._id}`,
+      type: 'LEAD GAP',
+      badgeClass: 'bg-amber-50 text-amber-700 border-amber-200',
+      title: `${d.branch} needs ${d.gap} more ${d.course} leads`,
+      branch: d.branch,
+      target: d.targetLeads,
+      gap: d.gap
+    })),
+    ...pendingCreatives.map((c) => ({
+      id: `apr-${c._id}`,
+      type: 'APPROVAL',
+      badgeClass: 'bg-amber-50 text-amber-700 border-amber-200',
+      title: c.title,
+      approvalId: c._id
+    }))
+  ];
+
+  // Log a real enquiry against a campaign → shared lead pool (HR allocation)
+  const handleGenerateLead = (campaign) => {
+    setLeadFormCampaign(campaign);
+    setLeadForm({ fullName: '', phone: '', email: '', location: '', branch: campaign.branch && campaign.branch !== 'All' ? campaign.branch : '', course: campaign.course || '' });
+  };
+
+  const handleSubmitCampaignLead = async (e) => {
+    e.preventDefault();
+    const campaign = leadFormCampaign;
+    if (!campaign || !leadForm.fullName.trim() || !leadForm.phone.trim()) return;
+    setSavingLead(true);
     try {
-      await createLead(newLead);
-    } catch (e) {
-      console.warn('Backend lead creation fallback:', e.message);
+      const created = await createLead({
+        fullName: leadForm.fullName.trim(),
+        phone: leadForm.phone.trim(),
+        email: leadForm.email.trim(),
+        location: leadForm.location.trim(),
+        branch: leadForm.branch.trim(),
+        course: leadForm.course.trim(),
+        source: campaign.name,
+        sourceName: campaign.name,
+        campaignCode: campaign.code,
+        sourceBadge: campaign.channel || '',
+        fetchedBy: currentUser?.name || 'Marketing',
+        stage: 'new'
+      });
+      setLeadFormCampaign(null);
+      setGeneratedLeadModal({ isOpen: true, lead: created, campaign });
+      showToast(`Lead ${created.fullName} added to the HR allocation pool`);
+    } catch (err) {
+      showToast(err?.response?.data?.error || 'Could not save the lead');
+    } finally {
+      setSavingLead(false);
     }
-
-    try {
-      const existing = JSON.parse(localStorage.getItem('thoughtflows_leads') || '[]');
-      localStorage.setItem('thoughtflows_leads', JSON.stringify([newLead, ...existing]));
-    } catch (e) {
-      console.warn(e);
-    }
-
-    setCampaignDeskList(prev => prev.map(c => c.id === campaign.id ? { ...c, leads: (c.leads || 0) + 1 } : c));
-    setTotalLeadsCount(prev => (prev || 0) + 1);
-
-    setGeneratedLeadModal({
-      isOpen: true,
-      lead: newLead,
-      campaign: campaign
-    });
-
-    showToast(`⚡ Generated Lead ${leadId} (${candidate.name}) → Stored in live MongoDB and routed to HR!`);
   };
 
   const showToast = (msg) => {
@@ -459,38 +189,69 @@ export default function MarketingDepartmentDashboard({
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  // Resolve an approval item
-  const handleApproveCreative = async (approvalId) => {
-    setPendingApprovals(prev => prev.filter(item => item.id !== approvalId));
-    setNeedsActionItems(prev => prev.filter(item => item.approvalId !== approvalId));
+  // Approve a creative — also closes its Leadership approval (server side)
+  const handleApproveCreative = async (creativeId) => {
     setSelectedAction(null);
     try {
-      await decideApproval(approvalId, 'approved');
+      await updateCreative(creativeId, { status: 'Approved' });
+      showToast('Creative approved');
     } catch (e) {
-      console.warn('Approval decision notice:', e.message);
+      showToast(e?.response?.data?.error || 'Could not approve the creative');
     }
-    showToast('Creative approved and scheduled for publishing!');
   };
 
-  // Pause or fix underperforming campaign
-  const handleFixCampaign = (action) => {
-    if (action === 'pause') {
-      setCampaigns(prev => prev.map(c => c.id === 'cmp-1' ? { ...c, status: 'Paused', statusColor: 'bg-slate-100 text-slate-600 border-slate-200' } : c));
-      setNeedsActionItems(prev => prev.filter(item => item.id !== 'act-1'));
-      showToast('Campaign paused. Daily ad spend halted.');
-    } else if (action === 'reallocate') {
-      setCampaigns(prev => prev.map(c => c.id === 'cmp-1' ? { ...c, dailyBudget: 800, status: 'Optimizing', statusColor: 'bg-amber-50 text-amber-700 border-amber-200' } : c));
-      setNeedsActionItems(prev => prev.filter(item => item.id !== 'act-1'));
-      showToast('Budget reduced to ₹800/day and switched to lookalike audience.');
+  // Pause or re-budget an over-CPL campaign
+  const handleFixCampaign = async (action) => {
+    const item = selectedAction;
+    if (!item?.campaignId) return;
+    try {
+      if (action === 'pause') {
+        await updateCampaign(item.campaignId, { status: 'Paused' });
+        showToast('Campaign paused');
+      } else {
+        const v = prompt('New daily budget (₹):', item.dailyBudget || '');
+        if (v === null) return;
+        await updateCampaign(item.campaignId, { dailyBudget: Math.max(0, parseInt(v, 10) || 0) });
+        showToast('Daily budget updated');
+      }
+      setSelectedAction(null);
+    } catch (e) {
+      showToast(e?.response?.data?.error || 'Could not update the campaign');
     }
-    setSelectedAction(null);
   };
 
-  // Resolve lead gap
-  const handleResolveLeadGap = (itemId, branchName) => {
-    setNeedsActionItems(prev => prev.filter(item => item.id !== itemId));
-    setSelectedAction(null);
-    showToast(`Instant ₹2,500 ad boost allocated for ${branchName}!`);
+  // Spend & budget are typed in from the ad platforms; results are computed
+  const handleEditSpend = async (camp) => {
+    const spent = prompt(`Amount spent so far on "${camp.name}" (₹):`, camp.spent || 0);
+    if (spent === null) return;
+    const budget = prompt('Total budget (₹):', camp.budget || 0);
+    if (budget === null) return;
+    const targetCpl = prompt('Target cost per lead (₹, 0 = none):', camp.targetCpl || 0);
+    if (targetCpl === null) return;
+    try {
+      await updateCampaign(camp._id, {
+        spent: Math.max(0, parseInt(spent, 10) || 0),
+        budget: Math.max(0, parseInt(budget, 10) || 0),
+        targetCpl: Math.max(0, parseInt(targetCpl, 10) || 0)
+      });
+      showToast(`Spend updated for ${camp.name}`);
+    } catch (e) {
+      showToast(e?.response?.data?.error || 'Could not update spend');
+    }
+  };
+
+  const handleNewCampaign = async () => {
+    const name = prompt('Campaign name:');
+    if (!name || !name.trim()) return;
+    const channel = prompt('Channel (e.g. Instagram Ads, Google Ads, WhatsApp):', '') || '';
+    const branch = prompt('Branch (or All):', 'All') || 'All';
+    const course = prompt('Course (e.g. CPC):', '') || '';
+    try {
+      await createCampaign({ name: name.trim(), channel, branch, course, status: 'Live' });
+      showToast(`Campaign "${name.trim()}" created`);
+    } catch (e) {
+      showToast(e?.response?.data?.error || 'Could not create the campaign');
+    }
   };
 
   return (

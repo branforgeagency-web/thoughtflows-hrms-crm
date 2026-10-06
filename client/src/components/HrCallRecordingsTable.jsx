@@ -316,7 +316,11 @@ export default function HrCallRecordingsTable({ currentUser }) {
                     <td className="py-3.5 px-4">
                       <div className="font-semibold text-slate-800">{rec.counselorName}</div>
                       <span className="text-[9.5px] text-slate-400 font-mono">
-                        {rec.source === 'exotel' ? '📞 Exotel Bridge' : '🎙️ Mic Audio'}
+                        {rec.source === 'exotel'
+                          ? '📞 Exotel Bridge'
+                          : (rec.source === 'phone_upload' || rec.source === 'uploaded')
+                            ? '📤 Uploaded from Phone'
+                            : '🎙️ Mic Audio'}
                       </span>
                     </td>
 
@@ -361,7 +365,7 @@ export default function HrCallRecordingsTable({ currentUser }) {
                         {rec.audioUrl && (
                           <a
                             href={recordingUrl(rec.audioUrl)}
-                            download={`call_${rec.leadName}_${rec.leadPhone}.webm`}
+                            download={`call_${rec.leadName}_${rec.leadPhone}.${(String(rec.audioUrl).split('?')[0].match(/\.(\w+)$/) || [])[1] || 'webm'}`}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="p-1.5 rounded-lg bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 transition-all"

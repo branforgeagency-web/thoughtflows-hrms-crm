@@ -56,6 +56,10 @@ const studentSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  passoutYear: {
+    type: String,
+    default: ''
+  },
   collegeCompany: {
     type: String,
     default: ''
@@ -143,6 +147,15 @@ const studentSchema = new mongoose.Schema({
   examFee: {
     type: Number,
     default: 0
+  },
+  // Exam fee paid in the same transaction as the course fee, or on its own
+  examPaidWithCourseFee: {
+    type: Boolean,
+    default: true
+  },
+  examTransactionId: {
+    type: String,
+    default: ''
   },
   paymentMethod: {
     type: String,

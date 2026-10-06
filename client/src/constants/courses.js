@@ -17,7 +17,7 @@ export const COURSE_CATEGORIES = [
         courseFee: 14000,
         fee: 14000,
         duration: '45 DAYS',
-        examFeeText: '₹70,207 ($814.20 + ₹1k tx fees)',
+        examFeeText: '₹70,207 ($830.20 + ₹1k tx fees)',
         examFee: 70207,
         desc: 'Outpatient physician practice & clinic coding credential (AAPC)'
       },
@@ -31,7 +31,7 @@ export const COURSE_CATEGORIES = [
         courseFee: 11500,
         fee: 11500,
         duration: '30 Days',
-        examFeeText: '₹70,207 ($814.20 + ₹1k tx fees)',
+        examFeeText: '₹70,207 ($830.20 + ₹1k tx fees)',
         examFee: 70207,
         desc: 'Accelerated CPC exam preparation and intensive mock marathons'
       },
@@ -45,7 +45,7 @@ export const COURSE_CATEGORIES = [
         courseFee: 21000,
         fee: 21000,
         duration: '2 Months',
-        examFeeText: '₹70,207 ($814.20 + ₹1k tx fees)',
+        examFeeText: '₹70,207 ($830.20 + ₹1k tx fees)',
         examFee: 70207,
         desc: 'Dual certification track: Outpatient CPC plus Emergency Department specialty'
       },
@@ -59,7 +59,7 @@ export const COURSE_CATEGORIES = [
         courseFee: 21000,
         fee: 21000,
         duration: '2 Months',
-        examFeeText: '₹70,207 ($814.20 + ₹1k tx fees)',
+        examFeeText: '₹70,207 ($830.20 + ₹1k tx fees)',
         examFee: 70207,
         desc: 'Dual track: Core CPC plus Evaluation & Management specialized coding'
       }

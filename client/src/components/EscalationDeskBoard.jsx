@@ -15,7 +15,7 @@ import {
   User,
   MessageSquare
 } from 'lucide-react';
-import { getEscalations, createEscalation, onDataUpdate } from '../services/api';
+import { getEscalations, createEscalation, updateEscalationStatus, onDataUpdate } from '../services/api';
 
 export default function EscalationDeskBoard({ 
   customScopeLabel = "HR issues",
@@ -35,16 +35,16 @@ export default function EscalationDeskBoard({
       if (Array.isArray(data)) {
         setEscalations(data.map(e => ({
           id: e._id || e.id,
-          ticketId: e.ticketId || `ESC-${(e._id || '').slice(-6).toUpperCase()}`,
+          ticketId: `ESC-${String(e._id || '').slice(-6).toUpperCase()}`,
           title: e.title,
-          priority: e.priority || 'urgent',
-          description: e.description || e.details || '',
-          owner: e.raisedBy || e.owner || 'HR Staff',
-          timeAgo: e.createdAt ? new Date(e.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Recently',
-          department: e.department || 'HR Department',
+          priority: e.priority || 'normal',
+          description: [e.description, e.response && `Response: ${e.response}`].filter(Boolean).join(' — '),
+          owner: e.raisedBy || '—',
+          timeAgo: e.createdAt ? new Date(e.createdAt).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '',
+          department: 'HR Department',
           departmentCode: e.departmentCode || 'DEP-HR-001',
-          status: (e.status || 'open').toUpperCase() === 'RESOLVED' ? 'RESOLVED' : 'ESCALATED',
-          branch: e.branchName || 'Saravanampatti (SVM)'
+          status: ['resolved', 'closed'].includes(e.status) ? 'RESOLVED' : e.status === 'in-progress' ? 'MGMT_ESCALATED' : 'ESCALATED',
+          branch: e.branchName || '—'
         })));
       }
     } catch (e) {
@@ -66,7 +66,7 @@ export default function EscalationDeskBoard({
   const [newTitle, setNewTitle] = useState('');
   const [newPriority, setNewPriority] = useState('urgent');
   const [newDesc, setNewDesc] = useState('');
-  const [newOwner, setNewOwner] = useState('Kavitha N.');
+  const [newOwner, setNewOwner] = useState('');
   const [newDept, setNewDept] = useState('HR Department');
 
   const showToast = (msg) => {
@@ -97,17 +97,16 @@ export default function EscalationDeskBoard({
   }, [escalations, searchQuery, filterStatus]);
 
   // Mark Resolved Action
-  const handleMarkResolved = (id) => {
-    setEscalations(prev => prev.map(item => {
-      if (item.id === id) {
-        return { ...item, status: 'RESOLVED' };
-      }
-      return item;
-    }));
-
+  const handleMarkResolved = async (id) => {
     const matched = escalations.find(e => e.id === id);
-    showToast(`Escalation ${matched?.ticketId || ''} marked as RESOLVED ✓`);
-    if (onEscalationChange) onEscalationChange();
+    try {
+      await updateEscalationStatus(id, 'resolved');
+      setEscalations(prev => prev.map(item => (item.id === id ? { ...item, status: 'RESOLVED' } : item)));
+      showToast(`Escalation ${matched?.ticketId || ''} marked as RESOLVED ✓`);
+      if (onEscalationChange) onEscalationChange();
+    } catch (err) {
+      showToast(err?.response?.data?.error || 'Could not resolve the escalation');
+    }
   };
 
   // Escalate to Mgmt Action
@@ -116,52 +115,51 @@ export default function EscalationDeskBoard({
     setMgmtNote(`Escalating issue "${item.title}" (${item.ticketId}) to Executive Founders Desk for priority resolution.`);
   };
 
-  const handleConfirmMgmtEscalation = (e) => {
+  // Forward to management: a linked escalation lands on the Admin desk and
+  // this one moves to in-progress with the note recorded as its response
+  const handleConfirmMgmtEscalation = async (e) => {
     e.preventDefault();
     if (!mgmtModalEscalation) return;
-
-    setEscalations(prev => prev.map(item => {
-      if (item.id === mgmtModalEscalation.id) {
-        return { 
-          ...item, 
-          status: 'MGMT_ESCALATED',
-          description: `${item.description} [Escalated to Management: ${mgmtNote}]` 
-        };
-      }
-      return item;
-    }));
-
-    showToast(`Escalation ${mgmtModalEscalation.ticketId} forwarded to Executive Leadership Desk 🚨`);
-    setMgmtModalEscalation(null);
-    if (onEscalationChange) onEscalationChange();
+    const item = mgmtModalEscalation;
+    try {
+      await createEscalation({
+        title: `[From HR] ${item.title}`,
+        description: `${item.description}\n\nForwarded: ${mgmtNote}`,
+        priority: item.priority === 'urgent' ? 'urgent' : 'normal',
+        departmentCode: 'ADM',
+        branchName: item.branch !== '—' ? item.branch : ''
+      });
+      await updateEscalationStatus(item.id, 'in-progress', `Escalated to Management: ${mgmtNote}`);
+      showToast(`Escalation ${item.ticketId} forwarded to Management 🚨`);
+      setMgmtModalEscalation(null);
+      loadEscalations();
+      if (onEscalationChange) onEscalationChange();
+    } catch (err) {
+      showToast(err?.response?.data?.error || 'Could not forward the escalation');
+    }
   };
 
-  // Add New Escalation
-  const handleCreateEscalation = (e) => {
+  // Add New Escalation (saved to the HR escalation queue)
+  const handleCreateEscalation = async (e) => {
     e.preventDefault();
     if (!newTitle.trim() || !newDesc.trim()) return;
-
-    const newTicketNum = Math.floor(1000 + Math.random() * 9000);
-    const newEntry = {
-      id: `esc_${Date.now()}`,
-      ticketId: `ESC-TF-2026-0${newTicketNum}`,
-      title: newTitle.trim(),
-      priority: newPriority,
-      description: newDesc.trim(),
-      owner: newOwner,
-      timeAgo: 'Just now',
-      department: newDept,
-      departmentCode: 'DEP-HR-001',
-      status: 'ESCALATED',
-      branch: 'Head Office'
-    };
-
-    setEscalations(prev => [newEntry, ...prev]);
-    setIsAddModalOpen(false);
-    setNewTitle('');
-    setNewDesc('');
-    showToast(`New Escalation Ticket ${newEntry.ticketId} raised successfully!`);
-    if (onEscalationChange) onEscalationChange();
+    try {
+      await createEscalation({
+        title: newTitle.trim(),
+        description: newDesc.trim(),
+        priority: newPriority === 'urgent' ? 'urgent' : 'normal',
+        departmentCode: 'DEP-HR-001',
+        ...(newOwner.trim() ? { raisedBy: newOwner.trim() } : {})
+      });
+      setIsAddModalOpen(false);
+      setNewTitle('');
+      setNewDesc('');
+      showToast('Escalation raised');
+      loadEscalations();
+      if (onEscalationChange) onEscalationChange();
+    } catch (err) {
+      showToast(err?.response?.data?.error || 'Could not raise the escalation');
+    }
   };
 
   return (

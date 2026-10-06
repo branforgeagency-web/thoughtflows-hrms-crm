@@ -17,7 +17,7 @@ const marketingCampaignSchema = new mongoose.Schema({
   statusClass: String,
   channel: {
     type: String,
-    default: 'Meta Ads (IG / FB)'
+    default: ''
   },
   branch: {
     type: String,
@@ -25,11 +25,11 @@ const marketingCampaignSchema = new mongoose.Schema({
   },
   course: {
     type: String,
-    default: 'CPC'
+    default: ''
   },
   dailyBudget: {
     type: Number,
-    default: 2000
+    default: 0
   },
   spent: {
     type: Number,
@@ -37,31 +37,15 @@ const marketingCampaignSchema = new mongoose.Schema({
   },
   budget: {
     type: Number,
-    default: 25000
-  },
-  leads: {
-    type: Number,
     default: 0
-  },
-  cpl: {
-    type: Number,
-    default: 150
   },
   targetCpl: {
     type: Number,
-    default: 160
-  },
-  admissions: {
-    type: Number,
     default: 0
-  },
-  roi: {
-    type: String,
-    default: '450%'
   },
   ctr: {
     type: String,
-    default: '3.2%'
+    default: ''
   }
 }, {
   timestamps: true

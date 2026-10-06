@@ -27,47 +27,56 @@ const studentLeadSchema = new mongoose.Schema({
   },
   age: {
     type: String,
-    default: '24'
+    default: ''
   },
   gender: {
     type: String,
-    default: 'Female'
+    default: ''
   },
   location: {
     type: String,
-    default: 'Coimbatore'
+    default: ''
   },
   education: {
     type: String,
-    default: 'Fresh Graduate'
+    default: ''
+  },
+  passoutYear: {
+    type: String,
+    default: ''
   },
   branch: {
     type: String,
-    default: 'Saravanampatti (CBE)'
+    default: ''
   },
   course: {
     type: String,
-    default: 'CPC - Certified Professional Coder'
+    default: ''
   },
   sourceId: {
     type: String,
-    default: 's21'
+    default: ''
   },
   sourceName: {
     type: String,
-    default: 'Facebook Job Post'
+    default: ''
   },
   sourceTier: {
     type: String,
-    default: 'TIER C'
+    default: ''
+  },
+  // Marketing campaign the lead came from (CAM-...) — drives campaign CPL / ROI
+  campaignCode: {
+    type: String,
+    default: ''
   },
   sourceBadge: {
     type: String,
-    default: 'FB POST'
+    default: ''
   },
   category: {
     type: String,
-    default: 'Fresh Graduate'
+    default: ''
   },
   stage: {
     type: String,
@@ -115,11 +124,11 @@ const studentLeadSchema = new mongoose.Schema({
   },
   budget: {
     type: String,
-    default: '₹20K-30K'
+    default: ''
   },
   batchTiming: {
     type: String,
-    default: 'Weekend (Sat-Sun)'
+    default: ''
   },
   currentRole: {
     type: String,
@@ -139,11 +148,11 @@ const studentLeadSchema = new mongoose.Schema({
   },
   fetchedBy: {
     type: String,
-    default: 'Google Ad ⚡'
+    default: ''
   },
   allocatedTo: {
     type: String,
-    default: 'Priyadharshini'
+    default: ''
   },
   // Student ID created when this lead was admitted (guards double admission)
   admittedStudentId: {

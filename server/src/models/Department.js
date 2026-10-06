@@ -1,5 +1,7 @@
 import mongoose from 'mongoose';
 
+// Department master. memberCount and head are computed live from staff
+// accounts (User collection) by /api/departments.
 const departmentSchema = new mongoose.Schema({
   name: {
     type: String,
@@ -10,11 +12,15 @@ const departmentSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  // Dashboard id this department logs into (hr, training, cccp, ...)
+  dashboard: {
+    type: String,
+    default: ''
+  },
   description: String,
-  head: String,
-  memberCount: {
-    type: Number,
-    default: 0
+  head: {
+    type: String,
+    default: ''
   },
   icon: String,
   color: String

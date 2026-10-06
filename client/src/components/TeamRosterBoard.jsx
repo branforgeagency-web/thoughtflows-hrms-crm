@@ -36,26 +36,17 @@ export default function TeamRosterBoard({
   const loadMembers = async () => {
     try {
       const data = await getTeam({ departmentCode: 'DEP-HR-001' });
-      if (Array.isArray(data) && data.length > 0) {
+      if (Array.isArray(data)) {
         setMembers(data.map(m => ({
           id: m._id || m.id,
           name: m.name,
-          role: m.role || 'Staffing Recruiter',
-          assignedCount: m.assigned || 12,
-          pendingCount: m.pending || 2,
+          role: m.role || 'Staff',
+          assignedCount: m.assigned || 0,
+          pendingCount: m.pending || 0,
           status: m.available !== false ? 'Available' : 'On Leave',
           shift: m.shift || 'General Shift',
           weeklySchedule: m.weeklySchedule || null
         })));
-      } else if (!customMembers) {
-        // Fallback default HR staff list for allocation
-        setMembers([
-          { id: 'tm-01', name: 'Kavitha N.', role: 'Senior Recruiter', assignedCount: 14, pendingCount: 2, status: 'Available' },
-          { id: 'tm-02', name: 'R Priyadharshini', role: 'Team Lead', assignedCount: 18, pendingCount: 1, status: 'Available' },
-          { id: 'tm-03', name: 'Guru Vigneshwar S', role: 'Team Lead', assignedCount: 15, pendingCount: 3, status: 'Available' },
-          { id: 'tm-04', name: 'Deepika S.', role: 'Recruiter', assignedCount: 10, pendingCount: 2, status: 'Available' },
-          { id: 'tm-05', name: 'Srinidhi B.', role: 'Recruiter', assignedCount: 11, pendingCount: 1, status: 'On Leave' }
-        ]);
       }
     } catch (e) {
       console.warn('Team roster fetch notice:', e.message);
@@ -101,15 +92,8 @@ export default function TeamRosterBoard({
   const handleOpenScheduleModal = (member) => {
     setScheduleModalMember(member);
 
-    // Try reading existing schedule from member or localStorage
-    const savedLocal = localStorage.getItem(`thoughtflows_weekly_roster_${member.name.toLowerCase()}`);
-    let existing = null;
-    if (savedLocal) {
-      try { existing = JSON.parse(savedLocal); } catch (e) {}
-    } else if (member.weeklySchedule) {
-      existing = member.weeklySchedule;
-    }
-
+    // The saved roster lives on the team member record (server)
+    const existing = Array.isArray(member.weeklySchedule) && member.weeklySchedule.length ? member.weeklySchedule : null;
     setEditingSchedule(existing || getCurrentWeekScheduleDays());
   };
 
@@ -143,16 +127,6 @@ export default function TeamRosterBoard({
         weeklySchedule: editingSchedule
       });
 
-      // Save to local storage cache for instant cross-component availability
-      const memName = scheduleModalMember.name.toLowerCase();
-      localStorage.setItem(`thoughtflows_weekly_roster_${memName}`, JSON.stringify(editingSchedule));
-      localStorage.setItem(`thoughtflows_weekly_roster_${memName.split(' ')[0]}`, JSON.stringify(editingSchedule));
-      localStorage.setItem('thoughtflows_latest_allocated_roster', JSON.stringify({
-        name: scheduleModalMember.name,
-        schedule: editingSchedule,
-        updatedAt: Date.now()
-      }));
-
       // Update local member state
       setMembers(prev => prev.map(m => {
         if (m.id === scheduleModalMember.id) {
@@ -165,7 +139,7 @@ export default function TeamRosterBoard({
       if (onRosterChange) onRosterChange();
     } catch (err) {
       console.error('Failed to save weekly schedule:', err);
-      showToast(`✓ Weekly schedule allocated for ${scheduleModalMember.name}`);
+      showToast(`⚠ Could not save the schedule: ${err?.response?.data?.error || err.message}`);
     } finally {
       setIsSaving(false);
       setScheduleModalMember(null);

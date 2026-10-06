@@ -49,6 +49,7 @@ import AddLeadModal from './AddLeadModal';
 import CompleteRegistrationModal from './CompleteRegistrationModal';
 import { getStudents, getLeads, createLead, updateLead, updateStudent, getDemos, createDemo, createStudent, getRecordings, getTodayClosure, saveDailyClosure, onDataUpdate, getNotifications, markNotificationRead, markNotificationsRead, getStudentRequests, getStudentTickets, getMyAttendance, setMyAttendance, logCall, getTodayCallLog, getHrTargets } from '../services/api';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
+import { useIncentivePolicy, progressiveIncentive } from '../utils/incentive';
 
 export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, onSwitchDepartment, theme = 'classic' }) {
   // Persist active tab across browser refresh within this session
@@ -457,8 +458,10 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [demos, scopedLeads, scopeMode, isElevatedUser, myName, branchShort]);
 
-  // Monthly admissions target set by the Head of HR (falls back to 25 if none is set)
-  const [monthlyTarget, setMonthlyTarget] = useState({ value: 25, fromHead: false });
+  // Monthly admissions target: the Head of HR's target for this counsellor (or
+  // "All HR"), otherwise Admin's default target from the incentive policy
+  const incentivePolicy = useIncentivePolicy();
+  const [headTarget, setHeadTarget] = useState(null);
   useEffect(() => {
     let alive = true;
     const load = () => getHrTargets({ period: 'month' })
@@ -467,7 +470,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         const admissionRows = rows.filter(t => /admission|enrol/i.test(t.title || ''));
         const pick = admissionRows.find(t => normName(t.assignedTo) === myName)
           || admissionRows.find(t => /^all\b/i.test(String(t.assignedTo || '').trim()));
-        setMonthlyTarget(pick && Number(pick.target) > 0 ? { value: Number(pick.target), fromHead: true } : { value: 25, fromHead: false });
+        setHeadTarget(pick && Number(pick.target) > 0 ? Number(pick.target) : null);
       })
       .catch(() => {});
     load();
@@ -475,6 +478,8 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     return () => { alive = false; off(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [myName]);
+  const policyTarget = Number(incentivePolicy?.defaultTarget) > 0 ? Number(incentivePolicy.defaultTarget) : null;
+  const monthlyTarget = { value: headTarget || policyTarget, fromHead: Boolean(headTarget) };
 
   const monthPrefix = todayKey.slice(0, 7);
   const admissionsThisMonth = useMemo(() => scopedStudents.filter(s => {
@@ -1384,26 +1389,30 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
                 MONTHLY TARGET • {new Date(`${todayKey}T00:00:00`).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' }).toUpperCase()}
               </span>
               <h3 className="text-base sm:text-lg font-bold text-slate-900 mt-1">
-                Target {monthlyTarget.value} admissions • {admissionsThisMonth} closed this month
+                {monthlyTarget.value
+                  ? `Target ${monthlyTarget.value} admissions • ${admissionsThisMonth} closed this month`
+                  : `${admissionsThisMonth} admissions closed this month`}
               </h3>
               <p className="text-xs text-amber-900/80">
-                {admissionsThisMonth >= monthlyTarget.value
-                  ? `Goal achieved! ${admissionsThisMonth - monthlyTarget.value} surplus admissions qualify for performance incentive.`
+                {!monthlyTarget.value
+                  ? 'No monthly target set yet — the Head of HR or Admin (Incentive Slabs) sets it.'
+                  : admissionsThisMonth >= monthlyTarget.value
+                  ? `Goal achieved! ${admissionsThisMonth - monthlyTarget.value} surplus admissions · ₹${progressiveIncentive(admissionsThisMonth, monthlyTarget.value, incentivePolicy?.bands).toLocaleString('en-IN')} incentive earned.`
                   : `${monthlyTarget.value - admissionsThisMonth} more to hit your target — then each extra admission earns incentive.`}
-                {!monthlyTarget.fromHead && ' (Default target — no monthly admissions target set by the Head of HR.)'}
+                {monthlyTarget.value && !monthlyTarget.fromHead && ' (Admin default target.)'}
               </p>
             </div>
           </div>
 
           <div className="w-full sm:w-64 flex flex-col items-end">
             <div className="flex items-center justify-between w-full text-xs font-extrabold text-slate-800 mb-1">
-              <span>{admissionsThisMonth} / {monthlyTarget.value}</span>
-              <span className="text-amber-700">{Math.min(100, Math.round((admissionsThisMonth / monthlyTarget.value) * 100))}%</span>
+              <span>{admissionsThisMonth} / {monthlyTarget.value || "—"}</span>
+              <span className="text-amber-700">{monthlyTarget.value ? `${Math.min(100, Math.round((admissionsThisMonth / monthlyTarget.value) * 100))}%` : "—"}</span>
             </div>
             <div className="w-full h-2.5 bg-amber-200/60 rounded-full overflow-hidden">
               <div 
                 className="h-full bg-gradient-to-r from-amber-400 to-[#73C1CC] rounded-full transition-all duration-500" 
-                style={{ width: `${Math.min(100, Math.round((admissionsThisMonth / monthlyTarget.value) * 100))}%` }}
+                style={{ width: `${monthlyTarget.value ? Math.min(100, Math.round((admissionsThisMonth / monthlyTarget.value) * 100)) : 0}%` }}
               />
             </div>
             <div className="flex items-center justify-between w-full mt-1.5 flex-wrap gap-2">
@@ -1959,6 +1968,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             email: admittingLead.email || '',
             location: admittingLead.location || '',
             qualification: admittingLead.education || '',
+            passoutYear: admittingLead.passoutYear || '',
             source: admittingLead.sourceName || admittingLead.source || '',
             courseName: admittingLead.course || '',
             branchName: admittingLead.branch || branchShort || '',

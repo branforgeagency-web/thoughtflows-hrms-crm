@@ -16,7 +16,7 @@ import {
   FileText,
   ShieldCheck
 } from 'lucide-react';
-import { getDailyClosures, onDataUpdate } from '../services/api';
+import { getDailyClosures, getTeam, getTeamTasks, createTeamTask, updateTeamTaskStatus, reviewDailyClosure, onDataUpdate } from '../services/api';
 
 export default function DailyTrackerBoard({ 
   customTasks = null,
@@ -25,14 +25,14 @@ export default function DailyTrackerBoard({
   const [activeTab, setActiveTab] = useState('eod'); // 'eod' | 'tasks'
   const [tasks, setTasks] = useState(customTasks || []);
   const [closures, setClosures] = useState([]);
-  const [acknowledgedIds, setAcknowledgedIds] = useState([]);
+  const [team, setTeam] = useState([]);
   const [toastMessage, setToastMessage] = useState(null);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
 
   // Form for New Task
   const [newTitle, setNewTitle] = useState('');
-  const [newAssignee, setNewAssignee] = useState('Kavitha N.');
-  const [newDue, setNewDue] = useState('due 5:00 PM');
+  const [newAssignee, setNewAssignee] = useState('');
+  const [newDue, setNewDue] = useState('due EOD');
   const [newPriority, setNewPriority] = useState('high');
 
   const showToast = (msg) => {
@@ -40,32 +40,40 @@ export default function DailyTrackerBoard({
     setTimeout(() => setToastMessage(null), 4000);
   };
 
-  // Load real HR staff EOD submissions from database
+  // EOD closures, today's team tasks and the HR team (task owners) — all from the server
   const loadClosures = async () => {
     try {
       const data = await getDailyClosures();
-      if (Array.isArray(data)) {
-        setClosures(data);
-      }
+      if (Array.isArray(data)) setClosures(data);
     } catch (e) {
       console.warn('Failed to fetch EOD closures:', e);
+    }
+  };
+  const loadTasks = async () => {
+    if (customTasks) return;
+    try {
+      const data = await getTeamTasks({ departmentCode: 'DEP-HR-001' });
+      if (Array.isArray(data)) setTasks(data.map((t) => ({ ...t, id: t._id })));
+    } catch (e) {
+      console.warn('Failed to fetch team tasks:', e);
     }
   };
 
   useEffect(() => {
     loadClosures();
+    loadTasks();
+    getTeam({ departmentCode: 'DEP-HR-001' }).then((d) => setTeam(Array.isArray(d) ? d : [])).catch(() => {});
     const unsub = onDataUpdate((entity) => {
-      if (entity === 'closures') {
-        loadClosures();
-      }
+      if (entity === 'closures') loadClosures();
+      if (entity === 'tasks') loadTasks();
     });
     return unsub;
   }, []);
 
   // Compute Live Counts for Top Stat Cards from real EOD closures & tasks
   const stats = useMemo(() => {
-    const todayStr = new Date().toISOString().split('T')[0];
-    const todayClosures = closures.filter(c => c.date === todayStr || !c.date);
+    const todayStr = new Date(Date.now() + 330 * 60000).toISOString().split('T')[0];
+    const todayClosures = closures.filter(c => c.date === todayStr);
     
     const eodSubmitted = todayClosures.length;
     const totalCalls = todayClosures.reduce((acc, c) => acc + (c.callsMade || 0), 0);
@@ -85,45 +93,52 @@ export default function DailyTrackerBoard({
     };
   }, [closures, tasks]);
 
-  const handleAcknowledgeEod = (closureId) => {
-    setAcknowledgedIds(prev => [...prev, closureId]);
-    showToast('✓ Staff EOD Report reviewed & acknowledged by Head of HR!');
+  const handleAcknowledgeEod = async (closureId) => {
+    try {
+      const updated = await reviewDailyClosure(closureId);
+      setClosures(prev => prev.map(c => (c._id === closureId ? updated : c)));
+      showToast('✓ EOD report marked reviewed');
+    } catch (e) {
+      showToast(e?.response?.data?.error || 'Could not mark the report reviewed');
+    }
   };
 
-  // Cycle Status
-  const handleCycleStatus = (id) => {
+  // Cycle Status (saved on the server)
+  const handleCycleStatus = async (id) => {
     const statusOrder = ['not-started', 'in-progress', 'completed', 'delayed'];
-    setTasks(prev => prev.map(t => {
-      if (t.id === id) {
-        const nextIdx = (statusOrder.indexOf(t.status) + 1) % statusOrder.length;
-        const nextStatus = statusOrder[nextIdx];
-        showToast(`Task "${t.title}" status updated to "${nextStatus}"`);
-        return { ...t, status: nextStatus };
-      }
-      return t;
-    }));
-    if (onTaskUpdate) onTaskUpdate();
+    const task = tasks.find(t => t.id === id);
+    if (!task) return;
+    const nextStatus = statusOrder[(statusOrder.indexOf(task.status) + 1) % statusOrder.length];
+    try {
+      await updateTeamTaskStatus(id, nextStatus);
+      setTasks(prev => prev.map(t => (t.id === id ? { ...t, status: nextStatus } : t)));
+      showToast(`Task "${task.title}" status updated to "${nextStatus}"`);
+      if (onTaskUpdate) onTaskUpdate();
+    } catch (e) {
+      showToast(e?.response?.data?.error || 'Could not update the task');
+    }
   };
 
-  // Add Task
-  const handleCreateTask = (e) => {
+  // Add Task — saved and pushed to the owner's notifications
+  const handleCreateTask = async (e) => {
     e.preventDefault();
-    if (!newTitle.trim()) return;
-
-    const newTask = {
-      id: `task_${Date.now()}`,
-      title: newTitle.trim(),
-      assignedTo: newAssignee,
-      dueTime: newDue,
-      priority: newPriority,
-      status: 'not-started'
-    };
-
-    setTasks(prev => [newTask, ...prev]);
-    setIsAddModalOpen(false);
-    setNewTitle('');
-    showToast(`New team task "${newTask.title}" added to daily tracker!`);
-    if (onTaskUpdate) onTaskUpdate();
+    if (!newTitle.trim() || !newAssignee) return;
+    try {
+      const created = await createTeamTask({
+        title: newTitle.trim(),
+        assignedTo: newAssignee,
+        dueTime: newDue,
+        priority: newPriority,
+        departmentCode: 'DEP-HR-001'
+      });
+      setTasks(prev => [{ ...created, id: created._id }, ...prev]);
+      setIsAddModalOpen(false);
+      setNewTitle('');
+      showToast(`Task "${created.title}" assigned to ${created.assignedTo}`);
+      if (onTaskUpdate) onTaskUpdate();
+    } catch (err) {
+      showToast(err?.response?.data?.error || 'Could not add the task');
+    }
   };
 
   return (
@@ -247,7 +262,7 @@ export default function DailyTrackerBoard({
               </div>
             ) : (
               closures.map((c, idx) => {
-                const isAck = acknowledgedIds.includes(c._id || c.id || idx);
+                const isAck = Boolean(c.reviewedAt);
                 const timeLabel = c.submittedAt 
                   ? new Date(c.submittedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                   : 'Today EOD';
@@ -268,7 +283,7 @@ export default function DailyTrackerBoard({
                             {c.counselorName || 'HR Executive'}
                           </div>
                           <div className="text-xs text-slate-400 font-mono mt-0.5">
-                            {c.branch || 'Saravanampatti Branch'} &middot; Submitted at {timeLabel} &middot; Date: {c.date || 'Today'}
+                            {c.branch || 'Branch not set'} &middot; Submitted at {timeLabel} &middot; Date: {c.date}
                           </div>
                         </div>
                       </div>
@@ -277,11 +292,11 @@ export default function DailyTrackerBoard({
                         {isAck ? (
                           <span className="text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-3 py-1 rounded-full flex items-center gap-1.5">
                             <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                            Reviewed &amp; Acknowledged
+                            Reviewed{c.reviewedBy ? ` by ${c.reviewedBy}` : ''}
                           </span>
                         ) : (
                           <button
-                            onClick={() => handleAcknowledgeEod(c._id || c.id || idx)}
+                            onClick={() => handleAcknowledgeEod(c._id)}
                             className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-3.5 py-1.5 rounded-full shadow-2xs transition-all active:scale-95 cursor-pointer flex items-center gap-1.5"
                           >
                             <CheckCircle2 className="w-3.5 h-3.5" />
@@ -468,13 +483,15 @@ export default function DailyTrackerBoard({
                   <label className="block text-xs font-bold text-slate-700 mb-1">
                     Assigned Owner
                   </label>
-                  <input
-                    type="text"
+                  <select
                     value={newAssignee}
                     onChange={(e) => setNewAssignee(e.target.value)}
                     className="w-full text-xs p-3 rounded-xl border border-slate-200 text-slate-800 focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500"
                     required
-                  />
+                  >
+                    <option value="">{team.length ? 'Select owner' : 'No HR staff accounts yet'}</option>
+                    {team.map((m) => <option key={m._id} value={m.name}>{m.name}</option>)}
+                  </select>
                 </div>
 
                 <div>

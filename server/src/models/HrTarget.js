@@ -9,7 +9,7 @@ const hrTargetSchema = new mongoose.Schema(
     period: { type: String, enum: ['today', 'week', 'month'], default: 'today' },
     assignedTo: { type: String, default: 'All HR' },
     departmentCode: { type: String, default: 'DEP-HR-001' },
-    assignedBy: { type: String, default: 'Head of HR' }
+    assignedBy: { type: String, default: '' }
   },
   { timestamps: true }
 );

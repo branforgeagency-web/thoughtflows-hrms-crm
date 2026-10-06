@@ -66,6 +66,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
   const [recordedAudioBlob, setRecordedAudioBlob] = useState(null);
   const [recordedAudioUrl, setRecordedAudioUrl] = useState(null);
   const [uploadedFileName, setUploadedFileName] = useState('');
+  const [uploadedDuration, setUploadedDuration] = useState(0);
   const [leadRecordings, setLeadRecordings] = useState([]);
   const [loadingRecordings, setLoadingRecordings] = useState(false);
 
@@ -199,6 +200,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
     setRecordedAudioBlob(null);
     setRecordedAudioUrl(null);
     setUploadedFileName('');
+    setUploadedDuration(0);
     showToast('Recorded audio removed');
   };
 
@@ -209,6 +211,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
     setRecordedAudioBlob(null);
     setRecordedAudioUrl(null);
     setUploadedFileName('');
+    setUploadedDuration(0);
     hasBeenAnsweredRef.current = false;
     clearTimers();
 
@@ -299,6 +302,13 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
     setRecordedAudioBlob(file);
     const url = URL.createObjectURL(file);
     setRecordedAudioUrl(url);
+    // Use the recording's own length when no call was timed in the CRM
+    const probe = new Audio();
+    probe.preload = 'metadata';
+    probe.onloadedmetadata = () => {
+      if (Number.isFinite(probe.duration) && probe.duration > 0) setUploadedDuration(Math.round(probe.duration));
+    };
+    probe.src = url;
     showToast(`✓ Uploaded audio: ${file.name}`);
   };
 
@@ -329,6 +339,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
     }
 
     if (audioBase64) {
+      const isPhoneUpload = recordedAudioBlob instanceof File;
       try {
         await saveRecording({
           leadId: leadData?._id || leadData?.id,
@@ -336,15 +347,17 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
           leadPhone: leadForm.phone,
           counselorName: currentUser?.name || '',
           counselorPhone: currentUser?.phone || '',
-          durationSeconds: callSeconds,
+          durationSeconds: isPhoneUpload ? (uploadedDuration || callSeconds) : callSeconds,
           outcome: selectedOutcome,
           notes: leadForm.notes,
           audioBase64,
-          source: uploadedFileName ? 'phone_upload' : 'browser_mic'
+          fileName: uploadedFileName,
+          source: isPhoneUpload ? 'phone_upload' : 'browser_mic'
         });
         await fetchLeadRecordings(leadForm.phone);
       } catch (err) {
         console.error('Failed to save call recording:', err);
+        showToast(`Could not save call recording: ${err.response?.data?.error || err.message}`);
       }
     }
 

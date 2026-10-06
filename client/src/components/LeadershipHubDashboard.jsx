@@ -469,6 +469,7 @@ export default function LeadershipHubDashboard({ onClose, currentUser, onLogout,
 
         {view === 'department' && !selectedDept && (
           <DepartmentHeadsView
+            departments={departments}
             onBack={backToLanding}
             onSelectHead={(deptId) => {
               if (deptId === 'hr') {
@@ -482,6 +483,7 @@ export default function LeadershipHubDashboard({ onClose, currentUser, onLogout,
 
         {view === 'department' && selectedDept === 'hr' && (
           <HeadOfHrDashboard
+            department={departments.find((d) => d.dashboard === 'hr') || null}
             onBack={() => setSelectedDept(null)}
             currentUser={currentUser}
             onChanged={refreshSummary}
@@ -1360,7 +1362,6 @@ const DEPARTMENT_HEADS_DATA = [
   {
     id: 'hr',
     title: 'Head of HR',
-    head: 'Priya S.',
     subtitle: 'Counsellors · leads · admissions',
     icon: Users,
     iconBg: '#581C87',
@@ -1369,8 +1370,7 @@ const DEPARTMENT_HEADS_DATA = [
   {
     id: 'training',
     title: 'Head of Training',
-    head: '4 Regional Heads',
-    subtitle: 'TN · Online · Kerala · Telangana/AP',
+    subtitle: 'Trainers · batches · readiness',
     icon: GraduationCap,
     iconBg: '#2563EB',
     iconColor: 'text-blue-100'
@@ -1378,7 +1378,6 @@ const DEPARTMENT_HEADS_DATA = [
   {
     id: 'cccp',
     title: 'Head of CCCP',
-    head: 'Anand K.',
     subtitle: 'College & Company · placement',
     icon: HeartHandshake,
     iconBg: '#059669',
@@ -1387,7 +1386,6 @@ const DEPARTMENT_HEADS_DATA = [
   {
     id: 'marketing',
     title: 'Head of Marketing',
-    head: 'Divya R.',
     subtitle: 'Campaigns · lead sources · CPL',
     icon: Megaphone,
     iconBg: '#D97706',
@@ -1396,7 +1394,6 @@ const DEPARTMENT_HEADS_DATA = [
   {
     id: 'student',
     title: 'Head of Students',
-    head: 'Lakshmi M.',
     subtitle: 'Student success · support',
     icon: Crown,
     iconBg: '#DB2777',
@@ -1404,7 +1401,10 @@ const DEPARTMENT_HEADS_DATA = [
   }
 ];
 
-function DepartmentHeadsView({ onBack, onSelectHead }) {
+// Card styling only — each head's name and staff count come from the live
+// department list (the staff account whose role marks them as head)
+function DepartmentHeadsView({ departments = [], onBack, onSelectHead }) {
+  const headOf = (id) => departments.find((d) => d.dashboard === id);
   return (
     <div className="w-full">
       {/* Top back button */}
@@ -1424,7 +1424,7 @@ function DepartmentHeadsView({ onBack, onSelectHead }) {
           Department Heads
         </h2>
         <p className="text-xs sm:text-sm text-slate-400 font-mono mt-1 flex items-center gap-2">
-          <span>5 departments</span>
+          <span>{DEPARTMENT_HEADS_DATA.length} departments</span>
           <span className="text-slate-300">·</span>
           <span>pick one to open its dashboard</span>
         </p>
@@ -1451,7 +1451,8 @@ function DepartmentHeadsView({ onBack, onSelectHead }) {
                   {dept.title}
                 </h3>
                 <p className="text-xs text-slate-400 font-medium mt-1">
-                  {dept.head}
+                  {headOf(dept.id)?.head || 'Head not assigned'}
+                  {typeof headOf(dept.id)?.memberCount === 'number' ? ` · ${headOf(dept.id).memberCount} staff` : ''}
                 </p>
                 <p className="text-xs text-slate-500 mt-0.5">
                   {dept.subtitle}
@@ -1465,124 +1466,46 @@ function DepartmentHeadsView({ onBack, onSelectHead }) {
   );
 }
 
-function HeadOfHrDashboard({ onBack, currentUser, onChanged }) {
+function HeadOfHrDashboard({ department, onBack, currentUser, onChanged }) {
   const [tab, setTab] = useState('desk');
   const counts = useDeskCounts({ departmentCode: 'DEP-HR-001' });
 
   const [approvalsList, setApprovalsList] = useState([]);
   const [closuresList, setClosuresList] = useState([]);
+  const [hrTeam, setHrTeam] = useState(null);
 
   useEffect(() => {
+    const safeTime = (dt) => {
+      if (!dt) return '';
+      const d = new Date(dt);
+      return isNaN(d.getTime()) ? '' : d.toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+    };
     const fetchRealData = async () => {
-      try {
-        const [cData, aData] = await Promise.all([
-          Promise.resolve().then(() => getDailyClosures()).catch(() => []),
-          Promise.resolve().then(() => getApprovals()).catch((err) => {
-            console.error('[Head of HR] getApprovals failed:', err);
-            return [];
-          })
-        ]);
-        if (Array.isArray(cData)) setClosuresList(cData);
-
-        // Merge DB approvals with localStorage pending approvals
-        const mergedMap = new Map();
-        let localApprovals = [];
-        try {
-          const lStr = localStorage.getItem('thoughtflows_pending_approvals');
-          if (lStr) localApprovals = JSON.parse(lStr);
-        } catch (e) {}
-
-        const safeTime = (dt, fallback = 'Recently') => {
-          if (!dt) return fallback;
-          try {
-            const d = new Date(dt);
-            return isNaN(d.getTime()) ? fallback : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-          } catch (e) {
-            return fallback;
-          }
+      const [cData, aData, tData] = await Promise.all([
+        getDailyClosures().catch(() => []),
+        getApprovals({ departmentCode: 'DEP-HR-001' }).catch(() => []),
+        getTeam({ departmentCode: 'DEP-HR-001' }).catch(() => null)
+      ]);
+      setClosuresList(Array.isArray(cData) ? cData : []);
+      setHrTeam(Array.isArray(tData) ? tData : null);
+      setApprovalsList((Array.isArray(aData) ? aData : []).map((a) => {
+        const priority = (a.priority || 'medium').toLowerCase();
+        return {
+          id: String(a._id || a.id),
+          title: a.title || a.kind || 'Approval Request',
+          priority,
+          priorityColor: priority === 'high' ? 'text-rose-500' : priority === 'low' ? 'text-blue-500' : 'text-amber-500',
+          detail: a.description || `${a.kind || 'Approval'} requested by ${a.requestedBy || 'staff'}`,
+          by: a.requestedBy || '—',
+          time: safeTime(a.createdAt),
+          status: (a.status || 'pending').toLowerCase(),
+          kind: a.kind || 'Approval'
         };
-
-        if (Array.isArray(aData)) {
-          aData.forEach(a => {
-            const aId = String(a._id || a.id || '');
-            if (aId) {
-              const status = (a.status || 'pending').toLowerCase();
-              const priority = (a.priority || 'medium').toLowerCase();
-              mergedMap.set(aId, {
-                id: aId,
-                title: a.title || a.name || a.kind || 'Approval Request',
-                priority: priority,
-                priorityColor: priority === 'high' ? 'text-rose-500' : priority === 'low' ? 'text-blue-500' : 'text-amber-500',
-                detail: a.description || a.detail || a.reason || `${a.kind || 'Approval'} requested by ${a.requestedBy || a.by || 'Staff'}`,
-                by: a.requestedBy || a.by || a.employeeName || 'HR Staff',
-                time: safeTime(a.createdAt, a.time || 'Recently'),
-                status: status,
-                kind: a.kind || 'Leave Approval'
-              });
-            }
-          });
-        }
-
-        const sigOf = (x) => [x.title, x.description || x.detail, x.requestedBy || x.by].map(v => String(v || '').trim().toLowerCase()).join('|');
-        const dbSigs = new Set((Array.isArray(aData) ? aData : []).map(sigOf));
-
-        if (Array.isArray(localApprovals)) {
-          localApprovals.forEach(a => {
-            const aId = String(a.id || a._id || '');
-            if (aId && !dbSigs.has(sigOf(a))) {
-              const status = (a.status || 'pending').toLowerCase();
-              const priority = (a.priority || 'medium').toLowerCase();
-              mergedMap.set(aId, {
-                id: aId,
-                title: a.title || a.name || a.kind || 'Approval Request',
-                priority: priority,
-                priorityColor: priority === 'high' ? 'text-rose-500' : priority === 'low' ? 'text-blue-500' : 'text-amber-500',
-                detail: a.detail || a.description || a.reason || `${a.kind || 'Approval'} requested by ${a.requestedBy || a.by || 'Staff'}`,
-                by: a.requestedBy || a.by || a.employeeName || 'HR Staff',
-                time: a.time || safeTime(a.createdAt),
-                status: status,
-                kind: a.kind || 'Leave Approval'
-              });
-            }
-          });
-        }
-
-        if (mergedMap.size === 0) {
-          const defaultItems = [
-            {
-              id: 'APR-LV-2026-0915',
-              title: 'Leave Request: Sick Leave (SL) (Half day)',
-              priority: 'medium',
-              priorityColor: 'text-amber-500',
-              detail: 'Sick Leave (SL) · Half day · Due to stomach pain i need half day leave (2026-09-15)',
-              by: 'Kavitha N.',
-              time: 'Sep 25',
-              status: 'pending',
-              kind: 'Leave Approval'
-            },
-            {
-              id: 'APR-TF-2026-1031',
-              title: 'Discount approval',
-              priority: 'high',
-              priorityColor: 'text-rose-500',
-              detail: 'Lead L-TF-CBE-2026-0188 — ₹4,000 discount on CPC',
-              by: 'Kavitha N.',
-              time: '10 min ago',
-              status: 'pending',
-              kind: 'Discount Approval'
-            }
-          ];
-          defaultItems.forEach(item => mergedMap.set(item.id, item));
-        }
-
-        setApprovalsList(Array.from(mergedMap.values()));
-      } catch (e) {
-        console.error('Error fetching approvals data:', e);
-      }
+      }));
     };
     fetchRealData();
     const unsub = onDataUpdate((entity) => {
-      if (!entity || ['closures', 'approvals', 'escalations'].includes(entity)) {
+      if (!entity || ['closures', 'approvals', 'escalations', 'team', 'leads'].includes(entity)) {
         fetchRealData();
       }
     });
@@ -1591,30 +1514,34 @@ function HeadOfHrDashboard({ onBack, currentUser, onChanged }) {
 
   const handleDecision = async (id, newStatus) => {
     try {
-      await decideApproval(id, newStatus).catch(() => {});
-    } catch (e) {}
-
-    try {
-      const lStr = localStorage.getItem('thoughtflows_pending_approvals');
-      if (lStr) {
-        const lArr = JSON.parse(lStr);
-        const updatedArr = lArr.map(item => item.id === id || item._id === id ? { ...item, status: newStatus } : item);
-        localStorage.setItem('thoughtflows_pending_approvals', JSON.stringify(updatedArr));
-      }
-    } catch (e) {}
-
-    setApprovalsList(prev => prev.map(item => item.id === id ? { ...item, status: newStatus } : item));
-    if (onChanged) onChanged();
+      const updated = await decideApproval(id, newStatus);
+      setApprovalsList(prev => prev.map(item => item.id === id ? { ...item, status: updated?.status || newStatus } : item));
+      if (onChanged) onChanged();
+    } catch (e) {
+      window.alert(e?.response?.data?.error || 'Could not save the decision');
+    }
   };
 
-  const pendingApprovalsCount = approvalsList.filter(a => (a.status || '').toLowerCase() === 'pending').length;
-  const eodCountToday = closuresList.filter(c => !c.date || c.date === new Date().toISOString().split('T')[0]).length;
+  const todayIst = new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10);
+  const pendingApprovalsCount = approvalsList.filter(a => a.status === 'pending').length;
+  const eodCountToday = closuresList.filter(c => c.date === todayIst).length;
+  const openEscalations = (counts.escalations || []).filter((e) => !['resolved', 'closed'].includes(e.status));
+  const teamSize = hrTeam ? hrTeam.length : null;
+  const availableToday = hrTeam ? hrTeam.filter((m) => m.available !== false).length : null;
+  // Follow-ups that are due or overdue across the HR team
+  const delayedWork = hrTeam ? hrTeam.reduce((s, m) => s + (m.pending || 0), 0) : null;
+  // Desk health: share of open items (approvals, escalations, overdue follow-ups) against the team's open leads
+  const openLeads = hrTeam ? hrTeam.reduce((s, m) => s + Math.max(0, (m.assigned || 0) - (m.completed || 0)), 0) : 0;
+  const health = hrTeam
+    ? Math.max(0, Math.min(100, Math.round(100 - ((pendingApprovalsCount + openEscalations.length + (delayedWork || 0)) / Math.max(1, openLeads + pendingApprovalsCount + openEscalations.length)) * 100)))
+    : null;
+  const show = (v) => (v === null || v === undefined ? '…' : String(v));
 
   const HR_TABS = [
     { key: 'desk', label: 'My Desk', icon: LayoutDashboard },
     { key: 'team', label: 'Team Performance', icon: Users, iconColor: 'text-blue-500' },
     { key: 'approvals', label: 'Approvals', icon: CheckCircle2, iconColor: 'text-emerald-500', badge: pendingApprovalsCount > 0 ? String(pendingApprovalsCount) : null, badgeColor: 'bg-amber-500' },
-    { key: 'escalations', label: 'Escalations', icon: AlertTriangle, iconColor: 'text-rose-500', badge: '1', badgeColor: 'bg-rose-500' },
+    { key: 'escalations', label: 'Escalations', icon: AlertTriangle, iconColor: 'text-rose-500', badge: openEscalations.length > 0 ? String(openEscalations.length) : null, badgeColor: 'bg-rose-500' },
     { key: 'tracker', label: 'Daily Tracker', icon: ClipboardList, iconColor: 'text-amber-500', badge: eodCountToday > 0 ? `${eodCountToday} EOD` : null, badgeColor: 'bg-purple-600' },
     { key: 'reports', label: 'Reports', icon: FileText, iconColor: 'text-indigo-500' },
     { key: 'roster', label: 'Roster', icon: Calendar, iconColor: 'text-sky-500' },
@@ -1633,7 +1560,7 @@ function HeadOfHrDashboard({ onBack, currentUser, onChanged }) {
       targetTab: 'approvals'
     },
     {
-      value: '1',
+      value: show(counts.escalations ? openEscalations.length : null),
       color: 'text-rose-500',
       topBorder: 'border-t-rose-500',
       title: 'Open Escalations',
@@ -1649,23 +1576,23 @@ function HeadOfHrDashboard({ onBack, currentUser, onChanged }) {
       targetTab: 'tracker'
     },
     {
-      value: '0',
-      color: 'text-emerald-500',
-      topBorder: 'border-t-emerald-500',
+      value: show(delayedWork),
+      color: delayedWork ? 'text-rose-500' : 'text-emerald-500',
+      topBorder: delayedWork ? 'border-t-rose-500' : 'border-t-emerald-500',
       title: 'Delayed Work',
-      sub: 'ON TRACK',
-      targetTab: 'desk'
-    },
-    {
-      value: '5',
-      color: 'text-amber-500',
-      topBorder: 'border-t-amber-400',
-      title: 'Team Size',
-      sub: 'ACTIVE MEMBERS',
+      sub: delayedWork ? 'FOLLOW-UPS DUE / OVERDUE' : 'ON TRACK',
       targetTab: 'team'
     },
     {
-      value: '33',
+      value: show(availableToday),
+      color: 'text-amber-500',
+      topBorder: 'border-t-amber-400',
+      title: 'Available Today',
+      sub: 'NOT ON LEAVE',
+      targetTab: 'roster'
+    },
+    {
+      value: show(teamSize),
       color: 'text-slate-900',
       topBorder: 'border-t-slate-800',
       title: 'Total HR Staff',
@@ -1700,13 +1627,13 @@ function HeadOfHrDashboard({ onBack, currentUser, onChanged }) {
               Head of HR
             </h2>
             <p className="text-xs text-slate-400 font-mono mt-0.5">
-              Jasmin <span className="mx-1 text-slate-300">·</span> Department Head <span className="mx-1 text-slate-300">·</span> DEP-HR-001
+              {department?.head || 'Head not assigned'} <span className="mx-1 text-slate-300">·</span> Department Head <span className="mx-1 text-slate-300">·</span> DEP-HR-001
             </p>
           </div>
         </div>
 
-        <div className="text-center pr-3 flex-shrink-0">
-          <div className="text-3xl font-extrabold text-rose-500 leading-none">0</div>
+        <div className="text-center pr-3 flex-shrink-0" title="100 minus the share of open approvals, escalations and overdue follow-ups against open work">
+          <div className={`text-3xl font-extrabold leading-none ${health === null ? 'text-slate-300' : health >= 80 ? 'text-emerald-500' : health >= 50 ? 'text-amber-500' : 'text-rose-500'}`}>{show(health)}</div>
           <div className="text-[9px] font-bold text-slate-400 tracking-wider uppercase mt-1">HEALTH</div>
         </div>
       </div>
@@ -1793,20 +1720,27 @@ function HeadOfHrDashboard({ onBack, currentUser, onChanged }) {
                 </button>
               ))}
 
-              <button
-                onClick={() => setTab('escalations')}
-                className="w-full flex items-center justify-between p-3.5 rounded-xl bg-white border border-slate-200/80 hover:border-slate-300 shadow-2xs transition-all text-left group cursor-pointer"
-              >
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[10px] font-bold bg-rose-100 text-rose-700 border border-rose-200 flex-shrink-0">
-                    🚨 Resolve
-                  </span>
-                  <span className="text-xs font-semibold text-slate-800 truncate group-hover:text-indigo-600 transition-colors">
-                    Fee dispute — Lead L-TF-CBE-2026-0150
-                  </span>
-                </div>
-                <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-slate-600 group-hover:translate-x-0.5 transition-all flex-shrink-0" />
-              </button>
+              {openEscalations.slice(0, 3).map((esc) => (
+                <button
+                  key={esc._id}
+                  onClick={() => setTab('escalations')}
+                  className="w-full flex items-center justify-between p-3.5 rounded-xl bg-white border border-slate-200/80 hover:border-slate-300 shadow-2xs transition-all text-left group cursor-pointer"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[10px] font-bold bg-rose-100 text-rose-700 border border-rose-200 flex-shrink-0">
+                      🚨 Resolve
+                    </span>
+                    <span className="text-xs font-semibold text-slate-800 truncate group-hover:text-indigo-600 transition-colors">
+                      {esc.title}{esc.raisedBy ? ` — ${esc.raisedBy}` : ''}
+                    </span>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-slate-600 group-hover:translate-x-0.5 transition-all flex-shrink-0" />
+                </button>
+              ))}
+
+              {pendingApprovalsCount === 0 && openEscalations.length === 0 && (
+                <div className="text-center py-6 text-xs text-slate-400">Nothing waiting on you — all approvals and escalations are cleared.</div>
+              )}
             </div>
           </div>
         </div>
@@ -1815,7 +1749,7 @@ function HeadOfHrDashboard({ onBack, currentUser, onChanged }) {
       {/* Tab 2: Team Performance */}
       {tab === 'team' && (
         <div className="space-y-6">
-          <TeamPerformanceBoard />
+          <TeamPerformanceBoard departmentCode="DEP-HR-001" title="HR Team Performance" />
           <LmsCertificationBoard />
           <TrainerQualityBoard />
         </div>
@@ -1957,7 +1891,7 @@ function HeadOfHrDashboard({ onBack, currentUser, onChanged }) {
 
       {/* Tab 6: Reports */}
       {tab === 'reports' && (
-        <ReportsExportBoard departmentName="HR department" />
+        <ReportsExportBoard departmentCode="DEP-HR-001" departmentName="HR department" />
       )}
 
       {/* Tab 7: Roster */}
@@ -1972,7 +1906,7 @@ function HeadOfHrDashboard({ onBack, currentUser, onChanged }) {
 
       {/* Tab 9: SOP Hub */}
       {tab === 'sop' && (
-        <SopHubBoard departmentName="HR" />
+        <SopHubBoard department="DEP-HR-001" departmentName="HR" />
       )}
 
       {/* Tab 10: Mgmt Summary */}
@@ -2015,14 +1949,6 @@ function DeptPicker({ departments, loading, onSelect }) {
     </div>
   );
 }
-
-const SOP_DOCS = [
-  { title: 'Department SOP', desc: 'Day-to-day operating procedure for this department.' },
-  { title: 'Team Responsibilities', desc: 'Who owns what across the team.' },
-  { title: 'Approval Rules', desc: 'What needs sign-off, and from whom, before it moves.' },
-  { title: 'Escalation Rules', desc: 'When to raise, to whom, and how urgency is set.' },
-  { title: 'Reporting Format', desc: 'The shape of the reports this desk sends upward.' }
-];
 
 function DeptDetail({ department: d, onBack, onChanged }) {
   const accent = ACCENTS.department;
@@ -2104,28 +2030,18 @@ function DeptDetail({ department: d, onBack, onChanged }) {
       )}
 
       {tab === 'team' && (
-        <TeamPerformanceBoard />
+        <TeamPerformanceBoard departmentCode={d.code} title={`${d.name} — Team Performance`} />
       )}
 
       {tab === 'approvals' && <ApprovalsDesk filter={{ departmentCode: d.code }} scopeLabel={d.name} accent={accent} onChanged={onChanged} />}
       {tab === 'escalations' && <EscalationsDesk filter={{ departmentCode: d.code }} scopeLabel={d.name} accent={accent} onChanged={onChanged} />}
 
       {tab === 'sop' && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          {SOP_DOCS.map((s) => (
-            <div key={s.title} className="p-4 rounded-xl bg-white border border-slate-200 flex items-start gap-3">
-              <FileText className="w-4 h-4 text-emerald-600 mt-0.5 flex-shrink-0" />
-              <div>
-                <div className="text-xs font-bold text-slate-900">{s.title}</div>
-                <p className="text-[10px] text-slate-500 mt-1">{s.desc}</p>
-              </div>
-            </div>
-          ))}
-        </div>
+        <SopHubBoard department={d.code} departmentName={d.name} />
       )}
 
       {tab === 'reports' && (
-        <ReportsExportBoard departmentName={`${d.name || 'HR department'}`} />
+        <ReportsExportBoard departmentCode={d.code} departmentName={d.name} />
       )}
     </div>
   );

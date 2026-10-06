@@ -73,7 +73,14 @@ const PUBLIC_ROUTES = [
 // Staff routes limited to Admin / Leadership
 const ADMIN_ROUTES = [
   ['*', /^\/admin\/users(\/|$)/],
-  ['PUT', /^\/admin\/slabs$/]
+  ['PUT', /^\/admin\/slabs$/],
+  ['PUT', /^\/settings\/incentive_policy$/],
+  ['POST', /^\/notifications\/remind$/],
+  ['*', /^\/leadership\/tasks(\/[^/]+)?$/],
+  ['PATCH', /^\/closures\/[^/]+\/review$/],
+  ['POST', /^\/branches$/],
+  ['PUT', /^\/branches\/[^/]+$/],
+  ['DELETE', /^\/branches\/[^/]+$/]
 ];
 
 // Department guards for staff writes. Admin & Leadership may do everything;
@@ -117,7 +124,12 @@ const STAFF_RULES = [
   ['PUT', /^\/student-portal\/requests\/[^/]+$/, ['training', 'hr']],
   // Placement & marketing
   ['*', /^\/cccp\//, ['cccp']],
-  ['*', /^\/marketing\/(campaigns|creatives)/, ['marketing']],
+  ['*', /^\/marketing\/(campaigns|creatives|content)/, ['marketing']],
+  // Branch lead demand: branch staff (HR) raise requests, Marketing fulfils them
+  ['*', /^\/marketing\/demands/, ['marketing', 'hr']],
+  // SOPs are written by department heads (Leadership / Admin only)
+  ['*', /^\/sops(\/[^/]+)?$/, []],
+  ['POST', /^\/sops\/[^/]+\/assign$/, []],
   // Leadership desk
   ['PATCH', /^\/leadership\/approvals\/[^/]+\/decision$/, ['marketing']],
   ['PATCH', /^\/leadership\/escalations\/[^/]+\/status$/, ['hr']],
@@ -185,7 +197,18 @@ function allowStudent(req, user) {
 }
 
 export function requireAuth(req, res, next) {
-  if (req.method === 'OPTIONS' || matches(PUBLIC_ROUTES, req.method, req.path)) return next();
+  if (req.method === 'OPTIONS') return next();
+  if (matches(PUBLIC_ROUTES, req.method, req.path)) {
+    // Public routes still recognise a signed-in caller (they may return more detail)
+    const header = req.headers.authorization || '';
+    if (header.startsWith('Bearer ')) {
+      try {
+        const user = jwt.verify(header.slice(7), secret());
+        if (user.typ !== 'file') req.user = user;
+      } catch (_) {}
+    }
+    return next();
+  }
 
   const header = req.headers.authorization || '';
   const fromHeader = header.startsWith('Bearer ');

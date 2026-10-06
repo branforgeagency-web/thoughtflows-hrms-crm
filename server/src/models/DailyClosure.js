@@ -11,7 +11,7 @@ const dailyClosureSchema = new mongoose.Schema({
   },
   branch: {
     type: String,
-    default: 'Saravanampatti Branch (CBE)'
+    default: ''
   },
   date: {
     type: String, // 'YYYY-MM-DD'
@@ -62,6 +62,14 @@ const dailyClosureSchema = new mongoose.Schema({
   editedFields: {
     type: [String],
     default: []
+  },
+  reviewedBy: {
+    type: String,
+    default: ''
+  },
+  reviewedAt: {
+    type: Date,
+    default: null
   },
   submittedBy: {
     type: String,

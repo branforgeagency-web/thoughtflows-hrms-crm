@@ -13,6 +13,10 @@ import {
   ChevronUp
 } from 'lucide-react';
 import { COURSE_CATEGORIES } from '../constants/courses';
+import { QUALIFICATION_GROUPS } from '../constants/qualifications';
+
+const CURRENT_YEAR = new Date().getFullYear();
+const PASSOUT_YEARS = Array.from({ length: CURRENT_YEAR - 1980 + 1 }, (_, i) => String(CURRENT_YEAR - i));
 
 export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
   if (!isOpen) return null;
@@ -29,7 +33,8 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
   const [age, setAge] = useState('24');
   const [gender, setGender] = useState('Female');
   const [location, setLocation] = useState('Coimbatore');
-  const [education, setEducation] = useState('— Select graduation —');
+  const [education, setEducation] = useState('');
+  const [passoutYear, setPassoutYear] = useState('');
   const [interestedCourse, setInterestedCourse] = useState('CPC - Certified Professional Coder');
   const [preferredBranch, setPreferredBranch] = useState('Saravanampatti (CBE)');
 
@@ -161,6 +166,7 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
       gender,
       location,
       education,
+      passoutYear,
       course: interestedCourse,
       branch: preferredBranch,
       source: currentSelectedSource.name,
@@ -446,8 +452,8 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
                 <p className="text-[10px] text-slate-400 mt-1">Student dashboard login: this email + an auto-generated TF password.</p>
               </div>
 
-              {/* Row 3: Age & Gender */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* Row 3: Age, Gender & Location */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-400 uppercase mb-1.5">
                     AGE
@@ -474,10 +480,6 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
                     <option value="Other">Other</option>
                   </select>
                 </div>
-              </div>
-
-              {/* Row 4: Location & Education */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-400 uppercase mb-1.5">
                     LOCATION
@@ -490,6 +492,10 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
                     className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#0e6977] transition-all font-sans"
                   />
                 </div>
+              </div>
+
+              {/* Row 4: Education & Year of Passout */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-400 uppercase mb-1.5">
                     EDUCATION / GRADUATION
@@ -499,15 +505,29 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
                     onChange={(e) => setEducation(e.target.value)}
                     className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#0e6977] transition-all font-sans cursor-pointer"
                   >
-                    <option value="— Select graduation —">— Select graduation —</option>
-                    <option value="BSc Life Sciences (Biotech, Micro, Biochem)">BSc Life Sciences (Biotech, Micro, Biochem)</option>
-                    <option value="BPharm / DPharm / MPharm">BPharm / DPharm / MPharm</option>
-                    <option value="BSc Nursing / GNM">BSc Nursing / GNM</option>
-                    <option value="BPT / Physiotherapy / Allied Health">BPT / Physiotherapy / Allied Health</option>
-                    <option value="BSc Computer Science / IT / BCA">BSc Computer Science / IT / BCA</option>
-                    <option value="BCom / BBA / Non-Life Sciences">BCom / BBA / Non-Life Sciences</option>
-                    <option value="BE / BTech">BE / BTech</option>
-                    <option value="Other Graduation">Other Graduation</option>
+                    <option value="">— Select graduation —</option>
+                    {QUALIFICATION_GROUPS.map((grp) => (
+                      <optgroup key={grp.group} label={grp.title}>
+                        {grp.options.map((q) => (
+                          <option key={q} value={q}>{q}</option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-400 uppercase mb-1.5">
+                    YEAR OF PASSOUT
+                  </label>
+                  <select
+                    value={passoutYear}
+                    onChange={(e) => setPassoutYear(e.target.value)}
+                    className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#0e6977] transition-all font-sans cursor-pointer"
+                  >
+                    <option value="">— Select year —</option>
+                    {PASSOUT_YEARS.map((y) => (
+                      <option key={y} value={y}>{y}</option>
+                    ))}
                   </select>
                 </div>
               </div>

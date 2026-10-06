@@ -23,7 +23,7 @@ const auditLogSchema = new mongoose.Schema({
   },
   ip: {
     type: String,
-    default: '127.0.0.1'
+    default: ''
   },
   details: String
 }, {

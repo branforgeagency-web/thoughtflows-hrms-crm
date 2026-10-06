@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { X, Sparkles, ArrowRight, Check, ShieldCheck, Copy, RotateCcw } from 'lucide-react';
 import { COURSE_CATEGORIES } from '../constants/courses';
+import { QUALIFICATION_GROUPS } from '../constants/qualifications';
 import logoImg from '../assets/thoughtflows-logo.png';
 import { 
   BRANCH_MAP, 
@@ -11,6 +12,10 @@ import {
   generateStudentIdDetails 
 } from '../utils/studentIdGenerator';
 import { getStudents } from '../services/api';
+
+const CURRENT_YEAR = new Date().getFullYear();
+const PASSOUT_YEARS = Array.from({ length: CURRENT_YEAR - 1980 + 1 }, (_, i) => String(CURRENT_YEAR - i));
+const ALL_QUALIFICATIONS = QUALIFICATION_GROUPS.flatMap((g) => g.options);
 
 export default function CompleteRegistrationModal({
   isOpen,
@@ -55,6 +60,10 @@ export default function CompleteRegistrationModal({
   const [examFeePaid, setExamFeePaid] = useState('');
   const [paymentMethod, setPaymentMethod] = useState('UPI / GPay / PhonePe');
   const [transactionId, setTransactionId] = useState(initialData?.transactionId || initialData?.paymentReference || '');
+  const [examPaidTogether, setExamPaidTogether] = useState(true);
+  const [examTransactionId, setExamTransactionId] = useState('');
+  const hasExamFee = (Number(examFeePaid) || 0) > 0;
+  const separateExamTxn = hasExamFee && !examPaidTogether;
 
   // Auto calculate pending balance and fee status safely from inputs
   const numTotalFee = Number(totalCourseFee) || 0;
@@ -167,7 +176,10 @@ export default function CompleteRegistrationModal({
       location: locationAddress.split(',')[0]?.trim() || branch || 'Coimbatore',
       address: locationAddress.trim(),
       qualification: highestQualification,
-      qualTag: highestQualification.toLowerCase().includes('pharm') || highestQualification.toLowerCase().includes('bsc') ? 'Life Sci' : 'Grad',
+      qualTag: QUALIFICATION_GROUPS.find((g) => g.group === 'life')?.options.includes(highestQualification)
+        || (!ALL_QUALIFICATIONS.includes(highestQualification) && /pharm|nursing|bsc life/i.test(highestQualification))
+        ? 'Life Sci'
+        : 'Grad',
       passoutYear,
       collegeCompany,
       source: modeOfSource,
@@ -188,6 +200,8 @@ export default function CompleteRegistrationModal({
       nextDueDate,
       examStatus: examBooked,
       examFee: Number(examFeePaid),
+      examPaidWithCourseFee: !separateExamTxn,
+      examTransactionId: hasExamFee ? (separateExamTxn ? examTransactionId.trim() : transactionId.trim()) : '',
       paymentMethod,
       paymentReference: transactionId.trim(),
       transactionId: transactionId.trim(),
@@ -392,14 +406,17 @@ export default function CompleteRegistrationModal({
                   className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer"
                 >
                   <option value="">— Select qualification —</option>
-                  <option value="BPharm (Bachelor of Pharmacy)">BPharm (Bachelor of Pharmacy)</option>
-                  <option value="BSc Life Sciences (Biotech, Micro, Biochem)">BSc Life Sciences (Biotech, Micro, Biochem)</option>
-                  <option value="BSc Nursing / GNM">BSc Nursing / GNM</option>
-                  <option value="BPT / Allied Health">BPT / Allied Health</option>
-                  <option value="BSc Computer Science / IT / BCA">BSc Computer Science / IT / BCA</option>
-                  <option value="BCom / BBA / Non-Life Sciences">BCom / BBA / Non-Life Sciences</option>
-                  <option value="BE / BTech">BE / BTech</option>
-                  <option value="Other Graduation">Other Graduation</option>
+                  {/* Keep a value from an older lead visible even if it's not in the current list */}
+                  {highestQualification && !ALL_QUALIFICATIONS.includes(highestQualification) && (
+                    <option value={highestQualification}>{highestQualification}</option>
+                  )}
+                  {QUALIFICATION_GROUPS.map((grp) => (
+                    <optgroup key={grp.group} label={grp.title}>
+                      {grp.options.map((q) => (
+                        <option key={q} value={q}>{q}</option>
+                      ))}
+                    </optgroup>
+                  ))}
                 </select>
               </div>
 
@@ -407,13 +424,19 @@ export default function CompleteRegistrationModal({
                 <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-500 uppercase mb-1">
                   YEAR OF PASSING
                 </label>
-                <input
-                  type="text"
+                <select
                   value={passoutYear}
                   onChange={(e) => setPassoutYear(e.target.value)}
-                  placeholder="e.g. 2022"
-                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all font-mono"
-                />
+                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer"
+                >
+                  <option value="">— Select year —</option>
+                  {passoutYear && !PASSOUT_YEARS.includes(String(passoutYear)) && (
+                    <option value={passoutYear}>{passoutYear}</option>
+                  )}
+                  {PASSOUT_YEARS.map((y) => (
+                    <option key={y} value={y}>{y}</option>
+                  ))}
+                </select>
               </div>
             </div>
 
@@ -754,6 +777,40 @@ export default function CompleteRegistrationModal({
               </div>
             </div>
 
+            {hasExamFee && (
+              <div>
+                <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-500 uppercase mb-1">
+                  HOW WAS THE EXAM FEE PAID?
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    { together: true, label: 'Together with course fee', hint: 'One transaction ID' },
+                    { together: false, label: 'Separately', hint: 'Separate transaction IDs' }
+                  ].map((opt) => {
+                    const active = examPaidTogether === opt.together;
+                    return (
+                      <button
+                        key={opt.label}
+                        type="button"
+                        onClick={() => setExamPaidTogether(opt.together)}
+                        className={`text-left px-3.5 py-2.5 rounded-xl border transition-all cursor-pointer ${
+                          active
+                            ? 'border-2 border-[#00897b] bg-teal-50 text-teal-900'
+                            : 'border-slate-200 bg-slate-50/70 hover:border-teal-300 text-slate-700'
+                        }`}
+                      >
+                        <div className="text-xs sm:text-sm font-bold flex items-center gap-1.5">
+                          {active && <Check className="w-3.5 h-3.5 text-[#00897b]" />}
+                          {opt.label}
+                        </div>
+                        <div className="text-[10.5px] text-slate-500 font-mono">{opt.hint}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
               <div>
                 <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-500 uppercase mb-1">
@@ -773,7 +830,11 @@ export default function CompleteRegistrationModal({
 
               <div>
                 <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-500 uppercase mb-1">
-                  TRANSACTION ID / UPI REF / UTR
+                  {separateExamTxn
+                    ? 'COURSE FEE TRANSACTION ID / UTR'
+                    : hasExamFee
+                      ? 'TRANSACTION ID (COURSE + EXAM FEE)'
+                      : 'TRANSACTION ID / UPI REF / UTR'}
                 </label>
                 <input
                   type="text"
@@ -784,6 +845,24 @@ export default function CompleteRegistrationModal({
                 />
               </div>
             </div>
+
+            {separateExamTxn && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                <div className="hidden sm:block" />
+                <div>
+                  <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-500 uppercase mb-1">
+                    EXAM FEE TRANSACTION ID / UTR
+                  </label>
+                  <input
+                    type="text"
+                    value={examTransactionId}
+                    onChange={(e) => setExamTransactionId(e.target.value)}
+                    placeholder="e.g. 428190384999"
+                    className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all font-mono"
+                  />
+                </div>
+              </div>
+            )}
 
             <p className="text-[11px] text-slate-400 font-mono pt-1 leading-relaxed">
               Pending balance & status update automatically. This fee record flows to the CRM and shows on the HR Head & Branch Manager dashboards.

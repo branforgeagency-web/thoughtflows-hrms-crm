@@ -51,8 +51,8 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin']
 }));
 app.options('*', cors());
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.use(express.json({ limit: '75mb' }));
+app.use(express.urlencoded({ limit: '75mb', extended: true }));
 app.use(morgan('dev'));
 
 // Static serving for call recordings

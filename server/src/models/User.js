@@ -30,7 +30,7 @@ const userSchema = new mongoose.Schema({
   },
   branch: {
     type: String,
-    default: 'Gandhipuram'
+    default: ''
   },
   status: {
     type: String,
