@@ -44,6 +44,7 @@ const NEEDS_FOLLOW_UP_DATE = ['Follow-up Needed', 'Call Back Later'];
 
 const STATUS_LABEL = {
   idle: 'READY',
+  dialing: 'DIALING…',
   'in-progress': 'ON CALL',
   completed: 'CALL ENDED'
 };
@@ -276,18 +277,26 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
     }
     const cleanPhone = leadForm.phone.replace(/[^\d+]/g, '');
     window.open(`tel:${cleanPhone}`, '_self');
+    // A tel: call gives the browser no connect/disconnect events, so the timer
+    // waits until the counsellor marks the call as connected.
+    if (callStatus !== 'in-progress') setCallStatus('dialing');
+    showToast(`Dialing ${leadForm.phone} via Phone / Phone Link… Tap "Connected" once the student picks up.`);
+  };
+
+  const handleCallConnected = () => {
     setCallStatus('in-progress');
     hasBeenAnsweredRef.current = true;
     startTimer();
     startAudioRecording();
-    showToast(`Calling ${leadForm.phone} via Phone / Phone Link… Call timer started.`);
+    showToast('Call connected. Timer started.');
   };
 
   const handleEndCall = () => {
+    const wasConnected = callStatus === 'in-progress';
     clearTimers();
     stopAudioRecording();
     setCallStatus('completed');
-    showToast('✓ Call ended. Audio recording ready.');
+    showToast(wasConnected ? '✓ Call ended. Audio recording ready.' : 'Call ended before it connected.');
   };
 
   // Handle local file upload
@@ -313,8 +322,8 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
   };
 
   const handleSaveAndClose = async () => {
-    if (['connecting', 'queued', 'ringing', 'in-progress'].includes(callStatus)) {
-      await handleEndCall();
+    if (['dialing', 'in-progress'].includes(callStatus)) {
+      handleEndCall();
     }
 
     if (NEEDS_FOLLOW_UP_DATE.includes(selectedOutcome) && !followUpDate) {
@@ -403,7 +412,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
     { title: 'Not Interested', sub: 'Close lead' }
   ];
 
-  const isCallActive = ['connecting', 'queued', 'ringing', 'in-progress'].includes(callStatus);
+  const isCallActive = ['dialing', 'in-progress'].includes(callStatus);
   const statusLabel = STATUS_LABEL[callStatus] || callStatus.toUpperCase();
 
   if (!isOpen) return null;
@@ -449,8 +458,32 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
               title="Call directly via Phone or Windows Phone Link"
             >
               <Phone className="w-3.5 h-3.5" />
-              <span>{callStatus === 'in-progress' ? 'RE-DIAL' : 'CALL VIA PHONE'}</span>
+              <span>{isCallActive ? 'RE-DIAL' : 'CALL VIA PHONE'}</span>
             </button>
+
+            {callStatus === 'dialing' && (
+              <button
+                type="button"
+                onClick={handleCallConnected}
+                className="bg-emerald-500 hover:bg-emerald-600 text-white font-extrabold text-xs px-4 py-2 rounded-full flex items-center gap-1.5 shadow-sm active:scale-95 transition-all cursor-pointer"
+                title="Start the timer once the student picks up"
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>CONNECTED</span>
+              </button>
+            )}
+
+            {isCallActive && (
+              <button
+                type="button"
+                onClick={handleEndCall}
+                className="bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs px-4 py-2 rounded-full flex items-center gap-1.5 shadow-sm active:scale-95 transition-all cursor-pointer"
+                title="Stop the timer when the call disconnects"
+              >
+                <X className="w-3.5 h-3.5" />
+                <span>HANG UP</span>
+              </button>
+            )}
 
             <div className="bg-white/10 border border-white/15 px-3 py-1.5 rounded-full text-xs font-bold text-white flex items-center gap-2">
               <span className={`w-2 h-2 rounded-full ${callStatus === 'in-progress' ? 'bg-rose-500 animate-ping' : isCallActive ? 'bg-amber-400 animate-pulse' : 'bg-slate-400'}`} />
