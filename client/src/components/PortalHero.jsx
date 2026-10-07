@@ -74,7 +74,7 @@ export default function PortalHero({
           <div className="mt-10 sm:mt-12 flex flex-nowrap items-center gap-5 sm:gap-8">
             {[
               { value: '35,000+', label: 'STUDENTS TRAINED' },
-              { value: '25,000+', label: 'PLACED IN CAREERS' },
+              { value: '30,000+', label: 'PLACED IN CAREERS' },
               { value: '15',      label: 'BRANCHES ACROSS INDIA' },
               { value: '121',     label: 'ACTIVE COURSES' },
             ].map((stat, i) => (

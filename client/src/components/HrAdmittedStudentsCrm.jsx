@@ -650,6 +650,10 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
                       <option value="Not Booked">Not Booked ⌵</option>
                       <option value="AAPC CPC Booked">AAPC CPC Booked</option>
                       <option value="Exam Scheduled">Exam Scheduled</option>
+                      {/* CCCP writes course-specific statuses (e.g. "CPC Exam Written") — keep them visible */}
+                      {s.examStatus && !['Not Booked', 'AAPC CPC Booked', 'Exam Scheduled'].includes(s.examStatus) && (
+                        <option value={s.examStatus}>{s.examStatus}</option>
+                      )}
                     </select>
                   </td>
 

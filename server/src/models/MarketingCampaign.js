@@ -46,6 +46,11 @@ const marketingCampaignSchema = new mongoose.Schema({
   ctr: {
     type: String,
     default: ''
+  },
+  // Every change to "spent" is logged so spend can be reported per month
+  spendLog: {
+    type: [{ at: { type: Date, default: Date.now }, amount: Number, by: String }],
+    default: []
   }
 }, {
   timestamps: true

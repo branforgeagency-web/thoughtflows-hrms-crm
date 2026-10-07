@@ -1,29 +1,35 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Activity, 
-  Rocket, 
-  Target, 
-  Building2, 
-  Calendar, 
-  Palette, 
-  TrendingUp, 
-  ChevronRight, 
-  Zap, 
-  X, 
-  CheckCircle2, 
-  Plus, 
-  Sparkles, 
-  Play, 
-  Pause, 
-  Check, 
-  LogOut
+import {
+  Activity,
+  Rocket,
+  Target,
+  Building2,
+  Calendar,
+  Palette,
+  TrendingUp,
+  ChevronRight,
+  Zap,
+  X,
+  CheckCircle2,
+  Plus,
+  Sparkles,
+  LogOut,
+  Pencil
 } from 'lucide-react';
 import logoImg from '../assets/thoughtflows-logo.png';
 import BranchLeadDemandBoard from './BranchLeadDemandBoard';
 import ContentCalendarBoard from './ContentCalendarBoard';
 import CreativeApprovalDesk from './CreativeApprovalDesk';
 import RoiReportsBoard from './RoiReportsBoard';
-import { getLeads, createLead, onDataUpdate, getCampaigns, createCampaign, updateCampaign, getMarketingSources, getLeadDemands, getCreatives, updateCreative } from '../services/api';
+import NotificationBell from './NotificationBell';
+import {
+  getLeads, createLead, onDataUpdate, getCampaigns, createCampaign, updateCampaign, getMarketingSources,
+  getLeadDemands, getCreatives, updateCreative, getContentPieces, getBranches
+} from '../services/api';
+import { ALL_COURSES } from '../constants/courses';
+
+const CAMPAIGN_CHANNELS = ['Instagram Ads', 'Meta Reels', 'Facebook Ads', 'Google Ads', 'YouTube Ads', 'WhatsApp Campaign', 'Campus / Offline', 'Referral'];
+const CAMPAIGN_STATUSES = ['Live', 'Paused', 'Planned', 'Completed'];
 
 export default function MarketingDepartmentDashboard({
   onClose,
@@ -32,78 +38,91 @@ export default function MarketingDepartmentDashboard({
   onSwitchDepartment,
   theme = 'classic'
 }) {
-  // Navigation Tabs: matching the user's reference image
   const [activeTab, setActiveTab] = useState('command-center');
-  
-  // Live marketing data — every figure below is computed from these records
+
+  // Live marketing data — every figure on this dashboard is computed from these records
   const [leads, setLeads] = useState([]);
   const [campaignRows, setCampaignRows] = useState([]);
   const [leadSourceRows, setLeadSourceRows] = useState([]);
   const [demands, setDemands] = useState([]);
   const [creatives, setCreatives] = useState([]);
+  const [contentPieces, setContentPieces] = useState([]);
+  const [branches, setBranches] = useState([]);
   const [loaded, setLoaded] = useState(false);
 
-  // Interactive Action Modal State
   const [selectedAction, setSelectedAction] = useState(null);
   const [toastMessage, setToastMessage] = useState(null);
-  const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [generatedLeadModal, setGeneratedLeadModal] = useState(null);
   const [leadFormCampaign, setLeadFormCampaign] = useState(null);
   const [leadForm, setLeadForm] = useState({ fullName: '', phone: '', email: '', location: '', branch: '', course: '' });
   const [savingLead, setSavingLead] = useState(false);
   const [selectedSourceDetail, setSelectedSourceDetail] = useState(null);
+  // Campaign create / edit (spend & budget are typed in from the ad platforms)
+  const [campaignForm, setCampaignForm] = useState(null);
+  const [savingCampaign, setSavingCampaign] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
     const fetchLiveMarketingData = async () => {
-      const [leadsData, campaignsData, sourcesData, demandsData, creativesData] = await Promise.all([
+      const [leadsData, campaignsData, sourcesData, demandsData, creativesData, contentData, branchData] = await Promise.all([
         getLeads().catch(() => null),
         getCampaigns().catch(() => null),
         getMarketingSources().catch(() => null),
         getLeadDemands().catch(() => null),
-        getCreatives().catch(() => null)
+        getCreatives().catch(() => null),
+        getContentPieces().catch(() => null),
+        getBranches().catch(() => null)
       ]);
       if (!isMounted) return;
       if (leadsData && Array.isArray(leadsData.leads)) setLeads(leadsData.leads);
+      else if (Array.isArray(leadsData)) setLeads(leadsData);
       if (Array.isArray(campaignsData)) setCampaignRows(campaignsData);
       if (Array.isArray(sourcesData)) setLeadSourceRows(sourcesData);
       if (Array.isArray(demandsData)) setDemands(demandsData);
       if (Array.isArray(creativesData)) setCreatives(creativesData);
+      if (Array.isArray(contentData)) setContentPieces(contentData);
+      if (Array.isArray(branchData)) setBranches(branchData);
       setLoaded(true);
     };
     fetchLiveMarketingData();
     const unsub = onDataUpdate((entity) => {
-      if (['leads', 'approvals', 'students', 'campaigns', 'marketing_campaigns', 'demands', 'creatives'].includes(entity)) {
+      if (['leads', 'approvals', 'students', 'campaigns', 'marketing_campaigns', 'demands', 'creatives', 'content', 'branches'].includes(entity)) {
         fetchLiveMarketingData();
       }
     });
+    // HR lead outcomes and Leadership approval decisions happen on other machines
+    const poll = setInterval(fetchLiveMarketingData, 60000);
     return () => {
       isMounted = false;
       unsub();
+      clearInterval(poll);
     };
   }, []);
 
-  const inr = (n) => `₹${(Number(n) || 0).toLocaleString('en-IN')}`;
+  const inr = (n) => (n === null || n === undefined ? '—' : `₹${(Number(n) || 0).toLocaleString('en-IN')}`);
+  const shortInr = (n) => {
+    const v = Number(n) || 0;
+    if (v >= 100000) return `₹${(v / 100000).toFixed(1)}L`;
+    if (v >= 1000) return `₹${(v / 1000).toFixed(1)}k`;
+    return `₹${v}`;
+  };
   const now = new Date();
   const leadsThisMonth = leads.filter((l) => {
     const d = new Date(l.createdAt);
     return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
   }).length;
   const totalSpend = campaignRows.reduce((s, c) => s + (Number(c.spent) || 0), 0);
+  // Logged spend changes dated this month (server keeps a spend log per campaign)
+  const spendThisMonth = campaignRows.reduce((s, c) => s + (Number(c.spentThisMonth) || 0), 0);
   const campaignLeads = campaignRows.reduce((s, c) => s + (c.leads || 0), 0);
   const campaignAdmissions = campaignRows.reduce((s, c) => s + (c.admissions || 0), 0);
   const blendedCpl = totalSpend && campaignLeads ? Math.round(totalSpend / campaignLeads) : null;
   const isUnderperforming = (c) => c.status === 'Underperforming' || (c.overTargetCpl && c.status !== 'Paused');
-  const statusClassOf = (c) => (c.status === 'Paused'
+  const statusClassOf = (c) => (c.status === 'Paused' || c.status === 'Completed'
     ? 'bg-slate-100 text-slate-600 border-slate-200'
     : isUnderperforming(c) ? 'bg-rose-50 text-rose-600 border-rose-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200');
 
-  const campaignDeskList = campaignRows.map((c) => ({
-    ...c,
-    statusClass: statusClassOf(c),
-    spentLabel: (Number(c.spent) || 0).toLocaleString('en-IN'),
-    budgetLabel: (Number(c.budget) || 0).toLocaleString('en-IN')
-  }));
+  const campaignDeskList = campaignRows.map((c) => ({ ...c, statusClass: statusClassOf(c) }));
   const campaigns = campaignRows.map((c) => ({
     id: c.id || c._id,
     name: c.name,
@@ -117,6 +136,7 @@ export default function MarketingDepartmentDashboard({
     targetCpl: c.targetCpl
   }));
   const pendingCreatives = creatives.filter((c) => c.status === 'Submitted');
+  const pendingApprovalCount = pendingCreatives.length;
 
   // "Needs Action": over-target CPL, open branch lead gaps, creatives awaiting sign-off
   const needsActionItems = [
@@ -125,6 +145,7 @@ export default function MarketingDepartmentDashboard({
       type: 'HIGH CPL',
       badgeClass: 'bg-rose-50 text-rose-600 border-rose-200',
       title: `${c.name} — ${inr(c.cpl)}/lead`,
+      campaign: c,
       campaignId: c._id,
       cpl: c.cpl,
       targetCpl: c.targetCpl,
@@ -137,16 +158,25 @@ export default function MarketingDepartmentDashboard({
       title: `${d.branch} needs ${d.gap} more ${d.course} leads`,
       branch: d.branch,
       target: d.targetLeads,
-      gap: d.gap
+      delivered: d.deliveredLeads,
+      gap: d.gap,
+      deadline: d.deadline,
+      campaignCode: d.campaignCode
     })),
     ...pendingCreatives.map((c) => ({
       id: `apr-${c._id}`,
       type: 'APPROVAL',
       badgeClass: 'bg-amber-50 text-amber-700 border-amber-200',
       title: c.title,
-      approvalId: c._id
+      approvalId: c._id,
+      creative: c
     }))
   ];
+
+  const showToast = (msg) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3500);
+  };
 
   // Log a real enquiry against a campaign → shared lead pool (HR allocation)
   const handleGenerateLead = (campaign) => {
@@ -184,11 +214,6 @@ export default function MarketingDepartmentDashboard({
     }
   };
 
-  const showToast = (msg) => {
-    setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 3500);
-  };
-
   // Approve a creative — also closes its Leadership approval (server side)
   const handleApproveCreative = async (creativeId) => {
     setSelectedAction(null);
@@ -200,57 +225,64 @@ export default function MarketingDepartmentDashboard({
     }
   };
 
-  // Pause or re-budget an over-CPL campaign
-  const handleFixCampaign = async (action) => {
-    const item = selectedAction;
-    if (!item?.campaignId) return;
+  const handlePauseCampaign = async (campaignId) => {
     try {
-      if (action === 'pause') {
-        await updateCampaign(item.campaignId, { status: 'Paused' });
-        showToast('Campaign paused');
-      } else {
-        const v = prompt('New daily budget (₹):', item.dailyBudget || '');
-        if (v === null) return;
-        await updateCampaign(item.campaignId, { dailyBudget: Math.max(0, parseInt(v, 10) || 0) });
-        showToast('Daily budget updated');
-      }
+      await updateCampaign(campaignId, { status: 'Paused' });
+      showToast('Campaign paused');
       setSelectedAction(null);
     } catch (e) {
       showToast(e?.response?.data?.error || 'Could not update the campaign');
     }
   };
 
-  // Spend & budget are typed in from the ad platforms; results are computed
-  const handleEditSpend = async (camp) => {
-    const spent = prompt(`Amount spent so far on "${camp.name}" (₹):`, camp.spent || 0);
-    if (spent === null) return;
-    const budget = prompt('Total budget (₹):', camp.budget || 0);
-    if (budget === null) return;
-    const targetCpl = prompt('Target cost per lead (₹, 0 = none):', camp.targetCpl || 0);
-    if (targetCpl === null) return;
-    try {
-      await updateCampaign(camp._id, {
-        spent: Math.max(0, parseInt(spent, 10) || 0),
-        budget: Math.max(0, parseInt(budget, 10) || 0),
-        targetCpl: Math.max(0, parseInt(targetCpl, 10) || 0)
-      });
-      showToast(`Spend updated for ${camp.name}`);
-    } catch (e) {
-      showToast(e?.response?.data?.error || 'Could not update spend');
-    }
+  const openCampaignForm = (camp = null) => {
+    setCampaignForm(camp
+      ? {
+        _id: camp._id || camp.id,
+        name: camp.name || '',
+        channel: camp.channel || '',
+        branch: camp.branch || 'All',
+        course: camp.course || '',
+        status: camp.status || 'Live',
+        dailyBudget: camp.dailyBudget ?? '',
+        budget: camp.budget ?? '',
+        spent: camp.spent ?? '',
+        targetCpl: camp.targetCpl ?? ''
+      }
+      : { name: '', channel: '', branch: 'All', course: '', status: 'Live', dailyBudget: '', budget: '', spent: '', targetCpl: '' });
   };
 
-  const handleNewCampaign = async () => {
-    const name = prompt('Campaign name:');
-    if (!name || !name.trim()) return;
-    const channel = prompt('Channel (e.g. Instagram Ads, Google Ads, WhatsApp):', '') || '';
-    const branch = prompt('Branch (or All):', 'All') || 'All';
-    const course = prompt('Course (e.g. CPC):', '') || '';
+  const handleSaveCampaign = async (e) => {
+    e.preventDefault();
+    const f = campaignForm;
+    if (!f || !f.name.trim()) return;
+    const num = (v) => Math.max(0, parseInt(v, 10) || 0);
+    const payload = {
+      name: f.name.trim(),
+      channel: f.channel,
+      branch: f.branch || 'All',
+      course: f.course,
+      status: f.status,
+      dailyBudget: num(f.dailyBudget),
+      budget: num(f.budget),
+      spent: num(f.spent),
+      targetCpl: num(f.targetCpl)
+    };
+    setSavingCampaign(true);
     try {
-      await createCampaign({ name: name.trim(), channel, branch, course, status: 'Live' });
-      showToast(`Campaign "${name.trim()}" created`);
-    } catch (e) {
-      showToast(e?.response?.data?.error || 'Could not create the campaign');
+      if (f._id) {
+        await updateCampaign(f._id, payload);
+        showToast(`Campaign "${payload.name}" updated`);
+      } else {
+        const created = await createCampaign(payload);
+        showToast(`Campaign ${created.code} created`);
+      }
+      setCampaignForm(null);
+      setSelectedAction(null);
+    } catch (err) {
+      showToast(err?.response?.data?.error || 'Could not save the campaign');
+    } finally {
+      setSavingCampaign(false);
     }
   };
 
@@ -292,7 +324,13 @@ export default function MarketingDepartmentDashboard({
           </div>
         </div>
 
-        {/* Right Section: Logout Button only */}
+        {/* Right Section: notifications (lead requests, Leadership decisions) + logout */}
+        <div className="flex items-center gap-2">
+        <NotificationBell
+          audience="marketing"
+          tone="dark"
+          onOpenItem={(n) => setActiveTab(n?.type === 'demand' ? 'branch-demand' : n?.type === 'creative' ? 'creative-approval' : n?.type === 'approval' ? 'roi-reports' : 'command-center')}
+        />
         <button
           onClick={() => (onLogout || onClose)?.()}
           className="flex items-center gap-1.5 px-4 py-1.5 rounded-full bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-sm border border-rose-400/30 transition-all active:scale-95 cursor-pointer"
@@ -301,6 +339,7 @@ export default function MarketingDepartmentDashboard({
           <LogOut className="w-3.5 h-3.5 text-rose-100" />
           <span>Logout</span>
         </button>
+        </div>
       </header>
 
       {/* MAIN CONTENT AREA */}
@@ -387,9 +426,9 @@ export default function MarketingDepartmentDashboard({
             >
               <Palette className="w-4 h-4 text-pink-500" />
               <span>Creative Approval</span>
-              {pendingApprovals.length > 0 && (
+              {pendingApprovalCount > 0 && (
                 <span className="w-5 h-5 rounded-full bg-amber-500 text-white text-[11px] font-black flex items-center justify-center shadow-xs">
-                  {pendingApprovals.length}
+                  {pendingApprovalCount}
                 </span>
               )}
             </button>
@@ -419,14 +458,14 @@ export default function MarketingDepartmentDashboard({
                 {/* 1. Leads This Month: Cyan */}
                 <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/70 shadow-[0_2px_12px_rgba(0,0,0,0.03)] border-t-[3.5px] border-t-cyan-500 flex flex-col justify-between hover:shadow-md transition-all">
                   <div className="text-3xl sm:text-4xl font-extrabold text-cyan-500 tracking-tight">
-                    {totalLeadsCount}
+                    {leadsThisMonth}
                   </div>
                   <div className="mt-3">
                     <div className="text-xs sm:text-sm font-bold text-slate-800 leading-snug">
                       Leads This Month
                     </div>
                     <div className="text-[11px] text-slate-400 font-mono mt-0.5">
-                      from all sources
+                      {loaded ? `${leads.length} in pool · all sources` : 'loading…'}
                     </div>
                   </div>
                 </div>
@@ -434,14 +473,14 @@ export default function MarketingDepartmentDashboard({
                 {/* 2. Avg Cost / Lead: Royal Blue */}
                 <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/70 shadow-[0_2px_12px_rgba(0,0,0,0.03)] border-t-[3.5px] border-t-blue-600 flex flex-col justify-between hover:shadow-md transition-all">
                   <div className="text-3xl sm:text-4xl font-extrabold text-blue-600 tracking-tight">
-                    ₹174
+                    {blendedCpl === null ? '—' : `₹${blendedCpl.toLocaleString('en-IN')}`}
                   </div>
                   <div className="mt-3">
                     <div className="text-xs sm:text-sm font-bold text-slate-800 leading-snug">
                       Avg Cost / Lead
                     </div>
                     <div className="text-[11px] text-slate-400 font-mono mt-0.5">
-                      blended
+                      spend ÷ campaign leads
                     </div>
                   </div>
                 </div>
@@ -449,14 +488,14 @@ export default function MarketingDepartmentDashboard({
                 {/* 3. Admissions: Green */}
                 <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/70 shadow-[0_2px_12px_rgba(0,0,0,0.03)] border-t-[3.5px] border-t-emerald-500 flex flex-col justify-between hover:shadow-md transition-all">
                   <div className="text-3xl sm:text-4xl font-extrabold text-emerald-600 tracking-tight">
-                    26
+                    {campaignAdmissions}
                   </div>
                   <div className="mt-3">
                     <div className="text-xs sm:text-sm font-bold text-slate-800 leading-snug">
                       Admissions
                     </div>
                     <div className="text-[11px] text-slate-400 font-mono mt-0.5">
-                      marketing-sourced
+                      from campaign leads
                     </div>
                   </div>
                 </div>
@@ -464,14 +503,14 @@ export default function MarketingDepartmentDashboard({
                 {/* 4. Spend: Black / Slate */}
                 <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/70 shadow-[0_2px_12px_rgba(0,0,0,0.03)] border-t-[3.5px] border-t-[#0f172a] flex flex-col justify-between hover:shadow-md transition-all">
                   <div className="text-3xl sm:text-4xl font-extrabold text-[#0f172a] tracking-tight">
-                    ₹66k
+                    {shortInr(spendThisMonth)}
                   </div>
                   <div className="mt-3">
                     <div className="text-xs sm:text-sm font-bold text-slate-800 leading-snug">
                       Spend
                     </div>
                     <div className="text-[11px] text-slate-400 font-mono mt-0.5">
-                      this month
+                      this month · {shortInr(totalSpend)} total
                     </div>
                   </div>
                 </div>
@@ -561,7 +600,7 @@ export default function MarketingDepartmentDashboard({
                 <div className="flex items-center justify-between mb-4">
                   <div>
                     <h3 className="text-base font-bold text-slate-900">Active Ad Campaigns Pulse</h3>
-                    <p className="text-xs text-slate-400">Real-time CPL and spend monitoring across Meta & Google Ads</p>
+                    <p className="text-xs text-slate-400">CPL = recorded spend ÷ leads tagged with the campaign code</p>
                   </div>
                   <button
                     onClick={() => setActiveTab('campaign-desk')}
@@ -579,12 +618,15 @@ export default function MarketingDepartmentDashboard({
                         <th className="pb-2.5">Channel</th>
                         <th className="pb-2.5">Status</th>
                         <th className="pb-2.5 text-right">Daily Budget</th>
-                        <th className="pb-2.5 text-right">MTD Spend</th>
+                        <th className="pb-2.5 text-right">Spend</th>
                         <th className="pb-2.5 text-right">Leads</th>
                         <th className="pb-2.5 text-right">Blended CPL</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 font-medium">
+                      {campaigns.length === 0 && (
+                        <tr><td colSpan={7} className="py-8 text-center text-slate-400">No campaigns yet — create one from the Campaign Desk.</td></tr>
+                      )}
                       {campaigns.map(cmp => (
                         <tr key={cmp.id} className="hover:bg-slate-50/60 transition-colors">
                           <td className="py-3 font-bold text-slate-800">{cmp.name}</td>
@@ -594,12 +636,12 @@ export default function MarketingDepartmentDashboard({
                               {cmp.status}
                             </span>
                           </td>
-                          <td className="py-3 text-right font-mono">₹{cmp.dailyBudget.toLocaleString()}</td>
-                          <td className="py-3 text-right font-mono">₹{cmp.spendMonth.toLocaleString()}</td>
+                          <td className="py-3 text-right font-mono">{inr(cmp.dailyBudget)}</td>
+                          <td className="py-3 text-right font-mono">{inr(cmp.spendMonth)}</td>
                           <td className="py-3 text-right font-bold text-slate-900">{cmp.leads}</td>
                           <td className="py-3 text-right font-bold font-mono">
-                            <span className={cmp.cpl > 200 ? 'text-rose-600' : 'text-emerald-600'}>
-                              ₹{cmp.cpl}
+                            <span className={cmp.cpl === null || cmp.cpl === undefined ? 'text-slate-400' : cmp.targetCpl && cmp.cpl > cmp.targetCpl ? 'text-rose-600' : 'text-emerald-600'}>
+                              {inr(cmp.cpl)}
                             </span>
                           </td>
                         </tr>
@@ -619,15 +661,28 @@ export default function MarketingDepartmentDashboard({
               {/* Main Container */}
               <div className="bg-white rounded-2xl p-5 sm:p-7 border border-slate-200/80 shadow-[0_4px_20px_-4px_rgba(15,23,42,0.05)] space-y-4">
                 {/* Header */}
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-lg">🚀</span>
-                    <h2 className="text-lg font-black text-slate-900 tracking-tight">Campaign Desk</h2>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-lg">🚀</span>
+                      <h2 className="text-lg font-black text-slate-900 tracking-tight">Campaign Desk</h2>
+                    </div>
+                    <p className="font-mono text-xs text-slate-500 mt-1">
+                      {campaignDeskList.length} campaigns · log an enquiry against a campaign to send it to HR
+                    </p>
                   </div>
-                  <p className="font-mono text-xs text-slate-500 mt-1">
-                    {campaignDeskList.length} campaigns · tap a campaign to generate a live lead
-                  </p>
+                  <button
+                    onClick={() => openCampaignForm()}
+                    className="self-start sm:self-auto flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold text-teal-700 bg-teal-50 hover:bg-teal-100 border border-teal-200 transition-all active:scale-95"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> New Campaign
+                  </button>
                 </div>
+                {campaignDeskList.length === 0 && (
+                  <div className="py-10 text-center text-xs text-slate-400 border border-dashed border-slate-200 rounded-2xl">
+                    No campaigns yet. Create one here or from a branch lead demand.
+                  </div>
+                )}
 
                 {/* 4 Campaign Cards */}
                 <div className="space-y-3 pt-1">
@@ -653,21 +708,29 @@ export default function MarketingDepartmentDashboard({
 
                       {/* Middle Row: Platform · Branch · Course · Spend/Budget */}
                       <div className="text-xs text-slate-500 font-mono">
-                        {camp.channel} · {camp.branch} · {camp.course} · ₹{camp.spent}/{camp.budget}
+                        {[camp.channel || 'no channel', camp.branch || 'All', camp.course || 'all courses'].join(' · ')} · spent {inr(camp.spent)} of {inr(camp.budget)} · {inr(camp.spentThisMonth || 0)} this month{camp.targetCpl ? ` · target CPL ${inr(camp.targetCpl)}` : ''}
                       </div>
 
                       {/* Bottom Row: Stats + Generate Lead Button */}
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1 border-t border-slate-100">
                         <div className="text-xs text-slate-500 font-mono">
-                          {camp.leads} leads · ₹{camp.cpl} CPL · {camp.admissions} admissions · ROI {camp.roi}
+                          {camp.leads || 0} leads · {inr(camp.cpl)} CPL · {camp.admissions || 0} admissions · ROI {camp.roi || '—'}
                         </div>
 
+                        <div className="self-end sm:self-auto flex items-center gap-2">
+                        <button
+                          onClick={() => openCampaignForm(camp)}
+                          className="border border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-semibold px-3 py-1.5 rounded-lg active:scale-95 transition-all flex items-center gap-1 cursor-pointer shadow-2xs"
+                        >
+                          <Pencil className="w-3 h-3" /> Spend / Edit
+                        </button>
                         <button
                           onClick={() => handleGenerateLead(camp)}
                           className="self-end sm:self-auto border border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-semibold px-3.5 py-1.5 rounded-lg active:scale-95 transition-all flex items-center gap-1 cursor-pointer shadow-2xs"
                         >
-                          <span>+ Generate Lead → HR</span>
+                          <span>+ Log Lead → HR</span>
                         </button>
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -681,7 +744,7 @@ export default function MarketingDepartmentDashboard({
                   <span>Live connection</span>
                 </div>
                 <p className="text-xs text-slate-700 leading-relaxed mt-1 font-normal">
-                  Every "Generate Lead" creates a real Lead ID (L-TF-...), drops it into the shared lead pool, and it appears in the <strong>Branch Manager's allocation queue</strong> — ready to assign to an HR. No lead reaches HR without a Lead ID.
+                  Every "Log Lead" creates a real lead tagged with the campaign code, drops it into the shared lead pool, and it appears in <strong>HR's allocation queue</strong> for the branch. Its outcome (connected → demo → admitted) flows back here as campaign leads, CPL and admissions.
                 </p>
               </div>
             </div>
@@ -722,6 +785,9 @@ export default function MarketingDepartmentDashboard({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100/90 text-xs">
+                      {leadSourceRows.length === 0 && (
+                        <tr><td colSpan={9} className="py-8 text-center text-slate-400">No leads in the pool yet.</td></tr>
+                      )}
                       {leadSourceRows.map((row, idx) => (
                         <tr 
                           key={idx} 
@@ -781,13 +847,12 @@ export default function MarketingDepartmentDashboard({
           {/* ========================================================================= */}
           {activeTab === 'branch-demand' && (
             <div className="space-y-6 animate-fadeIn">
-              <BranchLeadDemandBoard 
+              <BranchLeadDemandBoard
+                demands={demands}
+                campaigns={campaignRows}
+                branches={branches}
+                currentUser={currentUser}
                 onToast={showToast}
-                onCampaignCreated={(newCamp) => {
-                  showToast(`🚀 Campaign planned for ${newCamp.branch}! Added to Campaign Desk.`);
-                  // Sync with needsActionItems (remove any lead gap item for this branch)
-                  setNeedsActionItems(prev => prev.filter(item => !item.branch?.toLowerCase().includes(newCamp.branch.toLowerCase())));
-                }}
               />
             </div>
           )}
@@ -797,7 +862,7 @@ export default function MarketingDepartmentDashboard({
           {/* ========================================================================= */}
           {activeTab === 'content-calendar' && (
             <div className="space-y-6 animate-fadeIn">
-              <ContentCalendarBoard onToast={showToast} />
+              <ContentCalendarBoard pieces={contentPieces} branches={branches} currentUser={currentUser} onToast={showToast} />
             </div>
           )}
 
@@ -806,11 +871,12 @@ export default function MarketingDepartmentDashboard({
           {/* ========================================================================= */}
           {activeTab === 'creative-approval' && (
             <div className="space-y-6 animate-fadeIn">
-              <CreativeApprovalDesk 
+              <CreativeApprovalDesk
+                creatives={creatives}
+                campaigns={campaignRows}
+                branches={branches}
+                currentUser={currentUser}
                 onToast={showToast}
-                onQueueCountChange={(count) => {
-                  setPendingApprovals(new Array(count).fill({}));
-                }}
               />
             </div>
           )}
@@ -820,7 +886,16 @@ export default function MarketingDepartmentDashboard({
           {/* ========================================================================= */}
           {activeTab === 'roi-reports' && (
             <div className="space-y-6 animate-fadeIn">
-              <RoiReportsBoard onToast={showToast} />
+              <RoiReportsBoard
+                campaigns={campaignRows}
+                sources={leadSourceRows}
+                demands={demands}
+                creatives={creatives}
+                leads={leads}
+                branches={branches}
+                currentUser={currentUser}
+                onToast={showToast}
+              />
             </div>
           )}
 
@@ -858,24 +933,25 @@ export default function MarketingDepartmentDashboard({
               {selectedAction.type === 'HIGH CPL' && (
                 <div className="bg-rose-50/70 p-4 rounded-xl border border-rose-200 space-y-3">
                   <div className="flex items-center justify-between text-xs">
-                    <span className="text-rose-700 font-bold">Current CPL: ₹379</span>
-                    <span className="text-slate-600">Target: ₹160/lead</span>
+                    <span className="text-rose-700 font-bold">Current CPL: {inr(selectedAction.cpl)}</span>
+                    <span className="text-slate-600">Target: {inr(selectedAction.targetCpl)}/lead</span>
                   </div>
                   <p className="text-xs text-rose-900 leading-relaxed">
-                    Creative fatigue detected on Meta campaign. Daily burn rate is ₹2,200. We recommend pausing this ad set or capping daily spend immediately.
+                    {selectedAction.campaign?.leads || 0} leads on {inr(selectedAction.campaign?.spent)} spent · daily budget {inr(selectedAction.dailyBudget)}.
+                    Pause it, or lower the daily budget / update spend from the ad platform.
                   </p>
                   <div className="flex items-center gap-2 pt-1">
                     <button
-                      onClick={() => handleFixCampaign('pause')}
+                      onClick={() => handlePauseCampaign(selectedAction.campaignId)}
                       className="flex-1 py-2 px-3 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-all shadow-xs"
                     >
-                      Pause Ad Set
+                      Pause Campaign
                     </button>
                     <button
-                      onClick={() => handleFixCampaign('reallocate')}
+                      onClick={() => openCampaignForm(selectedAction.campaign)}
                       className="flex-1 py-2 px-3 rounded-xl bg-white hover:bg-slate-50 text-slate-800 border border-slate-300 text-xs font-bold transition-all"
                     >
-                      Cap to ₹800/day
+                      Edit budget / spend
                     </button>
                   </div>
                 </div>
@@ -884,31 +960,25 @@ export default function MarketingDepartmentDashboard({
               {/* LEAD GAP SPECIFIC ACTIONS */}
               {selectedAction.type === 'LEAD GAP' && (
                 <div className="bg-amber-50/70 p-4 rounded-xl border border-amber-200 space-y-3">
-                  <div className="text-xs text-amber-900">
-                    This branch is running behind on incoming enquiries for the next classroom batch. 
-                  </div>
                   <div className="flex items-center justify-between text-xs font-mono font-bold text-slate-700">
-                    <span>Target: {selectedAction.target || 65} leads</span>
-                    <span className="text-amber-700">Shortfall: {selectedAction.gap || 8} leads</span>
+                    <span>Target: {selectedAction.target} leads</span>
+                    <span>Delivered: {selectedAction.delivered || 0}</span>
+                    <span className="text-amber-700">Gap: {selectedAction.gap}</span>
                   </div>
-                  <div className="flex items-center gap-2 pt-1">
-                    <button
-                      onClick={() => {
-                        setSelectedAction(null);
-                        setActiveTab('branch-demand');
-                      }}
-                      className="flex-1 py-2.5 px-3 rounded-xl bg-white hover:bg-slate-50 text-slate-800 border border-slate-300 text-xs font-bold transition-all"
-                    >
-                      Open Demand Board
-                    </button>
-                    <button
-                      onClick={() => handleResolveLeadGap(selectedAction.id, selectedAction.branch || 'Branch')}
-                      className="flex-1 py-2.5 px-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-all shadow-sm"
-                    >
-                      <Zap className="w-3.5 h-3.5 text-amber-400" />
-                      <span>Boost Ads (+₹2.5k)</span>
-                    </button>
+                  <div className="text-xs text-amber-900">
+                    {selectedAction.campaignCode ? `Linked campaign: ${selectedAction.campaignCode}.` : 'No campaign linked yet.'}
+                    {selectedAction.deadline ? ` Deadline ${selectedAction.deadline}.` : ''}
                   </div>
+                  <button
+                    onClick={() => {
+                      setSelectedAction(null);
+                      setActiveTab('branch-demand');
+                    }}
+                    className="w-full py-2.5 px-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-all shadow-sm"
+                  >
+                    <Zap className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Open Demand Board · plan campaign</span>
+                  </button>
                 </div>
               )}
 
@@ -916,7 +986,8 @@ export default function MarketingDepartmentDashboard({
               {selectedAction.type === 'APPROVAL' && (
                 <div className="bg-purple-50/70 p-4 rounded-xl border border-purple-200 space-y-3">
                   <p className="text-xs text-purple-950">
-                    Creative is awaiting marketing lead sign-off before publishing to Instagram and offline campus networks.
+                    {[selectedAction.creative?.format, selectedAction.creative?.campaignCode, selectedAction.creative?.author && `by ${selectedAction.creative.author}`].filter(Boolean).join(' · ')}
+                    {' '}— awaiting sign-off. The same item is in Leadership Hub approvals; deciding here closes it there.
                   </p>
                   <div className="flex items-center gap-2 pt-1">
                     <button
@@ -951,6 +1022,135 @@ export default function MarketingDepartmentDashboard({
         </div>
       )}
 
+      {/* LOG A LEAD AGAINST A CAMPAIGN → shared lead pool (HR allocation) */}
+      {leadFormCampaign && (
+        <div className="fixed inset-0 z-[65] bg-slate-950/40 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-white rounded-3xl w-full max-w-md shadow-2xl border border-slate-200/80 p-6 animate-scaleUp relative max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Log lead → HR</h3>
+                <p className="text-[11px] text-slate-400 font-mono">{leadFormCampaign.code} · {leadFormCampaign.name}</p>
+              </div>
+              <button onClick={() => setLeadFormCampaign(null)} className="w-8 h-8 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <form onSubmit={handleSubmitCampaignLead} className="py-4 space-y-3 text-xs">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Full name *</label>
+                  <input required value={leadForm.fullName} onChange={(e) => setLeadForm({ ...leadForm, fullName: e.target.value })} className="w-full px-3 py-2 rounded-xl border border-slate-200 text-slate-800 text-xs focus:ring-2 focus:ring-teal-500 focus:outline-none" />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Phone *</label>
+                  <input required type="tel" value={leadForm.phone} onChange={(e) => setLeadForm({ ...leadForm, phone: e.target.value })} className="w-full px-3 py-2 rounded-xl border border-slate-200 text-slate-800 text-xs focus:ring-2 focus:ring-teal-500 focus:outline-none" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Email</label>
+                  <input type="email" value={leadForm.email} onChange={(e) => setLeadForm({ ...leadForm, email: e.target.value })} className="w-full px-3 py-2 rounded-xl border border-slate-200 text-slate-800 text-xs focus:ring-2 focus:ring-teal-500 focus:outline-none" />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Location</label>
+                  <input value={leadForm.location} onChange={(e) => setLeadForm({ ...leadForm, location: e.target.value })} className="w-full px-3 py-2 rounded-xl border border-slate-200 text-slate-800 text-xs focus:ring-2 focus:ring-teal-500 focus:outline-none" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Branch</label>
+                  <select value={leadForm.branch} onChange={(e) => setLeadForm({ ...leadForm, branch: e.target.value })} className="w-full px-3 py-2 rounded-xl border border-slate-200 text-slate-800 text-xs focus:ring-2 focus:ring-teal-500 focus:outline-none">
+                    <option value="">Unassigned</option>
+                    {branches.map((b) => <option key={b._id || b.name} value={b.name}>{b.name}</option>)}
+                    {leadForm.branch && !branches.some((b) => b.name === leadForm.branch) && <option value={leadForm.branch}>{leadForm.branch}</option>}
+                  </select>
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Course</label>
+                  <select value={leadForm.course} onChange={(e) => setLeadForm({ ...leadForm, course: e.target.value })} className="w-full px-3 py-2 rounded-xl border border-slate-200 text-slate-800 text-xs focus:ring-2 focus:ring-teal-500 focus:outline-none">
+                    <option value="">Not decided</option>
+                    {ALL_COURSES.map((c) => <option key={c.code} value={c.code}>{c.code}</option>)}
+                    {leadForm.course && !ALL_COURSES.some((c) => c.code === leadForm.course) && <option value={leadForm.course}>{leadForm.course}</option>}
+                  </select>
+                </div>
+              </div>
+              <div className="pt-3 border-t border-slate-100 flex justify-end gap-2.5">
+                <button type="button" onClick={() => setLeadFormCampaign(null)} className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100">Cancel</button>
+                <button type="submit" disabled={savingLead} className="px-5 py-2.5 rounded-xl text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-60 shadow-sm">
+                  {savingLead ? 'Saving…' : 'Send to HR pool'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* CREATE / EDIT CAMPAIGN */}
+      {campaignForm && (
+        <div className="fixed inset-0 z-[66] bg-slate-950/40 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-white rounded-3xl w-full max-w-md shadow-2xl border border-slate-200/80 p-6 animate-scaleUp relative max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <h3 className="text-base font-bold text-slate-900">{campaignForm._id ? 'Edit campaign' : 'New campaign'}</h3>
+              <button onClick={() => setCampaignForm(null)} className="w-8 h-8 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <form onSubmit={handleSaveCampaign} className="py-4 space-y-3 text-xs">
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Name *</label>
+                <input required value={campaignForm.name} onChange={(e) => setCampaignForm({ ...campaignForm, name: e.target.value })} className="w-full px-3 py-2 rounded-xl border border-slate-200 text-slate-800 text-xs focus:ring-2 focus:ring-teal-500 focus:outline-none" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Channel</label>
+                  <input list="mkt-channels" value={campaignForm.channel} onChange={(e) => setCampaignForm({ ...campaignForm, channel: e.target.value })} className="w-full px-3 py-2 rounded-xl border border-slate-200 text-slate-800 text-xs focus:ring-2 focus:ring-teal-500 focus:outline-none" />
+                  <datalist id="mkt-channels">{CAMPAIGN_CHANNELS.map((c) => <option key={c} value={c} />)}</datalist>
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Status</label>
+                  <select value={campaignForm.status} onChange={(e) => setCampaignForm({ ...campaignForm, status: e.target.value })} className="w-full px-3 py-2 rounded-xl border border-slate-200 text-slate-800 text-xs focus:ring-2 focus:ring-teal-500 focus:outline-none">
+                    {(CAMPAIGN_STATUSES.includes(campaignForm.status) ? CAMPAIGN_STATUSES : [campaignForm.status, ...CAMPAIGN_STATUSES]).map((s) => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Branch</label>
+                  <select value={campaignForm.branch} onChange={(e) => setCampaignForm({ ...campaignForm, branch: e.target.value })} className="w-full px-3 py-2 rounded-xl border border-slate-200 text-slate-800 text-xs focus:ring-2 focus:ring-teal-500 focus:outline-none">
+                    <option value="All">All branches</option>
+                    {branches.map((b) => <option key={b._id || b.name} value={b.name}>{b.name}</option>)}
+                    {campaignForm.branch && campaignForm.branch !== 'All' && !branches.some((b) => b.name === campaignForm.branch) && <option value={campaignForm.branch}>{campaignForm.branch}</option>}
+                  </select>
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Course</label>
+                  <select value={campaignForm.course} onChange={(e) => setCampaignForm({ ...campaignForm, course: e.target.value })} className="w-full px-3 py-2 rounded-xl border border-slate-200 text-slate-800 text-xs focus:ring-2 focus:ring-teal-500 focus:outline-none">
+                    <option value="">All courses</option>
+                    {ALL_COURSES.map((c) => <option key={c.code} value={c.code}>{c.code}</option>)}
+                    {campaignForm.course && !ALL_COURSES.some((c) => c.code === campaignForm.course) && <option value={campaignForm.course}>{campaignForm.course}</option>}
+                  </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                {[['dailyBudget', 'Daily budget ₹'], ['budget', 'Total budget ₹'], ['spent', 'Spent so far ₹'], ['targetCpl', 'Target CPL ₹']].map(([k, l]) => (
+                  <div key={k}>
+                    <label className="block font-bold text-slate-700 mb-1">{l}</label>
+                    <input type="number" min="0" value={campaignForm[k]} onChange={(e) => setCampaignForm({ ...campaignForm, [k]: e.target.value })} className="w-full px-3 py-2 rounded-xl border border-slate-200 text-slate-800 text-xs focus:ring-2 focus:ring-teal-500 focus:outline-none" />
+                  </div>
+                ))}
+              </div>
+              <p className="text-[11px] text-slate-400">Leads, admissions, CPL and ROI are counted automatically from the lead pool — only spend &amp; budget are typed in.</p>
+              <div className="pt-3 border-t border-slate-100 flex justify-end gap-2.5">
+                <button type="button" onClick={() => setCampaignForm(null)} className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100">Cancel</button>
+                <button type="submit" disabled={savingCampaign} className="px-5 py-2.5 rounded-xl text-xs font-bold text-white bg-teal-600 hover:bg-teal-700 disabled:opacity-60 shadow-sm">
+                  {savingCampaign ? 'Saving…' : 'Save campaign'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* LEAD GENERATED CONFIRMATION MODAL */}
       {generatedLeadModal?.isOpen && (
         <div className="fixed inset-0 z-[65] bg-slate-950/40 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
@@ -959,9 +1159,9 @@ export default function MarketingDepartmentDashboard({
               <Sparkles className="w-6 h-6 text-emerald-500" />
             </div>
 
-            <h3 className="text-lg font-black text-slate-900">Lead Dispatched to Branch Manager!</h3>
+            <h3 className="text-lg font-black text-slate-900">Lead sent to HR</h3>
             <p className="text-xs text-slate-500 mt-1">
-              Successfully generated with verified Lead ID and dropped into the CRM allocation queue.
+              Saved in the shared lead pool with the campaign code — HR allocates it from their queue.
             </p>
 
             <div className="my-4 p-4 rounded-xl bg-slate-50 border border-slate-200/80 space-y-2 text-xs">
@@ -985,7 +1185,7 @@ export default function MarketingDepartmentDashboard({
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-slate-400 font-medium">Target Branch:</span>
-                <span className="font-bold text-slate-900">{generatedLeadModal.lead.branch}</span>
+                <span className="font-bold text-slate-900">{generatedLeadModal.lead.branch || 'Unassigned'}</span>
               </div>
             </div>
 
@@ -1049,11 +1249,11 @@ export default function MarketingDepartmentDashboard({
                 </div>
                 <div className="flex justify-between">
                   <span>Valid Contact Rate:</span>
-                  <strong className="font-mono">{Math.round((selectedSourceDetail.valid / selectedSourceDetail.leads) * 100)}%</strong>
+                  <strong className="font-mono">{selectedSourceDetail.leads ? Math.round((selectedSourceDetail.valid / selectedSourceDetail.leads) * 100) : 0}%</strong>
                 </div>
                 <div className="flex justify-between">
                   <span>Lead-to-Admission Rate:</span>
-                  <strong className="font-mono">{((selectedSourceDetail.adm / selectedSourceDetail.leads) * 100).toFixed(1)}%</strong>
+                  <strong className="font-mono">{selectedSourceDetail.leads ? ((selectedSourceDetail.adm / selectedSourceDetail.leads) * 100).toFixed(1) : '0.0'}%</strong>
                 </div>
               </div>
             </div>

@@ -1,209 +1,123 @@
 import React, { useState } from 'react';
-import { 
-  X, 
-  Plus, 
-  Sparkles, 
-  CheckCircle2, 
-  Calendar, 
-  Instagram, 
-  Youtube, 
-  MessageCircle, 
-  Send, 
-  Clock, 
-  FileText, 
-  User, 
-  Check, 
-  ChevronRight,
-  Eye
-} from 'lucide-react';
+import { X, Plus, Calendar, Trash2 } from 'lucide-react';
+import { createContentPiece, updateContentPiece, deleteContentPiece } from '../services/api';
 
-export const INITIAL_CONTENT_PIECES = [
-  {
-    id: 'cnt-1',
-    code: 'CNT-TF-2026-0044',
-    title: 'CPC exam tips — carousel',
-    channel: 'Instagram',
-    category: 'CPC Exam Tips',
-    dueDate: 'Today',
-    author: 'Sana M.',
-    status: 'Approval Pending',
-    description: '10 slide carousel covering ICD-10-CM coding conventions, guidelines for diabetes with manifestations, and time-saving tabular navigation hacks.',
-    format: 'Carousel (1080x1350)',
-    targetBranch: 'All Branches',
-    caption: 'Mastering the CPC exam starts with knowing your guidelines like the back of your hand! Swipe through for 5 essential ICD-10 tips our trainers swear by. 📖✨ #MedicalCoding #CPCExam #AAPC'
-  },
-  {
-    id: 'cnt-2',
-    code: 'CNT-TF-2026-0045',
-    title: 'Placed student reel — Optum',
-    channel: 'Instagram',
-    category: 'Placement Proof',
-    dueDate: 'Today',
-    author: 'Karthik P.',
-    status: 'Design Pending',
-    description: 'Short video reel highlighting Keerthana R. from Coimbatore batch who secured ₹4.8 LPA at Optum Global Solutions within 3 weeks of passing CPC.',
-    format: 'Reel (9:16 Video)',
-    targetBranch: 'Coimbatore - Gandhipuram',
-    caption: 'From B.Sc Zoology fresher to CPC Certified Medical Coder at Optum! Meet Keerthana and hear how Thoughtflows transformed her career trajectory. 🚀 #ThoughtflowsSuccess'
-  },
-  {
-    id: 'cnt-3',
-    code: 'CNT-TF-2026-0046',
-    title: 'Salary growth after CPC',
-    channel: 'YouTube',
-    category: 'Career Growth',
-    dueDate: 'Tomorrow',
-    author: 'Content Writer',
-    status: 'Script Pending',
-    description: 'In-depth video analysis breaking down 0-5 years salary benchmarks for AAPC CPC, CPB, and CIC coders in Indian healthcare MNCs vs overseas remote roles.',
-    format: 'Video (16:9 4K)',
-    targetBranch: 'All Branches',
-    caption: 'What is the real salary growth for certified medical coders in 2026? We break down the actual pay bands from junior analyst to coding manager.'
-  },
-  {
-    id: 'cnt-4',
-    code: 'CNT-TF-2026-0047',
-    title: 'Hyderabad job drive promo',
-    channel: 'WhatsApp',
-    category: 'Branch Promotion',
-    dueDate: 'Today',
-    author: 'Divya R.',
-    status: 'Scheduled',
-    description: 'WhatsApp broadcast graphic and copy for 40+ healthcare employers participating in the upcoming Ameerpet & Madhapur Mega Placement Drive.',
-    format: 'Flyer (1080x1080)',
-    targetBranch: 'Hyderabad (Madhapur & Ameerpet)',
-    caption: '🚨 Hyderabad Walk-in Drive Alert! Top US RCM companies are hiring certified coders this Saturday at Thoughtflows Madhapur. Tap to RSVP your demo slot.'
-  }
+// Content calendar — every piece is a ContentPiece record on the server
+const STAGES = [
+  { label: 'Script', status: 'Script Pending' },
+  { label: 'Design', status: 'Design Pending' },
+  { label: 'Approval', status: 'Approval Pending' },
+  { label: 'Scheduled', status: 'Scheduled' },
+  { label: 'Published', status: 'Published' }
 ];
+const CHANNELS = ['Instagram', 'YouTube', 'WhatsApp', 'LinkedIn', 'Facebook', 'Website / Blog'];
+const CATEGORIES = ['CPC Exam Tips', 'Placement Proof', 'Career Growth', 'Branch Promotion', 'Student Spotlight', 'Event / Workshop'];
+const FORMATS = ['Reel (9:16 Video)', 'Carousel (1080x1350)', 'Post (1080x1080)', 'Video (16:9)', 'Story', 'Flyer', 'Article'];
 
-export default function ContentCalendarBoard({ 
-  onToast,
-  className = "" 
-}) {
-  const [contentPieces, setContentPieces] = useState(() => {
-    try {
-      const saved = localStorage.getItem('thoughtflows_content_calendar');
-      return saved ? JSON.parse(saved) : INITIAL_CONTENT_PIECES;
-    } catch {
-      return INITIAL_CONTENT_PIECES;
-    }
-  });
+const localDateKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const fmtDue = (d) => {
+  if (!d) return 'no date';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return d; // older free-text values
+  const today = localDateKey();
+  const tomorrow = localDateKey(new Date(Date.now() + 86400000));
+  if (d === today) return 'today';
+  if (d === tomorrow) return 'tomorrow';
+  return new Date(`${d}T00:00:00`).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+};
 
-  const [selectedPiece, setSelectedPiece] = useState(null);
-  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+export default function ContentCalendarBoard({ pieces = [], branches = [], currentUser, onToast, className = '' }) {
+  const toast = (m) => onToast && onToast(m);
+  const [selectedId, setSelectedId] = useState(null);
+  const [isAddOpen, setIsAddOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const selected = pieces.find((p) => (p._id || p.id) === selectedId) || null;
 
-  // New Content Piece Form State
-  const [newPieceForm, setNewPieceForm] = useState({
+  const emptyForm = () => ({
     title: '',
     channel: 'Instagram',
-    category: 'CPC Exam Tips',
-    dueDate: 'Today',
-    author: 'Kavya M.',
-    status: 'Design Pending',
+    category: CATEGORIES[0],
+    dueDate: localDateKey(),
+    author: currentUser?.name || '',
+    status: 'Script Pending',
     description: '',
-    format: 'Reel (9:16 Video)'
+    caption: '',
+    format: FORMATS[0],
+    targetBranch: 'All Branches'
   });
+  const [form, setForm] = useState(emptyForm);
 
-  const updatePieces = (newPieces) => {
-    setContentPieces(newPieces);
+  const sorted = [...pieces].sort((a, b) => {
+    const pa = a.status === 'Published' ? 1 : 0;
+    const pb = b.status === 'Published' ? 1 : 0;
+    return pa - pb || String(a.dueDate || '9999').localeCompare(String(b.dueDate || '9999'));
+  });
+  const today = localDateKey();
+  const inFlight = pieces.filter((p) => p.status !== 'Published').length;
+
+  const handleStatusChange = async (piece, status) => {
     try {
-      localStorage.setItem('thoughtflows_content_calendar', JSON.stringify(newPieces));
-    } catch (e) {
-      console.warn('Failed to save content pieces', e);
+      await updateContentPiece(piece._id || piece.id, { status });
+      toast(`"${piece.title}" → ${status}`);
+    } catch (err) {
+      toast(err?.response?.data?.error || 'Could not update the content piece');
     }
   };
 
-  const handleStatusChange = (pieceId, nextStatus) => {
-    const updated = contentPieces.map(p => {
-      if (p.id === pieceId) {
-        return { ...p, status: nextStatus };
-      }
-      return p;
-    });
-    updatePieces(updated);
-
-    const msg = `Updated "${contentPieces.find(p => p.id === pieceId)?.title}" status to "${nextStatus}"!`;
-    if (onToast) onToast(msg);
-
-    if (selectedPiece && selectedPiece.id === pieceId) {
-      setSelectedPiece(prev => ({ ...prev, status: nextStatus }));
+  const handleDelete = async (piece) => {
+    if (!window.confirm(`Delete "${piece.title}"?`)) return;
+    try {
+      await deleteContentPiece(piece._id || piece.id);
+      setSelectedId(null);
+      toast('Content piece removed');
+    } catch (err) {
+      toast(err?.response?.data?.error || 'Could not delete');
     }
   };
 
-  const handleCreatePiece = (e) => {
+  const handleCreate = async (e) => {
     e.preventDefault();
-    const nextIndex = contentPieces.length + 45;
-    const paddedIndex = String(nextIndex).padStart(4, '0');
-    const piece = {
-      id: `cnt-${Date.now()}`,
-      code: `CNT-TF-2026-${paddedIndex}`,
-      title: newPieceForm.title,
-      channel: newPieceForm.channel,
-      category: newPieceForm.category,
-      dueDate: newPieceForm.dueDate,
-      author: newPieceForm.author,
-      status: newPieceForm.status,
-      description: newPieceForm.description || 'Standard marketing campaign asset for batch intake and student reach.',
-      format: newPieceForm.format,
-      targetBranch: 'All Branches'
-    };
-
-    const updated = [piece, ...contentPieces];
-    updatePieces(updated);
-
-    const msg = `📅 Scheduled "${piece.title}" (${piece.code})!`;
-    if (onToast) onToast(msg);
-
-    setIsAddModalOpen(false);
-    setNewPieceForm({
-      title: '',
-      channel: 'Instagram',
-      category: 'CPC Exam Tips',
-      dueDate: 'Today',
-      author: 'Kavya M.',
-      status: 'Design Pending',
-      description: '',
-      format: 'Reel (9:16 Video)'
-    });
+    if (!form.title.trim()) return;
+    setSaving(true);
+    try {
+      const created = await createContentPiece({ ...form, title: form.title.trim() });
+      toast(`Scheduled "${created.title}" (${created.code})`);
+      setIsAddOpen(false);
+    } catch (err) {
+      toast(err?.response?.data?.error || 'Could not save the content piece');
+    } finally {
+      setSaving(false);
+    }
   };
 
-  // Status Badge styling - exact match to user reference screenshot
-  const getStatusBadge = (status) => {
+  const badge = (status) => {
     switch (status) {
       case 'Approval Pending':
-        return 'text-[#d97706] bg-[#fef3c7]/80 border border-[#fde68a]/70';
       case 'Design Pending':
         return 'text-[#d97706] bg-[#fef3c7]/80 border border-[#fde68a]/70';
       case 'Script Pending':
         return 'text-[#3b82f6] bg-[#eff6ff] border border-[#bfdbfe]/70';
-      case 'Scheduled':
+      case 'Published':
+        return 'text-slate-600 bg-slate-100 border border-slate-200';
       default:
         return 'text-[#10b981] bg-[#ecfdf5] border border-[#a7f3d0]/70';
     }
   };
 
+  const input = 'w-full px-3 py-2 rounded-xl border border-slate-200 text-slate-800 text-xs focus:ring-2 focus:ring-teal-500 focus:outline-none';
+
   return (
     <div className={`w-full ${className}`}>
-      {/* Outer Card Container - Exact match to reference screenshot */}
       <div className="bg-white rounded-2xl sm:rounded-3xl p-5 sm:p-7 border border-slate-200/80 shadow-[0_4px_25px_-5px_rgba(15,23,42,0.05)]">
-        
-        {/* Header: Title + Subtitle */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-5">
           <div>
             <div className="flex items-center gap-2">
               <span className="text-xl sm:text-2xl leading-none select-none">📅</span>
-              <h2 className="text-lg sm:text-xl font-bold text-slate-900 tracking-tight">
-                Content Calendar
-              </h2>
+              <h2 className="text-lg sm:text-xl font-bold text-slate-900 tracking-tight">Content Calendar</h2>
             </div>
-            <p className="text-xs sm:text-sm text-slate-500 font-mono mt-1">
-              {contentPieces.length} pieces in flight
-            </p>
+            <p className="text-xs sm:text-sm text-slate-500 font-mono mt-1">{inFlight} pieces in flight</p>
           </div>
-
-          {/* Action: Add Content Piece */}
           <button
-            onClick={() => setIsAddModalOpen(true)}
+            onClick={() => { setForm(emptyForm()); setIsAddOpen(true); }}
             className="self-start sm:self-auto flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold text-teal-700 bg-teal-50 hover:bg-teal-100 border border-teal-200 transition-all active:scale-95 cursor-pointer shadow-2xs"
           >
             <Plus className="w-3.5 h-3.5" />
@@ -211,300 +125,190 @@ export default function ContentCalendarBoard({
           </button>
         </div>
 
-        {/* List of Content Cards */}
         <div className="space-y-3.5 sm:space-y-4">
-          {contentPieces.map((piece) => (
-            <div
-              key={piece.id}
-              onClick={() => setSelectedPiece(piece)}
-              className="rounded-2xl border border-slate-200/90 p-4 sm:p-5 bg-white hover:border-slate-300 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs hover:shadow-xs cursor-pointer group"
-            >
-              {/* Left Section: Title + Code Badge + Metadata Subtitle */}
-              <div className="flex-1 min-w-0 pr-0 sm:pr-4">
-                {/* Row 1: Title + Code Badge */}
-                <div className="flex items-center gap-2.5 flex-wrap">
-                  <span className="font-bold text-slate-900 text-sm sm:text-base tracking-tight group-hover:text-teal-900 transition-colors">
-                    {piece.title}
-                  </span>
-                  <span className="bg-[#e0f7f6] text-[#0d9488] font-mono text-[10px] font-bold px-2 py-0.5 rounded border border-[#b2e8e5]">
-                    {piece.code}
-                  </span>
-                </div>
-
-                {/* Row 2: Channel · Category · Due Date · Author */}
-                <div className="text-xs text-slate-500 font-mono mt-1">
-                  {piece.channel} · {piece.category} · due {piece.dueDate} · {piece.author}
-                </div>
-              </div>
-
-              {/* Right Section: Status Pill Badge */}
-              <div className="shrink-0 flex items-center justify-end">
-                <span className={`px-3.5 py-1 rounded-full text-xs font-semibold border whitespace-nowrap font-mono ${getStatusBadge(piece.status)}`}>
-                  {piece.status}
-                </span>
-              </div>
+          {sorted.length === 0 && (
+            <div className="py-10 text-center text-xs text-slate-400 border border-dashed border-slate-200 rounded-2xl">
+              Nothing on the calendar yet. Use "Schedule Piece" to add the first one.
             </div>
-          ))}
+          )}
+          {sorted.map((piece) => {
+            const overdue = piece.dueDate && /^\d{4}-/.test(piece.dueDate) && piece.dueDate < today && !['Scheduled', 'Published'].includes(piece.status);
+            return (
+              <div
+                key={piece._id || piece.id}
+                onClick={() => setSelectedId(piece._id || piece.id)}
+                className="rounded-2xl border border-slate-200/90 p-4 sm:p-5 bg-white hover:border-slate-300 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs cursor-pointer group"
+              >
+                <div className="flex-1 min-w-0 pr-0 sm:pr-4">
+                  <div className="flex items-center gap-2.5 flex-wrap">
+                    <span className="font-bold text-slate-900 text-sm sm:text-base tracking-tight group-hover:text-teal-900">{piece.title}</span>
+                    <span className="bg-[#e0f7f6] text-[#0d9488] font-mono text-[10px] font-bold px-2 py-0.5 rounded border border-[#b2e8e5]">{piece.code}</span>
+                  </div>
+                  <div className="text-xs text-slate-500 font-mono mt-1">
+                    {[piece.channel, piece.category, `due ${fmtDue(piece.dueDate)}`, piece.author].filter(Boolean).join(' · ')}
+                    {overdue && <span className="ml-2 text-rose-600 font-bold">overdue</span>}
+                  </div>
+                </div>
+                <div className="shrink-0 flex items-center justify-end">
+                  <span className={`px-3.5 py-1 rounded-full text-xs font-semibold whitespace-nowrap font-mono ${badge(piece.status)}`}>{piece.status}</span>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
 
-      {/* ======================================================================= */}
-      {/* MODAL 1: VIEW & MANAGE CONTENT PIECE                                   */}
-      {/* ======================================================================= */}
-      {selectedPiece && (
+      {selected && (
         <div className="fixed inset-0 z-[70] bg-slate-950/40 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
           <div className="bg-white rounded-3xl w-full max-w-lg shadow-2xl border border-slate-200/80 p-6 animate-scaleUp relative max-h-[90vh] overflow-y-auto">
-            {/* Header */}
             <div className="flex items-center justify-between pb-4 border-b border-slate-100">
               <div className="flex items-center gap-2.5">
                 <div className="w-9 h-9 rounded-xl bg-teal-50 text-teal-600 flex items-center justify-center border border-teal-100">
                   <Calendar className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="text-base font-bold text-slate-900 leading-tight">
-                    {selectedPiece.title}
-                  </h3>
+                  <h3 className="text-base font-bold text-slate-900 leading-tight">{selected.title}</h3>
                   <div className="flex items-center gap-2 mt-0.5 font-mono text-xs">
-                    <span className="text-[#0d9488] font-bold">{selectedPiece.code}</span>
+                    <span className="text-[#0d9488] font-bold">{selected.code}</span>
                     <span className="text-slate-300">•</span>
-                    <span className="text-slate-500">{selectedPiece.channel}</span>
+                    <span className="text-slate-500">{selected.channel}</span>
                   </div>
                 </div>
               </div>
-
-              <button
-                onClick={() => setSelectedPiece(null)}
-                className="w-8 h-8 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center transition-all"
-              >
+              <button onClick={() => setSelectedId(null)} className="w-8 h-8 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center">
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            {/* Details Content */}
             <div className="py-4 space-y-4 text-xs">
-              {/* Status & Timing Banner */}
               <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/70 space-y-2 font-mono">
-                <div className="flex justify-between items-center">
-                  <span className="text-slate-500">Current Status:</span>
-                  <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold border ${getStatusBadge(selectedPiece.status)}`}>
-                    {selectedPiece.status}
-                  </span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-slate-500">Author / Owner:</span>
-                  <span className="font-bold text-slate-800">{selectedPiece.author}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-slate-500">Category &amp; Format:</span>
-                  <span className="font-bold text-slate-800">{selectedPiece.category} · {selectedPiece.format || 'Digital Asset'}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-slate-500">Publish Target:</span>
-                  <span className="text-amber-700 font-bold">due {selectedPiece.dueDate}</span>
-                </div>
+                {[
+                  ['Owner', selected.author || '—'],
+                  ['Category & format', [selected.category, selected.format].filter(Boolean).join(' · ') || '—'],
+                  ['Target branch', selected.targetBranch || 'All Branches'],
+                  ['Due', fmtDue(selected.dueDate)]
+                ].map(([k, v]) => (
+                  <div key={k} className="flex justify-between items-center gap-3">
+                    <span className="text-slate-500">{k}:</span>
+                    <span className="font-bold text-slate-800 text-right">{v}</span>
+                  </div>
+                ))}
               </div>
 
-              {/* Brief Description */}
-              <div>
-                <label className="block font-bold text-slate-700 mb-1">Asset Brief &amp; Outline</label>
-                <p className="p-3 rounded-xl bg-slate-50/70 border border-slate-200 text-slate-700 leading-relaxed">
-                  {selectedPiece.description}
-                </p>
-              </div>
-
-              {/* Caption Preview */}
-              {selectedPiece.caption && (
+              {selected.description && (
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">Approved Copy / Caption Preview</label>
-                  <p className="p-3 rounded-xl bg-teal-50/40 border border-teal-200/60 text-slate-800 font-mono text-[11px] leading-relaxed">
-                    {selectedPiece.caption}
-                  </p>
+                  <label className="block font-bold text-slate-700 mb-1">Brief</label>
+                  <p className="p-3 rounded-xl bg-slate-50/70 border border-slate-200 text-slate-700 leading-relaxed whitespace-pre-wrap">{selected.description}</p>
+                </div>
+              )}
+              {selected.caption && (
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Caption</label>
+                  <p className="p-3 rounded-xl bg-teal-50/40 border border-teal-200/60 text-slate-800 font-mono text-[11px] leading-relaxed whitespace-pre-wrap">{selected.caption}</p>
                 </div>
               )}
 
-              {/* Lifecycle Progression Actions */}
               <div className="pt-2">
                 <label className="block font-bold text-slate-700 mb-2">Update Stage</label>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 font-mono text-center">
-                  {[
-                    { label: 'Script', status: 'Script Pending' },
-                    { label: 'Design', status: 'Design Pending' },
-                    { label: 'Approval', status: 'Approval Pending' },
-                    { label: 'Scheduled', status: 'Scheduled' }
-                  ].map(stage => (
+                <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 font-mono text-center">
+                  {STAGES.map((st) => (
                     <button
-                      key={stage.status}
+                      key={st.status}
                       type="button"
-                      onClick={() => handleStatusChange(selectedPiece.id, stage.status)}
-                      className={`p-2 rounded-xl text-xs font-semibold border transition-all ${
-                        selectedPiece.status === stage.status
-                          ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
-                          : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200'
-                      }`}
+                      onClick={() => handleStatusChange(selected, st.status)}
+                      className={`p-2 rounded-xl text-xs font-semibold border transition-all ${selected.status === st.status ? 'bg-slate-900 text-white border-slate-900' : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200'}`}
                     >
-                      {stage.label}
+                      {st.label}
                     </button>
                   ))}
                 </div>
               </div>
-
-              {/* Quick Approval CTA for Pending items */}
-              {selectedPiece.status === 'Approval Pending' && (
-                <div className="p-3.5 rounded-xl bg-amber-50/60 border border-amber-200/80 flex items-center justify-between gap-3">
-                  <div>
-                    <div className="font-bold text-amber-900 text-xs">Ready for Publishing?</div>
-                    <div className="text-[11px] text-amber-700 font-mono">Sign off to lock this asset into the broadcast queue.</div>
-                  </div>
-                  <button
-                    onClick={() => handleStatusChange(selectedPiece.id, 'Scheduled')}
-                    className="px-4 py-2 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 transition-all shadow-sm active:scale-95 shrink-0"
-                  >
-                    Approve &amp; Schedule
-                  </button>
-                </div>
-              )}
             </div>
 
-            <div className="pt-3 border-t border-slate-100 flex justify-end">
-              <button
-                onClick={() => setSelectedPiece(null)}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 transition-all"
-              >
-                Close
+            <div className="pt-3 border-t border-slate-100 flex justify-between">
+              <button onClick={() => handleDelete(selected)} className="px-3 py-2 rounded-xl text-xs font-semibold text-rose-600 hover:bg-rose-50 flex items-center gap-1.5">
+                <Trash2 className="w-3.5 h-3.5" /> Delete
               </button>
+              <button onClick={() => setSelectedId(null)} className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100">Close</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* ======================================================================= */}
-      {/* MODAL 2: SCHEDULE NEW CONTENT PIECE                                     */}
-      {/* ======================================================================= */}
-      {isAddModalOpen && (
+      {isAddOpen && (
         <div className="fixed inset-0 z-[70] bg-slate-950/40 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
-          <div className="bg-white rounded-3xl w-full max-w-md shadow-2xl border border-slate-200/80 p-6 animate-scaleUp relative">
+          <div className="bg-white rounded-3xl w-full max-w-md shadow-2xl border border-slate-200/80 p-6 animate-scaleUp relative max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <div className="flex items-center gap-2">
                 <span className="text-xl">📅</span>
                 <h3 className="text-base font-bold text-slate-900">Schedule Content Piece</h3>
               </div>
-              <button
-                onClick={() => setIsAddModalOpen(false)}
-                className="w-8 h-8 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center transition-all"
-              >
+              <button onClick={() => setIsAddOpen(false)} className="w-8 h-8 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center">
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <form onSubmit={handleCreatePiece} className="py-4 space-y-3.5 text-xs">
+            <form onSubmit={handleCreate} className="py-4 space-y-3.5 text-xs">
               <div>
-                <label className="block font-bold text-slate-700 mb-1">Piece Title</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Life Science Career Path Guide — carousel"
-                  value={newPieceForm.title}
-                  onChange={(e) => setNewPieceForm({ ...newPieceForm, title: e.target.value })}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 text-slate-800 text-xs focus:ring-2 focus:ring-teal-500 focus:outline-none"
-                />
+                <label className="block font-bold text-slate-700 mb-1">Title</label>
+                <input type="text" required value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} className={input} />
               </div>
-
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block font-bold text-slate-700 mb-1">Channel</label>
-                  <select
-                    value={newPieceForm.channel}
-                    onChange={(e) => setNewPieceForm({ ...newPieceForm, channel: e.target.value })}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 text-slate-800 text-xs focus:ring-2 focus:ring-teal-500 focus:outline-none"
-                  >
-                    <option value="Instagram">Instagram</option>
-                    <option value="YouTube">YouTube</option>
-                    <option value="WhatsApp">WhatsApp</option>
-                    <option value="LinkedIn">LinkedIn</option>
-                    <option value="Facebook">Facebook</option>
+                  <select value={form.channel} onChange={(e) => setForm({ ...form, channel: e.target.value })} className={input}>
+                    {CHANNELS.map((c) => <option key={c} value={c}>{c}</option>)}
                   </select>
                 </div>
-
                 <div>
                   <label className="block font-bold text-slate-700 mb-1">Category</label>
-                  <select
-                    value={newPieceForm.category}
-                    onChange={(e) => setNewPieceForm({ ...newPieceForm, category: e.target.value })}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 text-slate-800 text-xs focus:ring-2 focus:ring-teal-500 focus:outline-none"
-                  >
-                    <option value="CPC Exam Tips">CPC Exam Tips</option>
-                    <option value="Placement Proof">Placement Proof</option>
-                    <option value="Career Growth">Career Growth</option>
-                    <option value="Branch Promotion">Branch Promotion</option>
-                    <option value="Student Spotlight">Student Spotlight</option>
+                  <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} className={input}>
+                    {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
                   </select>
                 </div>
               </div>
-
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">Due Date</label>
-                  <select
-                    value={newPieceForm.dueDate}
-                    onChange={(e) => setNewPieceForm({ ...newPieceForm, dueDate: e.target.value })}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 text-slate-800 text-xs focus:ring-2 focus:ring-teal-500 focus:outline-none"
-                  >
-                    <option value="Today">Today</option>
-                    <option value="Tomorrow">Tomorrow</option>
-                    <option value="This Friday">This Friday</option>
-                    <option value="Next Week">Next Week</option>
+                  <label className="block font-bold text-slate-700 mb-1">Format</label>
+                  <select value={form.format} onChange={(e) => setForm({ ...form, format: e.target.value })} className={input}>
+                    {FORMATS.map((c) => <option key={c} value={c}>{c}</option>)}
                   </select>
                 </div>
-
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">Owner / Creator</label>
-                  <input
-                    type="text"
-                    required
-                    value={newPieceForm.author}
-                    onChange={(e) => setNewPieceForm({ ...newPieceForm, author: e.target.value })}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 text-slate-800 text-xs focus:ring-2 focus:ring-teal-500 focus:outline-none"
-                  />
+                  <label className="block font-bold text-slate-700 mb-1">Due date</label>
+                  <input type="date" required value={form.dueDate} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} className={input} />
                 </div>
               </div>
-
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Owner</label>
+                  <input type="text" required value={form.author} onChange={(e) => setForm({ ...form, author: e.target.value })} className={input} />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Target branch</label>
+                  <select value={form.targetBranch} onChange={(e) => setForm({ ...form, targetBranch: e.target.value })} className={input}>
+                    <option value="All Branches">All Branches</option>
+                    {branches.map((b) => <option key={b._id || b.name} value={b.name}>{b.name}</option>)}
+                  </select>
+                </div>
+              </div>
               <div>
-                <label className="block font-bold text-slate-700 mb-1">Initial Status</label>
-                <select
-                  value={newPieceForm.status}
-                  onChange={(e) => setNewPieceForm({ ...newPieceForm, status: e.target.value })}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 text-slate-800 text-xs focus:ring-2 focus:ring-teal-500 focus:outline-none"
-                >
-                  <option value="Script Pending">Script Pending</option>
-                  <option value="Design Pending">Design Pending</option>
-                  <option value="Approval Pending">Approval Pending</option>
-                  <option value="Scheduled">Scheduled</option>
+                <label className="block font-bold text-slate-700 mb-1">Initial status</label>
+                <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })} className={input}>
+                  {STAGES.map((s) => <option key={s.status} value={s.status}>{s.status}</option>)}
                 </select>
               </div>
-
               <div>
-                <label className="block font-bold text-slate-700 mb-1">Brief / Concept</label>
-                <textarea
-                  rows="2"
-                  placeholder="Outline key message, hooks, and call-to-action..."
-                  value={newPieceForm.description}
-                  onChange={(e) => setNewPieceForm({ ...newPieceForm, description: e.target.value })}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 text-slate-800 text-xs focus:ring-2 focus:ring-teal-500 focus:outline-none"
-                />
+                <label className="block font-bold text-slate-700 mb-1">Brief</label>
+                <textarea rows="2" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className={input} />
               </div>
-
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Caption (optional)</label>
+                <textarea rows="2" value={form.caption} onChange={(e) => setForm({ ...form, caption: e.target.value })} className={input} />
+              </div>
               <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2.5">
-                <button
-                  type="button"
-                  onClick={() => setIsAddModalOpen(false)}
-                  className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 transition-all"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-5 py-2.5 rounded-xl text-xs font-bold text-white bg-teal-600 hover:bg-teal-700 transition-all shadow-sm active:scale-95 cursor-pointer"
-                >
+                <button type="button" onClick={() => setIsAddOpen(false)} className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100">Cancel</button>
+                <button type="submit" disabled={saving} className="px-5 py-2.5 rounded-xl text-xs font-bold text-white bg-teal-600 hover:bg-teal-700 disabled:opacity-60 shadow-sm active:scale-95 cursor-pointer">
                   Schedule Piece
                 </button>
               </div>

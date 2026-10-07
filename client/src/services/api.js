@@ -696,6 +696,14 @@ export const deleteCollege = async (id) => {
   return res.data;
 };
 
+// Campus student list → HR lead pool (duplicates by phone are skipped server-side)
+export const handoverCollegeStudents = async (id, data) => {
+  const res = await api.post(`/cccp/colleges/${id}/handover`, data);
+  notifyDataUpdate('cccp_colleges');
+  notifyDataUpdate('leads');
+  return res.data;
+};
+
 export const getCompanies = async () => {
   const res = await api.get('/cccp/companies');
   return res.data;
@@ -774,6 +782,18 @@ export const getCccpFollowUps = async () => {
 
 export const createCccpFollowUp = async (data) => {
   const res = await api.post('/cccp/followups', data);
+  notifyDataUpdate('cccp_followups');
+  return res.data;
+};
+
+export const updateCccpFollowUp = async (id, data) => {
+  const res = await api.put(`/cccp/followups/${id}`, data);
+  notifyDataUpdate('cccp_followups');
+  return res.data;
+};
+
+export const deleteCccpFollowUp = async (id) => {
+  const res = await api.delete(`/cccp/followups/${id}`);
   notifyDataUpdate('cccp_followups');
   return res.data;
 };

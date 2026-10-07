@@ -71,6 +71,8 @@ import {
   getDemos,
   getStudents,
   getDailyClosures,
+  getLeadDemands,
+  createLeadDemand,
   onDataUpdate
 } from '../services/api';
 
@@ -2255,6 +2257,97 @@ function BranchPicker({ branches, onSelect }) {
   );
 }
 
+// Branch Manager → Marketing: ask for leads. Shows on Marketing's Branch Lead
+// Demand board (and its bell); "delivered" is counted from real leads.
+function BranchLeadRequestPanel({ branchName }) {
+  const [demands, setDemands] = useState(null);
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ course: 'CPC', targetLeads: '', priority: 'medium', language: '', deadline: '', notes: '' });
+  const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(() => {
+    getLeadDemands()
+      .then((list) => setDemands((Array.isArray(list) ? list : []).filter((d) => String(d.branch || '').toLowerCase() === String(branchName || '').toLowerCase())))
+      .catch(() => setDemands([]));
+  }, [branchName]);
+  useEffect(() => {
+    load();
+    const off = onDataUpdate((e) => { if (['demands', 'leads', 'campaigns'].includes(e)) load(); });
+    return off;
+  }, [load]);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    const target = parseInt(form.targetLeads, 10);
+    if (!(target > 0)) { setMsg('Enter how many leads are needed'); return; }
+    setBusy(true);
+    try {
+      await createLeadDemand({ ...form, branch: branchName, targetLeads: target });
+      setMsg('Request sent to Marketing');
+      setOpen(false);
+      setForm({ course: 'CPC', targetLeads: '', priority: 'medium', language: '', deadline: '', notes: '' });
+    } catch (err) {
+      setMsg(err?.response?.data?.error || 'Could not send the request');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const field = 'w-full px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs text-slate-800 focus:outline-none focus:border-amber-500';
+  return (
+    <div className="p-4 rounded-xl bg-white border border-slate-200">
+      <div className="flex items-center justify-between gap-2 mb-3">
+        <h4 className="text-xs font-bold text-slate-900">📣 Lead requests to Marketing</h4>
+        <button onClick={() => { setOpen((v) => !v); setMsg(''); }} className="text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1 hover:bg-amber-100">
+          {open ? 'Cancel' : '+ Request leads'}
+        </button>
+      </div>
+      {msg && <div className="text-[11px] text-slate-600 mb-2">{msg}</div>}
+      {open && (
+        <form onSubmit={submit} className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3">
+          <input className={field} placeholder="Course (e.g. CPC)" value={form.course} onChange={(e) => setForm({ ...form, course: e.target.value })} />
+          <input className={field} type="number" min="1" required placeholder="Leads needed" value={form.targetLeads} onChange={(e) => setForm({ ...form, targetLeads: e.target.value })} />
+          <select className={field} value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })}>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+          </select>
+          <input className={field} placeholder="Language" value={form.language} onChange={(e) => setForm({ ...form, language: e.target.value })} />
+          <input className={field} type="date" value={form.deadline} onChange={(e) => setForm({ ...form, deadline: e.target.value })} />
+          <input className={field} placeholder="Notes" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
+          <button type="submit" disabled={busy} className="col-span-2 sm:col-span-3 py-1.5 rounded-lg text-xs font-bold text-white bg-amber-600 hover:bg-amber-700 disabled:opacity-60">
+            {busy ? 'Sending…' : 'Send to Marketing'}
+          </button>
+        </form>
+      )}
+      {demands === null ? (
+        <div className="text-[11px] text-slate-400 py-2 text-center">Loading…</div>
+      ) : demands.length === 0 ? (
+        <div className="text-[11px] text-slate-400 py-2 text-center">No lead requests from this branch yet.</div>
+      ) : (
+        <div className="space-y-2">
+          {demands.map((d) => {
+            const pctDone = d.targetLeads ? Math.min(100, Math.round(((d.deliveredLeads || 0) / d.targetLeads) * 100)) : 0;
+            return (
+              <div key={d.id || d._id} className="p-2.5 rounded-lg bg-slate-50 border border-slate-200">
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <span className="font-semibold text-slate-900">{d.targetLeads} {d.course} leads</span>
+                  <span className="text-[10px] font-bold text-slate-500">{d.status}{d.campaignCode ? ` · ${d.campaignCode}` : ''}</span>
+                </div>
+                <div className="mt-1.5 h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                  <div className="h-full bg-amber-500 rounded-full" style={{ width: `${pctDone}%` }} />
+                </div>
+                <div className="text-[10px] text-slate-500 mt-1">{d.deliveredLeads || 0} delivered ({pctDone}%){d.deadline ? ` · due ${d.deadline}` : ''}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BranchDetail({ branch: b, onBack, onChanged }) {
   const accent = ACCENTS.branch;
   const [tab, setTab] = useState('overview');
@@ -2377,7 +2470,12 @@ function BranchDetail({ branch: b, onBack, onChanged }) {
         </div>
       )}
 
-      {tab === 'leads' && <LeadsPanel branchName={b.name} accent={accent} />}
+      {tab === 'leads' && (
+        <div className="space-y-4">
+          <BranchLeadRequestPanel branchName={b.name} />
+          <LeadsPanel branchName={b.name} accent={accent} />
+        </div>
+      )}
 
       {tab === 'team' && (
         <div className="p-4 rounded-xl bg-white border border-slate-200">

@@ -1,14 +1,14 @@
 import mongoose from 'mongoose';
 
 // Cross-department notification feed (HR ⇄ Training).
-// audience: 'hr' | 'trainer' | 'student' | 'cccp'. recipientId / recipientName
+// audience: 'hr' | 'trainer' | 'student' | 'cccp' | 'marketing'. recipientId / recipientName
 // narrow it to one person; `batch` targets every student of a batch; when all
 // are empty every user of that audience sees it. Targeted notifications use
 // `read`; shared ones track each reader in `readBy` so one user marking it
 // read doesn't hide it for everyone else.
 const notificationSchema = new mongoose.Schema(
   {
-    audience: { type: String, enum: ['hr', 'trainer', 'student', 'cccp'], required: true },
+    audience: { type: String, enum: ['hr', 'trainer', 'student', 'cccp', 'marketing'], required: true },
     recipientId: { type: String, default: '' },
     recipientName: { type: String, default: '' },
     type: { type: String, default: 'info' },

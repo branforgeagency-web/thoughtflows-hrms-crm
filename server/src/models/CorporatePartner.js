@@ -5,9 +5,10 @@ const corporatePartnerSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  code: { type: String, default: '' },
   city: {
     type: String,
-    default: 'Chennai'
+    default: ''
   },
   type: {
     type: String,
@@ -30,7 +31,7 @@ const corporatePartnerSchema = new mongoose.Schema({
   },
   activeVacancies: {
     type: Number,
-    default: 10
+    default: 0
   },
   notes: String
 }, {

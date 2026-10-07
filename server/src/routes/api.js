@@ -823,6 +823,15 @@ async function applyApprovalDecision(approval) {
   if (approval.refType === 'creative' && approval.refId && mongoose.isValidObjectId(approval.refId)) {
     await MarketingCreative.findByIdAndUpdate(approval.refId, { status: CREATIVE_STATUS_BY_DECISION[approval.status] || 'Submitted' });
   }
+  // Marketing items (creatives, reports) → Marketing notification bell
+  if (approval.status !== 'pending' && /^MKT$/i.test(approval.departmentCode || '')) {
+    await pushNotification({
+      audience: 'marketing', type: approval.refType === 'creative' ? 'creative' : 'approval',
+      title: `${approval.title} — ${approval.status}`,
+      message: `${approval.decidedBy ? `Decided by ${approval.decidedBy}` : 'Decision recorded'} in Leadership Hub`,
+      createdBy: approval.decidedBy || ''
+    });
+  }
   // Tell an HR requester (leave, discount, shift change …) the outcome
   if (approval.requestedBy && approval.status !== 'pending' && /^(DEP-HR-001|HR)$/i.test(approval.departmentCode || '')) {
     await pushNotification({
@@ -3928,7 +3937,7 @@ async function markNotificationsRead(ids, req) {
 }
 
 // Leadership / Admin → a staff member's notification bell (Team Performance "Remind")
-const AUDIENCE_BY_DEPT_CODE = { 'DEP-HR-001': 'hr', ACAD: 'trainer', CCCP: 'cccp' };
+const AUDIENCE_BY_DEPT_CODE = { 'DEP-HR-001': 'hr', ACAD: 'trainer', CCCP: 'cccp', MKT: 'marketing' };
 router.post('/notifications/remind', async (req, res) => {
   try {
     const { name, departmentCode, message } = req.body || {};
@@ -4092,10 +4101,26 @@ router.delete('/training/materials/:id', async (req, res) => {
 // REAL CCCP (CAMPUS, CORPORATE, PLACEMENT, BILLING, FOLLOW-UPS) API
 // ==========================================
 // 1. Colleges
+// Older records saved 'MOU Signed' / 'In Discussion' — normalise to Signed | Draft | Not Signed
+const normaliseMou = (v) => (/signed/i.test(v || '') && !/not/i.test(v || '') ? 'Signed' : /draft/i.test(v || '') ? 'Draft' : 'Not Signed');
+const collegeView = (c) => {
+  const o = typeof c.toObject === 'function' ? c.toObject() : c;
+  return { id: String(o._id), _id: String(o._id), ...o, mouStatus: normaliseMou(o.mouStatus), mou: normaliseMou(o.mouStatus) };
+};
+// Readable partner codes (CLG-CBE-001 / CMP-HYD-001), unique per prefix
+async function nextPartnerCode(Model, prefix, city) {
+  const cityCode = (String(city || '').replace(/[^a-z]/gi, '').slice(0, 3) || 'GEN').toUpperCase();
+  const base = `${prefix}-${cityCode}-`;
+  const taken = new Set((await Model.find({ code: new RegExp(`^${base}`) }).select('code').lean()).map((d) => d.code));
+  let n = taken.size + 1;
+  while (taken.has(`${base}${String(n).padStart(3, '0')}`)) n += 1;
+  return `${base}${String(n).padStart(3, '0')}`;
+}
+
 router.get('/cccp/colleges', async (req, res) => {
   try {
     let colleges = await CollegePartner.find().sort({ createdAt: -1 });
-    res.json(colleges.map(c => ({ id: c._id.toString(), _id: c._id.toString(), ...c.toObject() })));
+    res.json(colleges.map(collegeView));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -4103,9 +4128,13 @@ router.get('/cccp/colleges', async (req, res) => {
 
 router.post('/cccp/colleges', async (req, res) => {
   try {
-    const college = new CollegePartner(req.body);
+    const body = { ...req.body };
+    if (!body.name || !String(body.name).trim()) return res.status(400).json({ error: 'College name is required' });
+    if (body.mouStatus !== undefined) body.mouStatus = normaliseMou(body.mouStatus);
+    if (!body.code) body.code = await nextPartnerCode(CollegePartner, 'CLG', body.city);
+    const college = new CollegePartner(body);
     await college.save();
-    res.status(201).json({ id: college._id.toString(), _id: college._id.toString(), ...college.toObject() });
+    res.status(201).json(collegeView(college));
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -4113,9 +4142,12 @@ router.post('/cccp/colleges', async (req, res) => {
 
 router.put('/cccp/colleges/:id', async (req, res) => {
   try {
-    const updated = await CollegePartner.findByIdAndUpdate(req.params.id, { $set: req.body }, { new: true });
+    const body = { ...req.body };
+    delete body._id; delete body.id; delete body.mou;
+    if (body.mouStatus !== undefined) body.mouStatus = normaliseMou(body.mouStatus);
+    const updated = await CollegePartner.findByIdAndUpdate(req.params.id, { $set: body }, { new: true });
     if (!updated) return res.status(404).json({ error: 'College not found' });
-    res.json({ id: updated._id.toString(), _id: updated._id.toString(), ...updated.toObject() });
+    res.json(collegeView(updated));
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -4125,6 +4157,55 @@ router.delete('/cccp/colleges/:id', async (req, res) => {
   try {
     await CollegePartner.findByIdAndDelete(req.params.id);
     res.json({ success: true, message: 'College removed' });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Campus student list → HR lead pool. Rows already in the pool (same phone)
+// are skipped; new leads carry source "Campus — <College>".
+router.post('/cccp/colleges/:id/handover', async (req, res) => {
+  try {
+    const college = await CollegePartner.findById(req.params.id);
+    if (!college) return res.status(404).json({ error: 'College not found' });
+    const rows = Array.isArray(req.body?.students) ? req.body.students : [];
+    if (!rows.length) return res.status(400).json({ error: 'Add at least one student' });
+    const key = (p) => String(p || '').replace(/\D/g, '').slice(-10);
+    const existing = new Set((await StudentLead.find().select('phone').lean()).map((l) => key(l.phone)).filter(Boolean));
+    const source = `Campus — ${college.name}`;
+    let created = 0;
+    const skipped = [];
+    for (const r of rows) {
+      const fullName = String(r.fullName || r.name || '').trim();
+      const k = key(r.phone);
+      if (!fullName || k.length < 10) { skipped.push({ name: fullName || '(blank)', reason: 'name or 10-digit phone missing' }); continue; }
+      if (existing.has(k)) { skipped.push({ name: fullName, reason: 'already in lead pool' }); continue; }
+      await StudentLead.create({
+        fullName,
+        phone: String(r.phone).trim(),
+        email: String(r.email || '').trim(),
+        course: String(r.course || '').trim(),
+        branch: String(r.branch || req.body.branch || '').trim(),
+        location: college.city || '',
+        source,
+        sourceName: source,
+        fetchedBy: req.user?.name || 'CCCP',
+        stage: 'new'
+      });
+      existing.add(k);
+      created += 1;
+    }
+    if (created) {
+      college.stage = college.stage === 'MOU Signed' ? college.stage : 'HR Handover Done';
+      await college.save();
+      await pushNotification({
+        audience: 'hr', type: 'campus',
+        title: `${created} campus lead${created > 1 ? 's' : ''} from ${college.name}`,
+        message: `Handed over by ${req.user?.name || 'CCCP'} · source "${source}" — allocate from the lead pool.`,
+        createdBy: req.user?.name || ''
+      });
+    }
+    res.json({ created, skipped, college: collegeView(college) });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -4142,7 +4223,10 @@ router.get('/cccp/companies', async (req, res) => {
 
 router.post('/cccp/companies', async (req, res) => {
   try {
-    const company = new CorporatePartner(req.body);
+    const body = { ...req.body };
+    if (!body.name || !String(body.name).trim()) return res.status(400).json({ error: 'Company name is required' });
+    if (!body.code) body.code = await nextPartnerCode(CorporatePartner, 'CMP', body.city);
+    const company = new CorporatePartner(body);
     await company.save();
     res.status(201).json({ id: company._id.toString(), _id: company._id.toString(), ...company.toObject() });
   } catch (e) {
@@ -4152,8 +4236,20 @@ router.post('/cccp/companies', async (req, res) => {
 
 router.put('/cccp/companies/:id', async (req, res) => {
   try {
-    const updated = await CorporatePartner.findByIdAndUpdate(req.params.id, { $set: req.body }, { new: true });
+    const body = { ...req.body };
+    delete body._id; delete body.id;
+    const before = await CorporatePartner.findById(req.params.id).select('stage').lean();
+    const updated = await CorporatePartner.findByIdAndUpdate(req.params.id, { $set: body }, { new: true });
     if (!updated) return res.status(404).json({ error: 'Corporate partner not found' });
+    // Corporate training deal closed → every trainer's bell (Training plans the batch)
+    if (updated.stage === 'Training Active' && before?.stage !== 'Training Active') {
+      await pushNotification({
+        audience: 'trainer', type: 'corporate',
+        title: `Corporate training: ${updated.name}`,
+        message: [`CCCP closed a corporate training deal${updated.city ? ` (${updated.city})` : ''} — please plan the batch.`, updated.contact && `Contact: ${updated.contact}`, updated.notes].filter(Boolean).join(' · '),
+        createdBy: req.user?.name || ''
+      });
+    }
     res.json({ id: updated._id.toString(), _id: updated._id.toString(), ...updated.toObject() });
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -4173,17 +4269,25 @@ router.delete('/cccp/companies/:id', async (req, res) => {
 // CCCP placement record status → student pipeline stage (same gates as the
 // Student 360 popup). Returns a note when the student can't move yet.
 const RECORD_STAGE = [[/join|placed/i, 7], [/select|offer/i, 6], [/interview/i, 5], [/mapped|company/i, 4]];
-async function syncStageFromRecord(studentId, status) {
+async function syncStageFromRecord(studentId, status, company = '') {
   const st = await findStudentByAnyId(studentId);
   if (!st) return '';
   const hit = RECORD_STAGE.find(([re]) => re.test(status || ''));
   if (!hit) return '';
   const target = hit[1];
+  // Mirror the CCCP outcome on the student record so HR (Placed tab),
+  // Leadership and the Student portal read the same status
+  const label = target >= 7 ? `Placed${company ? ` — ${company}` : ''}`
+    : target === 6 ? `Offer${company ? ` — ${company}` : ''}`
+    : target === 5 ? `Interview${company ? ` — ${company}` : ''}`
+    : `Mapped${company ? ` — ${company}` : ''}`;
+  st.placementStatus = label;
+  if (target >= 7) st.statusGroup = 'placed';
   const current = effectiveStage(st);
-  if (target <= current) return '';
+  if (target <= current) { await st.save(); return ''; }
   // A CCCP record carries the company / interview / offer itself, so the
   // steps in between are implied — only the Talentera gate applies here
-  if (autoStage(st) < 3 && current < 4) return `Student stage not moved. ${blockReason(st, 4)}`;
+  if (autoStage(st) < 3 && current < 4) { await st.save(); return `Student stage not moved. ${blockReason(st, 4)}`; }
   st.placementStage = target;
   await st.save();
   return '';
@@ -4202,7 +4306,7 @@ router.post('/cccp/placements', async (req, res) => {
   try {
     const record = new PlacementRecord(req.body);
     await record.save();
-    const stageNote = req.body.studentId ? await syncStageFromRecord(req.body.studentId, record.status || 'Company Mapped') : '';
+    const stageNote = req.body.studentId ? await syncStageFromRecord(req.body.studentId, record.status || 'Company Mapped', record.company) : '';
     res.status(201).json({ id: record._id.toString(), _id: record._id.toString(), ...record.toObject(), stageNote });
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -4213,7 +4317,7 @@ router.put('/cccp/placements/:id', async (req, res) => {
   try {
     const updated = await PlacementRecord.findByIdAndUpdate(req.params.id, { $set: req.body }, { new: true });
     if (!updated) return res.status(404).json({ error: 'Placement record not found' });
-    const stageNote = updated.studentId ? await syncStageFromRecord(updated.studentId, updated.status || 'Interview Scheduled') : '';
+    const stageNote = updated.studentId ? await syncStageFromRecord(updated.studentId, updated.status || 'Interview Scheduled', updated.company) : '';
     res.json({ id: updated._id.toString(), _id: updated._id.toString(), ...updated.toObject(), stageNote });
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -4271,7 +4375,7 @@ router.delete('/cccp/billing/:id', async (req, res) => {
 // 5. Follow-ups
 router.get('/cccp/followups', async (req, res) => {
   try {
-    let followups = await CccpFollowUp.find().sort({ date: 1 });
+    let followups = await CccpFollowUp.find().sort({ date: 1, time: 1 });
     res.json(followups.map(f => ({ id: f._id.toString(), _id: f._id.toString(), ...f.toObject() })));
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -4280,9 +4384,33 @@ router.get('/cccp/followups', async (req, res) => {
 
 router.post('/cccp/followups', async (req, res) => {
   try {
-    const fu = new CccpFollowUp(req.body);
+    const body = { ...req.body };
+    if (!body.who || !body.action) return res.status(400).json({ error: 'Who and action are required' });
+    const fu = new CccpFollowUp(body);
     await fu.save();
     res.status(201).json({ id: fu._id.toString(), _id: fu._id.toString(), ...fu.toObject() });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Mark a follow-up done / reschedule it
+router.put('/cccp/followups/:id', async (req, res) => {
+  try {
+    const body = { ...req.body };
+    delete body._id; delete body.id;
+    const updated = await CccpFollowUp.findByIdAndUpdate(req.params.id, { $set: body }, { new: true });
+    if (!updated) return res.status(404).json({ error: 'Follow-up not found' });
+    res.json({ id: updated._id.toString(), _id: updated._id.toString(), ...updated.toObject() });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.delete('/cccp/followups/:id', async (req, res) => {
+  try {
+    await CccpFollowUp.findByIdAndDelete(req.params.id);
+    res.json({ success: true });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -4303,6 +4431,9 @@ const campaignView = (c, leads, revenueByLead) => {
   const revenue = admitted.reduce((s, l) => s + (revenueByLead.get(String(l._id)) || 0), 0);
   const spent = Number(o.spent) || 0;
   const cpl = mine.length && spent ? Math.round(spent / mine.length) : null;
+  const monthStart = monthStartIST();
+  const spentThisMonth = (o.spendLog || []).filter((e) => new Date(e.at) >= monthStart).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  const leadsThisMonth = mine.filter((l) => new Date(l.createdAt) >= monthStart).length;
   return {
     id: String(o._id),
     _id: String(o._id),
@@ -4311,6 +4442,9 @@ const campaignView = (c, leads, revenueByLead) => {
     admissions: admitted.length,
     revenue,
     cpl,
+    spentThisMonth,
+    leadsThisMonth,
+    cplThisMonth: leadsThisMonth && spentThisMonth ? Math.round(spentThisMonth / leadsThisMonth) : null,
     costPerAdmission: admitted.length && spent ? Math.round(spent / admitted.length) : null,
     roi: spent ? `${Math.round(((revenue - spent) / spent) * 100)}%` : null,
     overTargetCpl: Boolean(cpl && o.targetCpl && cpl > o.targetCpl)
@@ -4346,6 +4480,7 @@ router.post('/marketing/campaigns', async (req, res) => {
     const data = pickCampaign(req.body);
     if (!data.name) return res.status(400).json({ error: 'Campaign name is required' });
     if (!data.code) data.code = `CAM-TF-${new Date().getFullYear()}-${Date.now().toString(36).toUpperCase()}`;
+    if (Number(data.spent) > 0) data.spendLog = [{ at: new Date(), amount: Number(data.spent), by: req.user?.name || '' }];
     const campaign = await MarketingCampaign.create(data);
     res.status(201).json(campaignView(campaign, [], new Map()));
   } catch (e) {
@@ -4355,7 +4490,15 @@ router.post('/marketing/campaigns', async (req, res) => {
 
 router.put('/marketing/campaigns/:id', async (req, res) => {
   try {
-    const updated = await MarketingCampaign.findByIdAndUpdate(req.params.id, { $set: pickCampaign(req.body) }, { new: true });
+    const data = pickCampaign(req.body);
+    const before = await MarketingCampaign.findById(req.params.id).select('spent').lean();
+    if (!before) return res.status(404).json({ error: 'Campaign not found' });
+    const update = { $set: data };
+    if (data.spent !== undefined) {
+      const delta = (Number(data.spent) || 0) - (Number(before.spent) || 0);
+      if (delta) update.$push = { spendLog: { at: new Date(), amount: delta, by: req.user?.name || '' } };
+    }
+    const updated = await MarketingCampaign.findByIdAndUpdate(req.params.id, update, { new: true });
     if (!updated) return res.status(404).json({ error: 'Campaign not found' });
     const [leads, revenue] = await Promise.all([StudentLead.find().select(LEAD_FIELDS_FOR_MARKETING).lean(), revenueByLeadId()]);
     res.json(campaignView(updated, leads, revenue));
@@ -4527,6 +4670,12 @@ router.post('/marketing/demands', async (req, res) => {
     const data = pickDemand(req.body);
     if (!data.branch || !(Number(data.targetLeads) > 0)) return res.status(400).json({ error: 'Branch and a target above 0 are required' });
     const created = await BranchLeadDemand.create({ ...data, requester: data.requester || req.user?.name || '' });
+    await pushNotification({
+      audience: 'marketing', type: 'demand',
+      title: `Lead request: ${created.branch} needs ${created.targetLeads} ${created.course || ''} leads`.trim(),
+      message: [created.requester && `Raised by ${created.requester}`, created.deadline && `deadline ${created.deadline}`, created.notes].filter(Boolean).join(' · '),
+      createdBy: created.requester || ''
+    });
     res.status(201).json((await demandViews([created]))[0]);
   } catch (e) {
     res.status(400).json({ error: e.message });

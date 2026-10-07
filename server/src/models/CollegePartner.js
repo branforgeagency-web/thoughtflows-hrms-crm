@@ -5,9 +5,10 @@ const collegePartnerSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  code: { type: String, default: '' },
   city: {
     type: String,
-    default: 'Coimbatore'
+    default: ''
   },
   type: {
     type: String,
@@ -16,10 +17,12 @@ const collegePartnerSchema = new mongoose.Schema({
   decisionMaker: String,
   phone: String,
   email: String,
+  // 'Not Signed' | 'Draft' | 'Signed'
   mouStatus: {
     type: String,
-    default: 'In Discussion'
+    default: 'Not Signed'
   },
+  studentStrength: { type: Number, default: null },
   workshopCount: {
     type: Number,
     default: 0

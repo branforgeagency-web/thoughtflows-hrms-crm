@@ -47,6 +47,13 @@ import {
   createBillingDeal, 
   getCccpFollowUps, 
   createCccpFollowUp, 
+  updateCccpFollowUp,
+  updateCollege,
+  updateCompany,
+  updateBillingDeal,
+  getCourseFeeRates,
+  getBranches,
+  handoverCollegeStudents,
   onDataUpdate 
 } from '../services/api';
 import { effectiveStage } from '../utils/placement';
@@ -66,6 +73,34 @@ const studentReadiness = (st) => {
   return null;
 };
 const trainerSaysReady = (st) => st?.trainerRecommendation === 'Ready' || Boolean(st?.syllabusCompleted);
+
+// 'Non-certified' also contains "certified" — match the real thing only
+const isCertified = (st) => /certified/i.test(st?.certified || '') && !/non[\s-]?certified/i.test(st?.certified || '');
+const feePending = (st) => st?.feeStatus === 'Part Paid' || st?.feeStatus === 'Pending';
+// One certification stage per student, read from the fields HR / Student portal also write
+const examStageOf = (st) => {
+  const ex = String(st?.examStatus || '').toLowerCase();
+  if (isCertified(st)) return 'Certified';
+  if (/fail|not cleared|retake/.test(ex)) return 'Not Cleared';
+  if (/written|appeared|result/.test(ex)) return 'Exam Written';
+  if (/booked|scheduled/.test(ex)) return 'Voucher Booked';
+  if (feePending(st)) return 'Payment Pending';
+  const r = studentReadiness(st);
+  if (trainerSaysReady(st) || (r !== null && r >= 80)) return 'Exam-ready';
+  return 'Interested';
+};
+const courseCodeOf = (st) => String(st?.course || '').split(/[\s—–-]/)[0].trim().toUpperCase() || 'AAPC';
+const localDateKey = (d = new Date()) => {
+  const x = new Date(d);
+  return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
+};
+const daysSince = (d) => (d ? Math.floor((Date.now() - new Date(d).getTime()) / 86400000) : 0);
+// SLA (days) before an item counts as stuck
+const SLA_DAYS = { collegeContact: 7, billing: 15 };
+const COLLEGE_STAGES = ['College Identified','Contacted','Decision-Maker Connected','Appointment Fixed','Visit Completed','Workshop Completed','Student Data Collected','HR Handover Done','MOU Signed'];
+const COMPANY_STAGES = ['Identified','Contacted','Decision-Maker Connected','Meeting Fixed','Meeting Done','Requirement Received','Training Active'];
+const BILLING_STATUSES = ['Payment Pending', 'Invoice Raised', 'Advance Received', 'Payment Completed', 'Not Billable'];
+const HIDDEN_DETAIL_KEYS = new Set(['_id', 'id', '__v', 'createdAt', 'updatedAt', 'readBy', 'previewColor', 'statusClass']);
 
 export default function CccpDashboard({
   onClose,
@@ -99,18 +134,23 @@ export default function CccpDashboard({
   const [placementStudents, setPlacementStudents] = useState([]);
   const [billingDeals, setBillingDeals] = useState([]);
   const [followUps, setFollowUps] = useState([]);
+  const [feeRates, setFeeRates] = useState([]);
+  const [branchList, setBranchList] = useState([]);
 
   const fetchLiveCccpData = async () => {
     try {
       setLoadingStudents(true);
-      const [stRes, clgRes, cmpRes, plcRes, bilRes, fuRes] = await Promise.all([
+      const [stRes, clgRes, cmpRes, plcRes, bilRes, fuRes, rateRes] = await Promise.all([
         getStudents().catch(() => []),
         getColleges().catch(() => []),
         getCompanies().catch(() => []),
         getPlacements().catch(() => []),
         getBillingDeals().catch(() => []),
-        getCccpFollowUps().catch(() => [])
+        getCccpFollowUps().catch(() => []),
+        getCourseFeeRates().catch(() => [])
       ]);
+      if (Array.isArray(rateRes)) setFeeRates(rateRes);
+      getBranches().then((b) => Array.isArray(b) && setBranchList(b)).catch(() => {});
       setStudents(Array.isArray(stRes) ? stRes : []);
       setCollegesList(Array.isArray(clgRes) ? clgRes : []);
       setCompaniesList(Array.isArray(cmpRes) ? cmpRes : []);
@@ -127,32 +167,23 @@ export default function CccpDashboard({
   useEffect(() => {
     fetchLiveCccpData();
     const unsub = onDataUpdate((entity) => {
-      if (!entity || entity.startsWith('cccp') || entity === 'students') {
+      if (!entity || entity.startsWith('cccp') || ['students', 'fee_rates', 'course_fees'].includes(entity)) {
         fetchLiveCccpData();
       }
     });
-    return unsub;
+    // Training / HR / Student-portal changes made on other machines
+    const poll = setInterval(fetchLiveCccpData, 60000);
+    return () => { unsub(); clearInterval(poll); };
   }, []);
 
   const handleUpdateStudentExam = async (studentId, examStatus, certified) => {
     try {
       await updateStudent(studentId, { examStatus, certified });
       setStudents(prev => prev.map(s => (s._id === studentId || s.studentId === studentId) ? { ...s, examStatus, certified } : s));
-      showToast(`✓ Updated certification status to "${certified}" for student!`);
+      showToast(`✓ Exam status saved: ${examStatus}${isCertified({ certified }) ? ` · ${certified}` : ''}`);
     } catch (err) {
       console.error('Failed to update student exam status:', err);
-      showToast('Error saving exam status');
-    }
-  };
-
-  const handleUpdateStudentPlacement = async (studentId, placementStatus, statusGroup = 'placed') => {
-    try {
-      await updateStudent(studentId, { placementStatus, statusGroup });
-      setStudents(prev => prev.map(s => (s._id === studentId || s.studentId === studentId) ? { ...s, placementStatus, statusGroup } : s));
-      showToast(`✓ Updated placement status to "${placementStatus}"!`);
-    } catch (err) {
-      console.error('Failed to update student placement status:', err);
-      showToast('Error saving placement status');
+      showToast(err?.response?.data?.error || 'Error saving exam status');
     }
   };
 
@@ -164,33 +195,31 @@ export default function CccpDashboard({
     type: 'Arts & Science',
     decisionMaker: '',
     studentStrength: '',
-    mou: 'No',
+    mou: 'Not Signed',
     stage: 'College Identified'
   });
 
   const handleSaveCollege = async (e) => {
     e?.preventDefault();
-    if (!collegeForm.name) return;
-    const cityCode = (collegeForm.city || 'CBG').substring(0, 3).toUpperCase();
-    const newCode = `CLG-${cityCode}-00${collegesList.length + 1}`;
+    if (!collegeForm.name.trim()) return;
+    // Code (CLG-<CITY>-NNN) is assigned by the server
     const newCol = {
-      name: collegeForm.name,
-      code: newCode,
-      city: collegeForm.city || 'Coimbatore',
-      type: collegeForm.type || 'Arts & Science',
-      decisionMaker: collegeForm.decisionMaker || 'Dr. Principal',
-      studentStrength: collegeForm.studentStrength || '',
-      mouStatus: collegeForm.mou === 'Yes' ? 'MOU Signed' : 'In Discussion',
-      stage: collegeForm.stage || 'Listed'
+      name: collegeForm.name.trim(),
+      city: collegeForm.city.trim(),
+      type: collegeForm.type,
+      decisionMaker: collegeForm.decisionMaker.trim(),
+      studentStrength: collegeForm.studentStrength === '' ? null : Number(collegeForm.studentStrength),
+      mouStatus: collegeForm.mou,
+      stage: collegeForm.stage
     };
     try {
       const created = await createCollege(newCol);
       setCollegesList(prev => [created, ...prev]);
       setIsAddCollegeOpen(false);
-      setCollegeForm({ name: '', city: '', type: 'Arts & Science', decisionMaker: '', studentStrength: '', mou: 'No', stage: 'College Identified' });
+      setCollegeForm({ name: '', city: '', type: 'Arts & Science', decisionMaker: '', studentStrength: '', mou: 'Not Signed', stage: 'College Identified' });
       showToast(`✓ Added college partner: ${created.name}`);
     } catch (err) {
-      showToast('Error creating college partner');
+      showToast(err?.response?.data?.error || 'Error creating college partner');
     }
   };
 
@@ -208,18 +237,16 @@ export default function CccpDashboard({
 
   const handleSaveCompany = async (e) => {
     e?.preventDefault();
-    if (!companyForm.name) return;
-    const cityCode = (companyForm.city || 'HYD').substring(0, 3).toUpperCase();
-    const newCode = `CMP-${cityCode}-00${companiesList.length + 1}`;
+    if (!companyForm.name.trim()) return;
+    // Code (CMP-<CITY>-NNN) is assigned by the server
     const newCmp = {
-      name: companyForm.name,
-      code: newCode,
-      city: companyForm.city || 'Hyderabad',
-      type: companyForm.type || 'Medical Coding',
-      contact: companyForm.contact || 'HR Team',
-      hiring: companyForm.hiring || 'Actively Hiring',
-      trainingInterest: companyForm.trainingInterest || 'No',
-      stage: companyForm.stage || 'Identified'
+      name: companyForm.name.trim(),
+      city: companyForm.city.trim(),
+      type: companyForm.type,
+      contact: companyForm.contact.trim(),
+      hiring: companyForm.hiring,
+      trainingInterest: companyForm.trainingInterest,
+      stage: companyForm.stage
     };
     try {
       const created = await createCompany(newCmp);
@@ -228,7 +255,75 @@ export default function CccpDashboard({
       setCompanyForm({ name: '', city: '', type: 'Medical Coding', contact: '', hiring: 'Actively Hiring', trainingInterest: 'No', stage: 'Identified' });
       showToast(`✓ Added corporate partner: ${created.name}`);
     } catch (err) {
-      showToast('Error creating corporate partner');
+      showToast(err?.response?.data?.error || 'Error creating corporate partner');
+    }
+  };
+
+  // Inline pipeline moves — these are what drive every count on Master Home
+  const handleUpdateCollege = async (col, patch) => {
+    try {
+      const updated = await updateCollege(col._id || col.id, patch);
+      setCollegesList(prev => prev.map(c => (c.id === col.id ? { ...c, ...updated } : c)));
+      showToast(`✓ ${col.name} updated`);
+    } catch (err) {
+      showToast(err?.response?.data?.error || 'Could not update the college');
+    }
+  };
+
+  // Campus student list → HR lead pool (one student per line: name, phone, email, course)
+  const [handoverCollege, setHandoverCollege] = useState(null);
+  const [handoverText, setHandoverText] = useState('');
+  const [handoverBranch, setHandoverBranch] = useState('');
+  const [handoverBusy, setHandoverBusy] = useState(false);
+  const parsedHandover = handoverText.split('\n').map(l => l.trim()).filter(Boolean).map(line => {
+    const [fullName = '', phone = '', email = '', course = ''] = line.split(/\t|,/).map(x => x.trim());
+    return { fullName, phone, email, course };
+  });
+  const handleHandover = async (e) => {
+    e.preventDefault();
+    if (!handoverCollege || !parsedHandover.length) return;
+    setHandoverBusy(true);
+    try {
+      const r = await handoverCollegeStudents(handoverCollege._id || handoverCollege.id, { students: parsedHandover, branch: handoverBranch });
+      if (r?.college) setCollegesList(prev => prev.map(c => (c.id === handoverCollege.id ? { ...c, ...r.college } : c)));
+      showToast(`✓ ${r.created} lead${r.created === 1 ? '' : 's'} sent to HR${r.skipped?.length ? ` · ${r.skipped.length} skipped (${r.skipped.slice(0, 2).map(x => `${x.name}: ${x.reason}`).join('; ')})` : ''}`);
+      if (r.created) { setHandoverCollege(null); setHandoverText(''); }
+    } catch (err) {
+      showToast(err?.response?.data?.error || 'Could not hand over the student list');
+    } finally {
+      setHandoverBusy(false);
+    }
+  };
+
+  const handleUpdateCompany = async (cmp, patch) => {
+    try {
+      const updated = await updateCompany(cmp._id || cmp.id, patch);
+      setCompaniesList(prev => prev.map(c => (c.id === cmp.id ? { ...c, ...updated } : c)));
+      showToast(`✓ ${cmp.name} updated`);
+    } catch (err) {
+      showToast(err?.response?.data?.error || 'Could not update the company');
+    }
+  };
+
+  const handleUpdateBilling = async (row, status) => {
+    try {
+      const patch = { status };
+      if (status === 'Payment Completed') patch.paidDate = localDateKey();
+      const updated = await updateBillingDeal(row._id || row.id, patch);
+      setBillingDeals(prev => prev.map(b => (b.id === row.id ? { ...b, ...updated } : b)));
+      showToast(`✓ ${row.deal}: ${status}`);
+    } catch (err) {
+      showToast(err?.response?.data?.error || 'Could not update the billing status');
+    }
+  };
+
+  const handleCompleteFollowUp = async (item) => {
+    try {
+      const updated = await updateCccpFollowUp(item._id || item.id, { status: 'Done' });
+      setFollowUps(prev => prev.map(f => (f.id === item.id ? { ...f, ...updated } : f)));
+      showToast(`✓ Done: ${item.action || item.title}`);
+    } catch (err) {
+      showToast(err?.response?.data?.error || 'Could not update the follow-up');
     }
   };
 
@@ -245,9 +340,11 @@ export default function CccpDashboard({
     e.preventDefault();
     if (!mapForm.studentId) return;
 
-    const targetStudent = students.find(s => s.studentId === mapForm.studentId || `${s.name} · ${s.studentId}` === mapForm.studentId);
-    const candidateName = targetStudent ? targetStudent.name : (mapForm.studentId.split('·')[0]?.trim() || mapForm.studentId);
-    const candidateTfId = targetStudent ? targetStudent.studentId : (mapForm.studentId.split('·')[1]?.trim() || 'TF-GEN-001');
+    const targetStudent = students.find(s => s.studentId === mapForm.studentId);
+    if (!targetStudent) { showToast('Pick a student from the admitted pool'); return; }
+    if (!mapForm.company) { showToast('Pick a company from the Corporate master'); return; }
+    const candidateName = targetStudent.name;
+    const candidateTfId = targetStudent.studentId;
 
     const newRecord = {
       studentId: candidateTfId,
@@ -255,8 +352,8 @@ export default function CccpDashboard({
       tfId: candidateTfId,
       readiness: studentReadiness(targetStudent) !== null ? `${studentReadiness(targetStudent)}%` : '—',
       trainerRec: targetStudent?.trainerRecommendation || (targetStudent?.syllabusCompleted ? 'Syllabus complete' : 'Pending'),
-      company: mapForm.company || (companiesList[0]?.name || 'Partner Company'),
-      role: mapForm.role || 'Medical Coder',
+      company: mapForm.company,
+      role: mapForm.role,
       interview: mapForm.interviewDate 
         ? new Date(mapForm.interviewDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) 
         : '—',
@@ -271,34 +368,47 @@ export default function CccpDashboard({
       setMapForm({ studentId: '', company: '', role: 'Medical Coder', interviewDate: '' });
       showToast(created?.stageNote ? `✓ Mapped ${candidateName} · ⚠ ${created.stageNote}` : `✓ Mapped ${candidateName} to ${newRecord.company}`);
     } catch (err) {
-      showToast('Error saving placement mapping');
+      showToast(err?.response?.data?.error || 'Error saving placement mapping');
     }
   };
 
-  const handleAdvanceStudent = async (id) => {
+  // Mapped → Interview needs a real interview date, so that step opens a date picker
+  const [advanceTarget, setAdvanceTarget] = useState(null);
+  const [advanceDate, setAdvanceDate] = useState('');
+  const NEXT_PLACEMENT_STATUS = { 'Not Ready': 'Company Mapped', 'Company Mapped': 'Interview Scheduled', 'Interview Scheduled': 'Selected', Selected: 'Joined' };
+
+  const savePlacementStatus = async (target, newStatus, extra = {}) => {
+    try {
+      const updated = await updatePlacement(target._id || target.id, { status: newStatus, ...extra });
+      setPlacementStudents(prev => prev.map(s => (s.id === target.id ? { ...s, ...updated } : s)));
+      showToast(updated?.stageNote ? `✓ ${target.name}: ${newStatus} · ⚠ ${updated.stageNote}` : `✓ Advanced ${target.name} to ${newStatus}`);
+    } catch (e) {
+      showToast(e?.response?.data?.error || `Could not move ${target.name}`);
+    }
+  };
+
+  const handleAdvanceStudent = (id) => {
     const target = placementStudents.find(s => s._id === id || s.id === id || s.studentId === id);
     if (!target) return;
-    let newStatus = target.status;
-    let interviewStr = target.interview;
-
-    if (target.status === 'Not Ready') {
-      newStatus = 'Company Mapped';
-    } else if (target.status === 'Company Mapped') {
-      newStatus = 'Interview Scheduled';
-      interviewStr = new Date(Date.now() + 86400000 * 3).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
-    } else if (target.status === 'Interview Scheduled') {
-      newStatus = 'Selected';
-    } else if (target.status === 'Selected') {
-      newStatus = 'Joined';
+    const newStatus = NEXT_PLACEMENT_STATUS[target.status];
+    if (!newStatus) { showToast(`${target.name} is already ${target.status}`); return; }
+    if (newStatus === 'Interview Scheduled') {
+      setAdvanceTarget(target);
+      setAdvanceDate('');
+      return;
     }
+    savePlacementStatus(target, newStatus);
+  };
 
-    try {
-      await updatePlacement(target._id || target.id, { status: newStatus, interview: interviewStr });
-      setPlacementStudents(prev => prev.map(s => (s._id === id || s.id === id || s.studentId === id) ? { ...s, status: newStatus, interview: interviewStr } : s));
-      showToast(`✓ Advanced ${target.name} to ${newStatus}`);
-    } catch (e) {
-      setPlacementStudents(prev => prev.map(s => (s._id === id || s.id === id || s.studentId === id) ? { ...s, status: newStatus, interview: interviewStr } : s));
-    }
+  const handleConfirmInterview = async (e) => {
+    e.preventDefault();
+    if (!advanceTarget || !advanceDate) return;
+    const d = new Date(advanceDate);
+    await savePlacementStatus(advanceTarget, 'Interview Scheduled', {
+      interviewDate: d,
+      interview: d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })
+    });
+    setAdvanceTarget(null);
   };
 
   // Billing handlers
@@ -316,8 +426,8 @@ export default function CccpDashboard({
       deal: billingForm.deal,
       type: billingForm.type,
       status: billingForm.status,
-      amount: billingForm.type === 'Campus' ? 180000 : 250000,
-      invoiceDate: new Date().toISOString().split('T')[0]
+      // Coordination only — amounts stay with Finance
+      invoiceDate: billingForm.status === 'Invoice Raised' ? localDateKey() : ''
     };
     try {
       const created = await createBillingDeal(newDeal);
@@ -326,18 +436,14 @@ export default function CccpDashboard({
       setBillingForm({ deal: '', type: 'Campus', status: 'Payment Pending' });
       showToast(`✓ Created billing record: ${created.deal}`);
     } catch (err) {
-      showToast('Error saving billing deal');
+      showToast(err?.response?.data?.error || 'Error saving billing deal');
     }
   };
 
   // Follow-up handlers
   const [isAddFollowUpOpen, setIsAddFollowUpOpen] = useState(false);
-  const [followUpForm, setFollowUpForm] = useState({
-    time: '11:00',
-    vertical: 'Campus',
-    who: '',
-    action: ''
-  });
+  const emptyFollowUp = () => ({ date: localDateKey(), time: '', vertical: 'Campus', who: '', action: '' });
+  const [followUpForm, setFollowUpForm] = useState(emptyFollowUp);
 
   const handleSaveFollowUp = async (e) => {
     e?.preventDefault();
@@ -347,57 +453,53 @@ export default function CccpDashboard({
       action: followUpForm.action,
       who: followUpForm.who,
       targetName: followUpForm.who,
-      time: followUpForm.time || '11:00',
+      time: followUpForm.time,
       vertical: followUpForm.vertical,
       type: followUpForm.vertical,
       status: 'Upcoming',
-      date: new Date().toISOString().split('T')[0]
+      date: followUpForm.date || localDateKey()
     };
     try {
       const created = await createCccpFollowUp(newFollowUp);
       setFollowUps(prev => [created, ...prev]);
       setIsAddFollowUpOpen(false);
-      setFollowUpForm({ time: '11:00', vertical: 'Campus', who: '', action: '' });
+      setFollowUpForm(emptyFollowUp());
       showToast(`✓ Scheduled follow-up: ${created.action || created.title}`);
     } catch (err) {
-      setFollowUps(prev => [{ ...newFollowUp, id: `flw-${Date.now()}` }, ...prev]);
-      setIsAddFollowUpOpen(false);
-      setFollowUpForm({ time: '11:00', vertical: 'Campus', who: '', action: '' });
-      showToast('Scheduled follow-up');
+      showToast(err?.response?.data?.error || 'Could not save the follow-up');
     }
   };
 
   // =========================================================================
   // REAL-TIME DYNAMIC METRICS CALCULATION (Zero Mock Data)
   // =========================================================================
-  // Certification Metrics
-  const certifiedCount = useMemo(() => 
-    students.filter(s => s.certified?.toLowerCase().includes('certified')).length
-  , [students]);
+  // Certification Metrics — one stage per student (see examStageOf)
+  const examStageCounts = useMemo(() => {
+    const counts = {};
+    students.forEach((st) => { const k = examStageOf(st); counts[k] = (counts[k] || 0) + 1; });
+    return counts;
+  }, [students]);
+  const certifiedCount = examStageCounts['Certified'] || 0;
+  const voucherBookedCount = examStageCounts['Voucher Booked'] || 0;
+  const paymentPendingCount = examStageCounts['Payment Pending'] || 0;
+  const interestedCount = examStageCounts['Interested'] || 0;
+  const examWrittenCount = examStageCounts['Exam Written'] || 0;
+  const examReadyCount = examStageCounts['Exam-ready'] || 0;
+  const notClearedCount = examStageCounts['Not Cleared'] || 0;
 
-  const voucherBookedCount = useMemo(() => 
-    students.filter(s => s.examStatus?.toLowerCase().includes('booked')).length
-  , [students]);
+  // Live exam voucher fee per course code from HR's fee schedule
+  const examFeeByCode = useMemo(() => {
+    const m = new Map();
+    feeRates.forEach((r) => { if (r?.code) m.set(String(r.code).toUpperCase(), Number(r.examFee) || 0); });
+    return m;
+  }, [feeRates]);
 
-  const paymentPendingCount = useMemo(() => 
-    students.filter(s => s.feeStatus === 'Part Paid' || s.feeStatus === 'Pending').length
-  , [students]);
-
-  const interestedCount = useMemo(() => 
-    students.filter(s => s.examStatus === 'Not Booked' && !s.certified?.toLowerCase().includes('certified')).length
-  , [students]);
-
-  const examWrittenCount = useMemo(() => 
-    students.filter(s => s.examStatus?.toLowerCase().includes('written') || s.examStatus?.toLowerCase().includes('cleared')).length
-  , [students]);
-
-  const examReadyCount = useMemo(() => 
-    students.filter(s => s.mockInterview?.toLowerCase().includes('cleared') || s.mockInterview?.toLowerCase().includes('ready') || s.examStatus?.toLowerCase().includes('target')).length
-  , [students]);
+  // Live readiness for a placement row (falls back to the snapshot saved on mapping)
+  const studentById = useMemo(() => new Map(students.map((st) => [st.studentId, st])), [students]);
 
   // Campus Metrics
   const mouSignedCount = useMemo(() => 
-    collegesList.filter(c => c.mou === 'Signed').length
+    collegesList.filter(c => c.mou === 'Signed' || c.stage === 'MOU Signed').length
   , [collegesList]);
 
   const collegesContactedCount = useMemo(() => 
@@ -409,7 +511,7 @@ export default function CccpDashboard({
   , [collegesList]);
 
   const collegesWorkshopCount = useMemo(() => 
-    collegesList.filter(c => c.stage === 'Workshop Completed').length
+    collegesList.filter(c => ['Workshop Completed', 'Student Data Collected', 'HR Handover Done'].includes(c.stage)).length
   , [collegesList]);
 
   // Corporate Metrics
@@ -455,6 +557,64 @@ export default function CccpDashboard({
     billingDeals.filter(b => b.status === 'Payment Pending' || b.status === 'Invoice Raised').length
   , [billingDeals]);
 
+  // Follow-ups: open items due today or overdue
+  const todayKey = localDateKey();
+  const openFollowUps = useMemo(() => followUps.filter(f => f.status !== 'Done'), [followUps]);
+  const dueFollowUps = useMemo(() => openFollowUps
+    .filter(f => !f.date || f.date <= todayKey)
+    .sort((a, b) => `${a.date || ''}${a.time || ''}`.localeCompare(`${b.date || ''}${b.time || ''}`)), [openFollowUps, todayKey]);
+
+  // Stuck items: past an SLA with no movement
+  const stuckItems = useMemo(() => {
+    const items = [];
+    collegesList.filter(c => ['Contacted', 'Decision-Maker Connected'].includes(c.stage) && daysSince(c.updatedAt) > SLA_DAYS.collegeContact)
+      .forEach(c => items.push({ key: `clg-${c.id}`, label: `${c.name} — no response`, tag: `${daysSince(c.updatedAt)}d`, title: `${c.name} - response pending`, item: c, nav: 'campus' }));
+    placementStudents.filter(p => p.status === 'Interview Scheduled' && p.interviewDate && new Date(p.interviewDate) < new Date(todayKey))
+      .forEach(p => items.push({ key: `plc-${p.id}`, label: `${p.name} — interview outcome missing`, tag: p.interview || 'Past', title: `${p.name} - ${p.company}`, item: p, nav: 'placement' }));
+    billingDeals.filter(b => ['Payment Pending', 'Invoice Raised'].includes(b.status) && daysSince(b.updatedAt || b.createdAt) > SLA_DAYS.billing)
+      .forEach(b => items.push({ key: `bil-${b.id}`, label: `${b.deal} — ${b.status.toLowerCase()}`, tag: `${daysSince(b.updatedAt || b.createdAt)}d`, title: b.deal, item: b, nav: 'billing' }));
+    followUps.filter(f => f.status !== 'Done' && f.date && f.date < todayKey)
+      .forEach(f => items.push({ key: `fu-${f.id}`, label: `${f.who}: ${f.action}`, tag: 'Overdue', title: f.action, item: f, nav: 'calendar' }));
+    return items;
+  }, [collegesList, placementStudents, billingDeals, followUps, todayKey]);
+
+  // Records behind a pipeline pill (drill-down shows the real list)
+  const recordsForStage = (type, label) => {
+    const certMap = { Interested: 'Interested', 'Exam-ready': 'Exam-ready', 'Voucher booked': 'Voucher Booked', 'Exam written': 'Exam Written', Certified: 'Certified' };
+    if (type === 'cert') return students.filter(st => examStageOf(st) === certMap[label]).map(st => ({ key: st._id || st.studentId, name: st.name, sub: `${st.studentId} · ${st.course || ''}` }));
+    if (type === 'campus') {
+      const pick = {
+        Listed: () => true,
+        Contacted: c => ['Contacted', 'Decision-Maker Connected'].includes(c.stage),
+        'Appt fixed': c => ['Appointment Fixed', 'Visit Completed'].includes(c.stage),
+        'Demo done': c => ['Workshop Completed', 'Student Data Collected', 'HR Handover Done'].includes(c.stage),
+        MOU: c => c.mou === 'Signed' || c.stage === 'MOU Signed'
+      }[label] || (() => false);
+      return collegesList.filter(pick).map(c => ({ key: c.id, name: c.name, sub: `${c.city || '—'} · ${c.stage}` }));
+    }
+    if (type === 'corporate') {
+      const pick = {
+        Listed: () => true,
+        Contacted: c => ['Contacted', 'Decision-Maker Connected'].includes(c.stage),
+        Meeting: c => ['Meeting Fixed', 'Meeting Done'].includes(c.stage),
+        Requirement: c => c.stage === 'Requirement Received',
+        Training: c => c.stage === 'Training Active'
+      }[label] || (() => false);
+      return companiesList.filter(pick).map(c => ({ key: c.id, name: c.name, sub: `${c.city || '—'} · ${c.stage}` }));
+    }
+    if (type === 'placement') {
+      const pick = {
+        Mapped: p => p.company && p.company !== '—',
+        Interviews: p => p.status === 'Interview Scheduled',
+        Selected: p => p.status === 'Selected',
+        Joined: p => p.status === 'Joined'
+      }[label] || (() => false);
+      return placementStudents.filter(pick).map(p => ({ key: p.id, name: p.name, sub: `${p.company || '—'} · ${p.status}` }));
+    }
+    return [];
+  };
+  const NAV_BY_TYPE = { cert: 'certification', campus: 'campus', corporate: 'corporate', placement: 'placement', followup: 'calendar' };
+
   // Real Counts for Sidebar Badges
   const navCounts = {
     certification: students.length,
@@ -462,7 +622,7 @@ export default function CccpDashboard({
     corporate: companiesList.length,
     placement: placementStudents.length,
     billing: pendingBillingCount,
-    calendar: followUps.length
+    calendar: dueFollowUps.length
   };
 
   // Real Pipeline Stages
@@ -499,6 +659,12 @@ export default function CccpDashboard({
 
   return (
     <div className="fixed inset-0 z-50 bg-[#f1f5f9] flex overflow-hidden font-sans text-slate-800 select-none animate-fadeIn">
+      {toastMsg && (
+        <div className="fixed top-5 right-5 z-[80] bg-slate-900 text-white px-5 py-3 rounded-2xl shadow-xl flex items-center gap-3 border border-slate-700 animate-slideDown max-w-sm">
+          <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
+          <span className="text-xs font-semibold">{toastMsg}</span>
+        </div>
+      )}
       {/* ================= LEFT SIDEBAR ================= */}
       <aside className="w-[220px] sm:w-[240px] bg-white border-r border-slate-200/80 flex flex-col justify-between p-4 shrink-0 z-20 shadow-[2px_0_12px_rgba(0,0,0,0.02)]">
         <div>
@@ -694,11 +860,11 @@ export default function CccpDashboard({
         <div className="pt-3 border-t border-slate-100 space-y-2 relative">
           <div className="px-2.5 py-1.5 rounded-lg bg-slate-50 flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-full bg-[#102a45] text-white text-xs font-bold flex items-center justify-center shrink-0">
-              MR
+              {(currentUser?.name || 'CCCP').split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase()}
             </div>
             <div className="truncate">
-              <div className="text-xs font-bold text-slate-800 leading-tight">Meenakshi R.</div>
-              <div className="text-[10px] text-slate-400 leading-tight truncate">Placements & Corp Head</div>
+              <div className="text-xs font-bold text-slate-800 leading-tight truncate">{currentUser?.name || 'CCCP Desk'}</div>
+              <div className="text-[10px] text-slate-400 leading-tight truncate">{currentUser?.role || 'Career & Placement Cell'}</div>
             </div>
           </div>
 
@@ -720,7 +886,7 @@ export default function CccpDashboard({
         {/* Body Container */}
         <div className="p-5 sm:p-7 space-y-6 max-w-[1640px] mx-auto w-full">
           <div className="flex justify-end -mb-4">
-            <NotificationBell audience="cccp" onOpenItem={() => setActiveNav('placement')} />
+            <NotificationBell audience="cccp" onOpenItem={(n) => setActiveNav(n?.type === 'exam' ? 'certification' : 'placement')} />
           </div>
           {/* ======================================================== */}
           {/* MASTER HOME VIEW                                          */}
@@ -801,7 +967,7 @@ export default function CccpDashboard({
                   </div>
                   <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[11px]">
                     <span className="text-slate-500 font-medium">In pipeline</span>
-                    <span className="font-bold text-teal-700 bg-teal-50 px-2 py-0.5 rounded-md border border-teal-100">{certifiedCount} certified MTD</span>
+                    <span className="font-bold text-teal-700 bg-teal-50 px-2 py-0.5 rounded-md border border-teal-100">{certifiedCount} certified</span>
                   </div>
                 </div>
 
@@ -1039,17 +1205,17 @@ export default function CccpDashboard({
                       <h2 className="text-sm font-bold text-slate-900">Follow-ups Today</h2>
                     </div>
                     <div className="font-mono text-xs text-slate-400 mb-3">
-                      due across all verticals
+                      due today or overdue · all verticals
                     </div>
                   </div>
 
                   <div className="space-y-2">
-                    {followUps.length === 0 ? (
+                    {dueFollowUps.length === 0 ? (
                       <div className="py-6 text-center text-xs text-slate-400">
                         No pending follow-ups today
                       </div>
                     ) : (
-                      followUps.map(item => (
+                      dueFollowUps.slice(0, 6).map(item => (
                         <div
                           key={item.id}
                           onClick={() => setSelectedDetail({ title: item.title || item.action, item, type: 'followup' })}
@@ -1059,7 +1225,7 @@ export default function CccpDashboard({
                             {item.title || `${item.who}: ${item.action}`}
                           </span>
                           <span className="font-mono text-xs font-bold text-amber-900 bg-amber-200/60 px-2 py-0.5 rounded-md shrink-0">
-                            {item.time}
+                            {item.date && item.date < todayKey ? 'Overdue' : (item.time || 'Today')}
                           </span>
                         </div>
                       ))
@@ -1080,46 +1246,26 @@ export default function CccpDashboard({
                       <h2 className="text-sm font-bold text-slate-900">Stuck Items</h2>
                     </div>
                     <div className="font-mono text-xs text-slate-400 mb-3">
-                      delayed beyond SLA · auto-escalated
+                      past SLA · college {SLA_DAYS.collegeContact}d · billing {SLA_DAYS.billing}d · interviews &amp; follow-ups past due
                     </div>
                   </div>
 
                   <div className="space-y-2">
-                    {paymentPendingCount === 0 && collegesList.filter(c => c.stage === 'Contacted').length === 0 ? (
+                    {stuckItems.length === 0 ? (
                       <div className="py-6 text-center text-xs text-slate-400">
-                        No escalated or SLA-breached items
+                        No SLA-breached items
                       </div>
                     ) : (
-                      <>
-                        {collegesList.filter(c => c.stage === 'Contacted').map(c => (
-                          <div
-                            key={c.id}
-                            onClick={() => setSelectedDetail({ title: `${c.name} - response pending`, item: c, type: 'stuck' })}
-                            className="cursor-pointer bg-rose-50/70 hover:bg-rose-100/70 border border-rose-200/70 rounded-xl px-3.5 py-2.5 flex items-center justify-between transition-all"
-                          >
-                            <span className="text-xs font-medium text-rose-950 truncate pr-2">
-                              {c.name} - contact follow-up
-                            </span>
-                            <span className="font-mono text-xs font-bold text-rose-700 bg-rose-200/60 px-2 py-0.5 rounded-md shrink-0">
-                              Overdue
-                            </span>
-                          </div>
-                        ))}
-                        {students.filter(s => s.feeStatus === 'Part Paid').slice(0, 2).map(s => (
-                          <div
-                            key={s._id || s.studentId}
-                            onClick={() => setSelectedDetail({ title: `${s.name} - balance fee`, item: s, type: 'stuck' })}
-                            className="cursor-pointer bg-rose-50/70 hover:bg-rose-100/70 border border-rose-200/70 rounded-xl px-3.5 py-2.5 flex items-center justify-between transition-all"
-                          >
-                            <span className="text-xs font-medium text-rose-950 truncate pr-2">
-                              {s.name} - exam fee pending
-                            </span>
-                            <span className="font-mono text-xs font-bold text-rose-700 bg-rose-200/60 px-2 py-0.5 rounded-md shrink-0">
-                              Payment
-                            </span>
-                          </div>
-                        ))}
-                      </>
+                      stuckItems.slice(0, 6).map(it => (
+                        <div
+                          key={it.key}
+                          onClick={() => setSelectedDetail({ title: it.title, item: it.item, type: 'stuck', nav: it.nav })}
+                          className="cursor-pointer bg-rose-50/70 hover:bg-rose-100/70 border border-rose-200/70 rounded-xl px-3.5 py-2.5 flex items-center justify-between transition-all"
+                        >
+                          <span className="text-xs font-medium text-rose-950 truncate pr-2">{it.label}</span>
+                          <span className="font-mono text-xs font-bold text-rose-700 bg-rose-200/60 px-2 py-0.5 rounded-md shrink-0">{it.tag}</span>
+                        </div>
+                      ))
                     )}
                   </div>
                 </div>
@@ -1160,7 +1306,7 @@ export default function CccpDashboard({
                   LIVE SYNCED
                 </span>
                 <p className="text-slate-700 text-xs font-medium leading-relaxed">
-                  Pulled from <strong className="text-slate-900 font-bold">Trainer 360</strong>: Exam Readiness, Mock Scores &amp; Trainer Recommendations are synchronized directly from live trainer evaluation submissions. If a trainer has not finalized scores, the candidate reflects <span className="font-semibold text-amber-800 bg-amber-100/60 px-2 py-0.5 rounded">Pending — Trainer Review</span>.
+                  Pulled from the <strong className="text-slate-900 font-bold">Training dashboard</strong>: readiness score, mock scores &amp; trainer recommendation come from the trainer's saved evaluations. Exam status is shared with HR and the Student portal. Students the trainer hasn't scored yet show <span className="font-semibold text-amber-800 bg-amber-100/60 px-2 py-0.5 rounded">—</span>.
                 </p>
               </div>
 
@@ -1168,18 +1314,15 @@ export default function CccpDashboard({
               <div className="bg-white/95 backdrop-blur-md rounded-2xl border border-slate-200/80 p-5 shadow-[0_4px_20px_-4px_rgba(15,23,42,0.03)]">
                 <div className="flex items-center justify-between overflow-x-auto pb-1 gap-2 min-w-[800px]">
                   {[
-                    { step: 1, label: 'Pool', done: true },
-                    { step: 2, label: 'Interest', done: true },
-                    { step: 3, label: 'Readiness', done: true },
-                    { step: 4, label: 'Agrees', done: true },
-                    { step: 5, label: 'Payment', done: true },
-                    { step: 6, label: 'Membership', done: false },
-                    { step: 7, label: 'Voucher', done: false },
-                    { step: 8, label: 'Exam Date', done: false },
-                    { step: 9, label: 'Written', done: false },
-                    { step: 10, label: 'Result', done: false },
-                    { step: 11, label: 'Certified', done: false }
-                  ].map((item, idx, arr) => (
+                    { step: 1, label: 'Pool', count: students.length },
+                    { step: 2, label: 'Interested', count: interestedCount },
+                    { step: 3, label: 'Payment Pending', count: paymentPendingCount },
+                    { step: 4, label: 'Exam-ready', count: examReadyCount },
+                    { step: 5, label: 'Voucher Booked', count: voucherBookedCount },
+                    { step: 6, label: 'Exam Written', count: examWrittenCount },
+                    { step: 7, label: 'Not Cleared', count: notClearedCount },
+                    { step: 8, label: 'Certified', count: certifiedCount }
+                  ].map((item) => ({ ...item, done: item.count > 0 })).map((item, idx, arr) => (
                     <React.Fragment key={item.step}>
                       <div className="flex flex-col items-center gap-2 flex-1 min-w-[60px]">
                         <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs transition-all ${
@@ -1213,7 +1356,7 @@ export default function CccpDashboard({
                     <h2 className="text-base font-bold text-slate-900">Exam Fees by Course</h2>
                     <span className="bg-emerald-50 text-emerald-700 border border-emerald-200/80 rounded-full px-2.5 py-0.5 text-[10px] font-bold flex items-center gap-1">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                      Managed in HR · Live reflected
+                      {feeRates.length ? 'From HR fee schedule · live' : 'Standard rates (HR fee schedule unavailable)'}
                     </span>
                   </div>
                 </div>
@@ -1261,7 +1404,10 @@ export default function CccpDashboard({
                       </div>
                       <div className="mt-2.5 pt-2 border-t border-slate-100">
                         <div className="text-sm font-black text-slate-900">
-                          {c.examFee > 0 ? `₹${c.examFee.toLocaleString('en-IN')}` : 'Included'}
+                          {(() => {
+                            const fee = examFeeByCode.has(String(c.code).toUpperCase()) ? examFeeByCode.get(String(c.code).toUpperCase()) : c.examFee;
+                            return fee > 0 ? `₹${Number(fee).toLocaleString('en-IN')}` : 'Included';
+                          })()}
                         </div>
                         <div className="text-[9px] text-slate-400 mt-0.5 uppercase tracking-wide">Exam Voucher</div>
                       </div>
@@ -1270,7 +1416,7 @@ export default function CccpDashboard({
                 </div>
 
                 <div className="bg-sky-50/70 border border-sky-200/60 rounded-xl p-3 text-xs text-sky-900 leading-relaxed font-medium">
-                  The CCCP Cell references these official exam voucher rates for candidate sponsorship and booking. Rates update directly whenever modified in the HR fee schedule.
+                  Exam voucher rates are read from HR's course fee schedule; a change saved there shows here on the next refresh.
                 </div>
               </div>
 
@@ -1278,9 +1424,9 @@ export default function CccpDashboard({
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
                 <div className="bg-white/95 backdrop-blur-md rounded-2xl p-4 sm:p-5 border border-slate-200/80 shadow-[0_4px_16px_-4px_rgba(15,23,42,0.04)] relative overflow-hidden">
                   <div className="absolute top-0 left-0 right-0 h-1 bg-slate-400" />
-                  <div className="text-[10px] font-extrabold tracking-wider text-slate-500 uppercase">INTERESTED</div>
-                  <div className="text-3xl font-black text-slate-900 my-1.5">{interestedCount}</div>
-                  <div className="text-[11px] text-slate-500">counselling pool</div>
+                  <div className="text-[10px] font-extrabold tracking-wider text-slate-500 uppercase">INTERESTED / READY</div>
+                  <div className="text-3xl font-black text-slate-900 my-1.5">{interestedCount + examReadyCount}</div>
+                  <div className="text-[11px] text-slate-500">{examReadyCount} exam-ready</div>
                 </div>
 
                 <div className="bg-white/95 backdrop-blur-md rounded-2xl p-4 sm:p-5 border border-slate-200/80 shadow-[0_4px_16px_-4px_rgba(15,23,42,0.04)] relative overflow-hidden">
@@ -1306,7 +1452,7 @@ export default function CccpDashboard({
 
                 <div className="bg-white/95 backdrop-blur-md rounded-2xl p-4 sm:p-5 border border-slate-200/80 shadow-[0_4px_16px_-4px_rgba(15,23,42,0.04)] relative overflow-hidden">
                   <div className="absolute top-0 left-0 right-0 h-1 bg-emerald-500" />
-                  <div className="text-[10px] font-extrabold tracking-wider text-slate-500 uppercase">CERTIFIED MTD</div>
+                  <div className="text-[10px] font-extrabold tracking-wider text-slate-500 uppercase">CERTIFIED</div>
                   <div className="text-3xl font-black text-slate-900 my-1.5">{certifiedCount}</div>
                   <div className="text-[11px] text-emerald-600 font-bold">→ placement desk</div>
                 </div>
@@ -1345,22 +1491,9 @@ export default function CccpDashboard({
                           students.map((st) => {
                             const readinessRaw = studentReadiness(st);
                             const readiness = readinessRaw ?? 0;
-                            const isReady = trainerSaysReady(st) || readiness >= 80 || st.mockInterview?.includes('Cleared') || st.certified?.includes('Certified');
-                            const stage = st.certified?.includes('Certified')
-                              ? 'Certified'
-                              : st.examStatus?.toLowerCase().includes('booked')
-                              ? 'Voucher Booked'
-                              : st.feeStatus === 'Part Paid'
-                              ? 'Payment Pending'
-                              : 'Interested';
-                            const action = stage === 'Certified'
-                              ? 'Forward to Placements'
-                              : stage === 'Voucher Booked'
-                              ? 'Track Exam Schedule'
-                              : stage === 'Payment Pending'
-                              ? 'Payment nudge'
-                              : 'AAPC Counseling';
-
+                            const isReady = trainerSaysReady(st) || readiness >= 80 || isCertified(st);
+                            const stage = examStageOf(st);
+                            const code = courseCodeOf(st);
                             const initials = (st.name || 'TF').split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase();
 
                             return (
@@ -1402,9 +1535,9 @@ export default function CccpDashboard({
                                   <span className={`px-2.5 py-1 rounded-lg text-[11px] font-bold ${
                                     stage === 'Certified'
                                       ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                      : stage === 'Voucher Booked'
+                                      : stage === 'Voucher Booked' || stage === 'Exam Written'
                                       ? 'bg-sky-50 text-sky-700 border border-sky-200'
-                                      : stage === 'Payment Pending'
+                                      : stage === 'Payment Pending' || stage === 'Not Cleared'
                                       ? 'bg-amber-50 text-amber-700 border border-amber-200'
                                       : 'bg-slate-100 text-slate-700'
                                   }`}>
@@ -1413,21 +1546,40 @@ export default function CccpDashboard({
                                 </td>
                                 <td className="py-3.5 px-4 font-semibold text-slate-800">
                                   <div className="flex items-center gap-1.5 flex-wrap">
-                                    {stage !== 'Certified' && stage !== 'Voucher Booked' && (
+                                    {['Interested', 'Exam-ready', 'Not Cleared'].includes(stage) && (
                                       <button
-                                        onClick={() => handleUpdateStudentExam(st._id || st.studentId, 'AAPC CPC Booked', 'Exam Scheduled')}
+                                        onClick={() => handleUpdateStudentExam(st._id || st.studentId, `${code} Exam Booked`, st.certified || 'Non-certified')}
                                         className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-sky-50 text-sky-700 hover:bg-sky-100 border border-sky-200 transition-all active:scale-95 cursor-pointer"
                                       >
-                                        Book AAPC Exam
+                                        Book {code} Exam
                                       </button>
+                                    )}
+                                    {stage === 'Payment Pending' && (
+                                      <span className="text-[10px] font-bold text-amber-700">Fee due · HR collects</span>
                                     )}
                                     {stage === 'Voucher Booked' && (
                                       <button
-                                        onClick={() => handleUpdateStudentExam(st._id || st.studentId, 'Cleared', 'CPC Certified ✓')}
-                                        className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-emerald-600 text-white hover:bg-emerald-700 shadow-xs transition-all active:scale-95 cursor-pointer"
+                                        onClick={() => handleUpdateStudentExam(st._id || st.studentId, `${code} Exam Written`, st.certified || 'Non-certified')}
+                                        className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-200 transition-all active:scale-95 cursor-pointer"
                                       >
-                                        Mark Certified ✓
+                                        Mark Written
                                       </button>
+                                    )}
+                                    {stage === 'Exam Written' && (
+                                      <>
+                                        <button
+                                          onClick={() => handleUpdateStudentExam(st._id || st.studentId, 'Cleared', `${code} Certified ✓`)}
+                                          className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-emerald-600 text-white hover:bg-emerald-700 shadow-xs transition-all active:scale-95 cursor-pointer"
+                                        >
+                                          Cleared ✓
+                                        </button>
+                                        <button
+                                          onClick={() => handleUpdateStudentExam(st._id || st.studentId, `${code} Not Cleared`, 'Non-certified')}
+                                          className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200 transition-all active:scale-95 cursor-pointer"
+                                        >
+                                          Not cleared
+                                        </button>
+                                      </>
                                     )}
                                     {stage === 'Certified' && (
                                       <button
@@ -1457,7 +1609,7 @@ export default function CccpDashboard({
               <div className="bg-gradient-to-r from-emerald-50/80 to-teal-50/80 border border-emerald-200/80 rounded-2xl p-4 text-xs text-emerald-950 flex items-center gap-2.5 shadow-2xs font-medium leading-relaxed">
                 <span className="w-5 h-5 rounded-full bg-emerald-600 text-white flex items-center justify-center text-xs font-bold shrink-0">✓</span>
                 <span>
-                  When a candidate reaches <strong className="font-bold">Certified</strong>, their Student 360 badge, placement-readiness score, and Talentera pipeline entry update automatically in real-time.
+                  Exam status and certification are saved on the student record — HR's Admitted Students view and the Student portal show the same status. Certified students are then mapped from the Placement desk.
                 </span>
               </div>
             </div>
@@ -1495,7 +1647,7 @@ export default function CccpDashboard({
                   i
                 </span>
                 <p className="text-slate-700 text-xs font-medium leading-relaxed">
-                  Validated bulk student rosters from signed campuses stream directly to HR Admissions as fresh prospective leads — tagged <span className="font-bold text-slate-900 bg-white/80 px-2 py-0.5 rounded border border-teal-200">Campus — [College] — [Event]</span> with duplicate-check and consent verification.
+                  Move each college through the pipeline from the Stage column. <b>Students → HR</b> sends a campus student list into HR's lead pool tagged <span className="font-bold text-slate-900 bg-white/80 px-2 py-0.5 rounded border border-teal-200">Campus — [College]</span> (phones already in the pool are skipped) and marks the college <b>HR Handover Done</b>.
                 </p>
               </div>
 
@@ -1527,12 +1679,13 @@ export default function CccpDashboard({
                           <th className="py-3.5 px-4 font-bold text-slate-600">DECISION-MAKER</th>
                           <th className="py-3.5 px-4 font-bold text-slate-600">MOU</th>
                           <th className="py-3.5 px-4 font-bold text-slate-600">STAGE</th>
+                          <th className="py-3.5 px-4 font-bold text-slate-600 text-right">HR</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 text-slate-700">
                         {collegesList.length === 0 ? (
                           <tr>
-                            <td colSpan={7} className="py-12 text-center text-slate-400 text-xs">
+                            <td colSpan={8} className="py-12 text-center text-slate-400 text-xs">
                               No colleges registered yet. Click "+ Add College" above to add your first campus partnership.
                             </td>
                           </tr>
@@ -1547,40 +1700,45 @@ export default function CccpDashboard({
                                   <span className="font-bold text-slate-900">{col.name}</span>
                                 </div>
                               </td>
-                              <td className="py-3.5 px-4 font-mono text-[11px] text-slate-500 font-medium">{col.code}</td>
-                              <td className="py-3.5 px-4 text-slate-800 font-medium">{col.city}</td>
+                              <td className="py-3.5 px-4 font-mono text-[11px] text-slate-500 font-medium">{col.code || '—'}</td>
+                              <td className="py-3.5 px-4 text-slate-800 font-medium">{col.city || '—'}</td>
                               <td className="py-3.5 px-4">
                                 <span className="inline-block px-2.5 py-0.5 rounded-md bg-slate-100 text-slate-700 font-semibold text-[11px]">
                                   {col.type}
                                 </span>
                               </td>
-                              <td className="py-3.5 px-4 text-slate-700 font-medium">{col.decisionMaker}</td>
+                              <td className="py-3.5 px-4 text-slate-700 font-medium">{col.decisionMaker || '—'}</td>
                               <td className="py-3.5 px-4">
-                                <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold ${
-                                  col.mou === 'Signed'
-                                    ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-600/20'
-                                    : col.mou === 'Draft'
-                                    ? 'bg-amber-50 text-amber-700 ring-1 ring-amber-600/20'
-                                    : 'bg-slate-100 text-slate-600'
-                                }`}>
-                                  <span className={`w-1.5 h-1.5 rounded-full ${
-                                    col.mou === 'Signed' ? 'bg-emerald-500' : col.mou === 'Draft' ? 'bg-amber-500' : 'bg-slate-400'
-                                  }`}></span>
-                                  {col.mou}
-                                </span>
+                                <select
+                                  value={col.mou || 'Not Signed'}
+                                  onChange={e => handleUpdateCollege(col, { mouStatus: e.target.value })}
+                                  className={`px-2 py-1 rounded-full text-[11px] font-bold border outline-none cursor-pointer ${
+                                    col.mou === 'Signed'
+                                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                      : col.mou === 'Draft'
+                                      ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                      : 'bg-slate-100 text-slate-600 border-slate-200'
+                                  }`}
+                                >
+                                  {['Not Signed', 'Draft', 'Signed'].map(o => <option key={o} value={o}>{o}</option>)}
+                                </select>
                               </td>
                               <td className="py-3.5 px-4">
-                                <span className={`px-2.5 py-1 rounded-lg text-[11px] font-bold ${
-                                  col.stage === 'MOU Signed'
-                                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                    : col.stage === 'Appointment Fixed'
-                                    ? 'bg-sky-50 text-sky-700 border border-sky-200'
-                                    : col.stage === 'Workshop Completed'
-                                    ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
-                                    : 'bg-slate-100 text-slate-700'
-                                }`}>
-                                  {col.stage}
-                                </span>
+                                <select
+                                  value={col.stage}
+                                  onChange={e => handleUpdateCollege(col, { stage: e.target.value })}
+                                  className="px-2 py-1 rounded-lg text-[11px] font-bold bg-slate-50 border border-slate-200 text-slate-800 outline-none cursor-pointer focus:border-teal-500"
+                                >
+                                  {(COLLEGE_STAGES.includes(col.stage) ? COLLEGE_STAGES : [col.stage, ...COLLEGE_STAGES]).map(o => <option key={o} value={o}>{o}</option>)}
+                                </select>
+                              </td>
+                              <td className="py-3.5 px-4 text-right">
+                                <button
+                                  onClick={() => { setHandoverCollege(col); setHandoverText(''); setHandoverBranch(''); }}
+                                  className="px-2.5 py-1 rounded-lg text-[11px] font-bold border border-teal-200 text-teal-700 bg-teal-50 hover:bg-teal-100 whitespace-nowrap"
+                                >
+                                  Students → HR
+                                </button>
                               </td>
                             </tr>
                           ))
@@ -1625,7 +1783,7 @@ export default function CccpDashboard({
                   i
                 </span>
                 <p className="text-slate-700 text-xs font-medium leading-relaxed">
-                  Confirmed corporate training agreements automatically trigger an active Corporate Batch inside Trainer 360 — CCCP closes the corporate deal while Training executes delivery.
+                  Companies added here feed the Placement desk's company list and Admin's partner count. Moving a company to <b>Training Active</b> notifies every trainer in the Training dashboard to plan the batch — record the deal on Billing Status.
                 </p>
               </div>
 
@@ -1677,40 +1835,37 @@ export default function CccpDashboard({
                                   <span className="font-bold text-slate-900">{cmp.name}</span>
                                 </div>
                               </td>
-                              <td className="py-3.5 px-4 font-mono text-[11px] text-slate-500 font-medium">{cmp.code}</td>
-                              <td className="py-3.5 px-4 text-slate-800 font-medium">{cmp.city}</td>
+                              <td className="py-3.5 px-4 font-mono text-[11px] text-slate-500 font-medium">{cmp.code || '—'}</td>
+                              <td className="py-3.5 px-4 text-slate-800 font-medium">{cmp.city || '—'}</td>
                               <td className="py-3.5 px-4">
                                 <span className="inline-block px-2.5 py-0.5 rounded-md bg-slate-100 text-slate-700 font-semibold text-[11px]">
                                   {cmp.type}
                                 </span>
                               </td>
-                              <td className="py-3.5 px-4 text-slate-700 font-medium">{cmp.contact}</td>
+                              <td className="py-3.5 px-4 text-slate-700 font-medium">{cmp.contact || '—'}</td>
                               <td className="py-3.5 px-4">
-                                <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold ${
-                                  cmp.hiring === 'Actively Hiring'
-                                    ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-600/20'
-                                    : cmp.hiring === 'Paused'
-                                    ? 'bg-amber-50 text-amber-700 ring-1 ring-amber-600/20'
-                                    : 'bg-slate-100 text-slate-600'
-                                }`}>
-                                  <span className={`w-1.5 h-1.5 rounded-full ${
-                                    cmp.hiring === 'Actively Hiring' ? 'bg-emerald-500 animate-pulse' : cmp.hiring === 'Paused' ? 'bg-amber-500' : 'bg-slate-400'
-                                  }`}></span>
-                                  {cmp.hiring}
-                                </span>
+                                <select
+                                  value={cmp.hiring || 'Actively Hiring'}
+                                  onChange={e => handleUpdateCompany(cmp, { hiring: e.target.value })}
+                                  className={`px-2 py-1 rounded-full text-[11px] font-bold border outline-none cursor-pointer ${
+                                    cmp.hiring === 'Actively Hiring'
+                                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                      : cmp.hiring === 'Paused'
+                                      ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                      : 'bg-slate-100 text-slate-600 border-slate-200'
+                                  }`}
+                                >
+                                  {['Actively Hiring', 'Paused', 'Not Hiring'].map(o => <option key={o} value={o}>{o}</option>)}
+                                </select>
                               </td>
                               <td className="py-3.5 px-4">
-                                <span className={`px-2.5 py-1 rounded-lg text-[11px] font-bold ${
-                                  cmp.stage === 'Requirement Received'
-                                    ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
-                                    : cmp.stage === 'Meeting Done'
-                                    ? 'bg-sky-50 text-sky-700 border border-sky-200'
-                                    : cmp.stage === 'Training Active'
-                                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                    : 'bg-slate-100 text-slate-700'
-                                }`}>
-                                  {cmp.stage}
-                                </span>
+                                <select
+                                  value={cmp.stage}
+                                  onChange={e => handleUpdateCompany(cmp, { stage: e.target.value })}
+                                  className="px-2 py-1 rounded-lg text-[11px] font-bold bg-slate-50 border border-slate-200 text-slate-800 outline-none cursor-pointer focus:border-blue-500"
+                                >
+                                  {(COMPANY_STAGES.includes(cmp.stage) ? COMPANY_STAGES : [cmp.stage, ...COMPANY_STAGES]).map(o => <option key={o} value={o}>{o}</option>)}
+                                </select>
                               </td>
                             </tr>
                           ))
@@ -1756,7 +1911,7 @@ export default function CccpDashboard({
                   LIVE ENGINE
                 </span>
                 <p className="text-xs text-slate-700 font-medium leading-relaxed">
-                  Readiness scores, mock ratings, and trainer recommendations are pulled automatically from <strong className="font-bold text-slate-900">Trainer 360</strong>. Confirmed offers dynamically update the candidate's master student profile.
+                  Readiness and trainer recommendation are read live from the <strong className="font-bold text-slate-900">Training dashboard</strong>. Each status move updates the student's placement stage; <b>Joined</b> marks the student Placed for HR, Leadership and the Student portal.
                 </p>
               </div>
 
@@ -1880,7 +2035,11 @@ export default function CccpDashboard({
                           </tr>
                         ) : (
                           placementStudents.map((st) => {
-                            const readiness = parseInt(st.readiness) || 80;
+                            const live = studentById.get(st.studentId);
+                            const liveReadiness = studentReadiness(live);
+                            const readinessRaw = liveReadiness !== null ? liveReadiness : (parseInt(st.readiness, 10) || null);
+                            const readiness = readinessRaw || 0;
+                            const trainerRec = live?.trainerRecommendation || st.trainerRec || 'Pending';
                             const initials = (st.name || 'TF').split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase();
 
                             return (
@@ -1898,8 +2057,8 @@ export default function CccpDashboard({
                                 </td>
                                 <td className="py-3.5 px-4">
                                   <div className="flex items-center gap-2">
-                                    <span className={`font-black ${readiness >= 80 ? 'text-emerald-600' : 'text-amber-600'}`}>
-                                      {st.readiness}
+                                    <span className={`font-black ${readinessRaw === null ? 'text-slate-400' : readiness >= 80 ? 'text-emerald-600' : 'text-amber-600'}`}>
+                                      {readinessRaw === null ? '—' : `${readiness}%`}
                                     </span>
                                     <div className="w-10 h-1.5 bg-slate-100 rounded-full overflow-hidden">
                                       <div 
@@ -1911,12 +2070,12 @@ export default function CccpDashboard({
                                 </td>
                                 <td className="py-3.5 px-4">
                                   <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
-                                    st.trainerRec === 'Ready'
+                                    trainerRec === 'Ready'
                                       ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-600/20'
                                       : 'bg-amber-50 text-amber-700 ring-1 ring-amber-600/20'
                                   }`}>
-                                    <span className={`w-1.5 h-1.5 rounded-full ${st.trainerRec === 'Ready' ? 'bg-emerald-500' : 'bg-amber-500'}`}></span>
-                                    {st.trainerRec}
+                                    <span className={`w-1.5 h-1.5 rounded-full ${trainerRec === 'Ready' ? 'bg-emerald-500' : 'bg-amber-500'}`}></span>
+                                    {trainerRec}
                                   </span>
                                 </td>
                                 <td className="py-3.5 px-4">
@@ -1928,7 +2087,7 @@ export default function CccpDashboard({
                                   {st.role}
                                 </td>
                                 <td className="py-3.5 px-4 text-slate-600 font-medium">
-                                  {st.interview}
+                                  {st.interview || '—'}
                                 </td>
                                 <td className="py-3.5 px-4">
                                   <span className={`inline-flex px-2.5 py-1 rounded-lg text-[11px] font-bold ${
@@ -1946,7 +2105,8 @@ export default function CccpDashboard({
                                 <td className="py-3.5 px-4 text-right">
                                   <button
                                     onClick={() => handleAdvanceStudent(st.id)}
-                                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl border border-slate-200 hover:border-slate-300 hover:bg-slate-100 text-slate-700 text-xs font-bold shadow-2xs transition-all active:scale-95"
+                                    disabled={!NEXT_PLACEMENT_STATUS[st.status]}
+                                    className="disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1 px-3 py-1.5 rounded-xl border border-slate-200 hover:border-slate-300 hover:bg-slate-100 text-slate-700 text-xs font-bold shadow-2xs transition-all active:scale-95"
                                   >
                                     <span>Advance</span>
                                     <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
@@ -2045,22 +2205,23 @@ export default function CccpDashboard({
                                 </span>
                               </td>
                               <td className="py-4 px-6">
-                                <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold ${
-                                  row.status === 'Payment Pending'
-                                    ? 'bg-amber-50 text-amber-800 border border-amber-200'
-                                    : row.status === 'Invoice Raised'
-                                    ? 'bg-blue-50 text-blue-800 border border-blue-200'
-                                    : row.status === 'Advance Received'
-                                    ? 'bg-sky-50 text-sky-800 border border-sky-200'
-                                    : row.status === 'Payment Completed'
-                                    ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-                                    : 'bg-slate-100 text-slate-600'
-                                }`}>
-                                  <span className={`w-1.5 h-1.5 rounded-full ${
-                                    row.status === 'Payment Completed' ? 'bg-emerald-500' : row.status === 'Payment Pending' ? 'bg-amber-500' : 'bg-blue-500'
-                                  }`}></span>
-                                  {row.status}
-                                </span>
+                                <select
+                                  value={row.status}
+                                  onChange={e => handleUpdateBilling(row, e.target.value)}
+                                  className={`px-2.5 py-1 rounded-lg text-xs font-bold border outline-none cursor-pointer ${
+                                    row.status === 'Payment Pending'
+                                      ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                      : row.status === 'Invoice Raised'
+                                      ? 'bg-blue-50 text-blue-800 border-blue-200'
+                                      : row.status === 'Advance Received'
+                                      ? 'bg-sky-50 text-sky-800 border-sky-200'
+                                      : row.status === 'Payment Completed'
+                                      ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                      : 'bg-slate-100 text-slate-600 border-slate-200'
+                                  }`}
+                                >
+                                  {(BILLING_STATUSES.includes(row.status) ? BILLING_STATUSES : [row.status, ...BILLING_STATUSES]).map(o => <option key={o} value={o}>{o}</option>)}
+                                </select>
                               </td>
                             </tr>
                           ))
@@ -2087,7 +2248,7 @@ export default function CccpDashboard({
                       ACTIVITY SCHEDULE
                     </span>
                     <span className="text-xs font-mono font-medium text-slate-400">
-                      {followUps.length} follow-ups planned
+                      {openFollowUps.length} open · {dueFollowUps.length} due
                     </span>
                   </div>
                   <h1 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
@@ -2120,16 +2281,17 @@ export default function CccpDashboard({
                     <table className="w-full text-left text-xs">
                       <thead className="bg-gradient-to-r from-slate-50 to-slate-100/70 text-slate-400 font-bold border-b border-slate-100 uppercase tracking-wider text-[10px]">
                         <tr>
-                          <th className="py-3.5 px-6 font-bold text-slate-600">TIME / DUE</th>
+                          <th className="py-3.5 px-6 font-bold text-slate-600">DUE</th>
                           <th className="py-3.5 px-6 font-bold text-slate-600">VERTICAL</th>
                           <th className="py-3.5 px-6 font-bold text-slate-600">PARTNER / CANDIDATE</th>
                           <th className="py-3.5 px-6 font-bold text-slate-600">ACTION REQUIRED</th>
+                          <th className="py-3.5 px-6 font-bold text-slate-600 text-right">STATUS</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 font-sans">
                         {followUps.length === 0 ? (
                           <tr>
-                            <td colSpan={4} className="py-12 text-center text-slate-400 text-xs">
+                            <td colSpan={5} className="py-12 text-center text-slate-400 text-xs">
                               No follow-up appointments scheduled yet. Click "+ Add Follow-up" above to schedule an agenda item.
                             </td>
                           </tr>
@@ -2137,8 +2299,8 @@ export default function CccpDashboard({
                           followUps.map((row) => (
                             <tr key={row.id} className="hover:bg-slate-50/80 transition-colors">
                               <td className="py-4 px-6">
-                                <span className="font-mono font-black text-xs text-slate-900 bg-slate-100 px-2.5 py-1 rounded-md">
-                                  {row.time}
+                                <span className={`font-mono font-black text-xs px-2.5 py-1 rounded-md ${row.status !== 'Done' && row.date && row.date < todayKey ? 'bg-rose-100 text-rose-800' : 'bg-slate-100 text-slate-900'}`}>
+                                  {row.date ? new Date(`${row.date}T00:00:00`).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) : '—'}{row.time ? ` · ${row.time}` : ''}
                                 </span>
                               </td>
                               <td className="py-4 px-6">
@@ -2159,6 +2321,18 @@ export default function CccpDashboard({
                               </td>
                               <td className="py-4 px-6 text-slate-700 font-medium">
                                 {row.action}
+                              </td>
+                              <td className="py-4 px-6 text-right">
+                                {row.status === 'Done' ? (
+                                  <span className="text-xs font-bold text-emerald-700">Done ✓</span>
+                                ) : (
+                                  <button
+                                    onClick={() => handleCompleteFollowUp(row)}
+                                    className="px-3 py-1 rounded-lg text-xs font-bold border border-slate-200 hover:bg-emerald-50 hover:border-emerald-200 text-slate-700 transition-all"
+                                  >
+                                    Mark done
+                                  </button>
+                                )}
                               </td>
                             </tr>
                           ))
@@ -2355,21 +2529,33 @@ export default function CccpDashboard({
 
             <div className="py-5 space-y-4">
               {selectedDetail.item ? (
-                <div className="p-4 bg-slate-50/80 rounded-2xl border border-slate-100 space-y-2.5 text-xs">
-                  {Object.entries(selectedDetail.item).map(([k, v]) => (
-                    <div key={k} className="flex justify-between items-center py-1.5 border-b border-slate-200/60 last:border-0">
-                      <span className="font-bold text-slate-500 uppercase text-[10px] tracking-wider">{k}:</span>
-                      <span className="font-semibold text-slate-800 bg-white px-2 py-0.5 rounded-md border border-slate-100">{String(v)}</span>
-                    </div>
-                  ))}
+                <div className="p-4 bg-slate-50/80 rounded-2xl border border-slate-100 space-y-2.5 text-xs max-h-[50vh] overflow-y-auto">
+                  {Object.entries(selectedDetail.item)
+                    .filter(([k, v]) => !HIDDEN_DETAIL_KEYS.has(k) && v !== null && v !== undefined && v !== '' && typeof v !== 'object')
+                    .map(([k, v]) => (
+                      <div key={k} className="flex justify-between items-center gap-3 py-1.5 border-b border-slate-200/60 last:border-0">
+                        <span className="font-bold text-slate-500 uppercase text-[10px] tracking-wider">{k.replace(/([A-Z])/g, ' $1')}</span>
+                        <span className="font-semibold text-slate-800 bg-white px-2 py-0.5 rounded-md border border-slate-100 text-right">{String(v)}</span>
+                      </div>
+                    ))}
                 </div>
-              ) : (
-                <div className="p-4 bg-slate-50/80 rounded-2xl border border-slate-100">
-                  <p className="text-sm text-slate-600 leading-relaxed">
-                    Total of <span className="font-black text-slate-900 bg-white px-2 py-0.5 rounded-md border border-slate-200">{selectedDetail.count} records</span> currently in this pipeline stage. Action items are actively tracked by the CCCP operational desk.
-                  </p>
-                </div>
-              )}
+              ) : (() => {
+                const label = String(selectedDetail.title || '').split(': ').pop();
+                const rows = recordsForStage(selectedDetail.type, label);
+                return (
+                  <div className="p-4 bg-slate-50/80 rounded-2xl border border-slate-100 space-y-2 max-h-[50vh] overflow-y-auto">
+                    <p className="text-xs text-slate-500">{rows.length} record{rows.length === 1 ? '' : 's'} in this stage</p>
+                    {rows.length === 0 ? (
+                      <p className="text-sm text-slate-400 py-4 text-center">Nothing here yet.</p>
+                    ) : rows.map(r => (
+                      <div key={r.key} className="bg-white border border-slate-100 rounded-xl px-3 py-2 text-xs">
+                        <div className="font-bold text-slate-800">{r.name}</div>
+                        <div className="text-slate-500">{r.sub}</div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
             </div>
 
             <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-2.5">
@@ -2379,17 +2565,84 @@ export default function CccpDashboard({
               >
                 Close
               </button>
-              <button
-                onClick={() => {
-                  alert(`Updated status for: ${selectedDetail.title}`);
-                  setSelectedDetail(null);
-                }}
-                className="px-5 py-2.5 text-xs font-bold uppercase tracking-wider text-white bg-gradient-to-r from-[#102a45] via-[#153a5c] to-[#1e3a8a] hover:opacity-95 rounded-xl shadow-md shadow-slate-900/10 transition-all active:scale-95"
-              >
-                Update / Advance Stage
-              </button>
+              {(selectedDetail.nav || NAV_BY_TYPE[selectedDetail.type]) && (
+                <button
+                  onClick={() => {
+                    setActiveNav(selectedDetail.nav || NAV_BY_TYPE[selectedDetail.type]);
+                    setSelectedDetail(null);
+                  }}
+                  className="px-5 py-2.5 text-xs font-bold uppercase tracking-wider text-white bg-gradient-to-r from-[#102a45] via-[#153a5c] to-[#1e3a8a] hover:opacity-95 rounded-xl shadow-md shadow-slate-900/10 transition-all active:scale-95"
+                >
+                  Open &amp; update
+                </button>
+              )}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ================= MODAL: SCHEDULE INTERVIEW (advance placement) ================= */}
+      {advanceTarget && (
+        <div className="fixed inset-0 z-50 bg-slate-950/40 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
+          <form onSubmit={handleConfirmInterview} className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl border border-slate-200/80 space-y-4">
+            <div>
+              <h3 className="text-base font-bold text-slate-900">Schedule interview</h3>
+              <p className="text-xs text-slate-500 mt-0.5">{advanceTarget.name} · {advanceTarget.company || 'company'}</p>
+            </div>
+            <input
+              type="date"
+              required
+              value={advanceDate}
+              onChange={e => setAdvanceDate(e.target.value)}
+              className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500"
+            />
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setAdvanceTarget(null)} className="px-4 py-2 rounded-xl text-xs font-bold bg-slate-100 text-slate-600">Cancel</button>
+              <button type="submit" className="px-4 py-2 rounded-xl text-xs font-bold text-white bg-purple-600 hover:bg-purple-700">Save interview</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* ================= MODAL: CAMPUS STUDENTS → HR ================= */}
+      {handoverCollege && (
+        <div className="fixed inset-0 z-50 bg-slate-950/40 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
+          <form onSubmit={handleHandover} className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-200/80 space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Hand over students to HR</h3>
+                <p className="text-xs text-slate-500 mt-0.5">{handoverCollege.name} · leads tagged "Campus — {handoverCollege.name}"</p>
+              </div>
+              <button type="button" onClick={() => setHandoverCollege(null)} className="w-8 h-8 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Students — one per line: name, phone, email, course</label>
+              <textarea
+                rows="8"
+                required
+                value={handoverText}
+                onChange={e => setHandoverText(e.target.value)}
+                placeholder={'Name, 9876543210, mail@example.com, CPC'}
+                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500"
+              />
+              <p className="text-[11px] text-slate-400 mt-1">Paste from Excel works (tab-separated). {parsedHandover.length} row{parsedHandover.length === 1 ? '' : 's'} read.</p>
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Branch for these leads</label>
+              <select value={handoverBranch} onChange={e => setHandoverBranch(e.target.value)} className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-teal-500">
+                <option value="">Unassigned (HR allocates)</option>
+                {branchList.map(b => <option key={b._id || b.name} value={b.name}>{b.name}</option>)}
+              </select>
+            </div>
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+              <button type="button" onClick={() => setHandoverCollege(null)} className="px-4 py-2 rounded-xl text-xs font-bold bg-slate-100 text-slate-600">Cancel</button>
+              <button type="submit" disabled={handoverBusy || !parsedHandover.length} className="px-4 py-2 rounded-xl text-xs font-bold text-white bg-teal-600 hover:bg-teal-700 disabled:opacity-50">
+                {handoverBusy ? 'Sending…' : `Send ${parsedHandover.length} to HR`}
+              </button>
+            </div>
+          </form>
         </div>
       )}
 
@@ -2473,7 +2726,7 @@ export default function CccpDashboard({
                     value={collegeForm.decisionMaker}
                     onChange={e => setCollegeForm({ ...collegeForm, decisionMaker: e.target.value })}
                     className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-50/50 hover:bg-slate-50 focus:bg-white text-sm text-slate-800 font-medium transition-all focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500"
-                    placeholder="e.g. Dr. Anitha R"
+                    placeholder="Principal / HOD name"
                   />
                 </div>
 
@@ -2499,7 +2752,7 @@ export default function CccpDashboard({
                     onChange={e => setCollegeForm({ ...collegeForm, mou: e.target.value })}
                     className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-50/50 hover:bg-slate-50 focus:bg-white text-sm text-slate-800 font-medium transition-all focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500"
                   >
-                    <option value="No">No</option>
+                    <option value="Not Signed">Not Signed</option>
                     <option value="Draft">Draft</option>
                     <option value="Signed">Signed</option>
                   </select>
@@ -2630,7 +2883,7 @@ export default function CccpDashboard({
                     value={companyForm.contact}
                     onChange={e => setCompanyForm({ ...companyForm, contact: e.target.value })}
                     className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-50/50 hover:bg-slate-50 focus:bg-white text-sm text-slate-800 font-medium transition-all focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                    placeholder="e.g. Ramesh (HR)"
+                    placeholder="HR contact name"
                   />
                 </div>
 
@@ -2944,16 +3197,23 @@ export default function CccpDashboard({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
-                    Time / Due
+                    Due date &amp; time
                   </label>
-                  <input
-                    type="text"
-                    required
-                    value={followUpForm.time}
-                    onChange={e => setFollowUpForm({ ...followUpForm, time: e.target.value })}
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-50/50 hover:bg-slate-50 focus:bg-white text-sm text-slate-800 font-medium transition-all focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500"
-                    placeholder="e.g. 11:30 or Today"
-                  />
+                  <div className="flex gap-2">
+                    <input
+                      type="date"
+                      required
+                      value={followUpForm.date}
+                      onChange={e => setFollowUpForm({ ...followUpForm, date: e.target.value })}
+                      className="flex-1 min-w-0 px-3 py-2.5 rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white text-sm text-slate-800 font-medium focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500"
+                    />
+                    <input
+                      type="time"
+                      value={followUpForm.time}
+                      onChange={e => setFollowUpForm({ ...followUpForm, time: e.target.value })}
+                      className="w-28 px-3 py-2.5 rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white text-sm text-slate-800 font-medium focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500"
+                    />
+                  </div>
                 </div>
 
                 <div>
@@ -2983,8 +3243,11 @@ export default function CccpDashboard({
                   value={followUpForm.who}
                   onChange={e => setFollowUpForm({ ...followUpForm, who: e.target.value })}
                   className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-50/50 hover:bg-slate-50 focus:bg-white text-sm text-slate-800 font-medium transition-all focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500"
-                  placeholder="e.g. Sri Ramakrishna College or Priya S"
+                  placeholder="Pick or type a college, company or student" list="cccp-followup-who"
                 />
+                <datalist id="cccp-followup-who">
+                  {[...collegesList.map(c => c.name), ...companiesList.map(c => c.name), ...students.map(st => `${st.name} · ${st.studentId}`)].map(n => <option key={n} value={n} />)}
+                </datalist>
               </div>
 
               <div>

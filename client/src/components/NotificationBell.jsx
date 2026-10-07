@@ -14,7 +14,8 @@ const ago = (d) => {
 
 const TYPE_ICON = {
   doubt: '💬', assessment: '📝', score: '🏅', material: '📚', live: '🔴', handover: '👩‍🏫', syllabus: '🎓',
-  submission: '📤', request: '📨', ticket: '🎫', attendance: '⚠️', recommendation: '✅', feedback: '⭐', demo: '🖥️'
+  submission: '📤', request: '📨', ticket: '🎫', attendance: '⚠️', recommendation: '✅', feedback: '⭐', demo: '🖥️',
+  demand: '🏢', creative: '🎨', approval: '✔️', corporate: '🏭', campus: '🎓', exam: '📝', placement: '💼'
 };
 
 export default function NotificationBell({ audience, recipientId, recipientName, onOpenItem, onNew, className = '', tone = 'light' }) {
