@@ -4,7 +4,7 @@ import mongoose from 'mongoose';
 // trainer consultation) go to the allocated trainer; admin ones (fee query,
 // payment link, profile edit, points redemption) go to the student's HR.
 export const TRAINER_REQUEST_TYPES = ['mock_interview', 'consultation'];
-export const HR_REQUEST_TYPES = ['fee_query', 'payment_link', 'profile_edit', 'redeem_points', 'exam_booking'];
+export const HR_REQUEST_TYPES = ['fee_query', 'payment_link', 'profile_edit', 'redeem_points'];
 
 const studentRequestSchema = new mongoose.Schema(
   {

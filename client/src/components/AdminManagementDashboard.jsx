@@ -1394,7 +1394,9 @@ export default function AdminManagementDashboard({
                         filteredUsers.map((u) => {
                           const uid = u.id || u._id;
                           const isVisible = showAllPasswords || Boolean(visiblePasswords[uid]);
-                          const pwd = u.password || '';
+                          // Older student logins were saved as bcrypt hashes, which can't be shown — reset them to get a visible password
+                          const isHashedPwd = /^\$2[aby]\$\d{2}\$/.test(u.password || '');
+                          const pwd = isHashedPwd ? '' : (u.password || '');
                           return (
                           <tr key={uid} className="hover:bg-slate-50/70 transition-colors">
                             <td className="p-4">
@@ -1420,7 +1422,11 @@ export default function AdminManagementDashboard({
                             <td className="p-4">
                               <div className="inline-flex items-center gap-1.5 p-1 rounded-xl bg-slate-50 border border-slate-200/90 shadow-2xs">
                                 <div className="px-2.5 py-1 rounded-lg bg-white border border-slate-100 font-mono text-xs text-slate-800 min-w-[95px] text-center flex items-center justify-center">
-                                  {isVisible ? (
+                                  {isVisible && isHashedPwd ? (
+                                    <span className="font-sans font-semibold text-amber-700 text-[10.5px]" title="Encrypted password — use the key button to set a new one">
+                                      Encrypted · reset to view
+                                    </span>
+                                  ) : isVisible ? (
                                     <span className="font-bold text-indigo-950 select-all tracking-normal">
                                       {pwd || '—'}
                                     </span>

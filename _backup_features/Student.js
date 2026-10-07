@@ -108,7 +108,6 @@ const studentSchema = new mongoose.Schema({
     type: String,
     default: 'Not Booked'
   },
-  examDate: { type: String, default: '' }, // set when HR schedules the AAPC exam slot
   certified: {
     type: String,
     default: 'Non-certified'

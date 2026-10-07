@@ -49,13 +49,6 @@ const trainerAssessmentSchema = new mongoose.Schema({
   rationale: {
     type: String,
     default: ''
-  },
-  // 'online' = MCQ test taken in the Student Portal and graded automatically
-  mode: { type: String, enum: ['offline', 'online'], default: 'offline' },
-  durationMin: { type: Number, default: null },
-  questions: {
-    type: [{ q: String, options: [String], answer: Number, marks: { type: Number, default: 1 } }],
-    default: []
   }
 }, {
   timestamps: true

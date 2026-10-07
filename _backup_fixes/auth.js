@@ -117,10 +117,6 @@ const STAFF_RULES = [
   ['PUT', /^\/training\/materials\/[^/]+\/pin$/, ['training']],
   ['DELETE', /^\/training\/materials\/[^/]+$/, ['training']],
   ['PUT', /^\/student-portal\/submissions\/[^/]+\/review$/, ['training']],
-  // Syllabus tracker, batch announcements, online tests, class recordings
-  ['*', /^\/training\/(syllabus|announcements)(\/|$)/, ['training']],
-  ['PUT', /^\/trainer\/assessments\/[^/]+\/questions$/, ['training']],
-  ['POST', /^\/trainer\/live-class\/[^/]+\/recording$/, ['training']],
   ['*', /^\/trainer\/live-class\/(start|end|[^/]+\/(notes|attendance-saved))$/, ['training']],
   ['PUT', /^\/trainer\/settings\/[^/]+$/, []],
   ['*', /^\/trainer\/settings\/[^/]+\/leaves/, ['training']], // own-record check is in the route
@@ -182,10 +178,6 @@ const STUDENT_RULES = [
   ['GET', /^\/demos\/mine$/, (req, u) => { req.query.email = u.email; }],
   ['GET', /^\/demos\/[^/]+\/zoom-join$/, (req, u) => { req.query.as = 'student'; req.query.email = u.email; }],
   ['POST', /^\/zoom-signature$/, (req) => { req.body = { ...(req.body || {}), role: 0 }; }],
-  // Online tests and doubt follow-ups — the routes pin everything to the signed-in student
-  ['GET', /^\/student-portal\/tests\/[^/]+$/],
-  ['POST', /^\/student-portal\/tests\/[^/]+\/(start|save|submit)$/],
-  ['POST', /^\/student-portal\/doubts\/[^/]+\/(followup|resolve)$/],
   ['POST', /^\/student-portal\/live-class\/join$/, (req, u) => { req.body = { ...(req.body || {}), studentId: u.studentId || req.body?.studentId, email: u.email || req.body?.email }; }]
 ];
 

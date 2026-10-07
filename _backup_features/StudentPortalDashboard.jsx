@@ -26,11 +26,8 @@ import {
   ExternalLink,
   LogOut,
   RefreshCw,
-  MessageSquare,
-  Menu,
-  PlayCircle
+  MessageSquare
 } from 'lucide-react';
-import StudentOnlineTest from './StudentOnlineTest';
 import BookNewDemoModal from './BookNewDemoModal';
 import StudentDemoNotice from './StudentDemoNotice';
 import {
@@ -46,8 +43,6 @@ import {
   trainingMaterialFileUrl,
   joinStudentLiveClass,
   submitStudentFeedback,
-  followUpDoubt,
-  resolveDoubt,
   onDataUpdate
 } from '../services/api';
 import NotificationBell from './NotificationBell';
@@ -75,7 +70,6 @@ const PLACEMENT_STAGES = [
   { id: 7, label: 'Joined & Placed', desc: 'Onboarding complete' }
 ];
 const LOCATION_OPTIONS = ['Coimbatore', 'Chennai', 'Bangalore', 'Hyderabad', 'Kochi', 'Madurai', 'Trichy', 'Remote / Work From Home'];
-const EXAM_OPTIONS = ['CPC', 'COC', 'CIC', 'CRC', 'CPB', 'CPMA', 'CCS', 'Other'];
 const TICKET_CATEGORIES = ['Fees & Receipts', 'Certificate Release', 'Batch Timing or Classroom Change', 'LMS / Materials Access', 'Attendance Correction', 'Placement Team Inquiry', 'Other'];
 
 // ----------------------------------------------------------------------------
@@ -87,11 +81,6 @@ const fmtDate = (d) => {
   const dt = new Date(d);
   if (Number.isNaN(dt.getTime())) return String(d);
   return dt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
-};
-const fmtDateTime = (d) => {
-  if (!d) return '';
-  const dt = new Date(d);
-  return Number.isNaN(dt.getTime()) ? String(d) : dt.toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 };
 const fmtSize = (b) => (!b ? '' : b > 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
 const fileToBase64 = (file) => new Promise((resolve, reject) => {
@@ -136,7 +125,6 @@ const CardTitle = ({ icon, title, right, sub }) => (
 const Pill = ({ tone = 'slate', children }) => (
   <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold border whitespace-nowrap ${PILL[tone]}`}>{children}</span>
 );
-const HeaderStatMini = ({ value }) => <span className="text-xs font-bold text-[#483ec7] bg-indigo-50 border border-indigo-100 px-2.5 py-0.5 rounded-full">{value}</span>;
 const Row = ({ label, value, mono }) => (
   <div className="py-3 flex items-center justify-between gap-4 text-xs sm:text-sm">
     <span className="text-slate-500 font-medium">{label}</span>
@@ -212,7 +200,7 @@ const Stars = ({ value = 0, onRate, disabled, size = 'text-xl' }) => (
   </div>
 );
 // Notification type → portal section
-const NOTIF_NAV = { module: 'dashboard', announcement: 'dashboard', recording: 'classes', exam: 'certification', payment: 'payments', doubt: 'trainers', handover: 'trainers', assessment: 'lms', score: 'lms', material: 'lms', submission: 'lms', live: 'classes', attendance: 'classes', ticket: 'help', syllabus: 'placement-prep', recommendation: 'placement-prep', referral: 'membership', request: 'dashboard' };
+const NOTIF_NAV = { payment: 'payments', doubt: 'trainers', handover: 'trainers', assessment: 'lms', score: 'lms', material: 'lms', submission: 'lms', live: 'classes', attendance: 'classes', ticket: 'help', syllabus: 'placement-prep', recommendation: 'placement-prep', referral: 'membership', request: 'dashboard' };
 
 // ============================================================================
 export default function StudentPortalDashboard({ onClose, currentUser, onLogout }) {
@@ -225,9 +213,6 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
   const [modal, setModal] = useState(null); // { type, ...payload }
   const [busy, setBusy] = useState(false);
   const [showDemoModal, setShowDemoModal] = useState(false);
-  const [navOpen, setNavOpen] = useState(false); // mobile sidebar
-  const [testId, setTestId] = useState(null); // online test being taken
-  const [followText, setFollowText] = useState({}); // doubt id → follow-up draft
 
   // form state shared by the modals
   const [form, setForm] = useState({});
@@ -274,7 +259,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
     const onVisible = () => { if (document.visibilityState === 'visible') load(true); };
     document.addEventListener('visibilitychange', onVisible);
     const unsub = onDataUpdate((entity) => {
-      if (['students', 'doubts', 'trainer_doubts', 'live_class', 'assessments', 'trainer_attendance', 'materials', 'student_submissions', 'student_requests', 'leads', 'syllabus', 'announcements'].includes(entity)) load(true);
+      if (['students', 'doubts', 'trainer_doubts', 'live_class', 'assessments', 'trainer_attendance', 'materials', 'student_submissions', 'student_requests', 'leads'].includes(entity)) load(true);
     });
     return () => { clearInterval(poll); unsub(); document.removeEventListener('visibilitychange', onVisible); };
   }, [load]);
@@ -299,19 +284,6 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
   const timetable = portal?.timetable || [];
   const rateableClasses = portal?.rateableClasses || [];
   const trainerFeedback = portal?.trainerFeedback || null;
-  const syllabus = portal?.syllabus || null;
-  const announcements = portal?.announcements || [];
-  const recordings = portal?.recordings || [];
-  const sylModules = syllabus?.modules || [];
-  const sylDone = sylModules.filter((m) => m.done).length;
-  const sylPct = sylModules.length ? Math.round((sylDone / sylModules.length) * 100) : null;
-
-  const sendFollowUp = async (q) => {
-    const text = String(followText[q.id] || '').trim();
-    if (!text) return;
-    const ok = await run(() => followUpDoubt(q.id, text), '✓ Follow-up sent to your trainer');
-    if (ok) setFollowText((f) => ({ ...f, [q.id]: '' }));
-  };
 
   const [trainerComment, setTrainerComment] = useState('');
   const rate = async (payload, msg = '✓ Thanks for your feedback') => {
@@ -466,13 +438,11 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
       { id: 'profile', label: 'My Profile', icon: User }
     ] }
   ];
-  const go = (id) => { setActiveNav(id); setNavOpen(false); };
   const navTitle = navItems.flatMap((g) => g.items).find((i) => i.id === activeNav)?.label || 'Dashboard';
 
   const pct = (v) => (typeof v === 'number' ? `${v}%` : '—');
   const bar = (v) => `${Math.min(100, Math.max(0, Number(v) || 0))}%`;
   const newReplies = doubts.filter((x) => x.status === 'Replied');
-  const answeredDoubts = doubts.filter((x) => x.status === 'Replied' || x.status === 'Resolved');
 
   // ==========================================================================
   // DASHBOARD
@@ -486,8 +456,6 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
     const workKey = (s) => s.materialId || `${s.type}:${s.title}`;
     const revision = submissions.find((s) => s.status === 'Needs Revision' && submissions.find((x) => workKey(x) === workKey(s)) === s);
     if (revision) actions.push({ icon: Upload, tone: 'amber', title: `Resubmit: ${revision.title}`, sub: revision.feedback || 'Trainer asked for a revision', go: () => setActiveNav('lms') });
-    const openTest = assessments.find((t) => t.mode === 'online' && t.myScore === null && t.attempt?.status !== 'submitted' && (!t.date || t.date <= new Date().toISOString().slice(0, 10)));
-    if (openTest) actions.unshift({ icon: BookOpen, tone: 'indigo', title: `${openTest.attempt?.status === 'in_progress' ? 'Finish' : 'Take'} online test: ${openTest.name}`, sub: `${openTest.questionCount} questions · ${openTest.durationMin || ''} min`, go: () => setTestId(openTest.id) });
     if (!d.resume) actions.push({ icon: Upload, tone: 'indigo', title: 'Upload your resume', sub: 'Needed before placement drives', go: () => openModal('submit', {}, { type: 'resume', title: 'Resume' }) });
     if (newReplies.length) actions.push({ icon: MessageSquare, tone: 'green', title: `${newReplies.length} doubt${newReplies.length > 1 ? 's' : ''} answered`, sub: newReplies[0].topic, go: () => setActiveNav('trainers') });
     if (materials[0]) actions.push({ icon: BookOpen, tone: 'indigo', title: `New material: ${materials[0].title}`, sub: materials[0].module || materials[0].category, go: () => setActiveNav('lms') });
@@ -556,25 +524,8 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                 <Row label="Current module" value={st.syllabusModule} />
               </div>
             </Card>
-            {sylModules.length > 0 && (
-              <Card>
-                <CardTitle icon="🧭" title="Syllabus Progress" sub={`${sylDone} of ${sylModules.length} modules covered by your trainer`} right={<Pill tone={sylPct === 100 ? 'green' : 'indigo'}>{sylPct}%</Pill>} />
-                <div className="w-full bg-slate-100 rounded-full h-2.5 overflow-hidden mb-4"><div className="h-full rounded-full bg-gradient-to-r from-[#483ec7] to-[#0d9488]" style={{ width: bar(sylPct) }} /></div>
-                <div className="space-y-1.5">
-                  {sylModules.map((m, i) => {
-                    const isNext = !m.done && sylModules.findIndex((x) => !x.done) === i;
-                    return (
-                      <div key={`${m.name}-${i}`} className={`flex items-center justify-between gap-3 text-xs px-3 py-2 rounded-xl border ${m.done ? 'bg-emerald-50/60 border-emerald-100' : isNext ? 'bg-indigo-50 border-indigo-200' : 'bg-white border-slate-100'}`}>
-                        <span className={`font-semibold ${m.done ? 'text-emerald-800' : isNext ? 'text-[#483ec7]' : 'text-slate-500'}`}>{m.done ? '✓' : isNext ? '●' : '○'} {m.name}</span>
-                        <span className="text-[10px] text-slate-400 shrink-0">{m.done ? fmtDate(m.doneAt) : isNext ? 'Up next' : ''}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </Card>
-            )}
             <Card>
-              <CardTitle icon="📍" title="Topics Covered in Class" sub="Logged by your trainer with each attendance" right={<button onClick={() => setActiveNav('progress')} className="text-xs font-bold text-[#483ec7] hover:underline cursor-pointer">Progress ›</button>} />
+              <CardTitle icon="📍" title="Modules Covered in Class" sub="Logged by your trainer with each attendance" right={<button onClick={() => setActiveNav('progress')} className="text-xs font-bold text-[#483ec7] hover:underline cursor-pointer">Progress ›</button>} />
               {d.topics.length === 0 ? <Empty icon="🗂" title="No classes logged yet" text="Topics appear here as your trainer records each class." /> : (
                 <div className="flex flex-wrap gap-2">
                   {d.topics.map((t, i) => <span key={t} className={`px-3 py-1.5 rounded-xl text-xs font-semibold border ${i === d.topics.length - 1 ? 'bg-indigo-50 border-indigo-200 text-[#483ec7]' : 'bg-emerald-50 border-emerald-200 text-emerald-800'}`}>{i === d.topics.length - 1 ? '● ' : '✓ '}{t}</span>)}
@@ -585,20 +536,6 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
           </div>
 
           <div className="lg:col-span-5 space-y-6">
-            {announcements.length > 0 && (
-              <Card>
-                <CardTitle icon="📢" title="Announcements" sub={trainer ? `From ${trainer.trainerName}` : 'From your trainer'} />
-                <div className="space-y-3 max-h-72 overflow-y-auto">
-                  {announcements.slice(0, 5).map((a) => (
-                    <div key={a.id} className="border-l-4 border-[#483ec7] bg-indigo-50/40 rounded-r-xl px-3 py-2">
-                      <div className="text-xs font-bold text-slate-900">{a.title}</div>
-                      {a.message && <p className="text-[11px] text-slate-600 mt-0.5 whitespace-pre-line">{a.message}</p>}
-                      <div className="text-[10px] text-slate-400 mt-1">{fmtDate(a.createdAt)}{a.trainerName ? ` · ${a.trainerName}` : ''}</div>
-                    </div>
-                  ))}
-                </div>
-              </Card>
-            )}
             <Card>
               <CardTitle icon="⚡" title="What needs your attention" />
               {actions.length === 0 ? <Empty icon="✅" title="You're all caught up" /> : (
@@ -756,11 +693,10 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                       <div className="text-[11px] text-slate-400">{[t.type, t.topic, t.date && fmtDate(t.date)].filter(Boolean).join(' · ')}</div>
                       {t.rationale && <div className="text-[11px] text-slate-600 mt-1 bg-slate-50 rounded-lg px-2 py-1">💬 {t.rationale}</div>}
                     </div>
-                    <div className="text-right flex-shrink-0 space-y-1">
+                    <div className="text-right flex-shrink-0">
                       {t.myScore !== null ? (
                         <><div className="font-mono font-bold text-sm text-slate-900">{t.myScore}/{t.totalMarks}</div><Pill tone={t.passed ? 'green' : 'red'}>{t.passed ? 'Passed' : 'Below pass mark'}</Pill></>
                       ) : <Pill tone="slate">Not scored</Pill>}
-                      {t.mode === 'online' && t.attempt?.status === 'submitted' && <button onClick={() => setTestId(t.id)} className="block ml-auto text-[11px] font-bold text-[#483ec7] hover:underline cursor-pointer">Review answers</button>}
                     </div>
                   </div>
                 ))}
@@ -861,20 +797,6 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
         </Card>
       )}
       <Card>
-        <CardTitle icon="🎬" title="Class Recordings" sub="Replay classes you missed or want to revise" right={<HeaderStatMini value={recordings.length} />} />
-        {recordings.length === 0 ? <Empty icon="🎬" title="No recordings yet" text="Your trainer adds the recording link after each class." /> : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {recordings.map((r) => (
-              <a key={r.id} href={r.url} target="_blank" rel="noreferrer" className="border border-slate-200 hover:border-[#483ec7]/50 rounded-2xl p-4 flex items-center gap-3 group">
-                <PlayCircle className="w-8 h-8 text-[#483ec7] shrink-0" />
-                <div className="min-w-0"><div className="text-sm font-bold text-slate-900 truncate group-hover:text-[#483ec7]">{r.topic || 'Class recording'}</div><div className="text-[11px] text-slate-400">{fmtDate(r.date)}{r.trainerName ? ` · ${r.trainerName}` : ''}</div></div>
-                <ExternalLink className="w-4 h-4 text-slate-300 ml-auto shrink-0" />
-              </a>
-            ))}
-          </div>
-        )}
-      </Card>
-      <Card>
         <CardTitle icon="🗂" title="Past Classes" sub="Every class your trainer recorded attendance for" />
         {attendance.length === 0 ? <Empty icon="🗓" title="No classes recorded yet" /> : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -966,20 +888,9 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
               <CardTitle icon="📝" title="Upcoming / Unscored Tests" />
               {assessments.filter((t) => t.myScore === null).length === 0 ? <Empty icon="✅" title="No pending tests" /> : (
                 <div className="space-y-2">
-                  {assessments.filter((t) => t.myScore === null).map((t) => {
-                    const online = t.mode === 'online';
-                    const inProgress = t.attempt?.status === 'in_progress';
-                    return (
-                      <div key={t.id} className="text-xs border border-slate-200 rounded-xl p-3">
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="font-bold text-slate-900">{t.name}</div>
-                          {online ? <Pill tone="indigo">ONLINE</Pill> : <Pill tone="slate">In class</Pill>}
-                        </div>
-                        <div className="text-[11px] text-slate-500">{[t.type, t.topic, t.date && fmtDate(t.date), online ? `${t.questionCount} questions · ${t.durationMin || ''} min` : t.timeLimit, `${t.totalMarks} marks · pass ${t.passMark}`].filter(Boolean).join(' · ')}</div>
-                        {online && <Btn tone="indigo" className="w-full mt-2" onClick={() => setTestId(t.id)}>{inProgress ? 'Continue test' : 'Open test'}</Btn>}
-                      </div>
-                    );
-                  })}
+                  {assessments.filter((t) => t.myScore === null).map((t) => (
+                    <div key={t.id} className="text-xs border border-slate-200 rounded-xl p-3"><div className="font-bold text-slate-900">{t.name}</div><div className="text-[11px] text-slate-500">{[t.type, t.topic, t.date && fmtDate(t.date), t.timeLimit, `${t.totalMarks} marks · pass ${t.passMark}`].filter(Boolean).join(' · ')}</div></div>
+                  ))}
                 </div>
               )}
             </Card>
@@ -996,7 +907,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
     const consults = requests.filter((r) => r.type === 'consultation');
     return (
       <div className="space-y-6 pb-12">
-        <PageHeader title="My Trainer" sub="Your allocated trainer, doubts and 1-on-1 requests" right={<HeaderStat label="Doubts answered" value={`${answeredDoubts.length}/${doubts.length}`} />} />
+        <PageHeader title="My Trainer" sub="Your allocated trainer, doubts and 1-on-1 requests" right={<HeaderStat label="Doubts answered" value={`${newReplies.length}/${doubts.length}`} />} />
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
           <div className="lg:col-span-5 space-y-6">
             <Card>
@@ -1043,21 +954,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                   <div key={q.id} className="border border-slate-200 rounded-2xl p-4">
                     <div className="flex items-center justify-between gap-2"><span className="text-[11px] font-bold text-slate-500">{q.topic} · {q.timeText}</span><Pill tone={statusTone(q.status)}>{q.status}</Pill></div>
                     <p className="text-sm text-slate-900 mt-1.5">{q.question}</p>
-                    {(q.thread?.length ? q.thread : (q.reply ? [{ by: 'trainer', name: q.trainerName, text: q.reply, at: q.repliedAt }] : [])).map((m, i) => (
-                      <div key={i} className={`mt-2 text-xs rounded-xl p-3 border ${m.by === 'trainer' ? 'bg-emerald-50 border-emerald-200' : 'bg-slate-50 border-slate-200 ml-6'}`}>
-                        <b className={m.by === 'trainer' ? 'text-emerald-800' : 'text-slate-700'}>{m.by === 'trainer' ? (m.name || q.trainerName || 'Trainer') : 'You'}:</b> <span className="text-slate-700 whitespace-pre-line">{m.text}</span>
-                        {m.at && <span className="block text-[10px] text-slate-400 mt-0.5">{fmtDate(m.at)}</span>}
-                      </div>
-                    ))}
-                    {q.status === 'Replied' && (
-                      <div className="mt-3 space-y-2">
-                        <div className="flex gap-2">
-                          <input value={followText[q.id] || ''} onChange={(e) => setFollowText((f) => ({ ...f, [q.id]: e.target.value }))} placeholder="Still unclear? Ask a follow-up…" className={inputCls} />
-                          <Btn tone="light" disabled={busy || !String(followText[q.id] || '').trim()} onClick={() => sendFollowUp(q)}><Send className="w-3.5 h-3.5" /></Btn>
-                        </div>
-                        <button onClick={() => run(() => resolveDoubt(q.id), '✓ Marked as resolved')} className="text-[11px] font-bold text-emerald-700 hover:underline cursor-pointer">✓ My doubt is cleared</button>
-                      </div>
-                    )}
+                    {q.reply && <div className="mt-3 text-xs bg-emerald-50 border border-emerald-200 rounded-xl p-3"><b className="text-emerald-800">{q.trainerName || 'Trainer'}:</b> <span className="text-slate-700">{q.reply}</span></div>}
                   </div>
                 ))}
               </div>
@@ -1145,7 +1042,6 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
   // ==========================================================================
   const renderCertification = () => {
     const interviews = st.interviews || [];
-    const examReqs = requests.filter((r) => r.type === 'exam_booking');
     const certReady = st.syllabusCompleted && d.balance === 0;
     return (
       <div className="space-y-6 pb-12">
@@ -1197,15 +1093,6 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                 <Row label="Fee clearance" value={d.balance === 0 ? 'Cleared' : `${inr(d.balance)} pending`} />
               </div>
               <p className={`text-[11px] mt-3 rounded-xl px-3 py-2 border ${certReady ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-slate-50 border-slate-200 text-slate-600'}`}>{certReady ? 'Eligible for course certificate — contact your branch for release.' : 'Course certificate is released after syllabus completion and zero fee dues.'}</p>
-            </Card>
-            <Card>
-              <CardTitle icon="🗓" title="AAPC Exam Slot" sub="Booked by your HR counsellor with the exam cell" right={<Btn tone="light" disabled={examReqs.some((r) => ['Open', 'Scheduled'].includes(r.status))} onClick={() => openModal('request', { reqType: 'exam_booking', title: 'Request an AAPC exam slot', subjects: EXAM_OPTIONS.map((x) => `${x} exam`) }, { subject: `${EXAM_OPTIONS.includes(shortCourse(st.course)) ? shortCourse(st.course) : 'Other'} exam` })}>{examReqs.some((r) => ['Open', 'Scheduled'].includes(r.status)) ? 'Requested' : 'Request slot'}</Btn>} />
-              <div className="divide-y divide-slate-100">
-                <Row label="Exam status" value={st.examStatus} />
-                {st.examDate && <Row label="Exam date" value={fmtDateTime(st.examDate)} />}
-              </div>
-              {!st.syllabusCompleted && <p className="text-[11px] text-slate-500 mt-2">Tip: book once your syllabus is nearly complete and your test average is above the pass mark.</p>}
-              {examReqs.length > 0 && <div className="mt-3 space-y-2">{examReqs.map((r) => <RequestRow key={r._id} r={r} />)}</div>}
             </Card>
             <Card>
               <CardTitle icon="📍" title="Preferred Work Locations" right={<Btn tone="light" onClick={() => openModal('locations', {}, { locations: st.preferredLocations || [] })}>Edit</Btn>} />
@@ -1340,7 +1227,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
             <textarea rows={4} value={quickDoubt} onChange={(e) => setQuickDoubt(e.target.value)} placeholder="Explain your doubt — include code numbers or the case snippet…" className={inputCls} />
             <Btn type="submit" disabled={busy || !quickDoubt.trim()} className="w-full"><Send className="w-4 h-4" />Send doubt</Btn>
           </form>
-          <div className="text-xs text-slate-500 mt-3">{answeredDoubts.length} answered · {doubts.length - answeredDoubts.length} awaiting reply · <button onClick={() => setActiveNav('trainers')} className="text-[#483ec7] font-bold cursor-pointer">view all</button></div>
+          <div className="text-xs text-slate-500 mt-3">{newReplies.length} answered · {doubts.length - newReplies.length} awaiting reply · <button onClick={() => setActiveNav('trainers')} className="text-[#483ec7] font-bold cursor-pointer">view all</button></div>
         </Card>
         <Card className="lg:col-span-6">
           <CardTitle icon="🏢" title="Branch support tickets" sub={[st.location, st.hrName && `HR: ${st.hrName}`].filter(Boolean).join(' · ')} right={<Btn onClick={() => openModal('ticket', {}, { category: TICKET_CATEGORIES[0] })}>+ Ticket</Btn>} />
@@ -1483,16 +1370,15 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
       }
 
       case 'request': {
-        const toTrainer = modal.reqType === 'mock_interview' || modal.reqType === 'consultation';
-        const needsDate = toTrainer || modal.reqType === 'exam_booking';
+        const needsDate = modal.reqType === 'mock_interview' || modal.reqType === 'consultation';
         return (
-          <Modal title={modal.title} sub={toTrainer ? `Goes to ${trainer?.trainerName || 'your trainer'}` : modal.reqType === 'exam_booking' ? `Goes to ${st.hrName || 'your HR counsellor'} and the exam cell` : `Goes to ${st.hrName || 'your HR counsellor'}`} onClose={closeModal}>
+          <Modal title={modal.title} sub={needsDate ? `Goes to ${trainer?.trainerName || 'your trainer'}` : `Goes to ${st.hrName || 'your HR counsellor'}`} onClose={closeModal}>
             <div className="space-y-3">
               {modal.subjects && (
                 <Field label="Subject"><select value={form.subject || ''} onChange={setF('subject')} className={inputCls}>{modal.subjects.map((s) => <option key={s}>{s}</option>)}</select></Field>
               )}
-              {needsDate && <Field label={modal.reqType === 'exam_booking' ? 'Preferred exam date' : 'Preferred date & time'}><input type="datetime-local" value={form.preferredDate || ''} onChange={setF('preferredDate')} className={inputCls} /></Field>}
-              <Field label={modal.reqType === 'profile_edit' ? 'What should be changed? (new phone / email / reason)' : modal.reqType === 'exam_booking' ? 'Online or test centre? Any other details' : 'Message'}><textarea rows={4} value={form.message || ''} onChange={setF('message')} className={inputCls} /></Field>
+              {needsDate && <Field label="Preferred date & time"><input type="datetime-local" value={form.preferredDate || ''} onChange={setF('preferredDate')} className={inputCls} /></Field>}
+              <Field label={modal.reqType === 'profile_edit' ? 'What should be changed? (new phone / email / reason)' : 'Message'}><textarea rows={4} value={form.message || ''} onChange={setF('message')} className={inputCls} /></Field>
             </div>
             {footer('Send request', () => submitRequest(modal.reqType, form.subject || modal.subject || modal.title), !form.message?.trim() && !form.preferredDate)}
           </Modal>
@@ -1630,8 +1516,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
   // ==========================================================================
   return (
     <div className="fixed inset-0 z-50 flex bg-[#f4f6fb] overflow-hidden text-slate-800 font-sans animate-fadeIn">
-      {navOpen && <div className="fixed inset-0 z-[54] bg-slate-900/50 lg:hidden" onClick={() => setNavOpen(false)} />}
-      <aside className={`fixed lg:static inset-y-0 left-0 z-[55] w-72 bg-[#0d9488] text-white flex flex-col justify-between p-4 sm:p-5 flex-shrink-0 h-full overflow-y-auto shadow-xl transition-transform duration-200 ${navOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0`}>
+      <aside className="w-64 sm:w-72 bg-[#0d9488] text-white flex flex-col justify-between p-4 sm:p-5 flex-shrink-0 h-full overflow-y-auto shadow-xl">
         <div className="space-y-6">
           <div className="flex items-center gap-3 px-1 pt-1">
             <div className="h-10 px-2.5 py-1 rounded-xl bg-white flex items-center justify-center shadow-sm flex-shrink-0"><img src="/thoughtflows-logo.png" alt="ThoughtFlows" className="h-7 w-auto object-contain" /></div>
@@ -1650,7 +1535,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                     const Icon = item.icon;
                     const active = activeNav === item.id;
                     return (
-                      <button key={item.id} onClick={() => go(item.id)}
+                      <button key={item.id} onClick={() => setActiveNav(item.id)}
                         className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs sm:text-sm transition-all cursor-pointer ${active ? 'bg-white text-[#0d9488] shadow-sm font-bold' : 'text-white/90 hover:text-white hover:bg-white/10 font-medium'}`}>
                         <Icon className="w-4 h-4 flex-shrink-0" /><span className="truncate">{item.label}</span>
                         {item.id === 'trainers' && newReplies.length > 0 && !active && <span className="ml-auto text-[10px] font-bold bg-white text-[#0d9488] rounded-full px-1.5">{newReplies.length}</span>}
@@ -1666,23 +1551,22 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
         <button onClick={onLogout || onClose} className="mt-6 w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-bold cursor-pointer"><LogOut className="w-4 h-4" /><span>Logout</span></button>
       </aside>
 
-      <main className="flex-1 min-w-0 flex flex-col h-full overflow-hidden">
-        <header className="h-16 px-3 sm:px-7 bg-white/80 backdrop-blur-xl border-b border-slate-200/80 flex items-center justify-between flex-shrink-0">
+      <main className="flex-1 flex flex-col h-full overflow-hidden">
+        <header className="h-16 px-4 sm:px-7 bg-white/80 backdrop-blur-xl border-b border-slate-200/80 flex items-center justify-between flex-shrink-0">
           <div className="flex items-center gap-3 min-w-0">
-            <button onClick={() => setNavOpen(true)} className="lg:hidden p-2 -ml-2 rounded-xl text-slate-600 hover:bg-slate-100 cursor-pointer" aria-label="Open menu"><Menu className="w-5 h-5" /></button>
-            <span className="hidden sm:block w-2 h-2 rounded-full bg-emerald-500" />
+            <span className="w-2 h-2 rounded-full bg-emerald-500" />
             <h2 className="text-sm sm:text-base font-extrabold text-slate-900 truncate">{navTitle}</h2>
             {d.batch && <span className="hidden sm:inline text-[10px] font-bold text-[#0d9488] bg-teal-50 border border-teal-200/80 px-2.5 py-0.5 rounded-full truncate max-w-[220px]">{d.batch}</span>}
           </div>
           <div className="flex items-center gap-2">
             {st.location && <span className="hidden md:flex items-center gap-1 text-xs font-semibold text-slate-600"><MapPin className="w-3.5 h-3.5" />{st.location}</span>}
-            {st?.studentId && <NotificationBell audience="student" recipientId={st.studentId} onNew={() => load(true)} onOpenItem={(n) => { go(NOTIF_NAV[n.type] || 'dashboard'); load(true); }} />}
+            {st?.studentId && <NotificationBell audience="student" recipientId={st.studentId} onNew={() => load(true)} onOpenItem={(n) => { setActiveNav(NOTIF_NAV[n.type] || 'dashboard'); load(true); }} />}
             <button onClick={() => load(true)} title="Refresh" className="p-2 rounded-xl text-slate-500 hover:bg-slate-100 cursor-pointer"><RefreshCw className="w-4 h-4" /></button>
             <button onClick={onLogout || onClose} className="px-3 py-2 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-100 flex items-center gap-1.5 cursor-pointer"><LogOut className="w-4 h-4" /><span className="hidden sm:inline">Logout</span></button>
           </div>
         </header>
 
-        <div className="flex-1 overflow-y-auto p-3 sm:p-7">
+        <div className="flex-1 overflow-y-auto p-4 sm:p-7">
           {loadError && <div className="mb-4 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5">⚠ {loadError} — showing the last loaded data.</div>}
           {activeNav === 'dashboard' && renderDashboard()}
           {activeNav === 'membership' && renderMembership()}
@@ -1706,8 +1590,6 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
       )}
 
       {renderModal()}
-
-      {testId && <StudentOnlineTest testId={testId} onClose={() => { setTestId(null); load(true); }} onFinished={() => load(true)} />}
 
       <BookNewDemoModal
         isOpen={showDemoModal}

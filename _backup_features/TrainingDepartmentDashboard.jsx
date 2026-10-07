@@ -42,12 +42,8 @@ import {
   Bell,
   ExternalLink,
   ChevronDown,
-  LogOut,
-  ListChecks,
-  Menu
+  LogOut
 } from 'lucide-react';
-import TrainerBatchDesk from './TrainerBatchDesk';
-import OnlineTestBuilder from './OnlineTestBuilder';
 import TrainingLibraryMaterials from './TrainingLibraryMaterials';
 import TrainingPlacementPrep from './TrainingPlacementPrep';
 import TrainingMyProfile from './TrainingMyProfile';
@@ -130,9 +126,6 @@ export default function TrainingDepartmentDashboard({
   const lc = (v) => String(v || '').toLowerCase();
 
   const [activeNav, setActiveNav] = useState('home');
-  const [navOpen, setNavOpen] = useState(false); // mobile sidebar
-  const [onlineTestFor, setOnlineTestFor] = useState(null); // test opened in the online-test builder
-  useEffect(() => { setNavOpen(false); }, [activeNav]);
   // Restored after a page refresh so the trainer is put straight back into the demo (a refresh always drops the Zoom connection)
   const [demoRoom, setDemoRoom] = useState(() => {
     try { return JSON.parse(sessionStorage.getItem('tf_demo_room') || 'null'); } catch (_) { return null; }
@@ -817,7 +810,6 @@ export default function TrainingDepartmentDashboard({
     if (n.type === 'demo') setActiveNav('demos');
     else if (n.type === 'doubt') setActiveNav('doubts');
     else if (n.type === 'handover') setActiveNav('students');
-    else if (n.type === 'submission' || String(n.type || '').startsWith('request_')) setActiveNav('student_desk');
     setShowNotifPanel(false);
   };
 
@@ -825,8 +817,7 @@ export default function TrainingDepartmentDashboard({
     <div className="fixed inset-0 z-50 flex bg-[#0c1921] text-slate-800 antialiased font-sans select-none overflow-hidden animate-fadeIn">
       
       {/* ================= LEFT SIDEBAR ================= */}
-      {navOpen && <div className="fixed inset-0 z-[45] bg-slate-900/60 lg:hidden" onClick={() => setNavOpen(false)} />}
-      <aside className={`fixed lg:static inset-y-0 left-0 z-[46] w-72 bg-[#0c1921] border-r border-[#172d3b] flex flex-col justify-between shrink-0 overflow-y-auto transition-transform duration-200 ${navOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0`}>
+      <aside className="w-64 sm:w-72 bg-[#0c1921] border-r border-[#172d3b] flex flex-col justify-between shrink-0 overflow-y-auto">
         <div>
           {/* Top Logo Card */}
           <div className="p-4 pb-2">
@@ -883,18 +874,6 @@ export default function TrainingDepartmentDashboard({
                 >
                   <PlayCircle className="w-4 h-4 shrink-0" />
                   <span>Class Session Room</span>
-                </button>
-
-                <button
-                  onClick={() => setActiveNav('batch_desk')}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold transition-all ${
-                    activeNav === 'batch_desk'
-                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
-                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
-                  }`}
-                >
-                  <ListChecks className="w-4 h-4 shrink-0" />
-                  <span>Syllabus & Announcements</span>
                 </button>
 
                 <button
@@ -1128,16 +1107,14 @@ export default function TrainingDepartmentDashboard({
       </aside>
 
       {/* ================= MAIN CONTENT AREA ================= */}
-      <main className="flex-1 min-w-0 bg-[#f4f7f8] overflow-y-auto flex flex-col">
+      <main className="flex-1 bg-[#f4f7f8] overflow-y-auto flex flex-col">
         
         {/* TOP HEADER */}
-        <header className="px-3 sm:px-6 py-4 border-b border-slate-200/80 bg-white/70 backdrop-blur-sm sticky top-0 z-20 flex items-center justify-between gap-2">
-          <button onClick={() => setNavOpen(true)} className="lg:hidden p-2 rounded-xl text-slate-600 hover:bg-slate-100 shrink-0" aria-label="Open menu"><Menu className="w-5 h-5" /></button>
-          <div className="min-w-0 flex-1">
+        <header className="px-6 py-4 border-b border-slate-200/80 bg-white/70 backdrop-blur-sm sticky top-0 z-20 flex items-center justify-between">
+          <div>
             <h1 className="text-xl font-extrabold text-[#0f242d] tracking-tight">
               {activeNav === 'home' && 'Home'}
               {activeNav === 'session_room' && 'Class Session Room'}
-              {activeNav === 'batch_desk' && 'Syllabus & Announcements'}
               {activeNav === 'attendance' && 'Daily Student Attendance'}
               {activeNav === 'demos' && 'Demos'}
               {activeNav === 'doubts' && 'Student Doubt Box'}
@@ -1157,7 +1134,6 @@ export default function TrainingDepartmentDashboard({
             <p className="text-xs text-slate-500 font-medium">
               {activeNav === 'home' && 'Your day at a glance'}
               {activeNav === 'session_room' && 'Run a live session'}
-              {activeNav === 'batch_desk' && 'Syllabus tracker · batch announcements · class recordings'}
               {activeNav === 'demos' && 'HR–allocated demos'}
               {activeNav === 'doubts' && 'SLA–tracked'}
               {activeNav === 'scorecard' && 'Action score · zone · variable pay'}
@@ -1172,7 +1148,7 @@ export default function TrainingDepartmentDashboard({
               {activeNav === 'profile' && `${trainerName} · ${trainerId} · ${trainerRole} · ${trainerBranch}`}
               {activeNav === 'skills' && 'L1 Assistant · L2 Regular · L3 Senior · L4 Lead. You can be allocated to a subject only at L2 or above.'}
               {activeNav === 'shift' && `${trainerShift} · Max load protection`}
-              {activeNav !== 'home' && activeNav !== 'session_room' && activeNav !== 'batch_desk' && activeNav !== 'demos' && activeNav !== 'doubts' && activeNav !== 'scorecard' && activeNav !== 'incentives' && activeNav !== 'batches' && activeNav !== 'students' && activeNav !== 'weak_students' && activeNav !== 'assessments' && activeNav !== 'library' && activeNav !== 'placement' && activeNav !== 'profile' && activeNav !== 'skills' && activeNav !== 'shift' && `Thoughtflows Medical Coding Academy · ${trainerBranch}`}
+              {activeNav !== 'home' && activeNav !== 'session_room' && activeNav !== 'demos' && activeNav !== 'doubts' && activeNav !== 'scorecard' && activeNav !== 'incentives' && activeNav !== 'batches' && activeNav !== 'students' && activeNav !== 'weak_students' && activeNav !== 'assessments' && activeNav !== 'library' && activeNav !== 'placement' && activeNav !== 'profile' && activeNav !== 'skills' && activeNav !== 'shift' && `Thoughtflows Medical Coding Academy · ${trainerBranch}`}
             </p>
           </div>
 
@@ -3029,7 +3005,6 @@ export default function TrainingDepartmentDashboard({
                   <div>
                     <h3 className="text-sm sm:text-base font-bold text-slate-900">{test.name}</h3>
                     <p className="text-xs text-slate-500 font-medium mt-0.5">{[test.type, test.batch, test.topic].filter(Boolean).join(' · ')}</p>
-                    {test.mode === 'online' && <span className="inline-block mt-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">ONLINE · {(test.questions || []).length} Q · {test.durationMin || parseInt(test.timeLimit, 10) || 45} min · auto-graded</span>}
                   </div>
                   <span className={`px-3 py-1 rounded-full text-xs font-bold border ${test.date < todayKey ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-[#ecfdf5] text-[#059669] border-emerald-200'}`}>
                     {test.date < todayKey ? 'Awaiting scores' : 'Upcoming'}
@@ -3055,12 +3030,6 @@ export default function TrainingDepartmentDashboard({
                     className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs sm:text-sm font-bold py-3 rounded-2xl transition-all text-center shadow-sm active:scale-[0.98]"
                   >
                     {rationaleTexts[test.id] ? 'Edit Rationale' : 'Add Rationale'}
-                  </button>
-                  <button
-                    onClick={() => setOnlineTestFor(test)}
-                    className="sm:col-span-2 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-800 text-xs sm:text-sm font-bold py-3 rounded-2xl transition-all text-center active:scale-[0.98]"
-                  >
-                    {test.mode === 'online' ? 'Online questions & attempts' : 'Make it an online test (MCQ, auto-graded)'}
                   </button>
                 </div>
               </div>
@@ -3149,17 +3118,12 @@ export default function TrainingDepartmentDashboard({
                             {below.length > 0 && (
                               <p className="text-xs text-rose-700">Below pass: {below.map(([k, v]) => `${nameOf(k)} (${v}/${t.totalMarks})`).join(', ')}</p>
                             )}
-                            <div className="flex items-center gap-3">
-                              <button
-                                onClick={() => setActiveScoreModalTest({ id: t.id, title: t.name, max: t.totalMarks, pass: t.passMark, batch: t.batch, test: t })}
-                                className="text-[11px] font-bold text-[#00897b] hover:underline"
-                              >
-                                Edit scores
-                              </button>
-                              {t.mode === 'online' && (
-                                <button onClick={() => setOnlineTestFor(t)} className="text-[11px] font-bold text-indigo-700 hover:underline">Online attempts</button>
-                              )}
-                            </div>
+                            <button
+                              onClick={() => setActiveScoreModalTest({ id: t.id, title: t.name, max: t.totalMarks, pass: t.passMark, batch: t.batch, test: t })}
+                              className="text-[11px] font-bold text-[#00897b] hover:underline"
+                            >
+                              Edit scores
+                            </button>
                           </div>
                         );
                       })}
@@ -3296,18 +3260,6 @@ export default function TrainingDepartmentDashboard({
                 </div>
               )}
 
-              {onlineTestFor && (
-                <OnlineTestBuilder
-                  test={onlineTestFor}
-                  onClose={() => setOnlineTestFor(null)}
-                  onSaved={(updated) => {
-                    setAssessmentTests(prev => prev.map(t => t.id === updated.id ? { ...t, ...updated } : t));
-                    setAssessmentToast(updated.mode === 'online' ? `"${updated.name}" is now an online test — ${updated.batch} has been notified.` : `"${updated.name}" is back to an in-class test.`);
-                    setTimeout(() => setAssessmentToast(null), 4500);
-                  }}
-                />
-              )}
-
               {showCreateTestModal && (
                 <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn overflow-y-auto">
                   <div className="bg-white rounded-3xl p-6 sm:p-7 max-w-lg w-full shadow-2xl border border-slate-200 space-y-4 animate-scaleUp my-8 max-h-[90vh] overflow-y-auto">
@@ -3434,11 +3386,6 @@ export default function TrainingDepartmentDashboard({
             />
           )}
 
-          {/* ================= TAB: SYLLABUS, ANNOUNCEMENTS & RECORDINGS ================= */}
-          {activeNav === 'batch_desk' && (
-            <TrainerBatchDesk batches={batches} />
-          )}
-
           {/* ================= TAB: STUDENT SUBMISSIONS & REQUESTS ================= */}
           {activeNav === 'student_desk' && (
             <TrainerStudentDesk trainerId={trainerId} trainerName={trainerName} />
@@ -3495,16 +3442,6 @@ export default function TrainingDepartmentDashboard({
               <span className="font-bold text-teal-800 block mb-1">Question ({activeDoubtModal.topic}):</span>
               {activeDoubtModal.question}
             </div>
-            {(activeDoubtModal.thread || []).length > 0 && (
-              <div className="space-y-2 max-h-56 overflow-y-auto">
-                {activeDoubtModal.thread.map((m, i) => (
-                  <div key={i} className={`text-xs p-2.5 rounded-xl border ${m.by === 'trainer' ? 'bg-emerald-50 border-emerald-100 ml-6' : 'bg-amber-50 border-amber-100'}`}>
-                    <b>{m.by === 'trainer' ? (m.name || 'You') : (m.name || activeDoubtModal.student)}:</b> <span className="whitespace-pre-line">{m.text}</span>
-                    {m.at && <span className="block text-[10px] text-slate-400 mt-0.5">{new Date(m.at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>}
-                  </div>
-                ))}
-              </div>
-            )}
 
             <div>
               <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">

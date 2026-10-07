@@ -34,15 +34,7 @@ const trainerDoubtSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
-  repliedAt: Date,
-  // Follow-up conversation after the first question (student ⇄ trainer)
-  thread: {
-    type: [{ by: { type: String, enum: ['student', 'trainer'] }, name: String, text: String, at: Date }],
-    default: []
-  },
-  lastStudentAt: Date, // SLA restarts from the student's latest message
-  resolvedByStudent: { type: Boolean, default: false },
-  resolvedAt: Date
+  repliedAt: Date
 }, {
   timestamps: true
 });

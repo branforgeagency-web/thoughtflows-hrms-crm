@@ -5,7 +5,7 @@ import StudentTimeline from './StudentTimeline';
 
 // HR side of the Student Portal: admin requests (fee query, payment link,
 // profile edit, points redemption) and branch support tickets.
-const REQ_LABEL = { fee_query: 'Fee query', payment_link: 'Payment link', profile_edit: 'Profile edit', redeem_points: 'Redeem points', exam_booking: 'AAPC exam slot' };
+const REQ_LABEL = { fee_query: 'Fee query', payment_link: 'Payment link', profile_edit: 'Profile edit', redeem_points: 'Redeem points' };
 const REQ_TONE = { Open: 'bg-amber-100 text-amber-700', Scheduled: 'bg-sky-100 text-sky-700', Resolved: 'bg-emerald-100 text-emerald-700', Declined: 'bg-slate-200 text-slate-600' };
 const TICKET_TONE = { open: 'bg-amber-100 text-amber-700', 'in-progress': 'bg-sky-100 text-sky-700', resolved: 'bg-emerald-100 text-emerald-700', closed: 'bg-slate-200 text-slate-600' };
 const ago = (d) => {

@@ -44,9 +44,6 @@ import LiveClassSession from '../models/LiveClassSession.js';
 import StudentSubmission from '../models/StudentSubmission.js';
 import { PLACEMENT_EDITORS, autoStage, effectiveStage, blockReason, stageChecks } from '../constants/placement.js';
 import StudentRequest, { TRAINER_REQUEST_TYPES } from '../models/StudentRequest.js';
-import BatchSyllabus from '../models/BatchSyllabus.js';
-import BatchAnnouncement from '../models/BatchAnnouncement.js';
-import TestAttempt from '../models/TestAttempt.js';
 import AppSetting from '../models/AppSetting.js';
 import ContentPiece from '../models/ContentPiece.js';
 import BranchLeadDemand from '../models/BranchLeadDemand.js';
@@ -3342,13 +3339,10 @@ function computeReadiness(st) {
 const DOUBT_SLA_HOURS = 24;
 function formatDoubt(d) {
   const created = d.createdAt ? new Date(d.createdAt) : new Date();
-  const since = d.lastStudentAt ? new Date(d.lastStudentAt) : created;
   const ageH = (Date.now() - created.getTime()) / 36e5;
-  const waitH = (Date.now() - since.getTime()) / 36e5;
-  let status = d.resolvedByStudent ? 'Resolved' : (d.status || 'New');
-  if (status === 'Pending') status = 'New'; // old default
-  if (!['Replied', 'Resolved'].includes(status) && waitH > DOUBT_SLA_HOURS) status = 'Overdue';
-  const left = Math.max(0, Math.round(DOUBT_SLA_HOURS - waitH));
+  let status = d.status || 'New';
+  if (status !== 'Replied' && ageH > DOUBT_SLA_HOURS) status = 'Overdue';
+  const left = Math.max(0, Math.round(DOUBT_SLA_HOURS - ageH));
   const timeText = ageH < 1 ? `${Math.max(1, Math.round(ageH * 60))} min ago` : ageH < 48 ? `${Math.round(ageH)}h ago` : `${Math.round(ageH / 24)}d ago`;
   return {
     id: d._id.toString(),
@@ -3366,11 +3360,8 @@ function formatDoubt(d) {
     reply: d.reply,
     repliedAt: d.repliedAt,
     createdAt: d.createdAt,
-    thread: (d.thread || []).map((m) => ({ by: m.by, name: m.name, text: m.text, at: m.at })),
-    resolvedByStudent: Boolean(d.resolvedByStudent),
-    resolvedAt: d.resolvedAt || null,
     timeText,
-    slaBadge: ['Replied', 'Resolved'].includes(status) ? 'Resolved' : status === 'Overdue' ? `SLA breached · ${DOUBT_SLA_HOURS}h` : `SLA · ${left}h left`
+    slaBadge: status === 'Replied' ? 'Resolved' : status === 'Overdue' ? `SLA breached · ${DOUBT_SLA_HOURS}h` : `SLA · ${left}h left`
   };
 }
 
@@ -3467,7 +3458,7 @@ router.put('/trainer/doubts/:id/reply', async (req, res) => {
     if (tName) setFields.trainerName = tName;
     const updated = await TrainerDoubt.findByIdAndUpdate(
       req.params.id,
-      { $set: { ...setFields, resolvedByStudent: false }, $push: { thread: { by: 'trainer', name: setFields.trainerName || tName || 'Trainer', text: String(reply).trim(), at: setFields.repliedAt } } },
+      { $set: setFields },
       { new: true }
     );
     if (!updated) return res.status(404).json({ error: 'Doubt not found' });
@@ -5249,10 +5240,6 @@ router.get('/student-portal/me', async (req, res) => {
         myScore,
         pct,
         passed: myScore !== null ? myScore >= (t.passMark || 0) : null,
-        mode: t.mode || 'offline',
-        questionCount: (t.questions || []).length,
-        durationMin: t.durationMin || null,
-        attempt: null,
         createdAt: t.createdAt
       };
     });
@@ -5296,24 +5283,6 @@ router.get('/student-portal/me', async (req, res) => {
     });
     const trainerFeedback = myFeedback.find((f) => f.kind === 'trainer' && f.trainerId === st.trainerId) || null;
 
-    // Syllabus checklist, trainer announcements, class recordings, my online-test attempts
-    const bKey = batchMatchKey(batch);
-    const [syllabusDoc, announcements, recordingSessions, myAttempts] = await Promise.all([
-      bKey ? BatchSyllabus.findOne({ batchKey: bKey }) : null,
-      bKey ? BatchAnnouncement.find({ batchKey: bKey }).sort({ createdAt: -1 }).limit(10) : [],
-      batch ? LiveClassSession.find({ batch, isLive: false, recordingUrl: { $nin: ['', null] } }).sort({ startedAt: -1 }).limit(20).select('topic trainerName startedAt recordingUrl') : [],
-      TestAttempt.find({ studentId: st.studentId }).select('assessmentId status score totalMarks submittedAt endsAt')
-    ]);
-    tests.forEach((t) => {
-      const a = myAttempts.find((x) => x.assessmentId === t.id);
-      if (a) t.attempt = { status: a.status, score: a.score, totalMarks: a.totalMarks, submittedAt: a.submittedAt, endsAt: a.endsAt };
-    });
-    const syllabus = syllabusDoc ? {
-      modules: (syllabusDoc.modules || []).map((m) => ({ name: m.name, done: Boolean(m.done), doneAt: m.doneAt || null })),
-      updatedAt: syllabusDoc.updatedAt
-    } : null;
-    const recordings = recordingSessions.map((sess) => ({ id: sess._id.toString(), topic: sess.topic || '', trainerName: sess.trainerName || '', date: sess.startedAt, url: sess.recordingUrl }));
-
     const classNotes = pastSessions.map((sess) => ({
       id: sess._id.toString(),
       topic: sess.topic,
@@ -5340,10 +5309,7 @@ router.get('/student-portal/me', async (req, res) => {
       hiringPartners: partners,
       timetable,
       rateableClasses,
-      trainerFeedback,
-      syllabus,
-      announcements: announcements.map((a) => ({ id: a._id.toString(), title: a.title, message: a.message, trainerName: a.trainerName, createdAt: a.createdAt })),
-      recordings
+      trainerFeedback
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -5710,14 +5676,6 @@ router.post('/student-portal/:id/requests', async (req, res) => {
       message: [message, preferredDate ? `Preferred: ${preferredDate}` : ''].filter(Boolean).join(' · '),
       studentId: st.studentId, createdBy: st.name
     });
-    if (type === 'exam_booking') {
-      await pushNotification({
-        audience: 'cccp', type: 'exam',
-        title: `Exam slot request: ${st.name}`,
-        message: [subject, preferredDate ? `Preferred: ${preferredDate}` : '', message].filter(Boolean).join(' · '),
-        studentId: st.studentId, createdBy: st.name
-      });
-    }
     res.status(201).json(doc);
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -5785,12 +5743,6 @@ router.put('/student-portal/requests/:id', async (req, res) => {
           doc.details = { ...(doc.details || {}), mockScore: Number(mockScore) };
           await doc.save();
         }
-        await st.save();
-      }
-      // AAPC exam slot booked by HR / exam cell → shown on the student record
-      if (doc.type === 'exam_booking' && ['Scheduled', 'Resolved'].includes(status)) {
-        st.examStatus = status === 'Resolved' ? 'Exam Booked' : 'Exam Scheduled';
-        if (doc.scheduledFor) st.examDate = doc.scheduledFor;
         await st.save();
       }
       // Approved redemption → deduct the points once
@@ -6269,462 +6221,6 @@ router.post('/hr/lms/assessment/:moduleKey', async (req, res) => {
     });
     await doc.save();
     res.json({ score, passed, passMark: bank.passMark, correct, summary: lmsSummary(doc) });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
-
-// ==========================================
-// LEARNING FEATURES
-//   • Batch syllabus tracker (trainer ticks modules → students see progress)
-//   • Batch announcements (trainer → every student of a batch)
-//   • Online MCQ tests (timed in the Student Portal, graded by the server)
-//   • Class recordings (link added after class → students can replay)
-//   • Doubt follow-ups (student replies / marks a doubt resolved)
-// ==========================================
-const TEST_GRACE_MS = 2 * 60000; // network slack after the timer ends
-const MAX_TEST_QUESTIONS = 200;
-const minutesOf = (v) => { const n = parseInt(String(v || ''), 10); return Number.isFinite(n) && n > 0 ? n : 45; };
-const sameBatch = (a, b) => Boolean(batchMatchKey(a)) && batchMatchKey(a) === batchMatchKey(b);
-
-// Does the signed-in trainer teach this batch? (other departments: yes)
-async function trainerTeachesBatch(req, batch) {
-  if (!isTrainerReq(req)) return true;
-  const me = myTrainerId(req);
-  if (!me || !batch) return false;
-  const rows = await Student.find({ trainerId: me }).select('batchName course');
-  return rows.some((s) => sameBatch(studentBatchOf(s), batch));
-}
-const NOT_YOUR_BATCH = { error: 'This batch is not allocated to you.' };
-
-// ---------- Syllabus tracker ----------
-router.get('/training/syllabus', async (req, res) => {
-  try {
-    const batch = tidyBatchName(req.query.batch || '');
-    if (!batch) return res.status(400).json({ error: 'batch is required' });
-    const doc = await BatchSyllabus.findOne({ batchKey: batchMatchKey(batch) });
-    res.json(doc || { batch, modules: [] });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-router.put('/training/syllabus', async (req, res) => {
-  try {
-    const batch = tidyBatchName(req.body?.batch || '');
-    if (!batch) return res.status(400).json({ error: 'batch is required' });
-    if (!(await trainerTeachesBatch(req, batch))) return res.status(403).json(NOT_YOUR_BATCH);
-    const incoming = (Array.isArray(req.body?.modules) ? req.body.modules : [])
-      .filter((m) => String(m?.name || '').trim())
-      .slice(0, 100);
-    const key = batchMatchKey(batch);
-    const doc = (await BatchSyllabus.findOne({ batchKey: key })) || new BatchSyllabus({ batch, batchKey: key });
-    const before = new Map((doc.modules || []).map((m) => [String(m._id), m]));
-    const by = req.user?.name || '';
-    const newlyDone = [];
-    doc.modules = incoming.map((m) => {
-      const prev = m._id ? before.get(String(m._id)) : null;
-      const name = String(m.name).trim().slice(0, 160);
-      const done = Boolean(m.done);
-      const wasDone = Boolean(prev?.done);
-      if (done && !wasDone) newlyDone.push(name);
-      return {
-        ...(prev ? { _id: prev._id } : {}),
-        name,
-        done,
-        doneAt: done ? (wasDone ? prev.doneAt : new Date()) : null,
-        doneBy: done ? (wasDone ? prev.doneBy : by) : ''
-      };
-    });
-    doc.batch = batch;
-    doc.course = String(req.body?.course || doc.course || '');
-    if (isTrainerReq(req)) doc.trainerId = myTrainerId(req);
-    doc.trainerName = by || doc.trainerName;
-    doc.updatedBy = by;
-    await doc.save();
-    if (newlyDone.length) {
-      const doneCount = doc.modules.filter((m) => m.done).length;
-      const pct = doc.modules.length ? Math.round((doneCount / doc.modules.length) * 100) : 0;
-      await notifyBatch(batch, {
-        type: 'module', title: `Module completed: ${newlyDone.join(', ')}`.slice(0, 180),
-        message: `${doneCount} of ${doc.modules.length} modules covered (${pct}%).`, createdBy: by
-      });
-    }
-    res.json(doc);
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
-
-// ---------- Batch announcements ----------
-router.get('/training/announcements', async (req, res) => {
-  try {
-    const batch = tidyBatchName(req.query.batch || '');
-    const query = batch ? { batchKey: batchMatchKey(batch) } : (isTrainerReq(req) ? { trainerId: myTrainerId(req) } : {});
-    res.json(await BatchAnnouncement.find(query).sort({ createdAt: -1 }).limit(50));
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-router.post('/training/announcements', async (req, res) => {
-  try {
-    const batch = tidyBatchName(req.body?.batch || '');
-    const title = String(req.body?.title || '').trim().slice(0, 140);
-    const message = String(req.body?.message || '').trim().slice(0, 2000);
-    if (!batch || !title) return res.status(400).json({ error: 'Batch and title are required' });
-    if (!(await trainerTeachesBatch(req, batch))) return res.status(403).json(NOT_YOUR_BATCH);
-    const doc = await BatchAnnouncement.create({
-      batch, batchKey: batchMatchKey(batch), title, message,
-      trainerId: isTrainerReq(req) ? myTrainerId(req) : String(req.body?.trainerId || ''),
-      trainerName: req.user?.name || ''
-    });
-    await notifyBatch(batch, { type: 'announcement', title: `📢 ${title}`, message: message.slice(0, 240), createdBy: doc.trainerName });
-    res.status(201).json(doc);
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
-
-router.delete('/training/announcements/:id', async (req, res) => {
-  try {
-    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
-    const doc = await BatchAnnouncement.findById(req.params.id);
-    if (!doc) return res.status(404).json({ error: 'Announcement not found' });
-    if (!trainerOwnsRecord(req, doc)) return res.status(403).json(NOT_YOUR_RECORD);
-    await doc.deleteOne();
-    res.json({ success: true });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
-
-// ---------- Online tests: trainer side ----------
-router.put('/trainer/assessments/:id/questions', async (req, res) => {
-  try {
-    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
-    const item = await TrainerAssessment.findById(req.params.id);
-    if (!item) return res.status(404).json({ error: 'Assessment not found' });
-    if (item.trainerId && !trainerOwnsRecord(req, item)) return res.status(403).json(NOT_YOUR_RECORD);
-    if (await TestAttempt.exists({ assessmentId: item._id.toString() })) {
-      return res.status(409).json({ error: 'Students have already started this test — the questions can no longer be changed.' });
-    }
-    const raw = Array.isArray(req.body?.questions) ? req.body.questions : [];
-    if (raw.length > MAX_TEST_QUESTIONS) return res.status(400).json({ error: `A test can have at most ${MAX_TEST_QUESTIONS} questions` });
-    const questions = [];
-    for (const [i, q] of raw.entries()) {
-      const text = String(q?.q || '').trim();
-      const options = (Array.isArray(q?.options) ? q.options : []).map((o) => String(o || '').trim());
-      const answer = Number(q?.answer);
-      if (!text) return res.status(400).json({ error: `Question ${i + 1}: the question text is empty` });
-      if (options.length < 2 || options.length > 6 || options.some((o) => !o)) return res.status(400).json({ error: `Question ${i + 1}: give 2–6 options and fill every option` });
-      if (!Number.isInteger(answer) || answer < 0 || answer >= options.length) return res.status(400).json({ error: `Question ${i + 1}: pick the correct option` });
-      questions.push({ q: text.slice(0, 3000), options: options.map((o) => o.slice(0, 600)), answer, marks: Math.min(20, Math.max(1, Math.round(Number(q?.marks) || 1))) });
-    }
-    const oldTotal = Number(item.totalMarks) || 0;
-    item.questions = questions;
-    item.mode = questions.length ? 'online' : 'offline';
-    if (questions.length) {
-      const total = questions.reduce((a, q) => a + q.marks, 0);
-      const askedPass = Number(req.body?.passMark);
-      item.passMark = Number.isFinite(askedPass) && askedPass > 0 && askedPass <= total
-        ? Math.round(askedPass)
-        : Math.min(total, Math.max(1, Math.round(((Number(item.passMark) || 0) / (oldTotal || total)) * total) || Math.ceil(total * 0.7)));
-      item.totalMarks = total;
-    }
-    const dur = Number(req.body?.durationMin);
-    if (Number.isFinite(dur) && dur >= 5 && dur <= 300) {
-      item.durationMin = Math.round(dur);
-      item.timeLimit = `${item.durationMin} min`;
-    } else if (!item.durationMin) {
-      item.durationMin = minutesOf(item.timeLimit);
-    }
-    await item.save();
-    if (questions.length) {
-      await notifyBatch(item.batch, {
-        type: 'assessment', title: `Online test ready: ${item.name}`,
-        message: `${questions.length} questions · ${item.durationMin} min${item.date ? ` · opens ${item.date}` : ''}. Open Materials & Tests to take it.`,
-        createdBy: item.trainerName || ''
-      });
-    }
-    res.json(formatAssessment(item));
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
-
-router.get('/trainer/assessments/:id/attempts', async (req, res) => {
-  try {
-    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
-    const item = await TrainerAssessment.findById(req.params.id).select('trainerId');
-    if (!item) return res.status(404).json({ error: 'Assessment not found' });
-    if (item.trainerId && !trainerOwnsRecord(req, item)) return res.status(403).json(NOT_YOUR_RECORD);
-    res.json(await TestAttempt.find({ assessmentId: req.params.id }).sort({ submittedAt: -1, startedAt: -1 }));
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ---------- Online tests: student side ----------
-async function portalStudentOf(req) {
-  if (req.user?.department !== 'student' || !req.user?.studentId) return null;
-  return findStudentByAnyId(req.user.studentId);
-}
-
-async function loadStudentTest(req, res) {
-  const st = await portalStudentOf(req);
-  if (!st) { res.status(403).json({ error: 'Please sign in with your student account.' }); return null; }
-  if (!mongoose.isValidObjectId(req.params.id)) { res.status(400).json({ error: 'Invalid test' }); return null; }
-  const test = await TrainerAssessment.findById(req.params.id);
-  if (!test || test.mode !== 'online' || !(test.questions || []).length) { res.status(404).json({ error: 'This online test is not available.' }); return null; }
-  if (!sameBatch(test.batch, studentBatchOf(st))) { res.status(403).json({ error: 'This test is not for your batch.' }); return null; }
-  return { st, test };
-}
-
-const cleanAnswers = (answers, test) => (test.questions || []).map((q, i) => {
-  const a = Number(Array.isArray(answers) ? answers[i] : -1);
-  return Number.isInteger(a) && a >= 0 && a < q.options.length ? a : -1;
-});
-
-// Grade, store the score on the test (same place a trainer's manual score
-// goes) and refresh the student's test average & readiness
-async function gradeAttempt(attempt, test, st, { auto = false } = {}) {
-  const answers = cleanAnswers(attempt.answers, test);
-  let score = 0;
-  let correct = 0;
-  test.questions.forEach((q, i) => { if (answers[i] === q.answer) { score += q.marks || 1; correct += 1; } });
-  attempt.answers = answers;
-  attempt.score = score;
-  attempt.correct = correct;
-  attempt.totalMarks = test.totalMarks;
-  attempt.status = 'submitted';
-  attempt.submittedAt = new Date();
-  attempt.autoSubmitted = auto;
-  attempt.late = !auto && Date.now() > new Date(attempt.endsAt).getTime() + TEST_GRACE_MS;
-  await attempt.save();
-
-  const key = attempt.studentKey || studentKeyOf(st);
-  const fresh = await TrainerAssessment.findById(test._id);
-  const scores = fresh.scores instanceof Map ? Object.fromEntries(fresh.scores) : (fresh.scores || {});
-  scores[key] = score;
-  fresh.scores = scores;
-  if (fresh.status === 'Active') fresh.status = 'Scored';
-  await fresh.save();
-  await recomputeAssessmentScores([key]);
-  await notifyStudent(st.studentId, {
-    type: 'score', title: `Score: ${test.name}`,
-    message: `You scored ${score}/${test.totalMarks} (${correct} of ${test.questions.length} correct)${auto ? ' — submitted automatically when time ran out' : ''}.`,
-    createdBy: test.trainerName || ''
-  });
-  if (test.trainerId) {
-    await pushNotification({
-      audience: 'trainer', recipientId: test.trainerId, recipientName: test.trainerName, type: 'submission',
-      title: `${st.name} finished ${test.name}`, message: `Score ${score}/${test.totalMarks}${attempt.late ? ' · submitted late' : ''}.`,
-      studentId: st.studentId, createdBy: st.name
-    });
-  }
-  return attempt;
-}
-
-// Attempts left open past their time are closed with whatever was saved
-async function closeIfExpired(attempt, test, st) {
-  if (attempt?.status === 'in_progress' && Date.now() > new Date(attempt.endsAt).getTime() + TEST_GRACE_MS) {
-    return gradeAttempt(attempt, test, st, { auto: true });
-  }
-  return attempt;
-}
-
-function studentTestView(test, attempt, st) {
-  const base = {
-    id: test._id.toString(), name: test.name, type: test.type, topic: test.topic || '', date: test.date || '',
-    durationMin: test.durationMin || minutesOf(test.timeLimit), totalMarks: test.totalMarks, passMark: test.passMark,
-    questionCount: test.questions.length, trainerName: test.trainerName || '',
-    opensToday: !test.date || test.date <= todayStr(),
-    alreadyScored: !attempt && Object.prototype.hasOwnProperty.call(test.scores instanceof Map ? Object.fromEntries(test.scores) : (test.scores || {}), studentKeyOf(st))
-  };
-  if (!attempt) return { ...base, state: 'not_started' };
-  if (attempt.status === 'in_progress') {
-    return {
-      ...base, state: 'in_progress', endsAt: attempt.endsAt, serverNow: new Date(),
-      answers: cleanAnswers(attempt.answers, test),
-      questions: test.questions.map((q) => ({ q: q.q, options: q.options, marks: q.marks }))
-    };
-  }
-  return {
-    ...base, state: 'submitted', score: attempt.score, correct: attempt.correct, submittedAt: attempt.submittedAt,
-    autoSubmitted: attempt.autoSubmitted, rationale: test.rationale || '',
-    review: test.questions.map((q, i) => ({ q: q.q, options: q.options, marks: q.marks, answer: q.answer, yours: attempt.answers[i] ?? -1 }))
-  };
-}
-
-router.get('/student-portal/tests/:id', async (req, res) => {
-  try {
-    const ctx = await loadStudentTest(req, res);
-    if (!ctx) return;
-    let attempt = await TestAttempt.findOne({ assessmentId: req.params.id, studentId: ctx.st.studentId });
-    attempt = await closeIfExpired(attempt, ctx.test, ctx.st);
-    res.json(studentTestView(ctx.test, attempt, ctx.st));
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-router.post('/student-portal/tests/:id/start', async (req, res) => {
-  try {
-    const ctx = await loadStudentTest(req, res);
-    if (!ctx) return;
-    const { st, test } = ctx;
-    let attempt = await TestAttempt.findOne({ assessmentId: req.params.id, studentId: st.studentId });
-    if (!attempt) {
-      if (test.date && test.date > todayStr()) return res.status(409).json({ error: `This test opens on ${test.date}.` });
-      const view = studentTestView(test, null, st);
-      if (view.alreadyScored) return res.status(409).json({ error: 'Your trainer has already entered a score for this test.' });
-      const now = new Date();
-      try {
-        attempt = await TestAttempt.create({
-          assessmentId: req.params.id, studentId: st.studentId, studentKey: studentKeyOf(st), studentName: st.name,
-          batch: studentBatchOf(st), startedAt: now,
-          endsAt: new Date(now.getTime() + (test.durationMin || minutesOf(test.timeLimit)) * 60000),
-          answers: test.questions.map(() => -1), totalMarks: test.totalMarks
-        });
-      } catch (err) {
-        if (err?.code !== 11000) throw err; // double click → reuse the attempt just created
-        attempt = await TestAttempt.findOne({ assessmentId: req.params.id, studentId: st.studentId });
-      }
-    }
-    attempt = await closeIfExpired(attempt, test, st);
-    res.json(studentTestView(test, attempt, st));
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
-
-// Autosave while the student works (keeps answers if the browser closes)
-router.post('/student-portal/tests/:id/save', async (req, res) => {
-  try {
-    const ctx = await loadStudentTest(req, res);
-    if (!ctx) return;
-    const attempt = await TestAttempt.findOne({ assessmentId: req.params.id, studentId: ctx.st.studentId });
-    if (!attempt || attempt.status !== 'in_progress') return res.status(409).json({ error: 'This attempt is closed.' });
-    if (Date.now() > new Date(attempt.endsAt).getTime() + TEST_GRACE_MS) return res.status(409).json({ error: 'Time is over.' });
-    attempt.answers = cleanAnswers(req.body?.answers, ctx.test);
-    await attempt.save();
-    res.json({ success: true, savedAt: new Date() });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
-
-router.post('/student-portal/tests/:id/submit', async (req, res) => {
-  try {
-    const ctx = await loadStudentTest(req, res);
-    if (!ctx) return;
-    const { st, test } = ctx;
-    let attempt = await TestAttempt.findOne({ assessmentId: req.params.id, studentId: st.studentId });
-    if (!attempt) return res.status(409).json({ error: 'Start the test first.' });
-    if (attempt.status === 'in_progress') {
-      // Answers sent after the time (plus grace) are ignored — the saved ones count
-      if (Date.now() <= new Date(attempt.endsAt).getTime() + TEST_GRACE_MS) attempt.answers = cleanAnswers(req.body?.answers, test);
-      attempt = await gradeAttempt(attempt, test, st);
-    }
-    res.json(studentTestView(test, attempt, st));
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
-
-// ---------- Class recordings ----------
-router.get('/trainer/live-class/history', async (req, res) => {
-  try {
-    const query = { isLive: false };
-    if (isTrainerReq(req)) query.trainerId = myTrainerId(req);
-    else if (req.query.trainerId) query.trainerId = String(req.query.trainerId);
-    if (req.query.batch) query.batch = String(req.query.batch);
-    const list = await LiveClassSession.find(query).sort({ startedAt: -1 }).limit(30)
-      .select('trainerId trainerName batch topic startedAt endedAt recordingUrl recordingAddedAt joins notes attendanceSaved');
-    res.json(list.map((s) => ({
-      sessionId: s._id.toString(), batch: s.batch, topic: s.topic, startedAt: s.startedAt, endedAt: s.endedAt,
-      recordingUrl: s.recordingUrl || '', joins: (s.joins || []).length, notes: (s.notes || []).length, attendanceSaved: s.attendanceSaved
-    })));
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-router.post('/trainer/live-class/:id/recording', async (req, res) => {
-  try {
-    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid session' });
-    const url = String(req.body?.url || '').trim();
-    if (url && (!/^https?:\/\/\S+$/i.test(url) || url.length > 1000)) return res.status(400).json({ error: 'Paste a valid https:// link' });
-    const sess = await LiveClassSession.findById(req.params.id);
-    if (!sess) return res.status(404).json({ error: 'Session not found' });
-    if (!trainerOwnsRecord(req, sess)) return res.status(403).json(NOT_YOUR_RECORD);
-    const isNew = url && !sess.recordingUrl;
-    sess.recordingUrl = url;
-    sess.recordingAddedAt = url ? new Date() : null;
-    await sess.save();
-    if (isNew) {
-      await notifyBatch(sess.batch, {
-        type: 'recording', title: `Class recording: ${sess.topic || 'class'}`,
-        message: `The recording of ${new Date(sess.startedAt).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })}'s class is ready. Open Classes to watch it.`,
-        createdBy: sess.trainerName || ''
-      });
-    }
-    res.json({ success: true, recordingUrl: sess.recordingUrl });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
-
-// ---------- Doubt follow-ups (student) ----------
-async function loadOwnDoubt(req, res) {
-  const st = await portalStudentOf(req);
-  if (!st) { res.status(403).json({ error: 'Please sign in with your student account.' }); return null; }
-  if (!mongoose.isValidObjectId(req.params.id)) { res.status(400).json({ error: 'Invalid doubt' }); return null; }
-  const doubt = await TrainerDoubt.findById(req.params.id);
-  if (!doubt || doubt.studentId !== st.studentId) { res.status(404).json({ error: 'Doubt not found' }); return null; }
-  return { st, doubt };
-}
-
-router.post('/student-portal/doubts/:id/followup', async (req, res) => {
-  try {
-    const ctx = await loadOwnDoubt(req, res);
-    if (!ctx) return;
-    const { st, doubt } = ctx;
-    const text = String(req.body?.text || '').trim().slice(0, 2000);
-    if (!text) return res.status(400).json({ error: 'Write your follow-up question' });
-    if (!(doubt.thread || []).length && doubt.reply) {
-      // keep the first reply in the conversation
-      doubt.thread.push({ by: 'trainer', name: doubt.trainerName || 'Trainer', text: doubt.reply, at: doubt.repliedAt || doubt.updatedAt });
-    }
-    const now = new Date();
-    doubt.thread.push({ by: 'student', name: st.name, text, at: now });
-    doubt.status = 'New';
-    doubt.lastStudentAt = now;
-    doubt.resolvedByStudent = false;
-    doubt.resolvedAt = null;
-    await doubt.save();
-    if (doubt.trainerId) {
-      await pushNotification({
-        audience: 'trainer', recipientId: doubt.trainerId, recipientName: doubt.trainerName, type: 'doubt',
-        title: `Follow-up from ${st.name}`, message: `${doubt.topic ? `${doubt.topic}: ` : ''}${text.slice(0, 200)}`,
-        studentId: st.studentId, createdBy: st.name
-      });
-    }
-    res.json(formatDoubt(doubt));
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
-
-router.post('/student-portal/doubts/:id/resolve', async (req, res) => {
-  try {
-    const ctx = await loadOwnDoubt(req, res);
-    if (!ctx) return;
-    ctx.doubt.resolvedByStudent = true;
-    ctx.doubt.resolvedAt = new Date();
-    await ctx.doubt.save();
-    res.json(formatDoubt(ctx.doubt));
   } catch (e) {
     res.status(400).json({ error: e.message });
   }

@@ -153,7 +153,7 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
 
   const inviteText = () => {
     const b = liveBatch || batch;
-    return `🎓 *Thoughtflows Academy — Live Class*\n\n📚 *Batch:* ${b?.name || ''}\n${live?.topic ? `📖 *Topic:* ${live.topic}\n` : ''}👨‍🏫 *Trainer:* ${trainerName}\n\n▶ Join now: open your *Student Portal → Dashboard → Join Class*.\n\n⚠ Please join from the portal — that is how your attendance is recorded.`;
+    return `🎓 *Thoughtflows Academy — Live Class*\n\n📚 *Batch:* ${b?.name || ''}\n${live?.topic ? `📖 *Topic:* ${live.topic}\n` : ''}👨‍🏫 *Trainer:* ${trainerName}\n\n▶ Join now: open your *Student Portal → Dashboard → Join Class*.${live?.zoomJoinUrl ? `\n\nIf the portal doesn't open, use Zoom: ${live.zoomJoinUrl}` : ''}`;
   };
 
   // ---------------------------------------------------------------------------
@@ -285,7 +285,7 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
                     );
                   })}
                 </div>
-                <p className="text-[10px] text-slate-400 mt-2">Tracks students who join from the portal. Joins after 15 min count as Late. Students who join with a direct Zoom link are not tracked — check them in the attendance review.</p>
+                <p className="text-[10px] text-slate-400 mt-2">Tracks students who join from the portal. Joins after 15 min count as Late.</p>
               </div>
 
               <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-sm flex flex-col">

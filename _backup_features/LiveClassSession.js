@@ -27,10 +27,7 @@ const liveClassSessionSchema = new mongoose.Schema(
     },
     // Notes the trainer adds during class — shown to the batch afterwards
     notes: { type: [{ text: String, at: Date }], default: [] },
-    attendanceSaved: { type: Boolean, default: false },
-    // Zoom cloud / Drive recording link the trainer adds after class
-    recordingUrl: { type: String, default: '' },
-    recordingAddedAt: { type: Date, default: null }
+    attendanceSaved: { type: Boolean, default: false }
   },
   { timestamps: true }
 );
