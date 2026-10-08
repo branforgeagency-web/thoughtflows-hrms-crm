@@ -474,11 +474,7 @@ export default function LeadershipHubDashboard({ onClose, currentUser, onLogout,
             departments={departments}
             onBack={backToLanding}
             onSelectHead={(deptId) => {
-              if (deptId === 'hr') {
-                setSelectedDept('hr');
-              } else if (onSwitchDepartment) {
-                onSwitchDepartment(deptId);
-              }
+              setSelectedDept(deptId);
             }}
           />
         )}
@@ -486,6 +482,85 @@ export default function LeadershipHubDashboard({ onClose, currentUser, onLogout,
         {view === 'department' && selectedDept === 'hr' && (
           <HeadOfHrDashboard
             department={departments.find((d) => d.dashboard === 'hr') || null}
+            onBack={() => setSelectedDept(null)}
+            currentUser={currentUser}
+            onChanged={refreshSummary}
+          />
+        )}
+
+        {view === 'department' && selectedDept === 'training' && (
+          <HeadOfTrainingDashboard
+            department={departments.find((d) => d.dashboard === 'training') || null}
+            onBack={() => setSelectedDept(null)}
+            currentUser={currentUser}
+            onChanged={refreshSummary}
+            onSwitchDepartment={onSwitchDepartment}
+          />
+        )}
+
+        {view === 'department' && selectedDept === 'cccp' && (
+          <HeadOfDeptDashboard
+            deptConfig={{
+              deptId: 'cccp',
+              code: 'DEP-CCCP-001',
+              title: 'Head of CCCP / Placement',
+              headName: 'Anand K.',
+              accentBg: '#059669',
+              borderAccent: 'border-emerald-600',
+              icon: HeartHandshake,
+              targetGapLabel: 'ON "STUDENTS PLACED"',
+              targetGapValue: '10',
+              sampleApproval: 'Company mapping — Optum — 5 seats',
+              defaultPendingApprovals: 1,
+              defaultOpenEscalations: 1,
+              defaultTeamSize: 3
+            }}
+            onBack={() => setSelectedDept(null)}
+            currentUser={currentUser}
+            onChanged={refreshSummary}
+          />
+        )}
+
+        {view === 'department' && selectedDept === 'marketing' && (
+          <HeadOfDeptDashboard
+            deptConfig={{
+              deptId: 'marketing',
+              code: 'DEP-MKT-001',
+              title: 'Head of Marketing',
+              headName: 'Ramesh V.',
+              accentBg: '#D97706',
+              borderAccent: 'border-amber-600',
+              icon: Megaphone,
+              targetGapLabel: 'ON "QUALIFIED LEADS GENERATED"',
+              targetGapValue: '15',
+              sampleApproval: 'Ad Campaign Budget — Google Ads — ₹50,000',
+              defaultPendingApprovals: 2,
+              defaultOpenEscalations: 1,
+              defaultTeamSize: 4
+            }}
+            onBack={() => setSelectedDept(null)}
+            currentUser={currentUser}
+            onChanged={refreshSummary}
+          />
+        )}
+
+        {view === 'department' && selectedDept === 'student' && (
+          <HeadOfDeptDashboard
+            deptConfig={{
+              deptId: 'student',
+              code: 'DEP-STU-001',
+              title: 'Head of Students',
+              headName: 'Priya S.',
+              accentBg: '#DB2777',
+              borderAccent: 'border-pink-600',
+              icon: Crown,
+              targetGapLabel: 'ON "STUDENT SATISFACTION %"',
+              targetGapValue: '5%',
+              sampleApproval: 'Course Extension Request — Batch 2026-A',
+              defaultPendingApprovals: 1,
+              defaultOpenEscalations: 2,
+              defaultTeamSize: 5
+            }}
             onBack={() => setSelectedDept(null)}
             currentUser={currentUser}
             onChanged={refreshSummary}
@@ -1915,6 +1990,713 @@ function HeadOfHrDashboard({ department, onBack, currentUser, onChanged }) {
       {tab === 'mgmt' && (
         <ManagementSummaryBoard departmentName="HR Department" />
       )}
+    </div>
+  );
+}
+
+// ---- Reusable Head of Department Dashboard (CCCP, Marketing, Students, etc.) ----
+
+function HeadOfDeptDashboard({ deptConfig, onBack, currentUser, onChanged }) {
+  const [tab, setTab] = useState('desk');
+  const counts = useDeskCounts({ departmentCode: deptConfig.code });
+  const IconComponent = deptConfig.icon || Users;
+
+  const [approvalsList, setApprovalsList] = useState([]);
+  const [closuresList, setClosuresList] = useState([]);
+  const [teamList, setTeamList] = useState(null);
+
+  useEffect(() => {
+    const safeTime = (dt) => {
+      if (!dt) return '';
+      const d = new Date(dt);
+      return isNaN(d.getTime()) ? '' : d.toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+    };
+    const fetchRealData = async () => {
+      const [cData, aData, tData] = await Promise.all([
+        getDailyClosures().catch(() => []),
+        getApprovals({ departmentCode: deptConfig.code }).catch(() => []),
+        getTeam({ departmentCode: deptConfig.code }).catch(() => null)
+      ]);
+      setClosuresList(Array.isArray(cData) ? cData : []);
+      setTeamList(Array.isArray(tData) ? tData : null);
+      setApprovalsList((Array.isArray(aData) ? aData : []).map((a) => {
+        const priority = (a.priority || 'medium').toLowerCase();
+        return {
+          id: String(a._id || a.id),
+          title: a.title || a.kind || 'Approval Request',
+          priority,
+          priorityColor: priority === 'high' ? 'text-rose-500' : priority === 'low' ? 'text-blue-500' : 'text-amber-500',
+          detail: a.description || `${a.kind || 'Approval'} requested by ${a.requestedBy || 'staff'}`,
+          by: a.requestedBy || '—',
+          time: safeTime(a.createdAt),
+          status: (a.status || 'pending').toLowerCase(),
+          kind: a.kind || 'Approval'
+        };
+      }));
+    };
+    fetchRealData();
+    const unsub = onDataUpdate((entity) => {
+      if (!entity || ['closures', 'approvals', 'escalations', 'team'].includes(entity)) {
+        fetchRealData();
+      }
+    });
+    return unsub;
+  }, [deptConfig.code]);
+
+  const handleDecision = async (id, newStatus) => {
+    try {
+      const updated = await decideApproval(id, newStatus);
+      setApprovalsList(prev => prev.map(item => item.id === id ? { ...item, status: updated?.status || newStatus } : item));
+      if (onChanged) onChanged();
+    } catch (e) {
+      window.alert(e?.response?.data?.error || 'Could not save the decision');
+    }
+  };
+
+  const pendingApprovalsCount = approvalsList.filter(a => a.status === 'pending').length || (deptConfig.defaultPendingApprovals || 1);
+  const openEscalations = (counts.escalations || []).filter((e) => !['resolved', 'closed'].includes(e.status));
+  const openEscalationsCount = openEscalations.length || (deptConfig.defaultOpenEscalations || 1);
+  const teamSize = teamList ? teamList.length : (deptConfig.defaultTeamSize || 3);
+
+  const TABS = [
+    { key: 'desk', label: 'My Desk', icon: LayoutDashboard },
+    { key: 'team', label: 'Team Performance', icon: Users, iconColor: 'text-blue-500' },
+    { key: 'approvals', label: 'Approvals', icon: CheckCircle2, iconColor: 'text-emerald-500', badge: String(pendingApprovalsCount), badgeColor: 'bg-amber-500' },
+    { key: 'escalations', label: 'Escalations', icon: AlertTriangle, iconColor: 'text-rose-500', badge: String(openEscalationsCount), badgeColor: 'bg-rose-500' },
+    { key: 'tracker', label: 'Daily Tracker', icon: ClipboardList, iconColor: 'text-amber-500' },
+    { key: 'reports', label: 'Reports', icon: FileText, iconColor: 'text-indigo-500' },
+    { key: 'roster', label: 'Roster', icon: Calendar, iconColor: 'text-sky-500' },
+    { key: 'targets', label: 'Targets', icon: Target, iconColor: 'text-rose-500' },
+    { key: 'sop', label: 'SOP Hub', icon: BookOpen, iconColor: 'text-emerald-600' },
+    { key: 'mgmt', label: 'Mgmt Summary', icon: TrendingUp, iconColor: 'text-blue-600' }
+  ];
+
+  return (
+    <div className="w-full space-y-6 animate-fadeIn font-sans text-slate-800">
+      {/* Top back button */}
+      <div>
+        <button
+          onClick={onBack}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 bg-white border border-slate-200/90 shadow-xs hover:bg-slate-50 hover:text-slate-900 transition-all cursor-pointer"
+        >
+          <ChevronLeft className="w-3.5 h-3.5 text-slate-500" />
+          Departments
+        </button>
+      </div>
+
+      {/* Header Banner matching user screenshot */}
+      <div className="bg-white border border-slate-200/90 rounded-2xl p-5 pl-6 flex items-center justify-between shadow-xs relative overflow-hidden">
+        <div className="absolute left-0 top-0 bottom-0 w-1.5" style={{ backgroundColor: deptConfig.accentBg }} />
+        <div className="flex items-center gap-4">
+          <div
+            className="w-12 h-12 rounded-2xl flex items-center justify-center text-white text-xl shadow-xs flex-shrink-0"
+            style={{ backgroundColor: deptConfig.accentBg }}
+          >
+            <IconComponent className="w-6 h-6 text-white" />
+          </div>
+          <div>
+            <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight">{deptConfig.title}</h2>
+            <p className="text-xs text-slate-400 font-mono mt-0.5">
+              {deptConfig.headName} <span className="text-slate-300">·</span> Department Head <span className="text-slate-300">·</span> {deptConfig.code}
+            </p>
+          </div>
+        </div>
+        <div className="text-right flex-shrink-0">
+          <div className="text-2xl font-extrabold text-rose-500 leading-none">0</div>
+          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mt-1">HEALTH</div>
+        </div>
+      </div>
+
+      {/* Tabs Row matching exact layout */}
+      <div className="flex items-center gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
+        {TABS.map((t) => {
+          const isActive = t.key === tab;
+          const Icon = t.icon;
+          return (
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              className={`flex-shrink-0 flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all border cursor-pointer ${
+                isActive
+                  ? 'bg-[#0f172a] text-white border-transparent shadow-xs'
+                  : 'bg-white text-slate-600 border-slate-200/90 hover:bg-slate-50'
+              }`}
+            >
+              <Icon className={`w-4 h-4 ${isActive ? 'text-white' : t.iconColor || 'text-slate-500'}`} />
+              {t.label}
+              {t.badge && (
+                <span className={`ml-1 text-[9.5px] font-extrabold text-white rounded-full w-4.5 h-4.5 grid place-items-center flex-shrink-0 ${t.badgeColor}`}>
+                  {t.badge}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Tab 1: My Desk */}
+      {tab === 'desk' && (
+        <div className="space-y-6">
+          {/* 6 KPI Cards Row */}
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4">
+            <button
+              onClick={() => setTab('approvals')}
+              className="text-left p-4 rounded-2xl bg-white border border-slate-200/90 border-t-4 border-t-amber-400 shadow-xs hover:shadow-md transition-all group cursor-pointer"
+            >
+              <div className="text-2xl font-extrabold text-amber-500">{pendingApprovalsCount}</div>
+              <div className="text-xs font-bold text-slate-900 mt-1">Pending Approvals</div>
+              <div className="text-[9.5px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">NEED YOUR SIGN-OFF</div>
+            </button>
+
+            <button
+              onClick={() => setTab('escalations')}
+              className="text-left p-4 rounded-2xl bg-white border border-slate-200/90 border-t-4 border-t-rose-500 shadow-xs hover:shadow-md transition-all group cursor-pointer"
+            >
+              <div className="text-2xl font-extrabold text-rose-500">{openEscalationsCount}</div>
+              <div className="text-xs font-bold text-slate-900 mt-1">Open Escalations</div>
+              <div className="text-[9.5px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">NEED ACTION</div>
+            </button>
+
+            <button
+              onClick={() => setTab('targets')}
+              className="text-left p-4 rounded-2xl bg-white border border-slate-200/90 border-t-4 border-t-amber-400 shadow-xs hover:shadow-md transition-all group cursor-pointer"
+            >
+              <div className="text-2xl font-extrabold text-amber-500">{deptConfig.targetGapValue || '10'}</div>
+              <div className="text-xs font-bold text-slate-900 mt-1">Target Gap</div>
+              <div className="text-[9.5px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">{deptConfig.targetGapLabel}</div>
+            </button>
+
+            <button
+              onClick={() => setTab('team')}
+              className="text-left p-4 rounded-2xl bg-white border border-slate-200/90 border-t-4 border-t-emerald-500 shadow-xs hover:shadow-md transition-all group cursor-pointer"
+            >
+              <div className="text-2xl font-extrabold text-emerald-600">0</div>
+              <div className="text-xs font-bold text-slate-900 mt-1">Delayed Work</div>
+              <div className="text-[9.5px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">ON TRACK</div>
+            </button>
+
+            <button
+              onClick={() => setTab('team')}
+              className="text-left p-4 rounded-2xl bg-white border border-slate-200/90 border-t-4 border-t-emerald-500 shadow-xs hover:shadow-md transition-all group cursor-pointer"
+            >
+              <div className="text-2xl font-extrabold text-emerald-600">0</div>
+              <div className="text-xs font-bold text-slate-900 mt-1">Team Not Updated</div>
+              <div className="text-[9.5px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">ALL ACTIVE</div>
+            </button>
+
+            <button
+              onClick={() => setTab('roster')}
+              className="text-left p-4 rounded-2xl bg-white border border-slate-200/90 border-t-4 border-t-slate-400 shadow-xs hover:shadow-md transition-all group cursor-pointer"
+            >
+              <div className="text-2xl font-extrabold text-slate-900">{teamSize}</div>
+              <div className="text-xs font-bold text-slate-900 mt-1">Team Size</div>
+              <div className="text-[9.5px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">MEMBERS</div>
+            </button>
+          </div>
+
+          {/* Priority Action Section ("⚡ What needs you now") */}
+          <div className="bg-white border border-slate-200/90 rounded-2xl p-6 shadow-xs space-y-4">
+            <div>
+              <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
+                <span className="text-amber-500">⚡</span> What needs you now
+              </h3>
+              <p className="text-xs text-slate-400 font-mono mt-0.5">
+                Your highest-priority items across approvals, escalations & work
+              </p>
+            </div>
+
+            <div className="space-y-3">
+              <div
+                onClick={() => setTab('approvals')}
+                className="p-4 rounded-xl bg-slate-50/80 border border-slate-200/80 flex items-center justify-between hover:bg-slate-100/60 transition-all cursor-pointer group"
+              >
+                <div className="flex items-center gap-3">
+                  <span className="px-2.5 py-1 rounded-lg text-xs font-extrabold bg-emerald-100 text-emerald-700 flex items-center gap-1">
+                    <CheckCircle2 className="w-3.5 h-3.5" /> Approve
+                  </span>
+                  <span className="text-xs font-extrabold text-slate-900">
+                    {deptConfig.sampleApproval || 'Department sign-off & budget approval request'}
+                  </span>
+                </div>
+                <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-slate-700 transition-colors" />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Tab 2: Team Performance */}
+      {tab === 'team' && <TeamPerformanceBoard />}
+
+      {/* Tab 3: Approvals */}
+      {tab === 'approvals' && (
+        <ApprovalsDesk filter={{ departmentCode: deptConfig.code }} scopeLabel={deptConfig.title} onChanged={onChanged} />
+      )}
+
+      {/* Tab 4: Escalations */}
+      {tab === 'escalations' && (
+        <EscalationsDesk filter={{ departmentCode: deptConfig.code }} scopeLabel={deptConfig.title} onChanged={onChanged} />
+      )}
+
+      {/* Tab 5: Daily Tracker */}
+      {tab === 'tracker' && <DailyTrackerBoard />}
+
+      {/* Tab 6: Reports */}
+      {tab === 'reports' && <ReportsExportBoard departmentCode={deptConfig.code} departmentName={deptConfig.title} />}
+
+      {/* Tab 7: Roster */}
+      {tab === 'roster' && <TeamRosterBoard />}
+
+      {/* Tab 8: Targets */}
+      {tab === 'targets' && <DepartmentTargetsBoard />}
+
+      {/* Tab 9: SOP Hub */}
+      {tab === 'sop' && <SopHubBoard department={deptConfig.code} departmentName={deptConfig.title} />}
+
+      {/* Tab 10: Mgmt Summary */}
+      {tab === 'mgmt' && <ManagementSummaryBoard departmentName={deptConfig.title} />}
+    </div>
+  );
+}
+
+// ---- Head of Training Dashboard (Training Department · Regions) ----
+
+const TRAINING_REGIONS_DATA = [
+  {
+    id: 'tn',
+    code: 'DEP-TR-TN-001',
+    badge: 'TN',
+    badgeBg: '#2563EB',
+    badgeColor: 'text-white',
+    topBarGrad: 'linear-gradient(90deg, #2563EB, #3B82F6)',
+    head: 'Manoj',
+    state: 'Tamil Nadu',
+    trainers: 2,
+    batches: 1,
+    branches: 3,
+    stat3Label: 'BRANCHES',
+    accentText: 'text-blue-600',
+    accentBorder: 'border-blue-200',
+    accentBg: 'bg-blue-50'
+  },
+  {
+    id: 'on',
+    code: 'DEP-TR-ON-002',
+    badge: 'ON',
+    badgeBg: '#0D9488',
+    badgeColor: 'text-white',
+    topBarGrad: 'linear-gradient(90deg, #0D9488, #10B981)',
+    head: 'Keerthika',
+    state: 'Online',
+    trainers: 4,
+    batches: 2,
+    branches: 1,
+    stat3Label: 'MODE',
+    accentText: 'text-teal-600',
+    accentBorder: 'border-teal-200',
+    accentBg: 'bg-teal-50'
+  },
+  {
+    id: 'kl',
+    code: 'DEP-TR-KL-003',
+    badge: 'KL',
+    badgeBg: '#16A34A',
+    badgeColor: 'text-white',
+    topBarGrad: 'linear-gradient(90deg, #16A34A, #22C55E)',
+    head: 'Vaishna',
+    state: 'Kerala',
+    trainers: 0,
+    batches: 0,
+    branches: 2,
+    stat3Label: 'BRANCHES',
+    accentText: 'text-green-600',
+    accentBorder: 'border-green-200',
+    accentBg: 'bg-green-50'
+  },
+  {
+    id: 'tg',
+    code: 'DEP-TR-TG-004',
+    badge: 'TG',
+    badgeBg: '#EA580C',
+    badgeColor: 'text-white',
+    topBarGrad: 'linear-gradient(90deg, #EA580C, #F97316)',
+    head: 'Pavithra',
+    state: 'Telangana & Andhra',
+    trainers: 1,
+    batches: 1,
+    branches: 2,
+    stat3Label: 'BRANCHES',
+    accentText: 'text-orange-600',
+    accentBorder: 'border-orange-200',
+    accentBg: 'bg-orange-50',
+    highlight: true,
+    showOpenBtn: true
+  }
+];
+
+const REGIONAL_HEAD_DATA = {
+  tn: {
+    head: 'Manoj',
+    initial: 'M',
+    code: 'DEP-TR-TN-001',
+    state: 'Tamil Nadu',
+    role: 'Regional Training Head · Tamil Nadu · DEP-TR-TN-001',
+    branches: 'Branches: Coimbatore · Salem · Trichy',
+    trainersCount: 2,
+    availableNow: 2,
+    activeBatchesCount: 1,
+    avgPerformance: 87,
+    themeColor: '#2563EB',
+    accentText: 'text-blue-600',
+    trainers: [
+      { id: 'TR-01', name: 'Revathi K', branch: 'Coimbatore', skills: 'Anatomy, ICD-10-CM, CPT', languages: 'Tamil, English', load: '2/5', performance: 90, status: 'Available' },
+      { id: 'TR-02', name: 'Rajesh M', branch: 'Coimbatore', skills: 'CPT, Medical Billing', languages: 'English', load: '3/5', performance: 83, status: 'Available' }
+    ],
+    batches: [
+      { batchId: 'BATCH-CBE-TA-0911', course: 'CPC', location: 'Coimbatore', language: 'Tamil', slot: '9:00–11:00 AM' }
+    ],
+    noteText: "This is Manoj's regional view — trainers, batches and performance for Tamil Nadu. Tell me what else Manoj should see or control and I'll add it."
+  },
+  on: {
+    head: 'Keerthika',
+    initial: 'K',
+    code: 'DEP-TR-ON-002',
+    state: 'Online',
+    role: 'Regional Training Head · Online · DEP-TR-ON-002',
+    branches: 'Branches: Virtual Desk · Live Zoom Rooms',
+    trainersCount: 4,
+    availableNow: 3,
+    activeBatchesCount: 2,
+    avgPerformance: 92,
+    themeColor: '#0D9488',
+    accentText: 'text-teal-600',
+    trainers: [
+      { id: 'TR-03', name: 'Ananya S', branch: 'Online', skills: 'ICD-10-CM, CPT, PCS', languages: 'English, Hindi', load: '4/5', performance: 94, status: 'Available' },
+      { id: 'TR-04', name: 'Karthik R', branch: 'Online', skills: 'Anatomy, Medical Billing', languages: 'Tamil, English', load: '3/5', performance: 91, status: 'Available' },
+      { id: 'TR-05', name: 'Priya N', branch: 'Online', skills: 'CPT, Evaluation & Mgmt', languages: 'English', load: '2/5', performance: 89, status: 'Busy' },
+      { id: 'TR-06', name: 'Suresh V', branch: 'Online', skills: 'CPC Exam Prep', languages: 'Telugu, English', load: '3/5', performance: 93, status: 'Available' }
+    ],
+    batches: [
+      { batchId: 'BATCH-ONL-EN-0810', course: 'Medical Coding', location: 'Online', language: 'English', slot: '10:00–12:00 PM' },
+      { batchId: 'BATCH-ONL-HI-0212', course: 'Billing & Coding', location: 'Online', language: 'Hindi', slot: '2:00–4:00 PM' }
+    ],
+    noteText: "This is Keerthika's regional view — trainers, batches and performance for Online. Tell me what else Keerthika should see or control and I'll add it."
+  },
+  kl: {
+    head: 'Vaishna',
+    initial: 'V',
+    code: 'DEP-TR-KL-003',
+    state: 'Kerala',
+    role: 'Regional Training Head · Kerala · DEP-TR-KL-003',
+    branches: 'Branches: Kochi · Trivandrum',
+    trainersCount: 0,
+    availableNow: 0,
+    activeBatchesCount: 0,
+    avgPerformance: 0,
+    themeColor: '#16A34A',
+    accentText: 'text-green-600',
+    trainers: [],
+    batches: [],
+    noteText: "This is Vaishna's regional view — trainers, batches and performance for Kerala. Tell me what else Vaishna should see or control and I'll add it."
+  },
+  tg: {
+    head: 'Pavithra',
+    initial: 'P',
+    code: 'DEP-TR-TG-004',
+    state: 'Telangana & Andhra',
+    role: 'Regional Training Head · Telangana & Andhra · DEP-TR-TG-004',
+    branches: 'Branches: Hyderabad · Vijayawada',
+    trainersCount: 1,
+    availableNow: 1,
+    activeBatchesCount: 1,
+    avgPerformance: 88,
+    themeColor: '#EA580C',
+    accentText: 'text-orange-600',
+    trainers: [
+      { id: 'TR-07', name: 'Swathi P', branch: 'Hyderabad', skills: 'ICD-10-CM, CPT, Billing', languages: 'Telugu, English', load: '2/5', performance: 88, status: 'Available' }
+    ],
+    batches: [
+      { batchId: 'BATCH-HYD-TE-0911', course: 'Medical Coding', location: 'Hyderabad', language: 'Telugu', slot: '9:00–11:00 AM' }
+    ],
+    noteText: "This is Pavithra's regional view — trainers, batches and performance for Telangana & Andhra. Tell me what else Pavithra should see or control and I'll add it."
+  }
+};
+
+function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, onSwitchDepartment }) {
+  const [selectedRegion, setSelectedRegion] = useState(null);
+
+  if (selectedRegion) {
+    const regData = REGIONAL_HEAD_DATA[selectedRegion.id] || {
+      head: selectedRegion.head,
+      initial: selectedRegion.head ? selectedRegion.head[0] : 'T',
+      code: selectedRegion.code,
+      state: selectedRegion.state,
+      role: `Regional Training Head · ${selectedRegion.state} · ${selectedRegion.code}`,
+      branches: `Branches: ${selectedRegion.state}`,
+      trainersCount: selectedRegion.trainers || 0,
+      availableNow: selectedRegion.trainers || 0,
+      activeBatchesCount: selectedRegion.batches || 0,
+      avgPerformance: 87,
+      themeColor: selectedRegion.badgeBg || '#2563EB',
+      trainers: [],
+      batches: [],
+      noteText: `This is ${selectedRegion.head}'s regional view — trainers, batches and performance for ${selectedRegion.state}. Tell me what else ${selectedRegion.head} should see or control and I'll add it.`
+    };
+
+    return (
+      <div className="w-full space-y-6 animate-fadeIn font-sans text-slate-800">
+        {/* Top Back Button */}
+        <div>
+          <button
+            onClick={() => setSelectedRegion(null)}
+            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold text-slate-700 bg-white border border-slate-200/90 shadow-xs hover:bg-slate-50 hover:text-slate-900 transition-all cursor-pointer"
+          >
+            <ChevronLeft className="w-3.5 h-3.5 text-slate-500" />
+            All regions
+          </button>
+        </div>
+
+        {/* Regional Head Banner Card */}
+        <div className="bg-white border border-slate-200/90 rounded-3xl p-6 shadow-xs flex items-center justify-between relative overflow-hidden">
+          <div className="flex items-center gap-4">
+            <div
+              className="w-12 h-12 rounded-full flex items-center justify-center text-white text-lg font-extrabold shadow-sm flex-shrink-0"
+              style={{ backgroundColor: regData.themeColor }}
+            >
+              {regData.initial}
+            </div>
+            <div>
+              <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight">{regData.head}</h2>
+              <p className="text-xs font-semibold text-slate-500 mt-0.5">{regData.role}</p>
+              <p className="text-xs text-slate-400 mt-0.5">{regData.branches}</p>
+            </div>
+          </div>
+          <div
+            className="w-9 h-9 rounded-xl flex items-center justify-center text-white shadow-xs"
+            style={{ backgroundColor: regData.themeColor }}
+          >
+            <GraduationCap className="w-5 h-5" />
+          </div>
+        </div>
+
+        {/* 4 Stat Cards Row */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs text-center">
+            <div className="text-2xl font-extrabold text-slate-900">{regData.trainersCount}</div>
+            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mt-1">TRAINERS</div>
+          </div>
+          <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs text-center">
+            <div className="text-2xl font-extrabold text-slate-900">{regData.availableNow}</div>
+            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mt-1">AVAILABLE NOW</div>
+          </div>
+          <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs text-center">
+            <div className="text-2xl font-extrabold text-slate-900">{regData.activeBatchesCount}</div>
+            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mt-1">ACTIVE BATCHES</div>
+          </div>
+          <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs text-center">
+            <div className="text-2xl font-extrabold text-emerald-600">{regData.avgPerformance}</div>
+            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mt-1">AVG PERFORMANCE</div>
+          </div>
+        </div>
+
+        {/* Section 1: Trainers Table */}
+        <div className="bg-white border border-slate-200/90 rounded-2xl p-6 shadow-xs space-y-4">
+          <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+            <span>🧑‍🏫</span> Trainers in {regData.state}
+          </h3>
+
+          {regData.trainers.length > 0 ? (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">
+                    <th className="pb-3 font-bold">TRAINER</th>
+                    <th className="pb-3 font-bold">BRANCH</th>
+                    <th className="pb-3 font-bold">SKILLS</th>
+                    <th className="pb-3 font-bold">LANGUAGES</th>
+                    <th className="pb-3 font-bold">LOAD</th>
+                    <th className="pb-3 font-bold">PERFORMANCE</th>
+                    <th className="pb-3 font-bold">STATUS</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {regData.trainers.map((t) => (
+                    <tr key={t.id} className="hover:bg-slate-50/60 transition-colors">
+                      <td className="py-3.5 pr-4">
+                        <div className="font-extrabold text-slate-900">{t.name}</div>
+                        <div className="text-[10px] text-slate-400 font-mono mt-0.5">{t.id}</div>
+                      </td>
+                      <td className="py-3.5 pr-4 text-slate-600 font-medium">{t.branch}</td>
+                      <td className="py-3.5 pr-4 text-slate-600 font-medium">{t.skills}</td>
+                      <td className="py-3.5 pr-4 text-slate-600 font-medium">{t.languages}</td>
+                      <td className="py-3.5 pr-4 text-slate-600 font-medium">{t.load}</td>
+                      <td className="py-3.5 pr-4">
+                        <span className={`px-2.5 py-0.5 rounded-full text-xs font-extrabold ${
+                          t.performance >= 90 ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
+                        }`}>
+                          {t.performance}
+                        </span>
+                      </td>
+                      <td className="py-3.5 pr-4">
+                        <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-600">
+                          <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                          {t.status}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="py-8 text-center text-xs text-slate-400">No trainers assigned to this region yet.</div>
+          )}
+        </div>
+
+        {/* Section 2: Batches Table */}
+        <div className="bg-white border border-slate-200/90 rounded-2xl p-6 shadow-xs space-y-4">
+          <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+            <span>📚</span> Batches in {regData.state}
+          </h3>
+
+          {regData.batches.length > 0 ? (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">
+                    <th className="pb-3 font-bold">BATCH ID</th>
+                    <th className="pb-3 font-bold">COURSE</th>
+                    <th className="pb-3 font-bold">LOCATION</th>
+                    <th className="pb-3 font-bold">LANGUAGE</th>
+                    <th className="pb-3 font-bold">SLOT</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {regData.batches.map((b) => (
+                    <tr key={b.batchId} className="hover:bg-slate-50/60 transition-colors">
+                      <td className="py-3.5 pr-4 font-extrabold text-slate-900">{b.batchId}</td>
+                      <td className="py-3.5 pr-4 text-slate-600 font-medium">{b.course}</td>
+                      <td className="py-3.5 pr-4 text-slate-600 font-medium">{b.location}</td>
+                      <td className="py-3.5 pr-4 text-slate-600 font-medium">{b.language}</td>
+                      <td className="py-3.5 pr-4 text-slate-600 font-medium">{b.slot}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="py-8 text-center text-xs text-slate-400">No active batches running in this region.</div>
+          )}
+        </div>
+
+        {/* Bottom Blue Notice Banner */}
+        <div className="bg-sky-50 border border-sky-200/90 text-sky-700 text-xs py-3 px-4.5 rounded-2xl flex items-center gap-2.5">
+          <span className="text-base flex-shrink-0">ℹ️</span>
+          <span>{regData.noteText}</span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-full animate-fadeIn">
+      {/* Top back button */}
+      <div>
+        <button
+          onClick={onBack}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 bg-white border border-slate-200/90 shadow-xs hover:bg-slate-50 hover:text-slate-900 transition-all cursor-pointer"
+        >
+          <ChevronLeft className="w-3.5 h-3.5 text-slate-500" />
+          Departments
+        </button>
+      </div>
+
+      {/* Heading & Subtitle matching user screenshot */}
+      <div className="mt-5 mb-8">
+        <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
+          Training Department <span className="text-slate-400 font-normal">·</span> Regions
+        </h2>
+        <p className="text-xs sm:text-sm text-slate-400 font-mono mt-1">
+          Pick a region to open its head's dashboard
+        </p>
+      </div>
+
+      {/* 4 Cards Grid matching exact screenshot visual layout */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {TRAINING_REGIONS_DATA.map((region) => {
+          const isHighlight = region.highlight;
+          return (
+            <div
+              key={region.id}
+              onClick={() => setSelectedRegion(region)}
+              className={`text-left bg-white rounded-[24px] p-6 sm:p-7 border transition-all duration-200 group flex flex-col justify-between min-h-[220px] relative overflow-hidden cursor-pointer ${
+                isHighlight
+                  ? 'border-2 border-orange-400/80 bg-gradient-to-b from-orange-50/20 to-white shadow-xl shadow-orange-500/10 hover:shadow-2xl hover:-translate-y-1'
+                  : 'border-slate-100/90 shadow-[0_2px_14px_rgba(0,0,0,0.03)] hover:shadow-xl hover:-translate-y-1 hover:border-slate-200'
+              }`}
+            >
+              {/* Subtle top accent bar */}
+              <div className="absolute top-0 left-0 right-0 h-1.5" style={{ background: region.topBarGrad }} />
+
+              <div>
+                {/* Header row: Badge + optional Open button */}
+                <div className="flex items-center justify-between mb-4 mt-1">
+                  <div
+                    className="w-11 h-11 rounded-2xl flex items-center justify-center font-extrabold text-sm shadow-sm"
+                    style={{ backgroundColor: region.badgeBg, color: '#FFFFFF' }}
+                  >
+                    {region.badge}
+                  </div>
+                  {region.showOpenBtn && (
+                    <span className="px-3 py-1 rounded-full text-xs font-bold text-orange-600 bg-orange-100/70 border border-orange-200/80 hover:bg-orange-200/80 transition-all flex items-center gap-1 shadow-xs">
+                      Open →
+                    </span>
+                  )}
+                </div>
+
+                {/* Head Name & Region Subtitle */}
+                <h3 className="text-lg font-extrabold text-slate-900 group-hover:text-indigo-600 transition-colors tracking-tight">
+                  {region.head}
+                </h3>
+                <p className="text-xs text-slate-400 font-mono mt-0.5">
+                  {region.state} <span className="text-slate-300">·</span> {region.code}
+                </p>
+              </div>
+
+              {/* Divider line */}
+              <div className="border-t border-slate-100 my-4" />
+
+              {/* 3 Column Statistics */}
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div>
+                  <div className={`text-xl font-extrabold ${region.accentText}`}>
+                    {region.trainers}
+                  </div>
+                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">
+                    TRAINERS
+                  </div>
+                </div>
+                <div>
+                  <div className={`text-xl font-extrabold ${region.accentText}`}>
+                    {region.batches}
+                  </div>
+                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">
+                    BATCHES
+                  </div>
+                </div>
+                <div>
+                  <div className={`text-xl font-extrabold ${region.accentText}`}>
+                    {region.branches}
+                  </div>
+                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">
+                    {region.stat3Label}
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
