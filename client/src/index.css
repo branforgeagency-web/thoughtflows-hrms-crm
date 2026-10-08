@@ -72,3 +72,30 @@ body {
   -ms-overflow-style: none !important;
   scrollbar-width: none !important;
 }
+
+/* Screen-capture deterrent (ScreenGuard) — active only while logged in */
+html.screen-guard body {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+html.screen-guard input,
+html.screen-guard textarea,
+html.screen-guard select,
+html.screen-guard [contenteditable="true"] {
+  -webkit-user-select: text;
+  user-select: text;
+}
+html.screen-guard img {
+  -webkit-user-drag: none;
+}
+@media print {
+  html.screen-guard body > * { display: none !important; }
+  html.screen-guard body::before {
+    content: 'Printing is disabled — this content is confidential.';
+    display: block;
+    padding: 48px;
+    font: 600 18px Inter, Arial, sans-serif;
+    color: #0f172a;
+  }
+}

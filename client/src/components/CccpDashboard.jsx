@@ -83,7 +83,8 @@ const examStageOf = (st) => {
   if (isCertified(st)) return 'Certified';
   if (/fail|not cleared|retake/.test(ex)) return 'Not Cleared';
   if (/written|appeared|result/.test(ex)) return 'Exam Written';
-  if (/booked|scheduled/.test(ex)) return 'Voucher Booked';
+  // "Not Booked" also contains "booked" — exclude the negative status
+  if (/booked|scheduled/.test(ex) && !/not[\s-]?(booked|scheduled)/.test(ex)) return 'Voucher Booked';
   if (feePending(st)) return 'Payment Pending';
   const r = studentReadiness(st);
   if (trainerSaysReady(st) || (r !== null && r >= 80)) return 'Exam-ready';

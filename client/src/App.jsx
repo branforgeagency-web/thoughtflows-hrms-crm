@@ -9,6 +9,7 @@ import DashboardModal from './components/DashboardModal';
 import LoginModal from './components/LoginModal';
 import CourseCatalogWidget from './components/CourseCatalogWidget';
 import StudentRegistrationPage from './components/StudentRegistrationPage';
+import ScreenGuard from './components/ScreenGuard';
 import axios from 'axios';
 
 export default function App() {
@@ -337,6 +338,8 @@ export default function App() {
         onLoginSuccess={handleLoginSuccess}
         theme={theme}
       />
+
+      <ScreenGuard active={Boolean(currentUser && isDashboardOpen)} />
 
       {/* Course Catalog — visible ONLY when logged into the HR Department dashboard */}
       <CourseCatalogWidget
