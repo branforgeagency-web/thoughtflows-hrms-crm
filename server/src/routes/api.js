@@ -3202,6 +3202,9 @@ router.post('/admin/users', async (req, res) => {
     if (!email) {
       return res.status(400).json({ error: 'Email is required' });
     }
+    if (!phone || String(phone).trim().length === 0) {
+      return res.status(400).json({ error: 'Mobile number is mandatory for all roles' });
+    }
     if (!password || String(password).trim().length === 0) {
       return res.status(400).json({ error: 'Password is required' });
     }

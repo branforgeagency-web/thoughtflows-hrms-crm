@@ -62,14 +62,20 @@ import TrainerScheduleEditor from './TrainerScheduleEditor';
 // Exact Academy Roles matching User screenshot
 const ACADEMY_ROLES = [
   'HR',
-  'Trainer',
+  'HR TL',
+  'BRANCH HEAD',
+  'PROCESS COACH',
+  'BUSINESS LEAD',
+  'DEPARTMENT HEAD',
+  'OPERATIONAL HEAD',
+  'TRAINER',
+  'TRAINING TL',
+  'TRAINING TEAM MANAGER',
+  'MIS',
+  'OUTDOOR MARKETING',
   'Student',
   'Branch Manager',
   'Regional Manager',
-  'Dept Head · HR',
-  'Dept Head · Marketing',
-  'Dept Head · CCCP',
-  'Operational Head',
   'Management',
   'CCCP Team',
   'Marketing Team'
@@ -77,7 +83,17 @@ const ACADEMY_ROLES = [
 
 const ROLE_TO_DEPARTMENT = {
   'HR': 'Admissions & Counseling',
-  'Trainer': 'Medical Coding Faculty',
+  'HR TL': 'Admissions & Counseling',
+  'BRANCH HEAD': 'Leadership & Operations',
+  'PROCESS COACH': 'Medical Coding Faculty',
+  'BUSINESS LEAD': 'Growth & Marketing',
+  'DEPARTMENT HEAD': 'Leadership & Operations',
+  'OPERATIONAL HEAD': 'Leadership & Operations',
+  'TRAINER': 'Medical Coding Faculty',
+  'TRAINING TL': 'Medical Coding Faculty',
+  'TRAINING TEAM MANAGER': 'Medical Coding Faculty',
+  'MIS': 'Admin & Management',
+  'OUTDOOR MARKETING': 'Growth & Marketing',
   'Student': 'Student Scholar',
   'Branch Manager': 'Leadership & Operations',
   'Regional Manager': 'Leadership & Operations',
@@ -409,8 +425,8 @@ export default function AdminManagementDashboard({
   // Add New User
   const handleCreateUser = async (e) => {
     e.preventDefault();
-    if (!newUserForm.name || !newUserForm.email) {
-      showToast('⚠️ Please enter name and email.');
+    if (!newUserForm.name || !newUserForm.email || !newUserForm.phone || !newUserForm.phone.trim()) {
+      showToast('⚠️ Please enter name, email, and mobile number (mandatory for all roles).');
       return;
     }
 
@@ -1407,6 +1423,7 @@ export default function AdminManagementDashboard({
                                 <div>
                                   <div className="font-bold text-slate-900 leading-tight">{u.name}</div>
                                   <div className="text-[11px] text-slate-500">{u.email}</div>
+                                  {u.phone && <div className="text-[10.5px] text-slate-400 font-medium">📱 {u.phone}</div>}
                                 </div>
                               </div>
                             </td>
@@ -2178,8 +2195,9 @@ export default function AdminManagementDashboard({
               </div>
 
               <div>
-                <label className="text-[#2563eb] font-extrabold text-[11px] tracking-wider uppercase mb-1.5 block">
-                  EMAIL
+                <label className="text-[#2563eb] font-extrabold text-[11px] tracking-wider uppercase mb-1.5 block flex items-center justify-between">
+                  <span>EMAIL</span>
+                  <span className="text-rose-500 font-bold text-[10px]">* REQUIRED</span>
                 </label>
                 <input
                   type="email"
@@ -2187,6 +2205,21 @@ export default function AdminManagementDashboard({
                   placeholder="e.g., kavitha@thoughtflows.in"
                   value={newUserForm.email}
                   onChange={(e) => setNewUserForm({ ...newUserForm, email: e.target.value })}
+                  className="w-full px-4 py-2.5 rounded-xl border border-slate-200 hover:border-slate-300 focus:border-blue-500 bg-white text-slate-800 placeholder:text-slate-400 focus:outline-none text-sm shadow-2xs font-medium transition-all"
+                />
+              </div>
+
+              <div>
+                <label className="text-[#2563eb] font-extrabold text-[11px] tracking-wider uppercase mb-1.5 block flex items-center justify-between">
+                  <span>MOBILE NUMBER</span>
+                  <span className="text-rose-500 font-bold text-[10px]">* MANDATORY</span>
+                </label>
+                <input
+                  type="tel"
+                  required
+                  placeholder="e.g., +91 98765 43210"
+                  value={newUserForm.phone}
+                  onChange={(e) => setNewUserForm({ ...newUserForm, phone: e.target.value })}
                   className="w-full px-4 py-2.5 rounded-xl border border-slate-200 hover:border-slate-300 focus:border-blue-500 bg-white text-slate-800 placeholder:text-slate-400 focus:outline-none text-sm shadow-2xs font-medium transition-all"
                 />
               </div>
@@ -2284,28 +2317,14 @@ export default function AdminManagementDashboard({
                 </div>
               </div>
 
-              {(newUserForm.role === 'HR' || newUserForm.role === 'Dept Head · HR') && (
-                <div className="space-y-4 rounded-2xl border border-rose-100 bg-rose-50/50 p-4">
-                  <p className="text-[11px] font-extrabold text-rose-700 uppercase tracking-wider flex items-center gap-1.5">
-                    <Phone className="w-3.5 h-3.5" /> HR Details
+              {(newUserForm.role === 'HR' || newUserForm.role === 'HR TL' || newUserForm.role === 'Dept Head · HR') && (
+                <div className="rounded-2xl border border-rose-100 bg-rose-50/50 p-3.5">
+                  <p className="text-[11px] font-extrabold text-rose-700 uppercase tracking-wider flex items-center gap-1.5 mb-1">
+                    <Phone className="w-3.5 h-3.5" /> HR Click-to-Call Note
                   </p>
-
-                  <div>
-                    <label className="text-[#2563eb] font-extrabold text-[11px] tracking-wider uppercase mb-1.5 block">
-                      MOBILE NUMBER
-                    </label>
-                    <input
-                      type="tel"
-                      required
-                      placeholder="e.g., +91 98765 43210"
-                      value={newUserForm.phone}
-                      onChange={(e) => setNewUserForm({ ...newUserForm, phone: e.target.value })}
-                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 hover:border-slate-300 focus:border-blue-500 bg-white text-slate-800 placeholder:text-slate-400 focus:outline-none text-sm shadow-2xs font-medium transition-all"
-                    />
-                    <p className="text-[10.5px] text-slate-500 font-medium mt-1.5 leading-relaxed">
-                      Used as the Exotel agent number for the Click-to-Call feature — HR won't be able to call leads without it.
-                    </p>
-                  </div>
+                  <p className="text-[10.5px] text-slate-600 font-medium leading-relaxed">
+                    The mobile number above will be registered as the Exotel agent caller ID for lead calls.
+                  </p>
                 </div>
               )}
 

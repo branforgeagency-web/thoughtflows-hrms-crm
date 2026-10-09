@@ -51,6 +51,7 @@ import DepartmentTargetsBoard from './DepartmentTargetsBoard';
 import SopHubBoard from './SopHubBoard';
 import ManagementSummaryBoard from './ManagementSummaryBoard';
 import DailyTrackerBoard from './DailyTrackerBoard';
+import RegionalManagerDashboard from './RegionalManagerDashboard';
 import {
   getBranches,
   getDepartments,
@@ -567,9 +568,13 @@ export default function LeadershipHubDashboard({ onClose, currentUser, onLogout,
           />
         )}
 
-        {view === 'regional' && !selectedRegion && <RegionPicker regions={regions} onSelect={setSelectedRegion} />}
-        {view === 'regional' && selectedRegion && (
-          <RegionDetail region={selectedRegion} onBack={() => setSelectedRegion(null)} onSelectBranch={openBranch} />
+        {view === 'regional' && (
+          <RegionalManagerDashboard
+            onBack={backToLanding}
+            initialManagerId={selectedRegion?.id || null}
+            liveBranches={branches}
+            onSelectBranch={openBranch}
+          />
         )}
 
         {view === 'branch' && !selectedBranch && <BranchPicker branches={branches} onSelect={setSelectedBranch} />}
