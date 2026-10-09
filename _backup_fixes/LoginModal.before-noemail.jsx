@@ -141,7 +141,7 @@ export default function LoginModal({
     if (isOpen) {
       const dept = DEPARTMENTS.find(d => d.id === initialDepartment) || DEPARTMENTS[1];
       setActiveDeptId(dept.id);
-      setEmail('');
+      setEmail(dept.email || '');
       setPassword('');
       setShowPassword(false);
       setError('');
@@ -246,7 +246,7 @@ export default function LoginModal({
                     type="button"
                     onClick={() => {
                       setActiveDeptId(dept.id);
-                      setEmail('');
+                      setEmail(dept.email || '');
                       setPassword('');
                       setError('');
                     }}
@@ -288,8 +288,13 @@ export default function LoginModal({
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
-              placeholder="Enter your email address"
-              autoComplete="off"
+              placeholder={
+                activeDeptId === 'admin' 
+                  ? 'admin@thoughtflows.in' 
+                  : activeDeptId === 'training' 
+                  ? 'srithar.brandforge@gmail.com' 
+                  : activeDept.email || 'you@thoughtflows.in'
+              }
               className={`w-full px-3.5 py-2.5 text-xs text-slate-800 placeholder-slate-400 outline-none transition-all ${
                 isClay
                   ? 'clay-input'
