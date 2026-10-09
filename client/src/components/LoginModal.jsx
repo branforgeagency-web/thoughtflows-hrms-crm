@@ -17,6 +17,8 @@ export const TRAINER_PROFILES = [
   }
 ];
 
+
+
 export const DEPARTMENTS = [
   {
     id: 'hr',
@@ -271,6 +273,8 @@ export default function LoginModal({
           </div>
         )}
 
+
+
         {error && (
           <div className="p-2.5 mb-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs text-center font-medium">
             {error}
@@ -279,6 +283,7 @@ export default function LoginModal({
 
         {/* Form Inputs */}
         <form onSubmit={handleSubmit} className="text-left space-y-3.5">
+
           <div>
             <label className="block text-[11px] font-extrabold tracking-wider text-[#00695c] uppercase mb-1">
               EMAIL ADDRESS

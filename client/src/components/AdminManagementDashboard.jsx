@@ -301,6 +301,21 @@ export default function AdminManagementDashboard({
     demoTrainer: false
   });
 
+  // Edit User Account Modal State
+  const [showEditUserModal, setShowEditUserModal] = useState(false);
+  const [isEditRoleDropdownOpen, setIsEditRoleDropdownOpen] = useState(false);
+  const [editUserForm, setEditUserForm] = useState({
+    id: '',
+    name: '',
+    email: '',
+    phone: '',
+    role: 'HR',
+    department: 'Admissions & Counseling',
+    branch: '',
+    password: '',
+    status: 'Active'
+  });
+
   // Selected Department Filter for Employee Directory
   const [selectedDeptFilter, setSelectedDeptFilter] = useState('All');
   const [directorySearchQuery, setDirectorySearchQuery] = useState('');
@@ -559,6 +574,67 @@ export default function AdminManagementDashboard({
       showToast(`✓ Password updated for ${name}`);
     } catch (err) {
       showToast(`⚠ ${err?.response?.data?.error || 'Could not update the password'}`);
+    }
+  };
+
+  // Open Edit User Account Modal
+  const handleOpenEditUserModal = (u) => {
+    setEditUserForm({
+      id: u.id || u._id,
+      _id: u._id || u.id,
+      name: u.name || '',
+      email: u.email || '',
+      phone: u.phone || '',
+      role: u.role || 'HR',
+      department: u.department || ROLE_TO_DEPARTMENT[u.role] || 'Leadership & Operations',
+      branch: u.branch || '',
+      password: '',
+      status: u.status || 'Active'
+    });
+    setIsEditRoleDropdownOpen(false);
+    setShowEditUserModal(true);
+  };
+
+  // Save Edits to User Account
+  const handleSaveEditUser = async (e) => {
+    if (e) e.preventDefault();
+    if (!editUserForm.name || !editUserForm.email) {
+      showToast('⚠️ Please enter full name and email address.');
+      return;
+    }
+    const userId = editUserForm.id || editUserForm._id;
+    try {
+      const payload = {
+        name: editUserForm.name.trim(),
+        email: editUserForm.email.trim().toLowerCase(),
+        phone: editUserForm.phone ? editUserForm.phone.trim() : '',
+        role: editUserForm.role,
+        department: editUserForm.department || ROLE_TO_DEPARTMENT[editUserForm.role] || 'Leadership & Operations',
+        branch: editUserForm.branch || '',
+        status: editUserForm.status || 'Active'
+      };
+      if (editUserForm.password && editUserForm.password.trim()) {
+        payload.password = editUserForm.password.trim();
+      }
+
+      const res = await axios.put(`/api/admin/users/${userId}`, payload);
+      const updatedUser = res.data;
+
+      setUsers(prev => prev.map(u => (u.id === userId || u._id === userId) ? { ...u, ...updatedUser } : u));
+      notifyDataUpdate('users');
+
+      logAdminAction({
+        action: 'User Account Updated',
+        category: 'Auth',
+        severity: 'Info',
+        details: `Updated details for ${updatedUser.name || editUserForm.name} (${updatedUser.email || editUserForm.email}) - Role: ${updatedUser.role}`
+      });
+
+      setShowEditUserModal(false);
+      setIsEditRoleDropdownOpen(false);
+      showToast(`✓ Account updated for ${editUserForm.name}`);
+    } catch (err) {
+      showToast(`⚠ ${err?.response?.data?.error || 'Could not update user account'}`);
     }
   };
 
@@ -1501,13 +1577,24 @@ export default function AdminManagementDashboard({
                             </td>
                             <td className="p-4 text-slate-500 text-[11px] font-mono">{u.lastLogin}</td>
                             <td className="p-4 text-right">
-                              <button
-                                onClick={() => handleDeleteUser(u.id || u._id, u.name, u.email)}
-                                className="p-1.5 rounded-lg text-rose-500 hover:text-rose-700 hover:bg-rose-50 transition-all cursor-pointer"
-                                title={`Delete ${u.name}`}
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
+                              <div className="flex items-center justify-end gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenEditUserModal(u)}
+                                  className="p-1.5 rounded-lg text-amber-600 hover:text-amber-800 hover:bg-amber-50 transition-all cursor-pointer"
+                                  title={`Edit details for ${u.name}`}
+                                >
+                                  <Edit3 className="w-4 h-4" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteUser(u.id || u._id, u.name, u.email)}
+                                  className="p-1.5 rounded-lg text-rose-500 hover:text-rose-700 hover:bg-rose-50 transition-all cursor-pointer"
+                                  title={`Delete ${u.name}`}
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
                             </td>
                           </tr>
                           );
@@ -1858,12 +1945,26 @@ export default function AdminManagementDashboard({
                           </div>
                         </div>
 
-                        {/* Head / Manager info */}
-                        <div className="mt-3.5 p-2.5 rounded-xl bg-slate-50/80 border border-slate-100 flex items-center justify-between text-xs">
-                          <span className="text-slate-500 font-medium">Head:</span>
-                          <span className="font-bold text-slate-900 truncate ml-2">
-                            {b.manager || 'Not assigned'}
-                          </span>
+                        {/* Head / Manager info & Account Credentials */}
+                        <div className="mt-3.5 p-2.5 rounded-xl bg-slate-50/90 border border-slate-200/80 space-y-1 text-xs">
+                          <div className="flex items-center justify-between">
+                            <span className="text-slate-500 font-medium">Branch Manager:</span>
+                            <span className="font-bold text-slate-900 truncate ml-2">
+                              {b.manager || 'Assigned Manager'}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between pt-1 border-t border-slate-200/60 font-mono text-[11px]">
+                            <span className="text-slate-400">Login Email:</span>
+                            <span className="font-bold text-purple-700 truncate ml-2">
+                              {b.managerEmail || `${(b.name || '').replace(/^(cbe|tnd|ker|hyd|and|mah)-?/i, '').trim().toLowerCase().replace(/[^a-z]/g, '') || 'branch'}@thoughtflows.in`}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between font-mono text-[11px]">
+                            <span className="text-slate-400">Password:</span>
+                            <span className="font-bold text-slate-700 truncate ml-2">
+                              {b.managerPassword || `${(b.name || '').replace(/^(cbe|tnd|ker|hyd|and|mah)-?/i, '').trim()}@123`}
+                            </span>
+                          </div>
                         </div>
 
                         {/* Metrics */}
@@ -2468,6 +2569,211 @@ export default function AdminManagementDashboard({
                   className="flex-1 py-3 rounded-xl bg-[#1d63ed] hover:bg-blue-700 text-white font-extrabold text-xs transition-all shadow-md hover:shadow-lg flex items-center justify-center gap-1.5 cursor-pointer active:scale-98"
                 >
                   <UserPlus className="w-4 h-4" /> Create User Account
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Edit User Account */}
+      {showEditUserModal && (
+        <div 
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowEditUserModal(false);
+              setIsEditRoleDropdownOpen(false);
+            }
+          }}
+          className="fixed inset-0 z-60 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4 pt-16 sm:pt-24 pb-8 overflow-y-auto animate-in fade-in duration-150"
+        >
+          <div className="bg-white rounded-3xl p-6 sm:p-8 max-w-lg w-full shadow-2xl border border-slate-200 text-slate-900 space-y-5 animate-in zoom-in-95 duration-150 relative max-h-[calc(100vh-6rem)] overflow-y-auto my-auto mt-4 sm:mt-6">
+            {/* Header with Title and Close Button */}
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center text-lg shrink-0 shadow-2xs mt-0.5">
+                  ✏️
+                </div>
+                <div>
+                  <h3 className="text-xl font-black text-[#1e293b] tracking-tight leading-snug">
+                    Edit User Account
+                  </h3>
+                  <p className="text-xs text-[#64748b] font-medium mt-1 leading-relaxed">
+                    Update user details, role designation, department, branch assignment, password or active status.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowEditUserModal(false);
+                  setIsEditRoleDropdownOpen(false);
+                }}
+                className="w-8 h-8 rounded-full bg-slate-100 text-slate-400 hover:bg-slate-200 hover:text-slate-700 flex items-center justify-center text-xs font-bold transition-all cursor-pointer shrink-0 mt-0.5"
+                title="Close"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEditUser} className="space-y-4">
+              {/* FULL NAME */}
+              <div>
+                <label className="text-[#2563eb] font-extrabold text-[11px] tracking-wider uppercase mb-1.5 block">
+                  FULL NAME
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Kavitha N."
+                  value={editUserForm.name}
+                  onChange={(e) => setEditUserForm({ ...editUserForm, name: e.target.value })}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-[#2563eb] text-xs font-medium text-slate-800 focus:outline-none transition-colors"
+                />
+              </div>
+
+              {/* EMAIL ADDRESS & MOBILE NUMBER */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[#2563eb] font-extrabold text-[11px] tracking-wider uppercase mb-1.5 block">
+                    EMAIL ADDRESS
+                  </label>
+                  <input
+                    type="email"
+                    required
+                    placeholder="e.g. kavitha@thoughtflows.in"
+                    value={editUserForm.email}
+                    onChange={(e) => setEditUserForm({ ...editUserForm, email: e.target.value })}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-[#2563eb] text-xs font-medium text-slate-800 focus:outline-none transition-colors"
+                  />
+                </div>
+                <div>
+                  <label className="text-[#2563eb] font-extrabold text-[11px] tracking-wider uppercase mb-1.5 block">
+                    MOBILE NUMBER
+                  </label>
+                  <input
+                    type="tel"
+                    placeholder="e.g. +91 98765 43210"
+                    value={editUserForm.phone}
+                    onChange={(e) => setEditUserForm({ ...editUserForm, phone: e.target.value })}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-[#2563eb] text-xs font-medium text-slate-800 focus:outline-none transition-colors"
+                  />
+                </div>
+              </div>
+
+              {/* ROLE SELECTION */}
+              <div className="relative">
+                <label className="text-[#2563eb] font-extrabold text-[11px] tracking-wider uppercase mb-1.5 block">
+                  ROLE DESIGNATION
+                </label>
+                <div
+                  onClick={() => setIsEditRoleDropdownOpen(!isEditRoleDropdownOpen)}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 bg-white text-xs font-semibold text-slate-800 cursor-pointer flex items-center justify-between shadow-2xs hover:border-blue-400 transition-colors"
+                >
+                  <span>{editUserForm.role}</span>
+                  <ChevronDown className="w-4 h-4 text-slate-400" />
+                </div>
+                {isEditRoleDropdownOpen && (
+                  <div className="absolute z-20 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-2xl shadow-xl max-h-48 overflow-y-auto p-1">
+                    {ACADEMY_ROLES.map((r) => (
+                      <button
+                        key={r}
+                        type="button"
+                        onClick={() => {
+                          const dept = ROLE_TO_DEPARTMENT[r] || 'Leadership & Operations';
+                          setEditUserForm({ ...editUserForm, role: r, department: dept });
+                          setIsEditRoleDropdownOpen(false);
+                        }}
+                        className={`w-full text-left px-3 py-2 text-xs rounded-xl font-medium transition-colors ${
+                          editUserForm.role === r ? 'bg-blue-50 text-blue-700 font-bold' : 'text-slate-700 hover:bg-slate-50'
+                        }`}
+                      >
+                        {r}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* DEPARTMENT & BRANCH */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[#2563eb] font-extrabold text-[11px] tracking-wider uppercase mb-1.5 block">
+                    DEPARTMENT
+                  </label>
+                  <input
+                    type="text"
+                    value={editUserForm.department}
+                    onChange={(e) => setEditUserForm({ ...editUserForm, department: e.target.value })}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-[#2563eb] text-xs font-medium text-slate-800 focus:outline-none transition-colors"
+                  />
+                </div>
+                <div>
+                  <label className="text-[#2563eb] font-extrabold text-[11px] tracking-wider uppercase mb-1.5 block">
+                    BRANCH ASSIGNMENT
+                  </label>
+                  <select
+                    value={editUserForm.branch}
+                    onChange={(e) => setEditUserForm({ ...editUserForm, branch: e.target.value })}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-[#2563eb] text-xs font-medium text-slate-800 focus:outline-none transition-colors bg-white"
+                  >
+                    <option value="">Select branch</option>
+                    {branchesList.map((b) => (
+                      <option key={b._id || b.name} value={b.name}>
+                        {b.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* PASSWORD & STATUS */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[#2563eb] font-extrabold text-[11px] tracking-wider uppercase mb-1.5 block">
+                    LOGIN PASSWORD
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Leave blank to keep current"
+                    value={editUserForm.password}
+                    onChange={(e) => setEditUserForm({ ...editUserForm, password: e.target.value })}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-[#2563eb] text-xs font-medium text-slate-800 focus:outline-none transition-colors"
+                  />
+                </div>
+                <div>
+                  <label className="text-[#2563eb] font-extrabold text-[11px] tracking-wider uppercase mb-1.5 block">
+                    ACCOUNT STATUS
+                  </label>
+                  <select
+                    value={editUserForm.status}
+                    onChange={(e) => setEditUserForm({ ...editUserForm, status: e.target.value })}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-[#2563eb] text-xs font-medium text-slate-800 focus:outline-none transition-colors bg-white"
+                  >
+                    <option value="Active">Active</option>
+                    <option value="Inactive">Inactive</option>
+                    <option value="Suspended">Suspended</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="pt-3 flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowEditUserModal(false);
+                    setIsEditRoleDropdownOpen(false);
+                  }}
+                  className="flex-1 py-3 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-600 font-bold text-xs transition-all cursor-pointer text-center"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 py-3 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-xs transition-all shadow-md hover:shadow-lg flex items-center justify-center gap-1.5 cursor-pointer active:scale-98"
+                >
+                  <Save className="w-4 h-4" /> Save Changes
                 </button>
               </div>
             </form>

@@ -52,6 +52,7 @@ import SopHubBoard from './SopHubBoard';
 import ManagementSummaryBoard from './ManagementSummaryBoard';
 import DailyTrackerBoard from './DailyTrackerBoard';
 import RegionalManagerDashboard from './RegionalManagerDashboard';
+import BranchManagerDashboard from './BranchManagerDashboard';
 import {
   getBranches,
   getDepartments,
@@ -236,6 +237,22 @@ export default function LeadershipHubDashboard({ onClose, currentUser, onLogout,
     });
     return () => unsub();
   }, [fetchLiveLeadershipData]);
+
+  // Auto-open assigned branch if logged in as a Branch Manager
+  useEffect(() => {
+    if (currentUser?.branch || currentUser?.role === 'Branch Manager') {
+      const branchName = currentUser.branch || 'Gandhipuram';
+      const targetName = String(branchName).toLowerCase();
+      const matched = branches.find(b => 
+        String(b.name || '').toLowerCase().includes(targetName) ||
+        targetName.includes(String(b.name || '').toLowerCase()) ||
+        String(b.code || '').toLowerCase() === targetName
+      ) || { name: branchName.startsWith('CBE-') ? branchName : `CBE-${branchName}`, city: 'Coimbatore', code: currentUser.branchCode || 'GPM' };
+
+      setSelectedBranch(matched);
+      setView('branch');
+    }
+  }, [branches, currentUser]);
 
   const regions = useMemo(() => {
     const map = {};
@@ -579,7 +596,13 @@ export default function LeadershipHubDashboard({ onClose, currentUser, onLogout,
 
         {view === 'branch' && !selectedBranch && <BranchPicker branches={branches} onSelect={setSelectedBranch} />}
         {view === 'branch' && selectedBranch && (
-          <BranchDetail branch={selectedBranch} onBack={() => setSelectedBranch(null)} onChanged={refreshSummary} />
+          <BranchManagerDashboard
+            branch={selectedBranch}
+            onBack={() => setSelectedBranch(null)}
+            allBranches={branches}
+            onSwitchBranch={(newB) => setSelectedBranch(newB)}
+            currentUser={currentUser}
+          />
         )}
       </main>
     </div>

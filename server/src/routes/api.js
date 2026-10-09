@@ -725,7 +725,7 @@ router.get('/branches', async (req, res) => {
   }
 });
 
-const BRANCH_FIELDS = ['name', 'code', 'city', 'state', 'aliases', 'manager', 'phone', 'image', 'capacity', 'status'];
+const BRANCH_FIELDS = ['name', 'code', 'city', 'state', 'aliases', 'manager', 'managerEmail', 'managerPassword', 'phone', 'image', 'capacity', 'status'];
 const pickBranch = (body = {}) => Object.fromEntries(Object.entries(body).filter(([k]) => BRANCH_FIELDS.includes(k)));
 
 router.post('/branches', async (req, res) => {
@@ -2919,6 +2919,31 @@ const TRAINER_ACCOUNTS = {
   }
 };
 
+// Dedicated Branch Manager Accounts per Branch
+const BRANCH_ACCOUNTS = {
+  'gandhipuram@thoughtflows.in': { branch: 'Gandhipuram', code: 'CBE-GPM', manager: 'Sindhu S', defaultPass: 'Gandhipuram@123' },
+  'cbe.gandhipuram@thoughtflows.in': { branch: 'Gandhipuram', code: 'CBE-GPM', manager: 'Sindhu S', defaultPass: 'Gandhipuram@123' },
+  'saravanampatti@thoughtflows.in': { branch: 'Saravanampatti', code: 'CBE-SVM', manager: 'Gayathri B', defaultPass: 'Saravanampatti@123' },
+  'cbe.saravanampatti@thoughtflows.in': { branch: 'Saravanampatti', code: 'CBE-SVM', manager: 'Gayathri B', defaultPass: 'Saravanampatti@123' },
+  'hopes@thoughtflows.in': { branch: 'Hopes', code: 'CBE-HPS', manager: 'Sruthi G', defaultPass: 'Hopes@123' },
+  'salem@thoughtflows.in': { branch: 'Salem', code: 'TND-SLM', manager: 'Salem Manager', defaultPass: 'Salem@123' },
+  'tiruppur@thoughtflows.in': { branch: 'Tiruppur', code: 'CBE-TPR', manager: 'Tiruppur Manager', defaultPass: 'Tiruppur@123' },
+  'erode@thoughtflows.in': { branch: 'Erode', code: 'CBE-ERD', manager: 'Erode Manager', defaultPass: 'Erode@123' },
+  'karur@thoughtflows.in': { branch: 'Karur', code: 'CBE-KRR', manager: 'Karur Manager', defaultPass: 'Karur@123' },
+  'kochi@thoughtflows.in': { branch: 'Kochi', code: 'KER-KOC', manager: 'Kochi Manager', defaultPass: 'Kochi@123' },
+  'trivandrum@thoughtflows.in': { branch: 'Trivandrum', code: 'KER-TRV', manager: 'Trivandrum Manager', defaultPass: 'Trivandrum@123' },
+  'ameerpet@thoughtflows.in': { branch: 'Ameerpet', code: 'HYD-AMP', manager: 'Ameerpet Manager', defaultPass: 'Ameerpet@123' },
+  'dilsukhnagar@thoughtflows.in': { branch: 'Dilsukhnagar', code: 'HYD-DSN', manager: 'Dilsukhnagar Manager', defaultPass: 'Dilsukhnagar@123' },
+  'madhapur@thoughtflows.in': { branch: 'Madhapur', code: 'HYD-MDP', manager: 'Madhapur Manager', defaultPass: 'Madhapur@123' },
+  'vijayawada@thoughtflows.in': { branch: 'Vijayawada', code: 'AND-VJA', manager: 'Vijayawada Manager', defaultPass: 'Vijayawada@123' },
+  'vizag@thoughtflows.in': { branch: 'Vizag', code: 'AND-VZG', manager: 'Vizag Manager', defaultPass: 'Vizag@123' },
+  'trichy@thoughtflows.in': { branch: 'Trichy', code: 'TND-TRY', manager: 'Trichy Manager', defaultPass: 'Trichy@123' },
+  'tirupati@thoughtflows.in': { branch: 'Tirupati', code: 'AND-TPT', manager: 'Tirupati Manager', defaultPass: 'Tirupati@123' },
+  'kollapur@thoughtflows.in': { branch: 'Kollapur', code: 'MAH-KLP', manager: 'Kollapur Manager', defaultPass: 'Kollapur@123' },
+  'pune@thoughtflows.in': { branch: 'Pune', code: 'MAH-PUN', manager: 'Pune Manager', defaultPass: 'Pune@123' },
+  'theni@thoughtflows.in': { branch: 'Theni', code: 'TND-THN', manager: 'Theni Manager', defaultPass: 'Theni@123' }
+};
+
 // ==========================================
 // DEVELOPMENT ONLY — quick login for developers.
 
@@ -3047,6 +3072,28 @@ router.post('/auth/login', async (req, res) => {
       if (!(await checkPassword(password, process.env[trainerEnvKey])).ok) return deny();
       const roster = dropUndefined(await trainerRosterFields(normalizedEmail, trainerUser.name, trainerUser.trainerId));
       return grant({ ...trainerUser, ...roster, department: 'training' }, `Welcome ${trainerUser.name}`);
+    }
+
+    // 0b. Dedicated Branch Manager Accounts per Branch
+    const branchAcc = BRANCH_ACCOUNTS[normalizedEmail];
+    if (branchAcc) {
+      const envKey = `BRANCH_${branchAcc.code.replace(/\W/g, '_').toUpperCase()}_PASSWORD`;
+      const expectedPass = process.env[envKey] || branchAcc.defaultPass || `${branchAcc.branch}@123`;
+      const { ok } = await checkPassword(password, expectedPass);
+      if (!ok) return deny('Invalid password for this branch manager account.');
+      return grant({
+        id: `usr_bm_${branchAcc.code}`,
+        name: `${branchAcc.branch} Branch Manager`,
+        userName: `${branchAcc.branch} Branch Manager`,
+        email: normalizedEmail,
+        role: 'Branch Manager',
+        department: 'leadership',
+        departmentCode: 'LEAD',
+        departmentName: 'Leadership & Operations',
+        branch: branchAcc.branch,
+        branchCode: branchAcc.code,
+        color: '#7c3aed'
+      }, `Welcome ${branchAcc.branch} Branch Manager`);
     }
 
     // 1. Accounts created by Admin / at admission (User collection)
