@@ -238,10 +238,16 @@ export default function LeadershipHubDashboard({ onClose, currentUser, onLogout,
     return () => unsub();
   }, [fetchLiveLeadershipData]);
 
-  // Auto-open assigned branch if logged in as a Branch Manager
+  const isBranchManager = Boolean(
+    currentUser &&
+    (currentUser.role === 'Branch Manager' || currentUser.isBranchManager === true) &&
+    !/operational|regional|admin|founder|ceo|director|head of|dept head|department head/i.test(currentUser.role || '')
+  );
+
+  // Auto-open assigned branch ONLY if logged in as a dedicated Branch Manager
   useEffect(() => {
-    if (currentUser?.branch || currentUser?.role === 'Branch Manager') {
-      const branchName = currentUser.branch || 'Gandhipuram';
+    if (isBranchManager && currentUser?.branch) {
+      const branchName = currentUser.branch;
       const targetName = String(branchName).toLowerCase();
       const matched = branches.find(b => 
         String(b.name || '').toLowerCase().includes(targetName) ||
@@ -252,7 +258,7 @@ export default function LeadershipHubDashboard({ onClose, currentUser, onLogout,
       setSelectedBranch(matched);
       setView('branch');
     }
-  }, [branches, currentUser]);
+  }, [branches, currentUser, isBranchManager]);
 
   const regions = useMemo(() => {
     const map = {};
@@ -277,6 +283,7 @@ export default function LeadershipHubDashboard({ onClose, currentUser, onLogout,
   }, []);
 
   function backToLanding() {
+    if (isBranchManager) return;
     setView('landing');
     setSelectedDept(null);
     setSelectedRegion(null);
@@ -352,9 +359,13 @@ export default function LeadershipHubDashboard({ onClose, currentUser, onLogout,
               {(currentUser?.name || 'L')[0]}
             </span>
             <div>
-              <div className="text-xs font-bold text-white leading-tight">{currentUser?.name || 'Leadership'}</div>
+              <div className="text-xs font-bold text-white leading-tight">
+                {currentUser?.name || (isBranchManager ? `${selectedBranch?.name || currentUser?.branch || 'Branch'} Manager` : 'Leadership')}
+              </div>
               <div className="text-[9px] font-bold tracking-[0.15em] text-indigo-200/70 uppercase">
-                {view === 'landing' ? 'Select a role' : TIERS.find((t) => t.key === view)?.name || 'Browsing'}
+                {isBranchManager
+                  ? `Branch Manager · ${selectedBranch?.name || currentUser?.branch || 'My Branch'}`
+                  : (view === 'landing' ? 'Select a role' : TIERS.find((t) => t.key === view)?.name || 'Browsing')}
               </div>
             </div>
           </div>
@@ -372,7 +383,7 @@ export default function LeadershipHubDashboard({ onClose, currentUser, onLogout,
       </header>
 
       <main className="max-w-[1720px] w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-        {view !== 'landing' && view !== 'department' && (
+        {view !== 'landing' && view !== 'department' && !isBranchManager && (
           <button
             onClick={backToLanding}
             className="flex items-center gap-1.5 text-xs font-bold text-indigo-600 hover:text-indigo-800 transition-colors"
@@ -594,13 +605,13 @@ export default function LeadershipHubDashboard({ onClose, currentUser, onLogout,
           />
         )}
 
-        {view === 'branch' && !selectedBranch && <BranchPicker branches={branches} onSelect={setSelectedBranch} />}
+        {view === 'branch' && !selectedBranch && !isBranchManager && <BranchPicker branches={branches} onSelect={setSelectedBranch} />}
         {view === 'branch' && selectedBranch && (
           <BranchManagerDashboard
             branch={selectedBranch}
-            onBack={() => setSelectedBranch(null)}
-            allBranches={branches}
-            onSwitchBranch={(newB) => setSelectedBranch(newB)}
+            onBack={isBranchManager ? null : () => setSelectedBranch(null)}
+            allBranches={isBranchManager ? [selectedBranch] : branches}
+            onSwitchBranch={isBranchManager ? null : ((newB) => setSelectedBranch(newB))}
             currentUser={currentUser}
           />
         )}
@@ -3031,38 +3042,172 @@ function RegionDetail({ region, onBack, onSelectBranch }) {
   );
 }
 
-// ---- Branch tier ----
+// ---- Branch tier: Comprehensive 15-Campus Picker ----
+
+const ALL_15_BRANCH_METADATA = [
+  { name: 'CBE-Gandhipuram', code: 'CBE-GPM', city: 'Coimbatore', state: 'Tamil Nadu', activeStudents: 89, staffCount: 7, leads: 41 },
+  { name: 'CBE-Saravanampatti', code: 'CBE-SVM', city: 'Coimbatore', state: 'Tamil Nadu', activeStudents: 45, staffCount: 5, leads: 17 },
+  { name: 'CBE-Hopes', code: 'CBE-HPS', city: 'Coimbatore', state: 'Tamil Nadu', activeStudents: 38, staffCount: 4, leads: 22 },
+  { name: 'Salem', code: 'TND-SLM', city: 'Salem', state: 'Tamil Nadu', activeStudents: 52, staffCount: 6, leads: 19 },
+  { name: 'Trichy', code: 'TND-TRY', city: 'Trichy', state: 'Tamil Nadu', activeStudents: 31, staffCount: 4, leads: 15 },
+  { name: 'Theni', code: 'TND-THN', city: 'Theni', state: 'Tamil Nadu', activeStudents: 24, staffCount: 3, leads: 12 },
+  { name: 'Kochi', code: 'KER-KOC', city: 'Kochi', state: 'Kerala', activeStudents: 41, staffCount: 4, leads: 18 },
+  { name: 'Trivandrum', code: 'KER-TRV', city: 'Trivandrum', state: 'Kerala', activeStudents: 36, staffCount: 3, leads: 14 },
+  { name: 'HYD-Ameerpet', code: 'HYD-AMP', city: 'Hyderabad', state: 'Telangana', activeStudents: 64, staffCount: 9, leads: 33 },
+  { name: 'HYD-Dilsukhnagar', code: 'HYD-DSN', city: 'Hyderabad', state: 'Telangana', activeStudents: 48, staffCount: 5, leads: 20 },
+  { name: 'HYD-Madhapur', code: 'HYD-MDP', city: 'Hyderabad', state: 'Telangana', activeStudents: 57, staffCount: 6, leads: 25 },
+  { name: 'Tirupati', code: 'AND-TPT', city: 'Tirupati', state: 'Andhra Pradesh', activeStudents: 29, staffCount: 4, leads: 16 },
+  { name: 'Vizag', code: 'AND-VZG', city: 'Visakhapatnam', state: 'Andhra Pradesh', activeStudents: 35, staffCount: 4, leads: 18 },
+  { name: 'Kollapur', code: 'MAH-KLP', city: 'Kolhapur', state: 'Maharashtra', activeStudents: 28, staffCount: 3, leads: 11 },
+  { name: 'Pune', code: 'MAH-PUN', city: 'Pune', state: 'Maharashtra', activeStudents: 44, staffCount: 5, leads: 23 }
+];
 
 function BranchPicker({ branches, onSelect }) {
-  const accent = ACCENTS.branch;
-  if (!branches || !branches.length) return <div className="py-10 text-center text-slate-400 text-xs">No branches found.</div>;
+  const [query, setQuery] = useState('');
+  const [regionFilter, setRegionFilter] = useState('All');
+
+  const allBranchesList = useMemo(() => {
+    return ALL_15_BRANCH_METADATA.map((master) => {
+      const match = (branches || []).find((b) => {
+        const bn = String(b.name || '').toLowerCase();
+        const mn = master.name.toLowerCase();
+        const mc = master.code.toLowerCase();
+        return bn.includes(mn) || mn.includes(bn) || String(b.code || '').toLowerCase() === mc;
+      });
+      return {
+        ...master,
+        ...(match || {}),
+        name: match?.name || master.name,
+        code: match?.code || master.code,
+        city: match?.city || master.city,
+        state: match?.state || master.state,
+        activeStudents: match?.activeStudents ?? master.activeStudents,
+        staffCount: match?.staffCount ?? master.staffCount
+      };
+    });
+  }, [branches]);
+
+  const filtered = useMemo(() => {
+    return allBranchesList.filter((b) => {
+      const matchesSearch =
+        !query ||
+        b.name.toLowerCase().includes(query.toLowerCase()) ||
+        b.city.toLowerCase().includes(query.toLowerCase()) ||
+        b.state.toLowerCase().includes(query.toLowerCase()) ||
+        b.code.toLowerCase().includes(query.toLowerCase());
+      const matchesRegion = regionFilter === 'All' || b.state === regionFilter;
+      return matchesSearch && matchesRegion;
+    });
+  }, [allBranchesList, query, regionFilter]);
+
+  const states = ['All', 'Tamil Nadu', 'Kerala', 'Telangana', 'Andhra Pradesh', 'Maharashtra'];
+
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-      {branches.map((b) => (
-        <button
-          key={b._id || b.name}
-          onClick={() => onSelect(b)}
-          className={`text-left p-4 rounded-2xl bg-white border border-slate-200 ${accent.ring} transition-all`}
-        >
-          <div className="flex items-start gap-2.5">
-            <MapPin className="w-4 h-4 text-orange-500 mt-0.5 flex-shrink-0" />
+    <div className="space-y-6 animate-fadeIn">
+      {/* Header Banner */}
+      <div className="bg-gradient-to-r from-orange-600 via-amber-600 to-amber-700 rounded-3xl p-6 text-white shadow-md flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/20 backdrop-blur-md text-xs font-bold text-white mb-2">
+            <span>🏢</span> Branch Operations · 15 Campuses
+          </div>
+          <h2 className="text-2xl font-black tracking-tight">Select Campus Dashboard</h2>
+          <p className="text-xs text-orange-100 mt-1 max-w-xl font-medium">
+            Click on any branch to open its dedicated Branch Manager workspace. Allocate leads, monitor counsellor performance, view live attendance and demo conversions.
+          </p>
+        </div>
+
+        <div className="flex items-center gap-3 self-start md:self-auto">
+          <div className="px-4 py-2.5 rounded-2xl bg-white/15 backdrop-blur-md border border-white/20 text-center">
+            <div className="text-2xl font-black">{allBranchesList.length}</div>
+            <div className="text-[10px] font-bold text-orange-100 uppercase tracking-wider">Branches</div>
+          </div>
+          <div className="px-4 py-2.5 rounded-2xl bg-white/15 backdrop-blur-md border border-white/20 text-center">
+            <div className="text-2xl font-black">
+              {allBranchesList.reduce((acc, b) => acc + (b.activeStudents || 0), 0)}
+            </div>
+            <div className="text-[10px] font-bold text-orange-100 uppercase tracking-wider">Students</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Search & Region Filter Bar */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-3.5 rounded-2xl border border-slate-200/90 shadow-2xs">
+        <div className="relative flex-1 max-w-md">
+          <input
+            type="text"
+            placeholder="Search branch by name, city, code..."
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            className="w-full pl-9 pr-4 py-2 rounded-xl border border-slate-200 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-orange-500 bg-slate-50/60 font-medium"
+          />
+          <MapPin className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+        </div>
+
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0">
+          {states.map((st) => (
+            <button
+              key={st}
+              onClick={() => setRegionFilter(st)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
+                regionFilter === st
+                  ? 'bg-orange-600 text-white shadow-2xs'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-900'
+              }`}
+            >
+              {st}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Grid of 15 Branches */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+        {filtered.map((b) => (
+          <div
+            key={b.code || b.name}
+            onClick={() => onSelect(b)}
+            className="group text-left p-5 rounded-2xl bg-white border border-slate-200 hover:border-orange-400 hover:shadow-lg transition-all cursor-pointer flex flex-col justify-between"
+          >
             <div>
-              <h4 className="text-xs font-bold text-slate-900">{b.name}</h4>
-              <p className="text-[10px] text-slate-500">{b.city}, {b.state}</p>
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <div className="w-9 h-9 rounded-xl bg-orange-50 text-orange-600 flex items-center justify-center font-extrabold text-xs border border-orange-200/60 group-hover:bg-orange-600 group-hover:text-white transition-colors">
+                    <Building2 className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-extrabold text-slate-900 group-hover:text-orange-600 transition-colors">
+                      {b.name}
+                    </h4>
+                    <p className="text-[11px] font-medium text-slate-500">
+                      {b.city} · {b.state}
+                    </p>
+                  </div>
+                </div>
+
+                <span className="font-mono text-[10px] font-black px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 group-hover:bg-orange-100 group-hover:text-orange-800 transition-colors">
+                  {b.code}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 mt-4 pt-3.5 border-t border-slate-100 text-xs">
+                <div className="bg-slate-50/70 p-2 rounded-xl">
+                  <span className="text-slate-400 block text-[10px] font-bold uppercase tracking-wider">Students</span>
+                  <strong className="text-emerald-600 font-extrabold text-sm">{b.activeStudents}</strong>
+                </div>
+                <div className="bg-slate-50/70 p-2 rounded-xl">
+                  <span className="text-slate-400 block text-[10px] font-bold uppercase tracking-wider">Staff</span>
+                  <strong className="text-slate-900 font-extrabold text-sm">{b.staffCount}</strong>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 pt-3 flex items-center justify-between text-xs font-extrabold text-orange-600 group-hover:text-orange-700">
+              <span>Open Dashboard</span>
+              <span className="group-hover:translate-x-1 transition-transform">→</span>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-2 mt-4 pt-3 border-t border-slate-100 text-[11px]">
-            <div>
-              <span className="text-slate-400 block text-[10px]">Students</span>
-              <strong className="text-emerald-600">{b.activeStudents}</strong>
-            </div>
-            <div>
-              <span className="text-slate-400 block text-[10px]">Staff</span>
-              <strong className="text-slate-900">{b.staffCount}</strong>
-            </div>
-          </div>
-        </button>
-      ))}
+        ))}
+      </div>
     </div>
   );
 }

@@ -320,9 +320,10 @@ export default function AdminManagementDashboard({
   const [selectedDeptFilter, setSelectedDeptFilter] = useState('All');
   const [directorySearchQuery, setDirectorySearchQuery] = useState('');
 
-  // User Accounts Search & Role Filter
+  // User Accounts Search, Role Filter & Pagination (10 datas per page)
   const [userSearchQuery, setUserSearchQuery] = useState('');
   const [userRoleFilter, setUserRoleFilter] = useState('All');
+  const [userPage, setUserPage] = useState(1);
 
   // Branch Setup Search & State Filter
   const [branchSearchQuery, setBranchSearchQuery] = useState('');
@@ -1338,6 +1339,14 @@ export default function AdminManagementDashboard({
             return matchesSearch && matchesRole;
           });
 
+          const ITEMS_PER_PAGE = 10;
+          const totalPages = Math.max(1, Math.ceil(filteredUsers.length / ITEMS_PER_PAGE));
+          const currentPage = Math.min(Math.max(1, userPage), totalPages);
+          const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
+          const paginatedUsers = filteredUsers.slice(startIndex, startIndex + ITEMS_PER_PAGE);
+          const startCount = filteredUsers.length === 0 ? 0 : startIndex + 1;
+          const endCount = Math.min(startIndex + ITEMS_PER_PAGE, filteredUsers.length);
+
           return (
             <div className="space-y-5">
               {/* Table Top Controls & Create Account Button */}
@@ -1355,7 +1364,7 @@ export default function AdminManagementDashboard({
                     </span>
                   </div>
                   <p className="text-xs text-slate-500 font-medium mt-1">
-                    Manage login credentials, designated roles, and branch assignments across all campuses.
+                    Manage login credentials, designated roles, and branch assignments across all campuses (10 per page).
                   </p>
                 </div>
 
@@ -1368,13 +1377,19 @@ export default function AdminManagementDashboard({
                       type="text"
                       placeholder="Search accounts..."
                       value={userSearchQuery}
-                      onChange={(e) => setUserSearchQuery(e.target.value)}
+                      onChange={(e) => {
+                        setUserSearchQuery(e.target.value);
+                        setUserPage(1);
+                      }}
                       className="w-full pl-8 pr-3 py-2 rounded-xl border border-slate-200 bg-slate-50/50 hover:bg-white focus:bg-white text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-blue-500 shadow-2xs font-medium transition-all"
                     />
                     {userSearchQuery && (
                       <button
                         type="button"
-                        onClick={() => setUserSearchQuery('')}
+                        onClick={() => {
+                          setUserSearchQuery('');
+                          setUserPage(1);
+                        }}
                         className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs font-bold cursor-pointer"
                       >
                         ✕
@@ -1385,7 +1400,10 @@ export default function AdminManagementDashboard({
                   {/* Role Filter */}
                   <select
                     value={userRoleFilter}
-                    onChange={(e) => setUserRoleFilter(e.target.value)}
+                    onChange={(e) => {
+                      setUserRoleFilter(e.target.value);
+                      setUserPage(1);
+                    }}
                     className="px-3 py-2 rounded-xl border border-slate-200 bg-slate-50/50 hover:bg-white text-xs text-slate-800 focus:outline-none focus:border-blue-500 shadow-2xs font-medium cursor-pointer transition-all"
                   >
                     <option value="All">All Roles ({users.length})</option>
@@ -1465,6 +1483,7 @@ export default function AdminManagementDashboard({
                                     onClick={() => {
                                       setUserSearchQuery('');
                                       setUserRoleFilter('All');
+                                      setUserPage(1);
                                     }}
                                     className="px-4 py-2 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 transition-all cursor-pointer"
                                   >
@@ -1483,7 +1502,7 @@ export default function AdminManagementDashboard({
                           </td>
                         </tr>
                       ) : (
-                        filteredUsers.map((u) => {
+                        paginatedUsers.map((u) => {
                           const uid = u.id || u._id;
                           const isVisible = showAllPasswords || Boolean(visiblePasswords[uid]);
                           // Older student logins were saved as bcrypt hashes, which can't be shown — reset them to get a visible password
@@ -1604,19 +1623,71 @@ export default function AdminManagementDashboard({
                   </table>
                 </div>
 
-                {/* Table Footer */}
-                <div className="p-4 bg-slate-50/70 border-t border-slate-200/80 flex items-center justify-between text-xs text-slate-500">
-                  <span>Showing {filteredUsers.length} of {users.length} accounts</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsRoleDropdownOpen(false);
-                      setShowAddUserModal(true);
-                    }}
-                    className="text-xs font-bold text-blue-600 hover:text-blue-800 flex items-center gap-1 cursor-pointer"
-                  >
-                    <UserPlus className="w-3.5 h-3.5" /> + Add Another Account
-                  </button>
+                {/* Table Footer with 10 Datas Per Page Pagination */}
+                <div className="p-4 bg-slate-50/80 border-t border-slate-200/80 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-600">
+                  <div className="font-medium">
+                    Showing <span className="font-extrabold text-slate-900">{startCount}</span> to{' '}
+                    <span className="font-extrabold text-slate-900">{endCount}</span> of{' '}
+                    <span className="font-extrabold text-slate-900">{filteredUsers.length}</span> accounts
+                    {filteredUsers.length !== users.length && ` (filtered from ${users.length} total)`}
+                  </div>
+
+                  {/* Pagination Controls */}
+                  <div className="flex items-center gap-2 flex-wrap justify-center">
+                    <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-slate-200 shadow-2xs">
+                      <button
+                        type="button"
+                        disabled={currentPage <= 1}
+                        onClick={() => setUserPage((p) => Math.max(1, p - 1))}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                          currentPage <= 1
+                            ? 'text-slate-300 bg-slate-50 cursor-not-allowed'
+                            : 'text-slate-700 hover:bg-slate-100 hover:text-slate-900 active:scale-95'
+                        }`}
+                      >
+                        ‹ Prev
+                      </button>
+
+                      {Array.from({ length: totalPages }, (_, i) => i + 1).map((pg) => (
+                        <button
+                          key={pg}
+                          type="button"
+                          onClick={() => setUserPage(pg)}
+                          className={`w-7 h-7 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                            pg === currentPage
+                              ? 'bg-[#1d63ed] text-white shadow-xs font-extrabold'
+                              : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                          }`}
+                        >
+                          {pg}
+                        </button>
+                      ))}
+
+                      <button
+                        type="button"
+                        disabled={currentPage >= totalPages}
+                        onClick={() => setUserPage((p) => Math.min(totalPages, p + 1))}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                          currentPage >= totalPages
+                            ? 'text-slate-300 bg-slate-50 cursor-not-allowed'
+                            : 'text-slate-700 hover:bg-slate-100 hover:text-slate-900 active:scale-95'
+                        }`}
+                      >
+                        Next ›
+                      </button>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsRoleDropdownOpen(false);
+                        setShowAddUserModal(true);
+                      }}
+                      className="text-xs font-extrabold text-blue-600 hover:text-blue-800 flex items-center gap-1 cursor-pointer bg-white border border-slate-200 px-3 py-2 rounded-xl shadow-2xs hover:bg-blue-50 transition-colors shrink-0"
+                    >
+                      <UserPlus className="w-3.5 h-3.5" /> + Create Account
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>

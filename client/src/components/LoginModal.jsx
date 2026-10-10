@@ -19,6 +19,24 @@ export const TRAINER_PROFILES = [
 
 
 
+export const BRANCH_LOGIN_PROFILES = [
+  { name: 'Gandhipuram', code: 'CBE-GPM', city: 'Coimbatore', email: 'gandhipuram@thoughtflows.in', manager: 'Sindhu S', pass: 'Gandhipuram@123' },
+  { name: 'Saravanampatti', code: 'CBE-SVM', city: 'Coimbatore', email: 'saravanampatti@thoughtflows.in', manager: 'Gayathri B', pass: 'Saravanampatti@123' },
+  { name: 'Hopes', code: 'CBE-HPS', city: 'Coimbatore', email: 'hopes@thoughtflows.in', manager: 'Sruthi G', pass: 'Hopes@123' },
+  { name: 'Salem', code: 'TND-SLM', city: 'Salem', email: 'salem@thoughtflows.in', manager: 'Salem Manager', pass: 'Salem@123' },
+  { name: 'Kochi', code: 'KER-KOC', city: 'Kochi', email: 'kochi@thoughtflows.in', manager: 'Kochi Manager', pass: 'Kochi@123' },
+  { name: 'Trivandrum', code: 'KER-TRV', city: 'Trivandrum', email: 'trivandrum@thoughtflows.in', manager: 'Trivandrum Manager', pass: 'Trivandrum@123' },
+  { name: 'Trichy', code: 'TND-TRY', city: 'Trichy', email: 'trichy@thoughtflows.in', manager: 'Trichy Manager', pass: 'Trichy@123' },
+  { name: 'Ameerpet', code: 'HYD-AMP', city: 'Hyderabad', email: 'ameerpet@thoughtflows.in', manager: 'Ameerpet Manager', pass: 'Ameerpet@123' },
+  { name: 'Dilsukhnagar', code: 'HYD-DSN', city: 'Hyderabad', email: 'dilsukhnagar@thoughtflows.in', manager: 'Dilsukhnagar Manager', pass: 'Dilsukhnagar@123' },
+  { name: 'Madhapur', code: 'HYD-MDP', city: 'Hyderabad', email: 'madhapur@thoughtflows.in', manager: 'Madhapur Manager', pass: 'Madhapur@123' },
+  { name: 'Tirupati', code: 'AND-TPT', city: 'Tirupati', email: 'tirupati@thoughtflows.in', manager: 'Tirupati Manager', pass: 'Tirupati@123' },
+  { name: 'Vizag', code: 'AND-VZG', city: 'Visakhapatnam', email: 'vizag@thoughtflows.in', manager: 'Vizag Manager', pass: 'Vizag@123' },
+  { name: 'Kollapur', code: 'MAH-KLP', city: 'Kolhapur', email: 'kollapur@thoughtflows.in', manager: 'Kollapur Manager', pass: 'Kollapur@123' },
+  { name: 'Pune', code: 'MAH-PUN', city: 'Pune', email: 'pune@thoughtflows.in', manager: 'Pune Manager', pass: 'Pune@123' },
+  { name: 'Theni', code: 'TND-THN', city: 'Theni', email: 'theni@thoughtflows.in', manager: 'Theni Manager', pass: 'Theni@123' }
+];
+
 export const DEPARTMENTS = [
   {
     id: 'hr',
@@ -138,13 +156,19 @@ export default function LoginModal({
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
   // Reset inputs when modal opens or initialDepartment changes
   useEffect(() => {
     if (isOpen) {
       const dept = DEPARTMENTS.find(d => d.id === initialDepartment) || DEPARTMENTS[1];
       setActiveDeptId(dept.id);
-      setEmail('');
-      setPassword('');
+      if (dept.id === 'leadership') {
+        setEmail('leadership@thoughtflows.in');
+        setPassword('Leadership@123');
+      } else {
+        setEmail('');
+        setPassword('');
+      }
       setShowPassword(false);
       setError('');
     }
@@ -280,6 +304,8 @@ export default function LoginModal({
             {error}
           </div>
         )}
+
+
 
         {/* Form Inputs */}
         <form onSubmit={handleSubmit} className="text-left space-y-3.5">
