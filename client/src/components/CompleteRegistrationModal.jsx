@@ -1,7 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { X, Sparkles, ArrowRight, Check, ShieldCheck, Copy, RotateCcw } from 'lucide-react';
+import { X, Sparkles, ArrowRight, Check, ShieldCheck, Copy, RotateCcw, AlertTriangle } from 'lucide-react';
 import { COURSE_CATEGORIES } from '../constants/courses';
 import { QUALIFICATION_GROUPS } from '../constants/qualifications';
+import { LEAD_SOURCE_GROUPS } from '../constants/leadSources';
+import { getAvailableTimingSlots, BATCH_SCHEDULE, CANONICAL_TIMING_OPTIONS } from '../constants/batchTimings';
+import SearchableSelect from './SearchableSelect';
 import logoImg from '../assets/thoughtflows-logo.png';
 import { 
   BRANCH_MAP, 
@@ -47,9 +50,13 @@ export default function CompleteRegistrationModal({
   const [course, setCourse] = useState(initialData?.courseName || initialData?.course || 'CPC - Certified Professional Coder');
   const [branch, setBranch] = useState(initialData?.branchName || initialData?.branch || 'Saravanampatti');
   const [courseType, setCourseType] = useState(initialData?.typeName || initialData?.mode || 'Online');
-  const [batchTiming, setBatchTiming] = useState(initialData?.batchTiming || '8:00–10:00 PM Weekdays');
+  const [batchTiming, setBatchTiming] = useState(initialData?.batchTiming || '');
   const [batchType, setBatchType] = useState(initialData?.batchType || 'Weekdays');
   const [dateOfJoining, setDateOfJoining] = useState(initialData?.dateOfJoining || new Date().toISOString().split('T')[0]);
+
+  const availableSlots = useMemo(() => {
+    return getAvailableTimingSlots({ course, mode: courseType, branch });
+  }, [course, courseType, branch]);
 
   // Fee Payment
   const [totalCourseFee, setTotalCourseFee] = useState(initialData?.courseFee ? String(initialData.courseFee) : '');
@@ -88,6 +95,7 @@ export default function CompleteRegistrationModal({
 
   const [toastMsg, setToastMsg] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState(null);
 
   // Sync or fetch students for ID serial calculation
   useEffect(() => {
@@ -217,6 +225,7 @@ export default function CompleteRegistrationModal({
     };
 
     try {
+      setSubmitError(null);
       if (onSubmit) {
         await onSubmit(studentRecord);
       }
@@ -225,7 +234,9 @@ export default function CompleteRegistrationModal({
         onClose();
       }, 500);
     } catch (err) {
-      showToast(`Error saving student: ${err.message}`);
+      const errMsg = err?.response?.data?.error || err.message || 'Error saving student';
+      setSubmitError(errMsg);
+      showToast(`⚠ ${errMsg}`);
     } finally {
       setSubmitting(false);
     }
@@ -275,6 +286,23 @@ export default function CompleteRegistrationModal({
         {/* SCROLLABLE FORM BODY */}
         <form onSubmit={handleSubmit} className="overflow-y-auto p-5 sm:p-7 space-y-6 text-xs text-slate-800">
           
+          {/* Submission Error Alert */}
+          {submitError && (
+            <div className="p-4 bg-rose-50 border-2 border-rose-300 text-rose-950 text-xs rounded-2xl shadow-sm animate-shake flex items-start gap-3">
+              <div className="w-7 h-7 rounded-lg bg-rose-500 text-white flex items-center justify-center flex-shrink-0 mt-0.5">
+                <AlertTriangle className="w-4 h-4" />
+              </div>
+              <div className="space-y-1 flex-1">
+                <div className="font-extrabold uppercase tracking-wide text-rose-700 text-[11px]">
+                  Duplicate Record / Admission Error
+                </div>
+                <div className="font-semibold text-rose-900 leading-relaxed text-xs">
+                  {submitError}
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* SECTION 1: Personal Details */}
           <div className="space-y-3.5">
             <div className="flex items-center gap-2 border-b border-slate-100 pb-2">
@@ -400,24 +428,13 @@ export default function CompleteRegistrationModal({
                 <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-500 uppercase mb-1">
                   HIGHEST QUALIFICATION
                 </label>
-                <select
+                <SearchableSelect
                   value={highestQualification}
-                  onChange={(e) => setHighestQualification(e.target.value)}
-                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer"
-                >
-                  <option value="">— Select qualification —</option>
-                  {/* Keep a value from an older lead visible even if it's not in the current list */}
-                  {highestQualification && !ALL_QUALIFICATIONS.includes(highestQualification) && (
-                    <option value={highestQualification}>{highestQualification}</option>
-                  )}
-                  {QUALIFICATION_GROUPS.map((grp) => (
-                    <optgroup key={grp.group} label={grp.title}>
-                      {grp.options.map((q) => (
-                        <option key={q} value={q}>{q}</option>
-                      ))}
-                    </optgroup>
-                  ))}
-                </select>
+                  onChange={setHighestQualification}
+                  placeholder="— Select qualification —"
+                  searchPlaceholder="Search qualification (e.g. BSc, Nursing, BPharm)..."
+                  groups={QUALIFICATION_GROUPS}
+                />
               </div>
 
               <div>
@@ -458,22 +475,14 @@ export default function CompleteRegistrationModal({
                 <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-500 uppercase mb-1">
                   MODE OF SOURCE
                 </label>
-                <select
+                <SearchableSelect
                   value={modeOfSource}
-                  onChange={(e) => setModeOfSource(e.target.value)}
-                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer"
-                >
-                  <option value="">— Select source —</option>
-                  <option value="Google Calls">Google Calls</option>
-                  <option value="Direct Call">Direct Call</option>
-                  <option value="Referral">Referral</option>
-                  <option value="Justdial">Justdial</option>
-                  <option value="WhatsApp Direct">WhatsApp Direct</option>
-                  <option value="Direct Walk-in">Direct Walk-in</option>
-                  <option value="Instagram">Instagram</option>
-                  <option value="Facebook Job Post">Facebook Job Post</option>
-                  <option value="LinkedIn">LinkedIn</option>
-                </select>
+                  onChange={setModeOfSource}
+                  placeholder="— Select mode of source —"
+                  searchPlaceholder="Search 32 sources (Google, Referral, WhatsApp...)"
+                  groups={LEAD_SOURCE_GROUPS}
+                  allowCustom={true}
+                />
               </div>
             </div>
 
@@ -514,6 +523,18 @@ export default function CompleteRegistrationModal({
                   className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer"
                 >
                   <option value="">— Select course —</option>
+                  <optgroup label="AMCT Certification Programmes">
+                    <option value="AMCT Beginner (Classroom)">AMCT Beginner (Classroom)</option>
+                    <option value="AMCT Beginner (Online)">AMCT Beginner (Online)</option>
+                    <option value="AMCT Intermediate (Classroom)">AMCT Intermediate (Classroom)</option>
+                    <option value="AMCT Intermediate (Online)">AMCT Intermediate (Online)</option>
+                    <option value="AMCT Advanced (Classroom)">AMCT Advanced (Classroom)</option>
+                    <option value="AMCT Advanced (Online)">AMCT Advanced (Online)</option>
+                    <option value="AMCT - Advanced Medical Coding">AMCT - Advanced Medical Coding (A)</option>
+                    <option value="AMCT Beginner">AMCT Beginner (AB)</option>
+                    <option value="AMCT Intermediate">AMCT Intermediate (AI)</option>
+                    <option value="AMCT Advanced">AMCT Advanced (AA)</option>
+                  </optgroup>
                   <optgroup label="AAPC Certifications">
                     <option value="CPC - Certified Professional Coder">CPC - Certified Professional Coder (C)</option>
                     <option value="CIC - Certified Inpatient Coder">CIC - Certified Inpatient Coder (E)</option>
@@ -547,10 +568,6 @@ export default function CompleteRegistrationModal({
                     <option value="HIM - Health Information Management">HIM - Health Information Management (HIM)</option>
                   </optgroup>
                   <optgroup label="Foundation & Other Tracks">
-                    <option value="AMCT - Advanced Medical Coding">AMCT - Advanced Medical Coding (A)</option>
-                    <option value="AMCT Beginner">AMCT Beginner (AB)</option>
-                    <option value="AMCT Intermediate">AMCT Intermediate (AI)</option>
-                    <option value="AMCT Advanced">AMCT Advanced (AA)</option>
                     <option value="CPC Crash Course">CPC Crash Course (F)</option>
                     <option value="CPT Coding">CPT Coding (T)</option>
                     <option value="ICD-10 Coding">ICD-10 Coding (Z)</option>
@@ -559,7 +576,7 @@ export default function CompleteRegistrationModal({
                   {COURSE_CATEGORIES.map((cat) => (
                     <optgroup key={cat.category} label={cat.title}>
                       {cat.courses.map((c) => {
-                        const val = `${c.code} - ${c.name}`;
+                        const val = c.code === c.name ? c.name : `${c.code} - ${c.name}`;
                         return (
                           <option key={c.code} value={val}>
                             {val}
@@ -615,12 +632,25 @@ export default function CompleteRegistrationModal({
                   onChange={(e) => setBatchTiming(e.target.value)}
                   className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer"
                 >
-                  <option value="">— Select timing —</option>
-                  <option value="9:00–11:00 AM">9:00–11:00 AM</option>
-                  <option value="11:30 AM–1:30 PM">11:30 AM–1:30 PM</option>
-                  <option value="2:00–4:00 PM">2:00–4:00 PM</option>
-                  <option value="6:00–8:00 PM">6:00–8:00 PM</option>
-                  <option value="8:00–10:00 PM Weekdays">8:00–10:00 PM Weekdays</option>
+                  <option value="">— Select timing slot —</option>
+                  {/* Preserve existing custom/legacy value if not matched */}
+                  {batchTiming && !availableSlots.some(s => s.label === batchTiming || s.value === batchTiming || s.timing === batchTiming) && (
+                    <option value={batchTiming}>Current: {batchTiming}</option>
+                  )}
+                  <optgroup label={`🎯 Available for Selected Course & Branch (${availableSlots.length} Slots)`}>
+                    {availableSlots.map((s, idx) => (
+                      <option key={`avail-${idx}`} value={s.label}>
+                        {s.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="📋 All Other Schedule Slots">
+                    {BATCH_SCHEDULE.filter(s => !availableSlots.some(a => a.label === s.label)).map((s, idx) => (
+                      <option key={`other-${idx}`} value={s.label}>
+                        {s.label}
+                      </option>
+                    ))}
+                  </optgroup>
                 </select>
               </div>
             </div>

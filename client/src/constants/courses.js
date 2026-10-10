@@ -3,6 +3,97 @@
 
 export const COURSE_CATEGORIES = [
   {
+    category: 'AMCT Certification Programmes',
+    title: 'AMCT Certification Programmes',
+    icon: '⚡',
+    courses: [
+      {
+        code: 'AMCT Beginner (Classroom)',
+        name: 'AMCT Beginner (Classroom)',
+        oldFee: 15000,
+        newFeeNoDiscount: 20000,
+        standardFee: 20000,
+        originalFee: 15000,
+        courseFee: 17000,
+        fee: 17000,
+        duration: '45 Days',
+        examFeeText: 'NO EXAM',
+        examFee: 0,
+        desc: 'AMCT Beginner level classroom foundation training (45 Days)'
+      },
+      {
+        code: 'AMCT Beginner (Online)',
+        name: 'AMCT Beginner (Online)',
+        oldFee: 15000,
+        newFeeNoDiscount: 15000,
+        standardFee: 15000,
+        originalFee: 15000,
+        courseFee: 14000,
+        fee: 14000,
+        duration: '45 Days',
+        examFeeText: 'NO EXAM',
+        examFee: 0,
+        desc: 'AMCT Beginner level online live training (45 Days)'
+      },
+      {
+        code: 'AMCT Intermediate (Classroom)',
+        name: 'AMCT Intermediate (Classroom)',
+        oldFee: 18000,
+        newFeeNoDiscount: 23000,
+        standardFee: 23000,
+        originalFee: 18000,
+        courseFee: 21000,
+        fee: 21000,
+        duration: '3 Months',
+        examFeeText: '₹70,207 ($814.20 + ₹1k tx fees)',
+        examFee: 70207,
+        desc: 'AMCT Intermediate classroom training with AAPC exam voucher (3 Months)'
+      },
+      {
+        code: 'AMCT Intermediate (Online)',
+        name: 'AMCT Intermediate (Online)',
+        oldFee: 18000,
+        newFeeNoDiscount: 21000,
+        standardFee: 21000,
+        originalFee: 18000,
+        courseFee: 20000,
+        fee: 20000,
+        duration: '3 Months',
+        examFeeText: '₹70,207 ($814.20 + ₹1k tx fees)',
+        examFee: 70207,
+        desc: 'AMCT Intermediate online live training with AAPC exam voucher (3 Months)'
+      },
+      {
+        code: 'AMCT Advanced (Classroom)',
+        name: 'AMCT Advanced (Classroom)',
+        oldFee: 25000,
+        newFeeNoDiscount: 30000,
+        standardFee: 30000,
+        originalFee: 25000,
+        courseFee: 27000,
+        fee: 27000,
+        duration: '4 Months',
+        examFeeText: '₹70,207 ($814.20 + ₹1k tx fees)',
+        examFee: 70207,
+        desc: 'AMCT Advanced comprehensive classroom coding with AAPC exam voucher (4 Months)'
+      },
+      {
+        code: 'AMCT Advanced (Online)',
+        name: 'AMCT Advanced (Online)',
+        oldFee: 25000,
+        newFeeNoDiscount: 27000,
+        standardFee: 27000,
+        originalFee: 25000,
+        courseFee: 26000,
+        fee: 26000,
+        duration: '4 Months',
+        examFeeText: '₹70,207 ($814.20 + ₹1k tx fees)',
+        examFee: 70207,
+        desc: 'AMCT Advanced comprehensive online live coding with AAPC exam voucher (4 Months)'
+      }
+    ]
+  },
+  {
     category: 'CPC Certification Programmes',
     title: 'CPC Certification Programmes',
     icon: '🎯',
@@ -673,6 +764,55 @@ export const COURSE_CATEGORIES = [
         desc: 'Anesthesia + CCS track tailored for coders with prior IPDRG experience'
       }
     ]
+  },
+  {
+    category: 'Medical Coding Internship Programmes',
+    title: 'Medical Coding Internship Programmes',
+    icon: '🎓',
+    courses: [
+      {
+        code: 'Internship Beginner',
+        name: 'Internship Beginner',
+        oldFee: 0,
+        newFeeNoDiscount: 37000,
+        standardFee: 37000,
+        originalFee: 0,
+        courseFee: 35000,
+        fee: 35000,
+        duration: '5 Months',
+        examFeeText: '₹70,207 ($814.20 + ₹1k tx fees)',
+        examFee: 70207,
+        desc: 'Medical Coding Internship Beginner programme with AAPC certification (5 Months)'
+      },
+      {
+        code: 'Internship Intermediate',
+        name: 'Internship Intermediate',
+        oldFee: 0,
+        newFeeNoDiscount: 45000,
+        standardFee: 45000,
+        originalFee: 0,
+        courseFee: 42000,
+        fee: 42000,
+        duration: '6 Months',
+        examFeeText: '₹70,207 ($814.20 + ₹1k tx fees)',
+        examFee: 70207,
+        desc: 'Medical Coding Internship Intermediate programme with AAPC certification (6 Months)'
+      },
+      {
+        code: 'Internship Advanced',
+        name: 'Internship Advanced',
+        oldFee: 0,
+        newFeeNoDiscount: 50000,
+        standardFee: 50000,
+        originalFee: 0,
+        courseFee: 48000,
+        fee: 48000,
+        duration: '7 Months',
+        examFeeText: '₹70,207 ($814.20 + ₹1k tx fees)',
+        examFee: 70207,
+        desc: 'Comprehensive Medical Coding Internship Advanced programme with AAPC certification (7 Months)'
+      }
+    ]
   }
 ];
 
@@ -698,6 +838,18 @@ export const COURSE_BY_CODE = ALL_COURSES.reduce((acc, c) => {
   acc[c.code.toUpperCase()] = c;
   return acc;
 }, {});
+
+// Aliases for short codes
+if (COURSE_BY_CODE['AMCT ADVANCED (CLASSROOM)']) {
+  COURSE_BY_CODE['AMCT'] = COURSE_BY_CODE['AMCT ADVANCED (CLASSROOM)'];
+  COURSE_BY_CODE['AMCT ADVANCED'] = COURSE_BY_CODE['AMCT ADVANCED (CLASSROOM)'];
+}
+if (COURSE_BY_CODE['AMCT BEGINNER (CLASSROOM)']) {
+  COURSE_BY_CODE['AMCT BEGINNER'] = COURSE_BY_CODE['AMCT BEGINNER (CLASSROOM)'];
+}
+if (COURSE_BY_CODE['AMCT INTERMEDIATE (CLASSROOM)']) {
+  COURSE_BY_CODE['AMCT INTERMEDIATE'] = COURSE_BY_CODE['AMCT INTERMEDIATE (CLASSROOM)'];
+}
 
 // Helper to format course name nicely
 export const formatCourseDisplay = (courseStr = '') => {

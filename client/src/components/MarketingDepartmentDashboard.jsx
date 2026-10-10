@@ -22,6 +22,7 @@ import ContentCalendarBoard from './ContentCalendarBoard';
 import CreativeApprovalDesk from './CreativeApprovalDesk';
 import RoiReportsBoard from './RoiReportsBoard';
 import NotificationBell from './NotificationBell';
+import DashboardNavSwitcher from './DashboardNavSwitcher';
 import {
   getLeads, createLead, onDataUpdate, getCampaigns, createCampaign, updateCampaign, getMarketingSources,
   getLeadDemands, getCreatives, updateCreative, getContentPieces, getBranches
@@ -324,8 +325,9 @@ export default function MarketingDepartmentDashboard({
           </div>
         </div>
 
-        {/* Right Section: notifications (lead requests, Leadership decisions) + logout */}
+        {/* Right Section: nav switcher + notifications + logout */}
         <div className="flex items-center gap-2">
+        <DashboardNavSwitcher currentDepartment="marketing" onSwitchDepartment={onSwitchDepartment} />
         <NotificationBell
           audience="marketing"
           tone="dark"

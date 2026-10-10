@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { updateStudent } from '../services/api';
 import StudentTimeline from './StudentTimeline';
+import EditStudentModal from './EditStudentModal';
 import { effectiveStage, autoStage, stageChecks, blockReason, PLACEMENT_EDITORS, ATTENDANCE_MIN, MOCK_PASS } from '../utils/placement';
 
 export default function StudentProfileModal({ isOpen, onClose, student: propStudent, onUpdateStudent }) {
@@ -35,6 +36,7 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
 
   const [activeTab, setActiveTab] = useState('Overview');
   const [showAddInterviewModal, setShowAddInterviewModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
   const [toastMsg, setToastMsg] = useState(null);
 
   const showToast = (msg) => {
@@ -259,13 +261,25 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={onClose}
-            className="w-9 h-9 rounded-xl bg-white/20 hover:bg-white/30 text-white flex items-center justify-center transition-all cursor-pointer flex-shrink-0 ml-2"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowEditModal(true)}
+              className="px-3 py-1.5 rounded-xl bg-white/20 hover:bg-white/30 text-white flex items-center gap-1.5 text-xs font-bold transition-all cursor-pointer shadow-2xs active:scale-95"
+              title="Edit Student Information"
+            >
+              <Edit2 className="w-3.5 h-3.5" />
+              <span>Edit</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onClose}
+              className="w-9 h-9 rounded-xl bg-white/20 hover:bg-white/30 text-white flex items-center justify-center transition-all cursor-pointer flex-shrink-0"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* ── TABS BAR ───────────────────────────────────────────────────── */}
@@ -982,7 +996,7 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
                 <div className="p-3 bg-teal-50/70 border border-teal-200 rounded-xl text-xs text-teal-950 flex items-start gap-2.5">
                   <UserCheck className="w-4 h-4 text-teal-700 shrink-0 mt-0.5" />
                   <div>
-                    <strong className="font-bold text-teal-900">Lead Trainer Endorsement:</strong> Student has cleared internal mock panels with 88% proficiency in Operative Note Coding and Medical Decision Making. Recommended for direct client interview allocation with tier-1 partners.
+                    <strong className="font-bold text-teal-900">Lead Trainer Endorsement:</strong> {student.trainerRecommendation ? `Recommendation: ${student.trainerRecommendation}` : ''}{student.trainerNotes ? ` · Note: ${student.trainerNotes}` : (!student.trainerRecommendation ? 'No specific endorsement notes entered by the trainer yet.' : '')}
                   </div>
                 </div>
               </div>
@@ -1130,6 +1144,19 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
 
         </div>
       </div>
+
+      {showEditModal && (
+        <EditStudentModal
+          isOpen={showEditModal}
+          student={student}
+          onClose={() => setShowEditModal(false)}
+          onSuccess={(updated) => {
+            setStudent(updated);
+            if (onUpdateStudent) onUpdateStudent(updated);
+            showToast(`✓ Updated details for ${updated.name}`);
+          }}
+        />
+      )}
     </div>
   );
 }

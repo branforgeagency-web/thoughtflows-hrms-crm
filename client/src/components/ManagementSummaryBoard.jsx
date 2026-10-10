@@ -64,10 +64,10 @@ export default function ManagementSummaryBoard({
     // Best performer
     const staffMap = {};
     students.forEach(s => {
-      const name = s.hrName || s.assignedTo || 'A.Lokesh Babu';
-      staffMap[name] = (staffMap[name] || 0) + 1;
+      const name = s.hrName || s.assignedTo;
+      if (name) staffMap[name] = (staffMap[name] || 0) + 1;
     });
-    let topName = 'A.Lokesh Babu';
+    let topName = 'No data yet';
     let topCount = 0;
     Object.entries(staffMap).forEach(([name, count]) => {
       if (count > topCount) {
@@ -76,8 +76,8 @@ export default function ManagementSummaryBoard({
       }
     });
 
-    const pendingAppr = pendingApprovalsCount !== null ? pendingApprovalsCount : 2;
-    const openEsc = openEscalationsCount !== null ? openEscalationsCount : 1;
+    const pendingAppr = typeof pendingApprovalsCount === 'number' ? pendingApprovalsCount : 0;
+    const openEsc = typeof openEscalationsCount === 'number' ? openEscalationsCount : 0;
 
     // Health Score: 100 minus open issues/escalations, bounded 0..100
     const healthNum = Math.max(0, 100 - (openEsc * 15 + pendingAppr * 5));
@@ -87,7 +87,7 @@ export default function ManagementSummaryBoard({
       pendingApprovals: pendingAppr,
       openEscalations: openEsc,
       topTarget: topTargetStr,
-      teamSize: Math.max(33, Object.keys(staffMap).length),
+      teamSize: Object.keys(staffMap).length,
       bestPerformer: topName
     };
   }, [students, closures, targets, pendingApprovalsCount, openEscalationsCount]);

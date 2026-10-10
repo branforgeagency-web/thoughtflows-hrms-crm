@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
-import { X, Sparkles, Check, ArrowRight } from 'lucide-react';
+import React, { useState, useMemo } from 'react';
+import { X, Sparkles, Check, ArrowRight, AlertTriangle } from 'lucide-react';
 import logoImg from '../assets/thoughtflows-logo.png';
 import { COURSE_CATEGORIES } from '../constants/courses';
+import { LEAD_SOURCE_GROUPS } from '../constants/leadSources';
+import { getAvailableTimingSlots, BATCH_SCHEDULE } from '../constants/batchTimings';
 
 import { getCurrentMonthYear, getCurrentMonthName } from '../utils/dateUtils';
 import { generateStudentIdDetails } from '../utils/studentIdGenerator';
@@ -21,6 +23,7 @@ export default function WalkinRegistrationModal({ isOpen, onClose, onRegister, c
   const [branch, setBranch] = useState(currentUser?.branch || 'Saravanampatti (CBE)');
   const [email, setEmail] = useState('');
   const [facebookId, setFacebookId] = useState('');
+  const [submitError, setSubmitError] = useState(null);
   const [education, setEducation] = useState('');
   const [passoutYear, setPassoutYear] = useState('');
   const [college, setCollege] = useState('');
@@ -28,14 +31,18 @@ export default function WalkinRegistrationModal({ isOpen, onClose, onRegister, c
 
   // Course & Mode
   const [courseType, setCourseType] = useState('Online'); // 'Online' | 'Offline'
-  const [course, setCourse] = useState('MCT'); // 'MCT', 'AMCT', 'CPC', etc.
+  const [course, setCourse] = useState('AMCT Beginner (Classroom)');
   
   // Knowledge source
-  const [source, setSource] = useState('Social Media'); // 'Social Media', 'Word of Mouth', 'Online', 'Others'
+  const [source, setSource] = useState('Direct Walk-in');
 
   // Timings & Batch
   const [preferredTimings, setPreferredTimings] = useState('');
   const [batchType, setBatchType] = useState('Both'); // 'Weekends', 'Weekdays', 'Both'
+
+  const availableSlots = useMemo(() => {
+    return getAvailableTimingSlots({ course, mode: courseType, branch });
+  }, [course, courseType, branch]);
 
   const [toastMsg, setToastMsg] = useState(null);
 
@@ -52,19 +59,13 @@ export default function WalkinRegistrationModal({ isOpen, onClose, onRegister, c
     }
   ];
 
-  const SOURCES = [
-    'Social Media',
-    'Word of Mouth',
-    'Online',
-    'Others'
-  ];
 
   const showToast = (msg) => {
     setToastMsg(msg);
     setTimeout(() => setToastMsg(null), 3000);
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     if (!name.trim()) {
       showToast('Please enter candidate name');
@@ -126,13 +127,24 @@ export default function WalkinRegistrationModal({ isOpen, onClose, onRegister, c
     };
 
     if (onRegister) {
-      onRegister(newStudent);
+      try {
+        setSubmitError(null);
+        await onRegister(newStudent);
+        showToast(`✓ Registration for ${name} submitted successfully!`);
+        setTimeout(() => {
+          onClose();
+        }, 600);
+      } catch (err) {
+        const msg = err?.response?.data?.error || err.message || 'Registration failed';
+        setSubmitError(msg);
+        showToast(`⚠ ${msg}`);
+      }
+    } else {
+      showToast(`✓ Registration for ${name} submitted successfully!`);
+      setTimeout(() => {
+        onClose();
+      }, 600);
     }
-
-    showToast(`✓ Registration for ${name} submitted successfully!`);
-    setTimeout(() => {
-      onClose();
-    }, 600);
   };
 
   return (
@@ -187,6 +199,23 @@ export default function WalkinRegistrationModal({ isOpen, onClose, onRegister, c
         {/* SCROLLABLE FORM BODY */}
         <form onSubmit={handleSubmit} className="overflow-y-auto px-5 sm:px-6 pb-6 space-y-4 text-xs font-sans">
           
+          {/* Submission Error Alert */}
+          {submitError && (
+            <div className="p-3.5 bg-rose-50 border-2 border-rose-300 text-rose-950 text-xs rounded-2xl shadow-sm animate-shake flex items-start gap-2.5">
+              <div className="w-6 h-6 rounded-lg bg-rose-500 text-white flex items-center justify-center flex-shrink-0 mt-0.5">
+                <AlertTriangle className="w-3.5 h-3.5" />
+              </div>
+              <div className="space-y-0.5 flex-1">
+                <div className="font-extrabold uppercase tracking-wide text-rose-700 text-[10px]">
+                  Duplicate Record / Registration Error
+                </div>
+                <div className="font-semibold text-rose-900 leading-relaxed text-xs">
+                  {submitError}
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Row 1: Name & Father's Name */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
@@ -485,23 +514,23 @@ export default function WalkinRegistrationModal({ isOpen, onClose, onRegister, c
           {/* BOX 2: HOW DID YOU KNOW ABOUT THOUGHTFLOWS? */}
           <div className="border border-slate-200/90 rounded-2xl p-4 bg-white/80 shadow-xs">
             <div className="text-xs font-black uppercase text-[#00695c] tracking-wider mb-2.5">
-              HOW DID YOU KNOW ABOUT THOUGHTFLOWS?
+              HOW DID YOU KNOW ABOUT THOUGHTFLOWS? (MODE OF SOURCE)
             </div>
-            <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
-              {SOURCES.map((s) => (
-                <label key={s} className="flex items-center gap-2 cursor-pointer text-slate-800 font-semibold select-none">
-                  <input
-                    type="radio"
-                    name="source"
-                    value={s}
-                    checked={source === s}
-                    onChange={() => setSource(s)}
-                    className="w-4 h-4 accent-[#00796b] cursor-pointer"
-                  />
-                  <span>{s}</span>
-                </label>
+            <select
+              value={source}
+              onChange={(e) => setSource(e.target.value)}
+              className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-slate-900 outline-none focus:border-[#00796b] transition-all font-medium cursor-pointer"
+            >
+              {LEAD_SOURCE_GROUPS.map((grp) => (
+                <optgroup key={grp.group} label={grp.title}>
+                  {grp.options.map((opt) => (
+                    <option key={opt} value={opt}>
+                      {opt}
+                    </option>
+                  ))}
+                </optgroup>
               ))}
-            </div>
+            </select>
           </div>
 
           {/* BOX 3: PREFERRED CLASS TIMINGS & BATCH TYPE */}
@@ -510,14 +539,31 @@ export default function WalkinRegistrationModal({ isOpen, onClose, onRegister, c
               <label className="block text-xs font-bold text-[#00695c] mb-1.5">
                 Preferred Class Timings <span className="text-rose-500">*</span>
               </label>
-              <input
-                type="text"
+              <select
                 required
-                placeholder="e.g. 8-10 PM Weekdays"
                 value={preferredTimings}
                 onChange={(e) => setPreferredTimings(e.target.value)}
-                className="w-full bg-slate-50/60 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-slate-900 outline-none focus:border-[#00796b] transition-all"
-              />
+                className="w-full bg-slate-50/60 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00796b] transition-all cursor-pointer font-medium"
+              >
+                <option value="">— Select timing slot —</option>
+                {preferredTimings && !availableSlots.some(s => s.label === preferredTimings || s.value === preferredTimings || s.timing === preferredTimings) && (
+                  <option value={preferredTimings}>Current: {preferredTimings}</option>
+                )}
+                <optgroup label={`🎯 Available for Selected Course & Branch (${availableSlots.length} Slots)`}>
+                  {availableSlots.map((s, idx) => (
+                    <option key={`avail-${idx}`} value={s.label}>
+                      {s.label}
+                    </option>
+                  ))}
+                </optgroup>
+                <optgroup label="📋 All Other Schedule Slots">
+                  {BATCH_SCHEDULE.filter(s => !availableSlots.some(a => a.label === s.label)).map((s, idx) => (
+                    <option key={`other-${idx}`} value={s.label}>
+                      {s.label}
+                    </option>
+                  ))}
+                </optgroup>
+              </select>
             </div>
 
             <div>

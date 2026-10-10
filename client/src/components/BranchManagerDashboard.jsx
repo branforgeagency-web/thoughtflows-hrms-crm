@@ -114,14 +114,7 @@ export default function BranchManagerDashboard({
       ]);
 
       // 1. Team members
-      let rawTeam = teamRes.status === 'fulfilled' && Array.isArray(teamRes.value) ? teamRes.value : [];
-      if (rawTeam.length === 0) {
-        // Fallback for new branch without members yet
-        rawTeam = [
-          { name: `${branchName} HR 1`, assigned: 8, quality: 92, available: true, shift: 'general' },
-          { name: `${branchName} HR 2`, assigned: 6, quality: 88, available: true, shift: 'general' }
-        ];
-      }
+      const rawTeam = teamRes.status === 'fulfilled' && Array.isArray(teamRes.value) ? teamRes.value : [];
       setTeamMembers(rawTeam);
 
       // 2. Attendance
@@ -132,22 +125,13 @@ export default function BranchManagerDashboard({
           name: r.employeeName || 'Staff',
           login: r.checkIn ? new Date(r.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : (r.status === 'present' ? '09:05 AM' : '—'),
           logout: r.checkOut ? new Date(r.checkOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—',
-          break: r.onBreak ? 'On Break' : (r.breakMinutes ? `${r.breakMinutes}m` : '15m'),
-          hours: `${(r.hoursWorked || (r.status === 'present' ? 5.2 : 0)).toFixed(1)} hrs`,
+          break: r.onBreak ? 'On Break' : (r.breakMinutes ? `${r.breakMinutes}m` : '0m'),
+          hours: `${(r.hoursWorked || 0).toFixed(1)} hrs`,
           status: r.status === 'present' ? 'ON DUTY' : (r.status === 'late' ? 'LATE' : 'OFF TODAY'),
           raw: r
         })));
       } else {
-        setAttendanceData(rawTeam.map((m, i) => ({
-          id: m._id || `att-${i}`,
-          name: m.name,
-          login: m.available !== false ? '09:05 AM' : '—',
-          logout: '—',
-          break: '15m',
-          hours: m.available !== false ? '5.4 hrs' : '0.0 hrs',
-          status: m.available !== false ? 'ON DUTY' : 'OFF TODAY',
-          raw: m
-        })));
+        setAttendanceData([]);
       }
 
       // 3. Leads
@@ -162,51 +146,30 @@ export default function BranchManagerDashboard({
 
       // 5. Demos
       const rawDemos = demRes.status === 'fulfilled' && Array.isArray(demRes.value) ? demRes.value : [];
-      if (rawDemos.length > 0) {
-        setDemos(rawDemos.map((d, i) => ({
-          id: d._id || `D${2000 + i}`,
-          student: d.studentName || d.student || 'Student',
-          course: d.course || 'Medical Coding',
-          trainer: d.trainerName || d.trainer || 'Trainer',
-          dateTime: d.dateTime || (d.preferredDate ? `${d.preferredDate} · ${d.timeSlot || '11:00 AM'}` : 'Sat · 11:00 AM'),
-          bookedBy: d.counselorName || d.bookedBy || rawTeam[0]?.name || 'Counsellor',
-          source: d.source || 'Phone/online',
-          status: d.status || 'Booked',
-          raw: d
-        })));
-      } else {
-        setDemos([
-          { id: 'D2001', student: 'Ramesh Kumar', course: 'CPC', trainer: 'Rajesh M.', dateTime: 'Sat · 11:00 AM', bookedBy: rawTeam[0]?.name || 'Counsellor', source: 'Phone/online', status: 'Booked' },
-          { id: 'D2002', student: 'Sneha P.', course: 'CCS', trainer: 'Lavanya K.', dateTime: 'Today · 4:30 PM', bookedBy: rawTeam[1]?.name || rawTeam[0]?.name || 'Counsellor', source: 'Walk-in', status: 'Attended' }
-        ]);
-      }
+      setDemos(rawDemos.map((d, i) => ({
+        id: d._id || `D${2000 + i}`,
+        student: d.studentName || d.student || 'Student',
+        course: d.course || 'Medical Coding',
+        trainer: d.trainerName || d.trainer || 'Trainer',
+        dateTime: d.dateTime || (d.preferredDate ? `${d.preferredDate} · ${d.timeSlot || '11:00 AM'}` : '—'),
+        bookedBy: d.counselorName || d.bookedBy || 'Counsellor',
+        source: d.source || 'Phone/online',
+        status: d.status || 'Booked',
+        raw: d
+      })));
 
       // 6. Approvals
       const rawApprovals = appRes.status === 'fulfilled' && Array.isArray(appRes.value) ? appRes.value : [];
-      if (rawApprovals.length > 0) {
-        setApprovals(rawApprovals.map((ap, i) => ({
-          id: ap._id || i + 1,
-          staffName: ap.staffName || ap.requesterName || rawTeam[0]?.name || 'Staff',
-          leaveType: ap.type || ap.leaveType || 'Earned Leave',
-          duration: ap.duration || '2 days',
-          date: ap.date ? new Date(ap.date).toLocaleDateString([], { month: 'short', day: 'numeric' }) : 'Today',
-          reason: ap.reason || 'Personal / family emergency',
-          status: ap.status || 'pending',
-          raw: ap
-        })));
-      } else {
-        setApprovals([
-          {
-            id: 1,
-            staffName: rawTeam[0]?.name || 'Staff Member',
-            leaveType: 'Earned Leave',
-            duration: '2 days',
-            date: 'Tomorrow',
-            reason: 'Personal work',
-            status: 'pending'
-          }
-        ]);
-      }
+      setApprovals(rawApprovals.map((ap, i) => ({
+        id: ap._id || i + 1,
+        staffName: ap.staffName || ap.requesterName || 'Staff',
+        leaveType: ap.type || ap.leaveType || 'Leave Request',
+        duration: ap.duration || '1 day',
+        date: ap.date ? new Date(ap.date).toLocaleDateString([], { month: 'short', day: 'numeric' }) : 'Today',
+        reason: ap.reason || 'Personal request',
+        status: ap.status || 'pending',
+        raw: ap
+      })));
 
       // 7. Daily Roster
       setRoster(rawTeam.map((m, idx) => ({
@@ -242,10 +205,10 @@ export default function BranchManagerDashboard({
   const counsellors = teamMembers.map((m, idx) => {
     const initials = getInitials(m.name);
     const bg = COLOR_PALETTE[idx % COLOR_PALETTE.length];
-    const calls = m.assigned !== undefined ? m.assigned : (8 + idx * 2);
-    const pickupVal = m.quality !== undefined && m.quality > 0 ? m.quality : (calls > 0 ? 91 : 0);
+    const calls = typeof m.assigned === 'number' ? m.assigned : 0;
+    const pickupVal = typeof m.quality === 'number' ? m.quality : 0;
     const pickupRate = `${pickupVal}%`;
-    const barWidth = calls > 0 ? `${pickupVal}%` : '5%';
+    const barWidth = calls > 0 ? `${pickupVal}%` : '0%';
     return {
       id: m._id || `c-${idx}`,
       name: m.name,
@@ -393,12 +356,12 @@ export default function BranchManagerDashboard({
 
   // Branch KPIs
   const presentCount = attendanceData.filter((a) => a.status === 'ON DUTY').length;
-  const targetMonthlyAdmissions = Math.max(20, teamMembers.length * 10);
+  const targetMonthlyAdmissions = Math.max(1, teamMembers.length * 10);
   const admittedCount = studentsList.length;
   const targetPct = Math.min(100, Math.round((admittedCount / targetMonthlyAdmissions) * 100)) || 0;
   const totalFeesVal = (admittedCount * 32000) / 100000;
   const convertedDemosCount = demos.filter((d) => d.status === 'Converted').length;
-  const demoConvPct = demos.length > 0 ? Math.round((convertedDemosCount / demos.length) * 100) : 26;
+  const demoConvPct = demos.length > 0 ? Math.round((convertedDemosCount / demos.length) * 100) : 0;
 
   return (
     <div className="w-full min-h-screen bg-[#f4f6fa] p-3 sm:p-5 lg:p-6 font-sans text-slate-800 animate-fadeIn">
@@ -607,7 +570,7 @@ export default function BranchManagerDashboard({
 
                     <div className="md:px-4 text-left">
                       <div className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider">INCENTIVE · MTD</div>
-                      <div className="text-2xl font-black text-amber-600 mt-1 tracking-tight">₹{Math.max(2, admittedCount * 2)}k</div>
+                      <div className="text-2xl font-black text-amber-600 mt-1 tracking-tight">₹{(admittedCount * 2).toLocaleString('en-IN')}k</div>
                       <div className="text-[11px] font-semibold text-slate-500 mt-1">payable to team</div>
                     </div>
                   </div>
@@ -692,7 +655,7 @@ export default function BranchManagerDashboard({
                   <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-2xs">
                     <div className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider">CONVERSION</div>
                     <div className="text-3xl font-black text-teal-600 tracking-tight mt-1">
-                      {leadsList.length > 0 ? Math.round((admittedCount / Math.max(1, leadsList.length)) * 100) : 34}%
+                      {leadsList.length > 0 ? Math.round((admittedCount / Math.max(1, leadsList.length)) * 100) : 0}%
                     </div>
                     <div className="text-xs font-semibold text-slate-500 mt-1">lead → admit</div>
                   </div>

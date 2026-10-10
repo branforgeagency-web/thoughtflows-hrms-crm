@@ -58,6 +58,7 @@ import { onDataUpdate, notifyDataUpdate, getCompanies, getStats, getAuditLogs, c
 import { progressiveIncentive } from '../utils/incentive';
 import { COURSE_CATEGORIES, ALL_COURSES, TRAINER_COURSES } from '../constants/courses';
 import TrainerScheduleEditor from './TrainerScheduleEditor';
+import DashboardNavSwitcher from './DashboardNavSwitcher';
 
 // Exact Academy Roles matching User screenshot
 const ACADEMY_ROLES = [
@@ -696,6 +697,8 @@ export default function AdminManagementDashboard({
         {/* Right: Quick Controls & Session Actions */}
         <div className="flex items-center gap-2.5 relative">
 
+          {/* Quick Cross-Dashboard Switcher */}
+          <DashboardNavSwitcher currentDepartment="admin" onSwitchDepartment={onSwitchDepartment} />
 
           {/* User Profile Pill */}
           <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200">
@@ -2547,7 +2550,7 @@ export default function AdminManagementDashboard({
                           <optgroup key={cat.category} label={cat.title}>
                             {cat.courses.map((c) => (
                               <option key={c.code} value={c.code}>
-                                {c.code} — {c.name}
+                                {c.code === c.name ? c.name : `${c.code} — ${c.name}`}
                               </option>
                             ))}
                           </optgroup>

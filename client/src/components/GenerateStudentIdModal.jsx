@@ -78,6 +78,17 @@ export default function GenerateStudentIdModal({ isOpen, onClose, onConfirm, exi
   };
 
   const COURSE_MAP = {
+    // AMCT Certification Programmes
+    'AB': 'AMCT Beginner',
+    'AI': 'AMCT Intermediate',
+    'AA': 'AMCT Advanced',
+    'A': 'AMCT - Advanced Medical Coding',
+
+    // Medical Coding Internship Programmes
+    'IB': 'Internship Beginner',
+    'II': 'Internship Intermediate',
+    'IA': 'Internship Advanced',
+
     // AAPC
     'C': 'CPC - Certified Professional Coder',
     'E': 'CIC - Certified Inpatient Coder',
@@ -113,10 +124,6 @@ export default function GenerateStudentIdModal({ isOpen, onClose, onConfirm, exi
     'HIM': 'HIM - Health Information Management',
 
     // Foundation & Other
-    'A': 'AMCT - Advanced Medical Coding',
-    'AB': 'AMCT Beginner',
-    'AI': 'AMCT Intermediate',
-    'AA': 'AMCT Advanced',
     'F': 'CPC Crash Course',
     'T': 'CPT Coding',
     'Z': 'ICD-10 Coding',
@@ -302,6 +309,19 @@ export default function GenerateStudentIdModal({ isOpen, onClose, onConfirm, exi
                   onChange={(e) => setCourse(e.target.value)}
                   className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer font-sans"
                 >
+                  <optgroup label="AMCT Certification Programmes">
+                    <option value="AB">AB - AMCT Beginner</option>
+                    <option value="AI">AI - AMCT Intermediate</option>
+                    <option value="AA">AA - AMCT Advanced</option>
+                    <option value="A">A - AMCT Foundation</option>
+                  </optgroup>
+
+                  <optgroup label="Medical Coding Internship Programmes">
+                    <option value="IB">IB - Internship Beginner</option>
+                    <option value="II">II - Internship Intermediate</option>
+                    <option value="IA">IA - Internship Advanced</option>
+                  </optgroup>
+
                   <optgroup label="AAPC Certifications">
                     <option value="C">C - CPC (Certified Professional Coder)</option>
                     <option value="E">E - CIC (Certified Inpatient Coder)</option>
@@ -341,10 +361,6 @@ export default function GenerateStudentIdModal({ isOpen, onClose, onConfirm, exi
                   </optgroup>
 
                   <optgroup label="Foundation & Prep Tracks">
-                    <option value="AB">AB - AMCT Beginner</option>
-                    <option value="AI">AI - AMCT Intermediate</option>
-                    <option value="AA">AA - AMCT Advanced</option>
-                    <option value="A">A - AMCT Foundation</option>
                     <option value="F">F - CPC Crash Course</option>
                     <option value="T">T - CPT Coding</option>
                     <option value="Z">Z - ICD-10 Coding</option>

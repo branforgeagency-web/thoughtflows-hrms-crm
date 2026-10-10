@@ -20,6 +20,17 @@ export const BRANCH_MAP = {
 };
 
 export const COURSE_MAP = {
+  // AMCT Certification Programmes
+  'AB': 'AMCT Beginner',
+  'AI': 'AMCT Intermediate',
+  'AA': 'AMCT Advanced',
+  'A': 'AMCT - Advanced Medical Coding',
+
+  // Medical Coding Internship Programmes
+  'IB': 'Internship Beginner',
+  'II': 'Internship Intermediate',
+  'IA': 'Internship Advanced',
+
   // AAPC Certifications
   'C': 'CPC - Certified Professional Coder',
   'E': 'CIC - Certified Inpatient Coder',
@@ -55,10 +66,6 @@ export const COURSE_MAP = {
   'HIM': 'HIM - Health Information Management',
 
   // Foundation & Prep Tracks
-  'A': 'AMCT - Advanced Medical Coding',
-  'AB': 'AMCT Beginner',
-  'AI': 'AMCT Intermediate',
-  'AA': 'AMCT Advanced',
   'F': 'CPC Crash Course',
   'T': 'CPT Coding',
   'Z': 'ICD-10 Coding',
@@ -139,6 +146,10 @@ export function getCourseCode(course) {
   if (COURSE_MAP[upper]) return upper;
 
   if (upper.includes('CRASH')) return 'F';
+  if (upper.includes('INTERNSHIP BEGINNER')) return 'IB';
+  if (upper.includes('INTERNSHIP INTERMEDIATE')) return 'II';
+  if (upper.includes('INTERNSHIP ADVANCED')) return 'IA';
+  if (upper.includes('INTERNSHIP')) return 'IB';
   if (upper.includes('AMCT BEGINNER') || upper.includes('BEGINNER')) return 'AB';
   if (upper.includes('AMCT INTERMEDIATE') || upper.includes('INTERMEDIATE')) return 'AI';
   if (upper.includes('AMCT ADVANCED') || upper.includes('ADVANCED')) return 'AA';

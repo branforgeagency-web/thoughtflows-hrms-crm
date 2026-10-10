@@ -307,15 +307,15 @@ export default function HrLmsSection({ currentUser }) {
 
   // 20 Course Knowledge Learning Modules
   const [courseModules, setCourseModules] = useState([
+    { id: 'c7', title: 'AMCT Beginner Course Module', sub: 'ACI', progress: 85, desc: 'videos + PDF · test · pass scale 85%', passingScore: '80%' },
+    { id: 'c8', title: 'AMCT Inter Course Module', sub: 'AI', progress: 40, desc: 'videos + PDF · test · 40% done', passingScore: '80%' },
+    { id: 'c9', title: 'AMCT Advanced Course Module', sub: 'AA', progress: 0, desc: 'videos + PDF · test · 0% done', passingScore: '80%' },
     { id: 'c1', title: 'CPC Course Module', sub: 'CPC', progress: 88, desc: 'videos + PDF · test · pass scale 80%', passingScore: '80%' },
     { id: 'c2', title: 'COC Course Module', sub: 'COC', progress: 82, desc: 'videos + PDF · test · pass scale 80%', passingScore: '80%' },
     { id: 'c3', title: 'CIC Course Module', sub: 'CIC', progress: 79, desc: 'videos + PDF · test · pass scale 80%', passingScore: '80%' },
     { id: 'c4', title: 'CRC Course Module', sub: 'CRC', progress: 35, desc: 'videos + PDF · test · 35% done', passingScore: '80%' },
     { id: 'c5', title: 'CPMA Course Module', sub: 'CPMA', progress: 0, desc: 'videos + PDF · test · 0% done', passingScore: '80%' },
     { id: 'c6', title: 'CCS Course Module', sub: 'CCS', progress: 90, desc: 'videos + PDF · test · pass scale 90%', passingScore: '80%' },
-    { id: 'c7', title: 'AMCT Beginner Course Module', sub: 'ACI', progress: 85, desc: 'videos + PDF · test · pass scale 85%', passingScore: '80%' },
-    { id: 'c8', title: 'AMCT Inter Course Module', sub: 'AI', progress: 40, desc: 'videos + PDF · test · 40% done', passingScore: '80%' },
-    { id: 'c9', title: 'AMCT Advanced Course Module', sub: 'AA', progress: 0, desc: 'videos + PDF · test · 0% done', passingScore: '80%' },
     { id: 'c10', title: 'IP-DRG Course Module', sub: 'IPDRG', progress: 0, desc: 'videos + PDF · test · 0% done', passingScore: '80%' },
     { id: 'c11', title: 'ED Coding Course Module', sub: 'ED', progress: 0, desc: 'videos + PDF · test · 0% done', passingScore: '80%' },
     { id: 'c12', title: 'E/M Course Module', sub: 'EM', progress: 76, desc: 'videos + PDF · test · pass scale 76%', passingScore: '80%' },
@@ -332,27 +332,28 @@ export default function HrLmsSection({ currentUser }) {
 
   // Detailed Course Eligibility List for My HR Profile view
   const PROFILE_COURSE_BASE = [
+    { code: 'AMCT_BEG', name: 'AMCT Beginner', category: 'Foundation', status: 'ELIGIBLE' },
+    { code: 'AMCT_INT', name: 'AMCT Intermediate', category: 'Advanced Mastery', status: 'ELIGIBLE' },
+    { code: 'AMCT_ADV', name: 'AMCT Advanced', category: 'Advanced Mastery', status: 'LOCKED' },
     { code: 'CPC', name: 'CPC', category: 'Medical Coding', status: 'ELIGIBLE' },
     { code: 'COC', name: 'COC', category: 'Outpatient Coding', status: 'ELIGIBLE' },
     { code: 'CIC', name: 'CIC', category: 'Inpatient Coding', status: 'ELIGIBLE' },
     { code: 'CRC', name: 'CRC', category: 'Risk Adjustment', status: 'LOCKED' },
     { code: 'CPMA', name: 'CPMA', category: 'Medical Auditing', status: 'LOCKED' },
     { code: 'CCS', name: 'CCS', category: 'Hospital Coding', status: 'ELIGIBLE' },
-    { code: 'AMCI_BEG', name: 'AMCI Beginner', category: 'Foundation', status: 'ELIGIBLE' },
-    { code: 'AMCI_MAS', name: 'AMCI Master', category: 'Advanced Mastery', status: 'LOCKED' },
   ];
 
   // 20 Course Cards Grid for dedicated Course Eligibility view
   const ALL_COURSE_GRID_BASE = [
+    { code: 'AMCT_BEG', title: 'AMCT Beginner', sub: 'ACI', canCounsel: true, score: 85 },
+    { code: 'AMCT_INT', title: 'AMCT Inter', sub: 'AI', canCounsel: false, score: 40 },
+    { code: 'AMCT_ADV', title: 'AMCT Advanced', sub: 'AA', canCounsel: false, score: 0 },
     { code: 'CPC', title: 'CPC', sub: 'CPC', canCounsel: true, score: 88 },
     { code: 'COC', title: 'COC', sub: 'COC', canCounsel: true, score: 82 },
     { code: 'CIC', title: 'CIC', sub: 'CIC', canCounsel: true, score: 79 },
     { code: 'CRC', title: 'CRC', sub: 'CRC', canCounsel: false, score: 35 },
     { code: 'CPMA', title: 'CPMA', sub: 'CPMA', canCounsel: false, score: 0 },
     { code: 'CCS', title: 'CCS', sub: 'CCS', canCounsel: true, score: 90 },
-    { code: 'AMCT_BEG', title: 'AMCT Beginner', sub: 'ACI', canCounsel: true, score: 85 },
-    { code: 'AMCT_INT', title: 'AMCT Inter', sub: 'AI', canCounsel: false, score: 40 },
-    { code: 'AMCT_ADV', title: 'AMCT Advanced', sub: 'AA', canCounsel: false, score: 0 },
     { code: 'IP_DRG', title: 'IP-DRG', sub: 'IPDRG', canCounsel: false, score: 0 },
     { code: 'ED', title: 'ED Coding', sub: 'ED', canCounsel: false, score: 0 },
     { code: 'EM', title: 'E/M', sub: 'EM', canCounsel: true, score: 76 },

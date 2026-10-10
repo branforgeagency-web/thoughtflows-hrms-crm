@@ -63,7 +63,7 @@ export default function BookNewDemoModal({ isOpen, onClose, initialData, onConfi
   const [studentName, setStudentName] = useState(initialData?.studentName || initialData?.name || initialData?.candidateName || '');
   const [mobile, setMobile] = useState(initialData?.mobile || initialData?.phone || '');
   const [email, setEmail] = useState(initialData?.email || '');
-  const [course, setCourse] = useState(initialData?.course || 'CPC');
+  const [course, setCourse] = useState(initialData?.course || 'AMCT Beginner (Classroom)');
   const [mode, setMode] = useState(initialData?.mode || 'Online (Zoom Live)');
   const [preferredDate, setPreferredDate] = useState(() => {
     const today = new Date();
@@ -263,7 +263,7 @@ export default function BookNewDemoModal({ isOpen, onClose, initialData, onConfi
                   <optgroup key={cat.category} label={cat.title}>
                     {cat.courses.map((c) => (
                       <option key={c.code} value={c.code}>
-                        {c.code} — {c.name}
+                        {c.code === c.name ? c.name : `${c.code} — ${c.name}`}
                       </option>
                     ))}
                   </optgroup>

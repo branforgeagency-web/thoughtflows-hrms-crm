@@ -15,11 +15,16 @@ import {
   ShieldCheck, 
   ExternalLink,
   ChevronLeft,
-  Check
+  Check,
+  AlertTriangle,
+  UserCheck,
+  AlertCircle
 } from 'lucide-react';
 import logoImg from '../assets/thoughtflows-logo.png';
 import { COURSE_CATEGORIES } from '../constants/courses';
-import { createStudent, getStudents } from '../services/api';
+import { LEAD_SOURCE_GROUPS } from '../constants/leadSources';
+import { getAvailableTimingSlots, BATCH_SCHEDULE } from '../constants/batchTimings';
+import { createStudent, getStudents, checkDuplicateStudent } from '../services/api';
 import { getCurrentMonthYear, getCurrentMonthName } from '../utils/dateUtils';
 import { copyToClipboard } from '../utils/clipboard';
 import { 
@@ -50,19 +55,24 @@ export default function StudentRegistrationPage({ onBack }) {
 
   // Course & Mode
   const [courseType, setCourseType] = useState('Online'); // 'Online' | 'Offline'
-  const [course, setCourse] = useState(queryParams.get('course') || 'CPC');
+  const [course, setCourse] = useState(queryParams.get('course') || 'AMCT Beginner (Classroom)');
   
   // Knowledge source
-  const [source, setSource] = useState('Online');
+  const [source, setSource] = useState(queryParams.get('source') || 'Google Calls / GMB');
 
   // Timings & Batch
-  const [preferredTimings, setPreferredTimings] = useState('8-10 PM Weekdays');
+  const [preferredTimings, setPreferredTimings] = useState('');
   const [batchType, setBatchType] = useState('Weekdays'); // 'Weekdays', 'Weekends', 'Both'
+
+  const availableSlots = useMemo(() => {
+    return getAvailableTimingSlots({ course, mode: courseType, branch });
+  }, [course, courseType, branch]);
 
   // Submission State
   const [submitting, setSubmitting] = useState(false);
   const [submittedData, setSubmittedData] = useState(null);
   const [errorMessage, setErrorMessage] = useState(null);
+  const [duplicateWarning, setDuplicateWarning] = useState(null);
   const [copiedId, setCopiedId] = useState(false);
 
   const [existingStudents, setExistingStudents] = useState([]);
@@ -74,6 +84,23 @@ export default function StudentRegistrationPage({ onBack }) {
       })
       .catch((err) => console.error('Error fetching students for registration page ID generator:', err));
   }, []);
+
+  const handleCheckDuplicate = async () => {
+    const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+    const cleanMail = email.trim().toLowerCase();
+    if (cleanPhone.length === 10 || cleanMail) {
+      try {
+        const res = await checkDuplicateStudent({ phone: cleanPhone, email: cleanMail });
+        if (res?.isDuplicate) {
+          setDuplicateWarning(res);
+        } else {
+          setDuplicateWarning(null);
+        }
+      } catch (e) {
+        // Silently ignore pre-check network hiccups
+      }
+    }
+  };
 
   const currentIdDetails = useMemo(() => {
     return generateStudentIdDetails({
@@ -98,13 +125,6 @@ export default function StudentRegistrationPage({ onBack }) {
     }
   ];
 
-  const SOURCES = [
-    'Social Media',
-    'Word of Mouth',
-    'Online',
-    'College Campus',
-    'Others'
-  ];
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -176,10 +196,16 @@ export default function StudentRegistrationPage({ onBack }) {
       setSubmitting(true);
       const res = await createStudent(studentRecord);
       setSubmittedData(res || studentRecord);
+      setDuplicateWarning(null);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (err) {
       console.error('Registration error:', err);
-      setErrorMessage(err?.response?.data?.error || err.message || 'Registration failed. Please try again.');
+      const errMsg = err?.response?.data?.error || err.message || 'Registration failed. Please try again.';
+      setErrorMessage(errMsg);
+      if (err?.response?.data?.duplicate) {
+        setDuplicateWarning(err.response.data.duplicate);
+      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     } finally {
       setSubmitting(false);
     }
@@ -357,11 +383,34 @@ export default function StudentRegistrationPage({ onBack }) {
               </div>
             </div>
 
-            {/* Error Message Alert */}
-            {errorMessage && (
-              <div className="mx-6 sm:mx-8 mt-4 p-3.5 bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold rounded-xl flex items-center gap-2 animate-shake">
-                <span>⚠️</span>
-                <span>{errorMessage}</span>
+            {/* Error / Duplicate Warning Alert */}
+            {(errorMessage || duplicateWarning) && (
+              <div className="mx-6 sm:mx-8 mt-4 p-4 bg-rose-50 border-2 border-rose-300 text-rose-950 text-xs rounded-2xl shadow-sm animate-shake">
+                <div className="flex items-start gap-3">
+                  <div className="w-8 h-8 rounded-xl bg-rose-500 text-white flex items-center justify-center flex-shrink-0 shadow-xs mt-0.5">
+                    <AlertTriangle className="w-4 h-4 stroke-[2.5]" />
+                  </div>
+                  <div className="space-y-1.5 flex-1">
+                    <div className="text-xs font-black uppercase tracking-wider text-rose-700">
+                      {duplicateWarning ? 'Duplicate Record Error' : 'Registration Error'}
+                    </div>
+                    <div className="text-xs sm:text-sm font-semibold text-rose-950 leading-relaxed">
+                      {errorMessage || duplicateWarning?.error}
+                    </div>
+                    {duplicateWarning?.firstRegistrationMember?.lastContactedHr && (
+                      <div className="pt-2 flex flex-wrap items-center gap-2">
+                        <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-white border border-rose-200 text-slate-800 rounded-xl text-xs font-extrabold shadow-xs">
+                          <User className="w-3.5 h-3.5 text-rose-600" />
+                          <span>First Registered Member: <strong className="text-slate-950">{duplicateWarning.firstRegistrationMember.name}</strong></span>
+                        </span>
+                        <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-500 text-white rounded-xl text-xs font-black shadow-xs">
+                          <UserCheck className="w-3.5 h-3.5 text-white" />
+                          <span>Lastly Contacted HR: <strong className="underline decoration-white/60">{duplicateWarning.firstRegistrationMember.lastContactedHr}</strong></span>
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
             )}
 
@@ -443,6 +492,7 @@ export default function StudentRegistrationPage({ onBack }) {
                       required
                       placeholder="10-digit mobile number"
                       value={phone}
+                      onBlur={handleCheckDuplicate}
                       onChange={(e) => {
                         setPhone(e.target.value);
                         if (sameAsMobile) setWhatsappNumber(e.target.value);
@@ -491,6 +541,7 @@ export default function StudentRegistrationPage({ onBack }) {
                       required
                       placeholder="student@gmail.com"
                       value={email}
+                      onBlur={handleCheckDuplicate}
                       onChange={(e) => setEmail(e.target.value)}
                       className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-slate-900 outline-none focus:border-[#00796b] transition-all"
                     />
@@ -636,27 +687,46 @@ export default function StudentRegistrationPage({ onBack }) {
                   <select
                     value={preferredTimings}
                     onChange={(e) => setPreferredTimings(e.target.value)}
-                    className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-slate-900 outline-none focus:border-[#00796b] transition-all font-medium"
+                    className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-slate-900 outline-none focus:border-[#00796b] transition-all font-medium cursor-pointer"
                   >
-                    <option value="8-10 PM Weekdays">8:00 PM – 10:00 PM (Weekdays)</option>
-                    <option value="7-9 AM Weekdays">7:00 AM – 9:00 AM (Morning)</option>
-                    <option value="10 AM-1 PM Daily">10:00 AM – 1:00 PM (Regular)</option>
-                    <option value="2-5 PM Weekdays">2:00 PM – 5:00 PM (Afternoon)</option>
-                    <option value="Weekend Full Day">Weekend Full Day (Sat & Sun)</option>
+                    <option value="">— Select timing slot —</option>
+                    {preferredTimings && !availableSlots.some(s => s.label === preferredTimings || s.value === preferredTimings || s.timing === preferredTimings) && (
+                      <option value={preferredTimings}>Current: {preferredTimings}</option>
+                    )}
+                    <optgroup label={`🎯 Available for Selected Course & Branch (${availableSlots.length} Slots)`}>
+                      {availableSlots.map((s, idx) => (
+                        <option key={`avail-${idx}`} value={s.label}>
+                          {s.label}
+                        </option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="📋 All Other Schedule Slots">
+                      {BATCH_SCHEDULE.filter(s => !availableSlots.some(a => a.label === s.label)).map((s, idx) => (
+                        <option key={`other-${idx}`} value={s.label}>
+                          {s.label}
+                        </option>
+                      ))}
+                    </optgroup>
                   </select>
                 </div>
 
                 <div>
                   <label className="block text-xs font-bold text-[#00695c] mb-1">
-                    How did you hear about Thoughtflows?
+                    How did you hear about Thoughtflows? (Mode of Source)
                   </label>
                   <select
                     value={source}
                     onChange={(e) => setSource(e.target.value)}
-                    className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-slate-900 outline-none focus:border-[#00796b] transition-all font-medium"
+                    className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-slate-900 outline-none focus:border-[#00796b] transition-all font-medium cursor-pointer"
                   >
-                    {SOURCES.map(s => (
-                      <option key={s} value={s}>{s}</option>
+                    {LEAD_SOURCE_GROUPS.map((grp) => (
+                      <optgroup key={grp.group} label={grp.title}>
+                        {grp.options.map((opt) => (
+                          <option key={opt} value={opt}>
+                            {opt}
+                          </option>
+                        ))}
+                      </optgroup>
                     ))}
                   </select>
                 </div>

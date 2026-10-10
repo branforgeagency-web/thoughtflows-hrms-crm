@@ -59,6 +59,7 @@ import {
 import { effectiveStage } from '../utils/placement';
 import { COURSE_CATEGORIES } from '../constants/courses';
 import NotificationBell from './NotificationBell';
+import DashboardNavSwitcher from './DashboardNavSwitcher';
 
 // Readiness comes from the Training dashboard (tests + attendance + mock +
 // trainer scores → Student.readinessScore). Older records fall back to the
@@ -886,8 +887,14 @@ export default function CccpDashboard({
       <main className="flex-1 flex flex-col h-full overflow-y-auto bg-[#f8fafc] bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(14,165,233,0.06),rgba(255,255,255,0))]">
         {/* Body Container */}
         <div className="p-5 sm:p-7 space-y-6 max-w-[1640px] mx-auto w-full">
-          <div className="flex justify-end -mb-4">
-            <NotificationBell audience="cccp" onOpenItem={(n) => setActiveNav(n?.type === 'exam' ? 'certification' : 'placement')} />
+          <div className="flex justify-between items-center -mb-4">
+            <div className="text-xs font-bold text-slate-500 uppercase tracking-wider hidden sm:block">
+              ThoughtFlows · CCCP &amp; Placements Desk
+            </div>
+            <div className="flex items-center gap-2.5 ml-auto">
+              <DashboardNavSwitcher currentDepartment="cccp" onSwitchDepartment={onSwitchDepartment} />
+              <NotificationBell audience="cccp" onOpenItem={(n) => setActiveNav(n?.type === 'exam' ? 'certification' : 'placement')} />
+            </div>
           </div>
           {/* ======================================================== */}
           {/* MASTER HOME VIEW                                          */}
@@ -1364,7 +1371,7 @@ export default function CccpDashboard({
 
                 {/* Category Filter Pills */}
                 <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
-                  {['ALL', 'AAPC', 'Speciality', 'AHIMA', 'HIMAA', 'Foundation'].map((cat) => (
+                  {['ALL', ...COURSE_CATEGORIES.map(cat => cat.category)].map((cat) => (
                     <button
                       key={cat}
                       type="button"
@@ -1375,7 +1382,7 @@ export default function CccpDashboard({
                           : 'bg-white border border-slate-200 text-slate-600 hover:border-slate-300'
                       }`}
                     >
-                      {cat === 'ALL' ? 'All Accreditations' : cat}
+                      {cat === 'ALL' ? 'All Accreditations' : cat.replace(/ programmes| Programmes| Certifications/gi, '')}
                     </button>
                   ))}
                 </div>

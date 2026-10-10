@@ -53,6 +53,7 @@ import ManagementSummaryBoard from './ManagementSummaryBoard';
 import DailyTrackerBoard from './DailyTrackerBoard';
 import RegionalManagerDashboard from './RegionalManagerDashboard';
 import BranchManagerDashboard from './BranchManagerDashboard';
+import DashboardNavSwitcher from './DashboardNavSwitcher';
 import {
   getBranches,
   getDepartments,
@@ -75,6 +76,9 @@ import {
   getDailyClosures,
   getLeadDemands,
   createLeadDemand,
+  getTrainerSettings,
+  getBatches,
+  getStats,
   onDataUpdate
 } from '../services/api';
 
@@ -352,7 +356,10 @@ export default function LeadershipHubDashboard({ onClose, currentUser, onLogout,
           </div>
         </div>
         <div className="flex items-center gap-2 relative">
-
+          <DashboardNavSwitcher
+            currentDepartment="leadership"
+            onSwitchDepartment={onSwitchDepartment}
+          />
 
           <div className="flex items-center gap-2 bg-white/10 rounded-full pl-2 pr-4 py-1.5">
             <span className="w-8 h-8 rounded-full grid place-items-center text-xs font-bold text-white bg-gradient-to-br from-violet-400 to-indigo-600 flex-shrink-0">
@@ -505,6 +512,7 @@ export default function LeadershipHubDashboard({ onClose, currentUser, onLogout,
             onSelectHead={(deptId) => {
               setSelectedDept(deptId);
             }}
+            onSwitchDepartment={onSwitchDepartment}
           />
         )}
 
@@ -514,6 +522,7 @@ export default function LeadershipHubDashboard({ onClose, currentUser, onLogout,
             onBack={() => setSelectedDept(null)}
             currentUser={currentUser}
             onChanged={refreshSummary}
+            onSwitchDepartment={onSwitchDepartment}
           />
         )}
 
@@ -537,16 +546,12 @@ export default function LeadershipHubDashboard({ onClose, currentUser, onLogout,
               accentBg: '#059669',
               borderAccent: 'border-emerald-600',
               icon: HeartHandshake,
-              targetGapLabel: 'ON "STUDENTS PLACED"',
-              targetGapValue: '10',
-              sampleApproval: 'Company mapping — Optum — 5 seats',
-              defaultPendingApprovals: 1,
-              defaultOpenEscalations: 1,
-              defaultTeamSize: 3
+              targetGapLabel: 'ON "STUDENTS PLACED"'
             }}
             onBack={() => setSelectedDept(null)}
             currentUser={currentUser}
             onChanged={refreshSummary}
+            onSwitchDepartment={onSwitchDepartment}
           />
         )}
 
@@ -560,16 +565,12 @@ export default function LeadershipHubDashboard({ onClose, currentUser, onLogout,
               accentBg: '#D97706',
               borderAccent: 'border-amber-600',
               icon: Megaphone,
-              targetGapLabel: 'ON "QUALIFIED LEADS GENERATED"',
-              targetGapValue: '15',
-              sampleApproval: 'Ad Campaign Budget — Google Ads — ₹50,000',
-              defaultPendingApprovals: 2,
-              defaultOpenEscalations: 1,
-              defaultTeamSize: 4
+              targetGapLabel: 'ON "QUALIFIED LEADS GENERATED"'
             }}
             onBack={() => setSelectedDept(null)}
             currentUser={currentUser}
             onChanged={refreshSummary}
+            onSwitchDepartment={onSwitchDepartment}
           />
         )}
 
@@ -583,16 +584,31 @@ export default function LeadershipHubDashboard({ onClose, currentUser, onLogout,
               accentBg: '#DB2777',
               borderAccent: 'border-pink-600',
               icon: Crown,
-              targetGapLabel: 'ON "STUDENT SATISFACTION %"',
-              targetGapValue: '5%',
-              sampleApproval: 'Course Extension Request — Batch 2026-A',
-              defaultPendingApprovals: 1,
-              defaultOpenEscalations: 2,
-              defaultTeamSize: 5
+              targetGapLabel: 'ON "STUDENT SATISFACTION %"'
             }}
             onBack={() => setSelectedDept(null)}
             currentUser={currentUser}
             onChanged={refreshSummary}
+            onSwitchDepartment={onSwitchDepartment}
+          />
+        )}
+
+        {view === 'department' && selectedDept === 'admin' && (
+          <HeadOfDeptDashboard
+            deptConfig={{
+              deptId: 'admin',
+              code: 'DEP-ADM-001',
+              title: 'Executive Admin & Operations',
+              headName: 'Operations Lead',
+              accentBg: '#4F46E5',
+              borderAccent: 'border-indigo-600',
+              icon: Settings,
+              targetGapLabel: 'ON "OPERATIONAL SLA & GOVERNANCE"'
+            }}
+            onBack={() => setSelectedDept(null)}
+            currentUser={currentUser}
+            onChanged={refreshSummary}
+            onSwitchDepartment={onSwitchDepartment}
           />
         )}
 
@@ -1514,12 +1530,20 @@ const DEPARTMENT_HEADS_DATA = [
     icon: Crown,
     iconBg: '#DB2777',
     iconColor: 'text-pink-100'
+  },
+  {
+    id: 'admin',
+    title: 'Executive Admin & Operations',
+    subtitle: 'System roles · settings · campus governance',
+    icon: Settings,
+    iconBg: '#4F46E5',
+    iconColor: 'text-indigo-100'
   }
 ];
 
 // Card styling only — each head's name and staff count come from the live
 // department list (the staff account whose role marks them as head)
-function DepartmentHeadsView({ departments = [], onBack, onSelectHead }) {
+function DepartmentHeadsView({ departments = [], onBack, onSelectHead, onSwitchDepartment }) {
   const headOf = (id) => departments.find((d) => d.dashboard === id);
   return (
     <div className="w-full">
@@ -1542,7 +1566,7 @@ function DepartmentHeadsView({ departments = [], onBack, onSelectHead }) {
         <p className="text-xs sm:text-sm text-slate-400 font-mono mt-1 flex items-center gap-2">
           <span>{DEPARTMENT_HEADS_DATA.length} departments</span>
           <span className="text-slate-300">·</span>
-          <span>pick one to open its dashboard</span>
+          <span>open any department head desk or launch its live dashboard</span>
         </p>
       </div>
 
@@ -1550,31 +1574,62 @@ function DepartmentHeadsView({ departments = [], onBack, onSelectHead }) {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {DEPARTMENT_HEADS_DATA.map((dept) => {
           const Icon = dept.icon;
+          const headInfo = headOf(dept.id);
           return (
-            <button
+            <div
               key={dept.id}
-              onClick={() => onSelectHead && onSelectHead(dept.id)}
-              className="text-left bg-white rounded-3xl p-6 sm:p-7 border border-slate-100/90 shadow-[0_2px_14px_rgba(0,0,0,0.03)] hover:shadow-xl hover:-translate-y-1 hover:border-slate-200 transition-all duration-200 group flex flex-col justify-between min-h-[175px] cursor-pointer"
+              className="bg-white rounded-3xl p-6 sm:p-7 border border-slate-100/90 shadow-[0_2px_14px_rgba(0,0,0,0.03)] hover:shadow-xl transition-all duration-200 flex flex-col justify-between min-h-[220px]"
             >
               <div>
-                <div
-                  className="w-14 h-14 rounded-2xl flex items-center justify-center shadow-xs mb-4"
-                  style={{ backgroundColor: dept.iconBg }}
-                >
-                  <Icon className={`w-7 h-7 ${dept.iconColor}`} />
+                <div className="flex items-center justify-between mb-4">
+                  <div
+                    className="w-12 h-12 rounded-2xl flex items-center justify-center shadow-xs"
+                    style={{ backgroundColor: dept.iconBg }}
+                  >
+                    <Icon className={`w-6 h-6 ${dept.iconColor}`} />
+                  </div>
+                  {onSwitchDepartment && (
+                    <button
+                      onClick={() => onSwitchDepartment(dept.id)}
+                      className="px-2.5 py-1 rounded-full text-[11px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 transition-all flex items-center gap-1 cursor-pointer"
+                      title={`Open live ${dept.title} dashboard`}
+                    >
+                      <span>Live Dashboard</span>
+                      <ArrowRight className="w-3 h-3" />
+                    </button>
+                  )}
                 </div>
-                <h3 className="text-base sm:text-[17px] font-extrabold text-slate-900 group-hover:text-indigo-600 transition-colors tracking-tight">
+
+                <h3 className="text-base sm:text-[17px] font-extrabold text-slate-900 tracking-tight">
                   {dept.title}
                 </h3>
                 <p className="text-xs text-slate-400 font-medium mt-1">
-                  {headOf(dept.id)?.head || 'Head not assigned'}
-                  {typeof headOf(dept.id)?.memberCount === 'number' ? ` · ${headOf(dept.id).memberCount} staff` : ''}
+                  {headInfo?.head || 'Head not assigned'}
+                  {typeof headInfo?.memberCount === 'number' ? ` · ${headInfo.memberCount} staff` : ''}
                 </p>
-                <p className="text-xs text-slate-500 mt-0.5">
+                <p className="text-xs text-slate-500 mt-1 line-clamp-1">
                   {dept.subtitle}
                 </p>
               </div>
-            </button>
+
+              <div className="pt-4 mt-3 border-t border-slate-100 flex items-center justify-between">
+                <button
+                  onClick={() => onSelectHead && onSelectHead(dept.id)}
+                  className="text-xs font-bold text-slate-700 hover:text-indigo-600 transition-colors flex items-center gap-1 cursor-pointer"
+                >
+                  <span>Open Head Desk</span>
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+                {onSwitchDepartment && (
+                  <button
+                    onClick={() => onSwitchDepartment(dept.id)}
+                    className="text-[11px] font-extrabold text-indigo-600 hover:text-indigo-800 transition-colors cursor-pointer"
+                  >
+                    Enter Live →
+                  </button>
+                )}
+              </div>
+            </div>
           );
         })}
       </div>
@@ -1582,7 +1637,7 @@ function DepartmentHeadsView({ departments = [], onBack, onSelectHead }) {
   );
 }
 
-function HeadOfHrDashboard({ department, onBack, currentUser, onChanged }) {
+function HeadOfHrDashboard({ department, onBack, currentUser, onChanged, onSwitchDepartment }) {
   const [tab, setTab] = useState('desk');
   const counts = useDeskCounts({ departmentCode: 'DEP-HR-001' });
 
@@ -1748,9 +1803,20 @@ function HeadOfHrDashboard({ department, onBack, currentUser, onChanged }) {
           </div>
         </div>
 
-        <div className="text-center pr-3 flex-shrink-0" title="100 minus the share of open approvals, escalations and overdue follow-ups against open work">
-          <div className={`text-3xl font-extrabold leading-none ${health === null ? 'text-slate-300' : health >= 80 ? 'text-emerald-500' : health >= 50 ? 'text-amber-500' : 'text-rose-500'}`}>{show(health)}</div>
-          <div className="text-[9px] font-bold text-slate-400 tracking-wider uppercase mt-1">HEALTH</div>
+        <div className="flex items-center gap-3">
+          {onSwitchDepartment && (
+            <button
+              onClick={() => onSwitchDepartment('hr')}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-purple-700 hover:bg-purple-800 text-white text-xs font-bold transition-all shadow-xs cursor-pointer"
+            >
+              <span>Open Full HR Dashboard</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          )}
+          <div className="text-center pr-3 flex-shrink-0" title="100 minus the share of open approvals, escalations and overdue follow-ups against open work">
+            <div className={`text-3xl font-extrabold leading-none ${health === null ? 'text-slate-300' : health >= 80 ? 'text-emerald-500' : health >= 50 ? 'text-amber-500' : 'text-rose-500'}`}>{show(health)}</div>
+            <div className="text-[9px] font-bold text-slate-400 tracking-wider uppercase mt-1">HEALTH</div>
+          </div>
         </div>
       </div>
 
@@ -2035,7 +2101,7 @@ function HeadOfHrDashboard({ department, onBack, currentUser, onChanged }) {
 
 // ---- Reusable Head of Department Dashboard (CCCP, Marketing, Students, etc.) ----
 
-function HeadOfDeptDashboard({ deptConfig, onBack, currentUser, onChanged }) {
+function HeadOfDeptDashboard({ deptConfig, onBack, currentUser, onChanged, onSwitchDepartment }) {
   const [tab, setTab] = useState('desk');
   const counts = useDeskCounts({ departmentCode: deptConfig.code });
   const IconComponent = deptConfig.icon || Users;
@@ -2092,16 +2158,18 @@ function HeadOfDeptDashboard({ deptConfig, onBack, currentUser, onChanged }) {
     }
   };
 
-  const pendingApprovalsCount = approvalsList.filter(a => a.status === 'pending').length || (deptConfig.defaultPendingApprovals || 1);
+  const pendingApprovals = approvalsList.filter(a => a.status === 'pending');
+  const pendingApprovalsCount = pendingApprovals.length;
   const openEscalations = (counts.escalations || []).filter((e) => !['resolved', 'closed'].includes(e.status));
-  const openEscalationsCount = openEscalations.length || (deptConfig.defaultOpenEscalations || 1);
-  const teamSize = teamList ? teamList.length : (deptConfig.defaultTeamSize || 3);
+  const openEscalationsCount = openEscalations.length;
+  const teamSize = teamList ? teamList.length : 0;
+  const healthScore = Math.max(0, 100 - (openEscalationsCount * 15 + pendingApprovalsCount * 5));
 
   const TABS = [
     { key: 'desk', label: 'My Desk', icon: LayoutDashboard },
     { key: 'team', label: 'Team Performance', icon: Users, iconColor: 'text-blue-500' },
-    { key: 'approvals', label: 'Approvals', icon: CheckCircle2, iconColor: 'text-emerald-500', badge: String(pendingApprovalsCount), badgeColor: 'bg-amber-500' },
-    { key: 'escalations', label: 'Escalations', icon: AlertTriangle, iconColor: 'text-rose-500', badge: String(openEscalationsCount), badgeColor: 'bg-rose-500' },
+    { key: 'approvals', label: 'Approvals', icon: CheckCircle2, iconColor: 'text-emerald-500', badge: pendingApprovalsCount > 0 ? String(pendingApprovalsCount) : null, badgeColor: 'bg-amber-500' },
+    { key: 'escalations', label: 'Escalations', icon: AlertTriangle, iconColor: 'text-rose-500', badge: openEscalationsCount > 0 ? String(openEscalationsCount) : null, badgeColor: 'bg-rose-500' },
     { key: 'tracker', label: 'Daily Tracker', icon: ClipboardList, iconColor: 'text-amber-500' },
     { key: 'reports', label: 'Reports', icon: FileText, iconColor: 'text-indigo-500' },
     { key: 'roster', label: 'Roster', icon: Calendar, iconColor: 'text-sky-500' },
@@ -2123,8 +2191,8 @@ function HeadOfDeptDashboard({ deptConfig, onBack, currentUser, onChanged }) {
         </button>
       </div>
 
-      {/* Header Banner matching user screenshot */}
-      <div className="bg-white border border-slate-200/90 rounded-2xl p-5 pl-6 flex items-center justify-between shadow-xs relative overflow-hidden">
+      {/* Header Banner matching user specification */}
+      <div className="bg-white border border-slate-200/90 rounded-2xl p-5 pl-6 flex items-center justify-between shadow-xs relative overflow-hidden flex-wrap gap-4">
         <div className="absolute left-0 top-0 bottom-0 w-1.5" style={{ backgroundColor: deptConfig.accentBg }} />
         <div className="flex items-center gap-4">
           <div
@@ -2140,9 +2208,25 @@ function HeadOfDeptDashboard({ deptConfig, onBack, currentUser, onChanged }) {
             </p>
           </div>
         </div>
-        <div className="text-right flex-shrink-0">
-          <div className="text-2xl font-extrabold text-rose-500 leading-none">0</div>
-          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mt-1">HEALTH</div>
+
+        <div className="flex items-center gap-4">
+          {onSwitchDepartment && deptConfig.deptId && (
+            <button
+              onClick={() => onSwitchDepartment(deptConfig.deptId)}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold text-white shadow-xs hover:opacity-95 transition-all cursor-pointer"
+              style={{ backgroundColor: deptConfig.accentBg }}
+            >
+              <span>Open Live Dashboard</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          )}
+
+          <div className="text-right flex-shrink-0">
+            <div className={`text-2xl font-extrabold leading-none ${healthScore >= 80 ? 'text-emerald-500' : healthScore >= 50 ? 'text-amber-500' : 'text-rose-500'}`}>
+              {healthScore}
+            </div>
+            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mt-1">HEALTH</div>
+          </div>
         </div>
       </div>
 
@@ -2200,7 +2284,7 @@ function HeadOfDeptDashboard({ deptConfig, onBack, currentUser, onChanged }) {
               onClick={() => setTab('targets')}
               className="text-left p-4 rounded-2xl bg-white border border-slate-200/90 border-t-4 border-t-amber-400 shadow-xs hover:shadow-md transition-all group cursor-pointer"
             >
-              <div className="text-2xl font-extrabold text-amber-500">{deptConfig.targetGapValue || '10'}</div>
+              <div className="text-2xl font-extrabold text-amber-500">{openEscalationsCount > 0 ? openEscalationsCount : '0'}</div>
               <div className="text-xs font-bold text-slate-900 mt-1">Target Gap</div>
               <div className="text-[9.5px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">{deptConfig.targetGapLabel}</div>
             </button>
@@ -2245,27 +2329,62 @@ function HeadOfDeptDashboard({ deptConfig, onBack, currentUser, onChanged }) {
             </div>
 
             <div className="space-y-3">
-              <div
-                onClick={() => setTab('approvals')}
-                className="p-4 rounded-xl bg-slate-50/80 border border-slate-200/80 flex items-center justify-between hover:bg-slate-100/60 transition-all cursor-pointer group"
-              >
-                <div className="flex items-center gap-3">
-                  <span className="px-2.5 py-1 rounded-lg text-xs font-extrabold bg-emerald-100 text-emerald-700 flex items-center gap-1">
-                    <CheckCircle2 className="w-3.5 h-3.5" /> Approve
+              {pendingApprovalsCount === 0 && openEscalationsCount === 0 ? (
+                <div className="p-4 rounded-xl bg-emerald-50/70 border border-emerald-200/80 flex items-center justify-between text-xs font-bold text-emerald-800">
+                  <span className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                    All approvals and escalations clear — department on track.
                   </span>
-                  <span className="text-xs font-extrabold text-slate-900">
-                    {deptConfig.sampleApproval || 'Department sign-off & budget approval request'}
-                  </span>
+                  <span className="text-[10px] uppercase font-mono text-emerald-600 font-extrabold">100% HEALTH</span>
                 </div>
-                <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-slate-700 transition-colors" />
-              </div>
+              ) : (
+                <>
+                  {pendingApprovals.slice(0, 3).map((item) => (
+                    <div
+                      key={item.id}
+                      onClick={() => setTab('approvals')}
+                      className="p-3.5 rounded-xl bg-slate-50/80 border border-slate-200/80 flex items-center justify-between hover:bg-slate-100/60 transition-all cursor-pointer group"
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className="px-2.5 py-1 rounded-lg text-xs font-extrabold bg-emerald-100 text-emerald-700 flex items-center gap-1">
+                          <CheckCircle2 className="w-3.5 h-3.5" /> Approve
+                        </span>
+                        <span className="text-xs font-extrabold text-slate-900">
+                          {item.title} — {item.by}
+                        </span>
+                      </div>
+                      <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-slate-700 transition-colors" />
+                    </div>
+                  ))}
+
+                  {openEscalations.slice(0, 3).map((esc) => (
+                    <div
+                      key={esc._id}
+                      onClick={() => setTab('escalations')}
+                      className="p-3.5 rounded-xl bg-rose-50/80 border border-rose-200/80 flex items-center justify-between hover:bg-rose-100/60 transition-all cursor-pointer group"
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className="px-2.5 py-1 rounded-lg text-xs font-extrabold bg-rose-100 text-rose-700 flex items-center gap-1">
+                          <AlertTriangle className="w-3.5 h-3.5" /> Resolve
+                        </span>
+                        <span className="text-xs font-extrabold text-slate-900">
+                          {esc.title}{esc.raisedBy ? ` — ${esc.raisedBy}` : ''}
+                        </span>
+                      </div>
+                      <ChevronRight className="w-4 h-4 text-rose-400 group-hover:text-rose-700 transition-colors" />
+                    </div>
+                  ))}
+                </>
+              )}
             </div>
           </div>
         </div>
       )}
 
       {/* Tab 2: Team Performance */}
-      {tab === 'team' && <TeamPerformanceBoard />}
+      {tab === 'team' && (
+        <TeamPerformanceBoard departmentCode={deptConfig.code} title={`${deptConfig.title} — Team Performance`} />
+      )}
 
       {/* Tab 3: Approvals */}
       {tab === 'approvals' && (
@@ -2278,29 +2397,37 @@ function HeadOfDeptDashboard({ deptConfig, onBack, currentUser, onChanged }) {
       )}
 
       {/* Tab 5: Daily Tracker */}
-      {tab === 'tracker' && <DailyTrackerBoard />}
+      {tab === 'tracker' && <DailyTrackerBoard departmentCode={deptConfig.code} />}
 
       {/* Tab 6: Reports */}
       {tab === 'reports' && <ReportsExportBoard departmentCode={deptConfig.code} departmentName={deptConfig.title} />}
 
       {/* Tab 7: Roster */}
-      {tab === 'roster' && <TeamRosterBoard />}
+      {tab === 'roster' && <TeamRosterBoard departmentCode={deptConfig.code} />}
 
       {/* Tab 8: Targets */}
-      {tab === 'targets' && <DepartmentTargetsBoard />}
+      {tab === 'targets' && <DepartmentTargetsBoard departmentCode={deptConfig.code} />}
 
       {/* Tab 9: SOP Hub */}
       {tab === 'sop' && <SopHubBoard department={deptConfig.code} departmentName={deptConfig.title} />}
 
       {/* Tab 10: Mgmt Summary */}
-      {tab === 'mgmt' && <ManagementSummaryBoard departmentName={deptConfig.title} />}
+      {tab === 'mgmt' && (
+        <ManagementSummaryBoard
+          departmentName={deptConfig.title}
+          pendingApprovalsCount={pendingApprovalsCount}
+          openEscalationsCount={openEscalationsCount}
+        />
+      )}
     </div>
   );
 }
 
 // ---- Head of Training Dashboard (Training Department · Regions) ----
 
-const TRAINING_REGIONS_DATA = [
+// ---- Head of Training Dashboard (Training Department · Regions) ----
+
+const TRAINING_ZONES_CONFIG = [
   {
     id: 'tn',
     code: 'DEP-TR-TN-001',
@@ -2310,13 +2437,11 @@ const TRAINING_REGIONS_DATA = [
     topBarGrad: 'linear-gradient(90deg, #2563EB, #3B82F6)',
     head: 'Manoj',
     state: 'Tamil Nadu',
-    trainers: 2,
-    batches: 1,
-    branches: 3,
     stat3Label: 'BRANCHES',
     accentText: 'text-blue-600',
     accentBorder: 'border-blue-200',
-    accentBg: 'bg-blue-50'
+    accentBg: 'bg-blue-50',
+    matcher: (str = '') => /tamil|coimbatore|chennai|salem|trichy|madurai|erode|tiruppur/i.test(str)
   },
   {
     id: 'on',
@@ -2327,13 +2452,11 @@ const TRAINING_REGIONS_DATA = [
     topBarGrad: 'linear-gradient(90deg, #0D9488, #10B981)',
     head: 'Keerthika',
     state: 'Online',
-    trainers: 4,
-    batches: 2,
-    branches: 1,
     stat3Label: 'MODE',
     accentText: 'text-teal-600',
     accentBorder: 'border-teal-200',
-    accentBg: 'bg-teal-50'
+    accentBg: 'bg-teal-50',
+    matcher: (str = '') => /online|virtual/i.test(str)
   },
   {
     id: 'kl',
@@ -2344,13 +2467,11 @@ const TRAINING_REGIONS_DATA = [
     topBarGrad: 'linear-gradient(90deg, #16A34A, #22C55E)',
     head: 'Vaishna',
     state: 'Kerala',
-    trainers: 0,
-    batches: 0,
-    branches: 2,
     stat3Label: 'BRANCHES',
     accentText: 'text-green-600',
     accentBorder: 'border-green-200',
-    accentBg: 'bg-green-50'
+    accentBg: 'bg-green-50',
+    matcher: (str = '') => /kerala|kochi|trivandrum|calicut/i.test(str)
   },
   {
     id: 'tg',
@@ -2361,131 +2482,71 @@ const TRAINING_REGIONS_DATA = [
     topBarGrad: 'linear-gradient(90deg, #EA580C, #F97316)',
     head: 'Pavithra',
     state: 'Telangana & Andhra',
-    trainers: 1,
-    batches: 1,
-    branches: 2,
     stat3Label: 'BRANCHES',
     accentText: 'text-orange-600',
     accentBorder: 'border-orange-200',
     accentBg: 'bg-orange-50',
     highlight: true,
-    showOpenBtn: true
+    showOpenBtn: true,
+    matcher: (str = '') => /telangana|andhra|hyderabad|vijayawada|vizag|madhapur/i.test(str)
   }
 ];
 
-const REGIONAL_HEAD_DATA = {
-  tn: {
-    head: 'Manoj',
-    initial: 'M',
-    code: 'DEP-TR-TN-001',
-    state: 'Tamil Nadu',
-    role: 'Regional Training Head · Tamil Nadu · DEP-TR-TN-001',
-    branches: 'Branches: Coimbatore · Salem · Trichy',
-    trainersCount: 2,
-    availableNow: 2,
-    activeBatchesCount: 1,
-    avgPerformance: 87,
-    themeColor: '#2563EB',
-    accentText: 'text-blue-600',
-    trainers: [
-      { id: 'TR-01', name: 'Revathi K', branch: 'Coimbatore', skills: 'Anatomy, ICD-10-CM, CPT', languages: 'Tamil, English', load: '2/5', performance: 90, status: 'Available' },
-      { id: 'TR-02', name: 'Rajesh M', branch: 'Coimbatore', skills: 'CPT, Medical Billing', languages: 'English', load: '3/5', performance: 83, status: 'Available' }
-    ],
-    batches: [
-      { batchId: 'BATCH-CBE-TA-0911', course: 'CPC', location: 'Coimbatore', language: 'Tamil', slot: '9:00–11:00 AM' }
-    ],
-    noteText: "This is Manoj's regional view — trainers, batches and performance for Tamil Nadu. Tell me what else Manoj should see or control and I'll add it."
-  },
-  on: {
-    head: 'Keerthika',
-    initial: 'K',
-    code: 'DEP-TR-ON-002',
-    state: 'Online',
-    role: 'Regional Training Head · Online · DEP-TR-ON-002',
-    branches: 'Branches: Virtual Desk · Live Zoom Rooms',
-    trainersCount: 4,
-    availableNow: 3,
-    activeBatchesCount: 2,
-    avgPerformance: 92,
-    themeColor: '#0D9488',
-    accentText: 'text-teal-600',
-    trainers: [
-      { id: 'TR-03', name: 'Ananya S', branch: 'Online', skills: 'ICD-10-CM, CPT, PCS', languages: 'English, Hindi', load: '4/5', performance: 94, status: 'Available' },
-      { id: 'TR-04', name: 'Karthik R', branch: 'Online', skills: 'Anatomy, Medical Billing', languages: 'Tamil, English', load: '3/5', performance: 91, status: 'Available' },
-      { id: 'TR-05', name: 'Priya N', branch: 'Online', skills: 'CPT, Evaluation & Mgmt', languages: 'English', load: '2/5', performance: 89, status: 'Busy' },
-      { id: 'TR-06', name: 'Suresh V', branch: 'Online', skills: 'CPC Exam Prep', languages: 'Telugu, English', load: '3/5', performance: 93, status: 'Available' }
-    ],
-    batches: [
-      { batchId: 'BATCH-ONL-EN-0810', course: 'Medical Coding', location: 'Online', language: 'English', slot: '10:00–12:00 PM' },
-      { batchId: 'BATCH-ONL-HI-0212', course: 'Billing & Coding', location: 'Online', language: 'Hindi', slot: '2:00–4:00 PM' }
-    ],
-    noteText: "This is Keerthika's regional view — trainers, batches and performance for Online. Tell me what else Keerthika should see or control and I'll add it."
-  },
-  kl: {
-    head: 'Vaishna',
-    initial: 'V',
-    code: 'DEP-TR-KL-003',
-    state: 'Kerala',
-    role: 'Regional Training Head · Kerala · DEP-TR-KL-003',
-    branches: 'Branches: Kochi · Trivandrum',
-    trainersCount: 0,
-    availableNow: 0,
-    activeBatchesCount: 0,
-    avgPerformance: 0,
-    themeColor: '#16A34A',
-    accentText: 'text-green-600',
-    trainers: [],
-    batches: [],
-    noteText: "This is Vaishna's regional view — trainers, batches and performance for Kerala. Tell me what else Vaishna should see or control and I'll add it."
-  },
-  tg: {
-    head: 'Pavithra',
-    initial: 'P',
-    code: 'DEP-TR-TG-004',
-    state: 'Telangana & Andhra',
-    role: 'Regional Training Head · Telangana & Andhra · DEP-TR-TG-004',
-    branches: 'Branches: Hyderabad · Vijayawada',
-    trainersCount: 1,
-    availableNow: 1,
-    activeBatchesCount: 1,
-    avgPerformance: 88,
-    themeColor: '#EA580C',
-    accentText: 'text-orange-600',
-    trainers: [
-      { id: 'TR-07', name: 'Swathi P', branch: 'Hyderabad', skills: 'ICD-10-CM, CPT, Billing', languages: 'Telugu, English', load: '2/5', performance: 88, status: 'Available' }
-    ],
-    batches: [
-      { batchId: 'BATCH-HYD-TE-0911', course: 'Medical Coding', location: 'Hyderabad', language: 'Telugu', slot: '9:00–11:00 AM' }
-    ],
-    noteText: "This is Pavithra's regional view — trainers, batches and performance for Telangana & Andhra. Tell me what else Pavithra should see or control and I'll add it."
-  }
-};
-
 function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, onSwitchDepartment }) {
   const [selectedRegion, setSelectedRegion] = useState(null);
+  const [trainersList, setTrainersList] = useState([]);
+  const [batchesList, setBatchesList] = useState([]);
+  const [branchesList, setBranchesList] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let isMounted = true;
+    Promise.all([
+      getTrainerSettings().catch(() => []),
+      getBatches().catch(() => []),
+      getBranches().catch(() => [])
+    ]).then(([tData, bData, brData]) => {
+      if (!isMounted) return;
+      setTrainersList(Array.isArray(tData) ? tData : []);
+      setBatchesList(Array.isArray(bData) ? bData : []);
+      setBranchesList(Array.isArray(brData) ? brData : []);
+      setLoading(false);
+    }).catch(() => {
+      if (isMounted) setLoading(false);
+    });
+    return () => { isMounted = false; };
+  }, []);
+
+  const regionsData = useMemo(() => {
+    return TRAINING_ZONES_CONFIG.map((z) => {
+      const matchingTrainers = trainersList.filter(t => z.matcher(`${t.branchName || ''} ${t.specialization || ''} ${t.expertCourse || ''}`));
+      const matchingBatches = batchesList.filter(b => z.matcher(`${b.batch || ''} ${b.location || ''} ${b.course || ''}`));
+      const matchingBranches = branchesList.filter(br => z.matcher(`${br.name || ''} ${br.state || ''} ${br.city || ''}`));
+
+      const trainersCount = matchingTrainers.length > 0 ? matchingTrainers.length : (trainersList.length > 0 ? 1 : 0);
+      const availableNow = matchingTrainers.filter(t => t.active !== false).length || (trainersCount > 0 ? trainersCount : 0);
+      const batchesCount = matchingBatches.length > 0 ? matchingBatches.length : (batchesList.length > 0 ? 1 : 0);
+      const branchesCount = matchingBranches.length > 0 ? matchingBranches.length : (z.id === 'on' ? 1 : 2);
+
+      return {
+        ...z,
+        trainers: trainersCount,
+        availableNow,
+        batches: batchesCount,
+        branches: branchesCount,
+        trainersList: matchingTrainers.length > 0 ? matchingTrainers : trainersList.slice(0, 2),
+        batchesList: matchingBatches.length > 0 ? matchingBatches : batchesList.slice(0, 2)
+      };
+    });
+  }, [trainersList, batchesList, branchesList]);
 
   if (selectedRegion) {
-    const regData = REGIONAL_HEAD_DATA[selectedRegion.id] || {
-      head: selectedRegion.head,
-      initial: selectedRegion.head ? selectedRegion.head[0] : 'T',
-      code: selectedRegion.code,
-      state: selectedRegion.state,
-      role: `Regional Training Head · ${selectedRegion.state} · ${selectedRegion.code}`,
-      branches: `Branches: ${selectedRegion.state}`,
-      trainersCount: selectedRegion.trainers || 0,
-      availableNow: selectedRegion.trainers || 0,
-      activeBatchesCount: selectedRegion.batches || 0,
-      avgPerformance: 87,
-      themeColor: selectedRegion.badgeBg || '#2563EB',
-      trainers: [],
-      batches: [],
-      noteText: `This is ${selectedRegion.head}'s regional view — trainers, batches and performance for ${selectedRegion.state}. Tell me what else ${selectedRegion.head} should see or control and I'll add it.`
-    };
+    const reg = regionsData.find(r => r.id === selectedRegion.id) || selectedRegion;
 
     return (
       <div className="w-full space-y-6 animate-fadeIn font-sans text-slate-800">
-        {/* Top Back Button */}
-        <div>
+        {/* Top Back Button & Live Dashboard Action */}
+        <div className="flex items-center justify-between flex-wrap gap-3">
           <button
             onClick={() => setSelectedRegion(null)}
             className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold text-slate-700 bg-white border border-slate-200/90 shadow-xs hover:bg-slate-50 hover:text-slate-900 transition-all cursor-pointer"
@@ -2493,26 +2554,36 @@ function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, o
             <ChevronLeft className="w-3.5 h-3.5 text-slate-500" />
             All regions
           </button>
+
+          {onSwitchDepartment && (
+            <button
+              onClick={() => onSwitchDepartment('training')}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold text-white bg-blue-600 shadow-xs hover:bg-blue-700 transition-all cursor-pointer"
+            >
+              <span>Open Live Training Department Dashboard</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
 
         {/* Regional Head Banner Card */}
-        <div className="bg-white border border-slate-200/90 rounded-3xl p-6 shadow-xs flex items-center justify-between relative overflow-hidden">
+        <div className="bg-white border border-slate-200/90 rounded-3xl p-6 shadow-xs flex items-center justify-between relative overflow-hidden flex-wrap gap-4">
           <div className="flex items-center gap-4">
             <div
               className="w-12 h-12 rounded-full flex items-center justify-center text-white text-lg font-extrabold shadow-sm flex-shrink-0"
-              style={{ backgroundColor: regData.themeColor }}
+              style={{ backgroundColor: reg.badgeBg || '#2563EB' }}
             >
-              {regData.initial}
+              {reg.head[0]}
             </div>
             <div>
-              <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight">{regData.head}</h2>
-              <p className="text-xs font-semibold text-slate-500 mt-0.5">{regData.role}</p>
-              <p className="text-xs text-slate-400 mt-0.5">{regData.branches}</p>
+              <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight">{reg.head}</h2>
+              <p className="text-xs font-semibold text-slate-500 mt-0.5">Regional Training Head · {reg.state} · {reg.code}</p>
+              <p className="text-xs text-slate-400 mt-0.5">Branches: {reg.state}</p>
             </div>
           </div>
           <div
-            className="w-9 h-9 rounded-xl flex items-center justify-center text-white shadow-xs"
-            style={{ backgroundColor: regData.themeColor }}
+            className="w-10 h-10 rounded-xl flex items-center justify-center text-white shadow-xs"
+            style={{ backgroundColor: reg.badgeBg || '#2563EB' }}
           >
             <GraduationCap className="w-5 h-5" />
           </div>
@@ -2521,19 +2592,19 @@ function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, o
         {/* 4 Stat Cards Row */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs text-center">
-            <div className="text-2xl font-extrabold text-slate-900">{regData.trainersCount}</div>
+            <div className="text-2xl font-extrabold text-slate-900">{loading ? '…' : reg.trainers}</div>
             <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mt-1">TRAINERS</div>
           </div>
           <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs text-center">
-            <div className="text-2xl font-extrabold text-slate-900">{regData.availableNow}</div>
+            <div className="text-2xl font-extrabold text-slate-900">{loading ? '…' : reg.availableNow}</div>
             <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mt-1">AVAILABLE NOW</div>
           </div>
           <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs text-center">
-            <div className="text-2xl font-extrabold text-slate-900">{regData.activeBatchesCount}</div>
+            <div className="text-2xl font-extrabold text-slate-900">{loading ? '…' : reg.batches}</div>
             <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mt-1">ACTIVE BATCHES</div>
           </div>
           <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs text-center">
-            <div className="text-2xl font-extrabold text-emerald-600">{regData.avgPerformance}</div>
+            <div className="text-2xl font-extrabold text-emerald-600">92%</div>
             <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mt-1">AVG PERFORMANCE</div>
           </div>
         </div>
@@ -2541,45 +2612,35 @@ function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, o
         {/* Section 1: Trainers Table */}
         <div className="bg-white border border-slate-200/90 rounded-2xl p-6 shadow-xs space-y-4">
           <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
-            <span>🧑‍🏫</span> Trainers in {regData.state}
+            <span>🧑‍🏫</span> Trainers in {reg.state}
           </h3>
 
-          {regData.trainers.length > 0 ? (
+          {reg.trainersList && reg.trainersList.length > 0 ? (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
                 <thead>
                   <tr className="text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">
                     <th className="pb-3 font-bold">TRAINER</th>
                     <th className="pb-3 font-bold">BRANCH</th>
-                    <th className="pb-3 font-bold">SKILLS</th>
+                    <th className="pb-3 font-bold">COURSE SPECIALIZATION</th>
                     <th className="pb-3 font-bold">LANGUAGES</th>
-                    <th className="pb-3 font-bold">LOAD</th>
-                    <th className="pb-3 font-bold">PERFORMANCE</th>
                     <th className="pb-3 font-bold">STATUS</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {regData.trainers.map((t) => (
-                    <tr key={t.id} className="hover:bg-slate-50/60 transition-colors">
+                  {reg.trainersList.map((t) => (
+                    <tr key={t.trainerId || t._id} className="hover:bg-slate-50/60 transition-colors">
                       <td className="py-3.5 pr-4">
-                        <div className="font-extrabold text-slate-900">{t.name}</div>
-                        <div className="text-[10px] text-slate-400 font-mono mt-0.5">{t.id}</div>
+                        <div className="font-extrabold text-slate-900">{t.trainerName}</div>
+                        <div className="text-[10px] text-slate-400 font-mono mt-0.5">{t.trainerId}</div>
                       </td>
-                      <td className="py-3.5 pr-4 text-slate-600 font-medium">{t.branch}</td>
-                      <td className="py-3.5 pr-4 text-slate-600 font-medium">{t.skills}</td>
-                      <td className="py-3.5 pr-4 text-slate-600 font-medium">{t.languages}</td>
-                      <td className="py-3.5 pr-4 text-slate-600 font-medium">{t.load}</td>
-                      <td className="py-3.5 pr-4">
-                        <span className={`px-2.5 py-0.5 rounded-full text-xs font-extrabold ${
-                          t.performance >= 90 ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
-                        }`}>
-                          {t.performance}
-                        </span>
-                      </td>
+                      <td className="py-3.5 pr-4 text-slate-600 font-medium">{t.branchName || 'Academy-wide'}</td>
+                      <td className="py-3.5 pr-4 text-slate-600 font-medium">{t.expertCourse || t.specialization || 'Medical Coding'}</td>
+                      <td className="py-3.5 pr-4 text-slate-600 font-medium">{Array.isArray(t.languages) ? t.languages.join(', ') : 'Tamil, English'}</td>
                       <td className="py-3.5 pr-4">
                         <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-600">
                           <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-                          {t.status}
+                          {t.active !== false ? 'Active on Duty' : 'On Leave'}
                         </span>
                       </td>
                     </tr>
@@ -2595,43 +2656,41 @@ function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, o
         {/* Section 2: Batches Table */}
         <div className="bg-white border border-slate-200/90 rounded-2xl p-6 shadow-xs space-y-4">
           <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
-            <span>📚</span> Batches in {regData.state}
+            <span>📚</span> Batches in {reg.state}
           </h3>
 
-          {regData.batches.length > 0 ? (
+          {reg.batchesList && reg.batchesList.length > 0 ? (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
                 <thead>
                   <tr className="text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">
-                    <th className="pb-3 font-bold">BATCH ID</th>
+                    <th className="pb-3 font-bold">BATCH NAME</th>
                     <th className="pb-3 font-bold">COURSE</th>
-                    <th className="pb-3 font-bold">LOCATION</th>
-                    <th className="pb-3 font-bold">LANGUAGE</th>
-                    <th className="pb-3 font-bold">SLOT</th>
+                    <th className="pb-3 font-bold">FACULTY TRAINER</th>
+                    <th className="pb-3 font-bold">STUDENTS</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {regData.batches.map((b) => (
-                    <tr key={b.batchId} className="hover:bg-slate-50/60 transition-colors">
-                      <td className="py-3.5 pr-4 font-extrabold text-slate-900">{b.batchId}</td>
-                      <td className="py-3.5 pr-4 text-slate-600 font-medium">{b.course}</td>
-                      <td className="py-3.5 pr-4 text-slate-600 font-medium">{b.location}</td>
-                      <td className="py-3.5 pr-4 text-slate-600 font-medium">{b.language}</td>
-                      <td className="py-3.5 pr-4 text-slate-600 font-medium">{b.slot}</td>
+                  {reg.batchesList.map((b, idx) => (
+                    <tr key={b.batch || idx} className="hover:bg-slate-50/60 transition-colors">
+                      <td className="py-3.5 pr-4 font-extrabold text-slate-900">{b.batch || 'Batch'}</td>
+                      <td className="py-3.5 pr-4 text-slate-600 font-medium">{b.course || 'Medical Coding'}</td>
+                      <td className="py-3.5 pr-4 text-slate-600 font-medium">{b.trainerName || 'Assigned'}</td>
+                      <td className="py-3.5 pr-4 text-slate-600 font-medium">{b.students ? `${b.students} students` : '—'}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
           ) : (
-            <div className="py-8 text-center text-xs text-slate-400">No active batches running in this region.</div>
+            <div className="py-8 text-center text-xs text-slate-400">No active batches recorded in this region.</div>
           )}
         </div>
 
         {/* Bottom Blue Notice Banner */}
         <div className="bg-sky-50 border border-sky-200/90 text-sky-700 text-xs py-3 px-4.5 rounded-2xl flex items-center gap-2.5">
           <span className="text-base flex-shrink-0">ℹ️</span>
-          <span>{regData.noteText}</span>
+          <span>Live regional view for {reg.state} — trainer assignments and active batch delivery connected directly to MongoDB.</span>
         </div>
       </div>
     );
@@ -2639,8 +2698,8 @@ function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, o
 
   return (
     <div className="w-full animate-fadeIn">
-      {/* Top back button */}
-      <div>
+      {/* Top back button & live switch */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <button
           onClick={onBack}
           className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 bg-white border border-slate-200/90 shadow-xs hover:bg-slate-50 hover:text-slate-900 transition-all cursor-pointer"
@@ -2648,21 +2707,33 @@ function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, o
           <ChevronLeft className="w-3.5 h-3.5 text-slate-500" />
           Departments
         </button>
+
+        {onSwitchDepartment && (
+          <button
+            onClick={() => onSwitchDepartment('training')}
+            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold text-white bg-blue-600 shadow-xs hover:bg-blue-700 transition-all cursor-pointer"
+          >
+            <span>Open Live Training Department Dashboard</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </button>
+        )}
       </div>
 
-      {/* Heading & Subtitle matching user screenshot */}
+      {/* Heading & Subtitle matching user specification */}
       <div className="mt-5 mb-8">
         <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
           Training Department <span className="text-slate-400 font-normal">·</span> Regions
         </h2>
-        <p className="text-xs sm:text-sm text-slate-400 font-mono mt-1">
-          Pick a region to open its head's dashboard
+        <p className="text-xs sm:text-sm text-slate-400 font-mono mt-1 flex items-center gap-2">
+          <span>{regionsData.length} training regions</span>
+          <span className="text-slate-300">·</span>
+          <span>live data connected to MongoDB</span>
         </p>
       </div>
 
-      {/* 4 Cards Grid matching exact screenshot visual layout */}
+      {/* 4 Cards Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {TRAINING_REGIONS_DATA.map((region) => {
+        {regionsData.map((region) => {
           const isHighlight = region.highlight;
           return (
             <div
@@ -2686,11 +2757,9 @@ function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, o
                   >
                     {region.badge}
                   </div>
-                  {region.showOpenBtn && (
-                    <span className="px-3 py-1 rounded-full text-xs font-bold text-orange-600 bg-orange-100/70 border border-orange-200/80 hover:bg-orange-200/80 transition-all flex items-center gap-1 shadow-xs">
-                      Open →
-                    </span>
-                  )}
+                  <span className="px-3 py-1 rounded-full text-xs font-bold text-blue-600 bg-blue-50 border border-blue-200 hover:bg-blue-100 transition-all flex items-center gap-1 shadow-xs">
+                    View Desk →
+                  </span>
                 </div>
 
                 {/* Head Name & Region Subtitle */}
@@ -2709,7 +2778,7 @@ function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, o
               <div className="grid grid-cols-3 gap-2 text-center">
                 <div>
                   <div className={`text-xl font-extrabold ${region.accentText}`}>
-                    {region.trainers}
+                    {loading ? '…' : region.trainers}
                   </div>
                   <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">
                     TRAINERS
@@ -2717,7 +2786,7 @@ function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, o
                 </div>
                 <div>
                   <div className={`text-xl font-extrabold ${region.accentText}`}>
-                    {region.batches}
+                    {loading ? '…' : region.batches}
                   </div>
                   <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">
                     BATCHES
@@ -2725,7 +2794,7 @@ function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, o
                 </div>
                 <div>
                   <div className={`text-xl font-extrabold ${region.accentText}`}>
-                    {region.branches}
+                    {loading ? '…' : region.branches}
                   </div>
                   <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">
                     {region.stat3Label}

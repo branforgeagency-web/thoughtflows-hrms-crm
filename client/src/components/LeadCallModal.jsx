@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import useFileToken from '../hooks/useFileToken';
+import { getAvailableTimingSlots, BATCH_SCHEDULE } from '../constants/batchTimings';
 import {
   Phone,
   Edit2,
@@ -54,7 +55,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
   // Call state (Direct device / Phone Link call)
   const [callStatus, setCallStatus] = useState('idle');
   const [callSeconds, setCallSeconds] = useState(0);
-  const [selectedOutcome, setSelectedOutcome] = useState('Follow-up Needed');
+  const [selectedOutcome, setSelectedOutcome] = useState('');
   const [followUpDate, setFollowUpDate] = useState('');
   const [followUpTime, setFollowUpTime] = useState('');
   const [toastMsg, setToastMsg] = useState(null);
@@ -78,42 +79,46 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
   const timerRef = useRef(null);
   const hasBeenAnsweredRef = useRef(false);
 
-  // Lead Form State matching the design exactly
+  // Lead Form State - starts completely blank with no fake defaults
   const [leadForm, setLeadForm] = useState({
     name: '',
     phone: '',
     whatsappNumber: '',
-    source: 'Google Calls',
-    leadFor: 'Demo',
-    timeIn: '15:32',
-    branch: 'Saravanampatti',
-    status: 'NEW',
-    fetchedBy: 'Google Ad ⚡',
-    allocatedTo: 'Priyadharshini',
-    spokenBy: 'YOU',
-    age: '24',
-    gender: 'Female',
+    source: '',
+    leadFor: '',
+    timeIn: '',
+    branch: '',
+    status: '',
+    fetchedBy: '',
+    allocatedTo: '',
+    spokenBy: '',
+    age: '',
+    gender: '',
     education: '',
-    currentRole: 'BPO / Call Center',
-    experienceYrs: '3.5',
-    location: 'Coimbatore',
-    course: 'CPC - Certified Professional Coder',
-    budget: '₹20K-30K',
-    batchTiming: 'Weekend (Sat-Sun)',
-    decisionStatus: 'Will discuss with family',
-    notes: 'Interested but wants weekend batch. Family discussion needed. Will call Sunday after 7 PM. Sent CPC brochure on WhatsApp.'
+    currentRole: '',
+    experienceYrs: '',
+    location: '',
+    course: '',
+    budget: '',
+    batchTiming: '',
+    decisionStatus: '',
+    notes: ''
   });
 
-  // Pitch Checklist Items matching screenshot
+  const availableSlots = useMemo(() => {
+    return getAvailableTimingSlots({ course: leadForm.course, branch: leadForm.branch });
+  }, [leadForm.course, leadForm.branch]);
+
+  // Call Talking Points Checklist - all unchecked by default
   const [checklist, setChecklist] = useState([
-    { id: 1, text: 'Acknowledge night shifts / call targets are exhausting', checked: true },
-    { id: 2, text: 'Position medical coding as remote-friendly, higher pay', checked: true },
-    { id: 3, text: 'Ask: years of BPO experience & current package', checked: true },
-    { id: 4, text: 'If 2+ yrs experience → pitch CPC fast-track (3 months)', checked: false },
-    { id: 5, text: 'Share alumni placement examples (3–4 names, salaries)', checked: false },
-    { id: 6, text: 'Send BPO-to-Coder salary comparison sheet on WhatsApp', checked: false },
-    { id: 7, text: 'Book demo within 48 hrs · weekend slot preferred', checked: false },
-    { id: 8, text: 'Mention AAPC certification + placement guarantee', checked: false }
+    { id: 1, text: 'Introduce ThoughtFlows Academy & purpose of the call', checked: false },
+    { id: 2, text: 'Understand candidate background, qualification & aspirations', checked: false },
+    { id: 3, text: 'Explain Medical Coding / AMCT career opportunities & higher packages', checked: false },
+    { id: 4, text: 'Pitch course options (AMCT / CPC), study mode & curriculum duration', checked: false },
+    { id: 5, text: 'Share student alumni placements, salary milestones & hiring partners', checked: false },
+    { id: 6, text: 'Send syllabus curriculum brochure & fee breakdown on WhatsApp', checked: false },
+    { id: 7, text: 'Book free demo session slot or confirm next follow-up date & time', checked: false },
+    { id: 8, text: 'Explain accreditation benefits, exam readiness & placement assistance', checked: false }
   ]);
 
   const toggleChecklistItem = (id) => {
@@ -218,30 +223,59 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
 
     if (leadData) {
       const p = leadData.phone || '';
+      let formattedTimeIn = leadData.timeIn || '';
+      if (!formattedTimeIn && leadData.createdAt) {
+        try {
+          formattedTimeIn = new Date(leadData.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        } catch {
+          formattedTimeIn = '';
+        }
+      }
+
+      let resolvedCourse = leadData.course || leadData.interestedCourse || '';
+      if (resolvedCourse) {
+        for (const cat of COURSE_CATEGORIES) {
+          const match = cat.courses?.find(
+            (c) =>
+              c.code?.toLowerCase() === resolvedCourse.toLowerCase() ||
+              c.name?.toLowerCase() === resolvedCourse.toLowerCase() ||
+              `${c.code} - ${c.name}`.toLowerCase() === resolvedCourse.toLowerCase()
+          );
+          if (match) {
+            resolvedCourse = match.code === match.name ? match.name : `${match.code} - ${match.name}`;
+            break;
+          }
+        }
+      }
+
       setLeadForm({
-        name: leadData.name || leadData.fullName || '',
-        phone: p || '+919876500000',
+        name: leadData.fullName || leadData.name || '',
+        phone: p,
         whatsappNumber: leadData.whatsappNumber || leadData.alternatePhone || '',
-        source: leadData.sourceName || leadData.source || 'Google Calls',
-        leadFor: leadData.leadFor || 'Demo',
-        timeIn: leadData.timeIn || '15:32',
-        branch: leadData.branch || currentUser?.branch || 'Saravanampatti',
-        status: leadData.stage ? leadData.stage.toUpperCase() : 'NEW',
-        fetchedBy: leadData.fetchedBy || 'Google Ad ⚡',
-        allocatedTo: leadData.allocatedTo || leadData.counselorAssigned || 'Priyadharshini',
-        spokenBy: currentUser?.name ? `${currentUser.name} · YOU` : 'YOU',
-        age: leadData.age || '24',
-        gender: leadData.gender || 'Female',
-        education: leadData.education || '',
-        currentRole: leadData.currentRole || 'BPO / Call Center',
-        experienceYrs: leadData.experienceYrs || '3.5',
-        location: leadData.location || 'Coimbatore',
-        course: leadData.course || 'CPC - Certified Professional Coder',
-        budget: leadData.budget || '₹20K-30K',
-        batchTiming: leadData.batchTiming || 'Weekend (Sat-Sun)',
-        decisionStatus: leadData.decisionStatus || 'Will discuss with family',
-        notes: leadData.notes || 'Interested but wants weekend batch. Family discussion needed. Will call Sunday after 7 PM. Sent CPC brochure on WhatsApp.'
+        source: leadData.sourceName || leadData.source || '',
+        leadFor: leadData.leadFor || leadData.cameFor || '',
+        timeIn: formattedTimeIn,
+        branch: leadData.branch || currentUser?.branch || '',
+        status: leadData.stage ? String(leadData.stage).toUpperCase() : (leadData.status ? String(leadData.status).toUpperCase() : ''),
+        fetchedBy: leadData.fetchedBy || leadData.sourceName || leadData.source || '',
+        allocatedTo: leadData.allocatedTo || leadData.counselorAssigned || '',
+        spokenBy: leadData.spokenBy || (currentUser?.name ? `${currentUser.name} · YOU` : 'YOU'),
+        age: leadData.age ? String(leadData.age) : '',
+        gender: leadData.gender || '',
+        education: leadData.education || leadData.qualification || '',
+        currentRole: leadData.currentRole || leadData.category || '',
+        experienceYrs: leadData.experienceYrs ? String(leadData.experienceYrs) : '',
+        location: leadData.location || leadData.city || '',
+        course: resolvedCourse,
+        budget: leadData.budget || '',
+        batchTiming: leadData.batchTiming || '',
+        decisionStatus: leadData.decisionStatus || '',
+        notes: leadData.notes || leadData.followUpNote || leadData.discussionNote || ''
       });
+      setSelectedOutcome(leadData.callOutcome || leadData.lastCallOutcome || leadData.outcome || '');
+      setFollowUpDate(leadData.followUpDate || '');
+      setFollowUpTime(leadData.followUpTime || '');
+      setChecklist((prev) => prev.map((item) => ({ ...item, checked: false })));
       fetchLeadRecordings(p);
     }
 
@@ -371,13 +405,13 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
     }
 
     const payload = {
-      outcome: selectedOutcome,
-      stage: OUTCOME_STAGE[selectedOutcome],
+      outcome: selectedOutcome || undefined,
+      stage: selectedOutcome ? OUTCOME_STAGE[selectedOutcome] : undefined,
       notes: leadForm.notes,
       durationSeconds: callSeconds,
       wasAnswered: hasBeenAnsweredRef.current,
-      followUpDate: NEEDS_FOLLOW_UP_DATE.includes(selectedOutcome) ? followUpDate : '',
-      followUpTime: NEEDS_FOLLOW_UP_DATE.includes(selectedOutcome) ? followUpTime : '',
+      followUpDate: NEEDS_FOLLOW_UP_DATE.includes(selectedOutcome) ? followUpDate : (leadData?.followUpDate || ''),
+      followUpTime: NEEDS_FOLLOW_UP_DATE.includes(selectedOutcome) ? followUpTime : (leadData?.followUpTime || ''),
       leadForm: { ...leadForm }
     };
 
@@ -435,14 +469,14 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
           {/* Caller Identity */}
           <div className="flex items-center gap-3.5">
             <div className="w-11 h-11 rounded-2xl bg-[#00b894] text-white font-black text-xl flex items-center justify-center shadow-xs">
-              {(leadForm.name || 'P')[0]}
+              {(leadForm.name || 'L')[0]}
             </div>
             <div>
               <h2 className="text-base sm:text-lg font-black text-white tracking-tight leading-tight">
-                {leadForm.name || 'Priya Ramesh'}
+                {leadForm.name || 'Enquiry Lead'}
               </h2>
               <div className="text-xs text-teal-300 font-mono tracking-wider mt-0.5">
-                {leadForm.phone || '+919876500000'}
+                {leadForm.phone || '—'}
               </div>
             </div>
           </div>
@@ -531,27 +565,67 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
               <div className="space-y-2">
                 <div className="flex items-center justify-between p-2 rounded-xl bg-white border border-slate-200/80">
                   <span className="text-[10px] font-mono font-bold text-slate-400 uppercase">SOURCE</span>
-                  <span className="font-extrabold text-slate-900">{leadForm.source}</span>
+                  {isEditingContext ? (
+                    <input
+                      type="text"
+                      value={leadForm.source}
+                      onChange={(e) => setLeadForm({ ...leadForm, source: e.target.value })}
+                      placeholder="Add source..."
+                      className="text-right font-bold text-slate-900 border-b border-teal-400 outline-none w-36 text-xs bg-transparent"
+                    />
+                  ) : (
+                    <span className="font-extrabold text-slate-900">{leadForm.source || '—'}</span>
+                  )}
                 </div>
 
                 <div className="flex items-center justify-between p-2 rounded-xl bg-purple-50/70 border border-purple-200">
                   <span className="text-[10px] font-mono font-bold text-purple-700 uppercase">LEAD FOR</span>
-                  <span className="font-extrabold text-purple-800">{leadForm.leadFor}</span>
+                  {isEditingContext ? (
+                    <input
+                      type="text"
+                      value={leadForm.leadFor}
+                      onChange={(e) => setLeadForm({ ...leadForm, leadFor: e.target.value })}
+                      placeholder="e.g. Admission / Demo"
+                      className="text-right font-bold text-purple-800 border-b border-purple-400 outline-none w-36 text-xs bg-transparent"
+                    />
+                  ) : (
+                    <span className="font-extrabold text-purple-800">{leadForm.leadFor || '—'}</span>
+                  )}
                 </div>
 
                 <div className="flex items-center justify-between p-2 rounded-xl bg-white border border-slate-200/80">
                   <span className="text-[10px] font-mono font-bold text-slate-400 uppercase">TIME IN</span>
-                  <span className="font-bold text-slate-800 font-mono">{leadForm.timeIn}</span>
+                  {isEditingContext ? (
+                    <input
+                      type="text"
+                      value={leadForm.timeIn}
+                      onChange={(e) => setLeadForm({ ...leadForm, timeIn: e.target.value })}
+                      placeholder="e.g. 10:30 AM"
+                      className="text-right font-bold text-slate-800 border-b border-teal-400 outline-none w-36 text-xs bg-transparent"
+                    />
+                  ) : (
+                    <span className="font-bold text-slate-800 font-mono">{leadForm.timeIn || '—'}</span>
+                  )}
                 </div>
 
                 <div className="flex items-center justify-between p-2 rounded-xl bg-white border border-slate-200/80">
                   <span className="text-[10px] font-mono font-bold text-slate-400 uppercase">BRANCH</span>
-                  <span className="font-bold text-slate-800">{leadForm.branch}</span>
+                  {isEditingContext ? (
+                    <input
+                      type="text"
+                      value={leadForm.branch}
+                      onChange={(e) => setLeadForm({ ...leadForm, branch: e.target.value })}
+                      placeholder="Add branch..."
+                      className="text-right font-bold text-slate-800 border-b border-teal-400 outline-none w-36 text-xs bg-transparent"
+                    />
+                  ) : (
+                    <span className="font-bold text-slate-800">{leadForm.branch || '—'}</span>
+                  )}
                 </div>
 
                 <div className="flex items-center justify-between p-2 rounded-xl bg-white border border-slate-200/80">
                   <span className="text-[10px] font-mono font-bold text-slate-400 uppercase">STATUS</span>
-                  <span className="font-black text-[#00b894] tracking-wide">{leadForm.status}</span>
+                  <span className="font-black text-[#00b894] tracking-wide">{leadForm.status || '—'}</span>
                 </div>
               </div>
 
@@ -563,15 +637,45 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                 <div className="space-y-1.5 text-[11px]">
                   <div className="flex items-center justify-between p-1.5 rounded-lg bg-white border border-slate-100">
                     <span className="text-slate-400 font-medium">FETCHED</span>
-                    <span className="font-bold text-slate-800">{leadForm.fetchedBy}</span>
+                    {isEditingContext ? (
+                      <input
+                        type="text"
+                        value={leadForm.fetchedBy}
+                        onChange={(e) => setLeadForm({ ...leadForm, fetchedBy: e.target.value })}
+                        placeholder="Add fetched by..."
+                        className="text-right font-bold text-slate-800 border-b border-teal-400 outline-none w-32 text-xs bg-transparent"
+                      />
+                    ) : (
+                      <span className="font-bold text-slate-800">{leadForm.fetchedBy || '—'}</span>
+                    )}
                   </div>
                   <div className="flex items-center justify-between p-1.5 rounded-lg bg-white border border-slate-100">
                     <span className="text-slate-400 font-medium">ALLOCATED</span>
-                    <span className="font-bold text-slate-800">{leadForm.allocatedTo}</span>
+                    {isEditingContext ? (
+                      <input
+                        type="text"
+                        value={leadForm.allocatedTo}
+                        onChange={(e) => setLeadForm({ ...leadForm, allocatedTo: e.target.value })}
+                        placeholder="Add staff name..."
+                        className="text-right font-bold text-slate-800 border-b border-teal-400 outline-none w-32 text-xs bg-transparent"
+                      />
+                    ) : (
+                      <span className="font-bold text-slate-800">{leadForm.allocatedTo || '—'}</span>
+                    )}
                   </div>
                   <div className="flex items-center justify-between p-1.5 rounded-lg bg-white border border-slate-100">
                     <span className="text-slate-400 font-medium">SPOKEN</span>
-                    <span className="font-extrabold text-[#00897b]">{leadForm.spokenBy}</span>
+                    {isEditingContext ? (
+                      <input
+                        type="text"
+                        value={leadForm.spokenBy}
+                        onChange={(e) => setLeadForm({ ...leadForm, spokenBy: e.target.value })}
+                        placeholder="Add spoken by..."
+                        className="text-right font-extrabold text-[#00897b] border-b border-teal-400 outline-none w-32 text-xs bg-transparent"
+                      />
+                    ) : (
+                      <span className="font-extrabold text-[#00897b]">{leadForm.spokenBy || '—'}</span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -581,9 +685,21 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                 <div className="text-[10px] font-black uppercase tracking-wider text-slate-400 font-mono">
                   FOLLOW-UP HISTORY
                 </div>
-                <p className="text-[11px] text-slate-500 leading-relaxed">
-                  No follow-ups yet — first call. Add one below after you speak.
-                </p>
+                {leadData?.followUpDate ? (
+                  <div className="p-2 rounded-xl bg-white border border-slate-200 text-[11px] space-y-1">
+                    <div className="flex items-center justify-between font-bold text-slate-800">
+                      <span>Scheduled Follow-up</span>
+                      <span className="text-teal-700 font-mono">{leadData.followUpDate} {leadData.followUpTime || ''}</span>
+                    </div>
+                    {leadData.followUpNote && (
+                      <p className="text-slate-600 text-[10.5px] leading-snug">{leadData.followUpNote}</p>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-slate-500 leading-relaxed">
+                    No follow-ups recorded yet.
+                  </p>
+                )}
                 <button
                   type="button"
                   onClick={() => setSelectedOutcome('Follow-up Needed')}
@@ -626,6 +742,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                     type="text"
                     value={leadForm.age}
                     onChange={(e) => setLeadForm({ ...leadForm, age: e.target.value })}
+                    placeholder="e.g. 23"
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 outline-none focus:border-[#0e6977] focus:bg-white"
                   />
                 </div>
@@ -638,6 +755,10 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                     onChange={(e) => setLeadForm({ ...leadForm, gender: e.target.value })}
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 outline-none focus:border-[#0e6977] focus:bg-white"
                   >
+                    <option value="">— Select Gender —</option>
+                    {leadForm.gender && !['Female', 'Male', 'Other'].includes(leadForm.gender) && (
+                      <option value={leadForm.gender}>{leadForm.gender}</option>
+                    )}
                     <option value="Female">Female</option>
                     <option value="Male">Male</option>
                     <option value="Other">Other</option>
@@ -655,16 +776,41 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                   onChange={(e) => setLeadForm({ ...leadForm, education: e.target.value })}
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 outline-none focus:border-[#0e6977] focus:bg-white"
                 >
-                  <option value="">— Select —</option>
-                  <option value="B.Tech Biotechnology">B.Tech Biotechnology</option>
+                  <option value="">— Select Education —</option>
+                  {leadForm.education && ![
+                    'BSc Nursing',
+                    'GNM / ANM Nursing',
+                    'B.Pharm / D.Pharm',
+                    'M.Pharm / Pharm.D',
+                    'BSc Biotechnology',
+                    'BSc Microbiology',
+                    'BSc Biochemistry',
+                    'BSc Zoology / Botany / Life Science',
+                    'BPT (Physiotherapy)',
+                    'BSc MLT (Medical Lab Technology)',
+                    'BSc Radiology / Allied Health',
+                    'B.Tech / BE',
+                    'Arts & Science Graduate',
+                    'Diploma',
+                    'Other'
+                  ].includes(leadForm.education) && (
+                    <option value={leadForm.education}>{leadForm.education}</option>
+                  )}
                   <option value="BSc Nursing">BSc Nursing</option>
-                  <option value="B.Pharm">B.Pharm</option>
+                  <option value="GNM / ANM Nursing">GNM / ANM Nursing</option>
+                  <option value="B.Pharm / D.Pharm">B.Pharm / D.Pharm</option>
+                  <option value="M.Pharm / Pharm.D">M.Pharm / Pharm.D</option>
+                  <option value="BSc Biotechnology">BSc Biotechnology</option>
                   <option value="BSc Microbiology">BSc Microbiology</option>
                   <option value="BSc Biochemistry">BSc Biochemistry</option>
-                  <option value="BSc Zoology / Life Science">BSc Zoology / Life Science</option>
-                  <option value="BE / B.Tech (Other)">BE / B.Tech (Other)</option>
+                  <option value="BSc Zoology / Botany / Life Science">BSc Zoology / Botany / Life Science</option>
+                  <option value="BPT (Physiotherapy)">BPT (Physiotherapy)</option>
+                  <option value="BSc MLT (Medical Lab Technology)">BSc MLT (Medical Lab Technology)</option>
+                  <option value="BSc Radiology / Allied Health">BSc Radiology / Allied Health</option>
+                  <option value="B.Tech / BE">B.Tech / BE</option>
                   <option value="Arts & Science Graduate">Arts & Science Graduate</option>
                   <option value="Diploma">Diploma</option>
+                  <option value="Other">Other</option>
                 </select>
               </div>
 
@@ -679,11 +825,28 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                     onChange={(e) => setLeadForm({ ...leadForm, currentRole: e.target.value })}
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 outline-none focus:border-[#0e6977] focus:bg-white"
                   >
-                    <option value="BPO / Call Center">BPO / Call Center</option>
+                    <option value="">— Select Role / Background —</option>
+                    {leadForm.currentRole && ![
+                      'Fresher / Job Seeker',
+                      'Final Year Student',
+                      'BPO / Call Center',
+                      'Hospital Staff / Nurse',
+                      'Medical Coding Trainee',
+                      'Data Entry / IT Support',
+                      'Career Gap',
+                      'Homemaker',
+                      'Other'
+                    ].includes(leadForm.currentRole) && (
+                      <option value={leadForm.currentRole}>{leadForm.currentRole}</option>
+                    )}
                     <option value="Fresher / Job Seeker">Fresher / Job Seeker</option>
+                    <option value="Final Year Student">Final Year Student</option>
+                    <option value="BPO / Call Center">BPO / Call Center</option>
                     <option value="Hospital Staff / Nurse">Hospital Staff / Nurse</option>
                     <option value="Medical Coding Trainee">Medical Coding Trainee</option>
                     <option value="Data Entry / IT Support">Data Entry / IT Support</option>
+                    <option value="Career Gap">Career Gap</option>
+                    <option value="Homemaker">Homemaker</option>
                     <option value="Other">Other</option>
                   </select>
                 </div>
@@ -695,6 +858,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                     type="text"
                     value={leadForm.experienceYrs}
                     onChange={(e) => setLeadForm({ ...leadForm, experienceYrs: e.target.value })}
+                    placeholder="e.g. 0, 1.5, 2..."
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 outline-none focus:border-[#0e6977] focus:bg-white"
                   />
                 </div>
@@ -709,6 +873,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                   type="text"
                   value={leadForm.location}
                   onChange={(e) => setLeadForm({ ...leadForm, location: e.target.value })}
+                  placeholder="Candidate city / location..."
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 outline-none focus:border-[#0e6977] focus:bg-white"
                 />
               </div>
@@ -724,10 +889,14 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                     onChange={(e) => setLeadForm({ ...leadForm, course: e.target.value })}
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 outline-none focus:border-[#0e6977] focus:bg-white"
                   >
+                    <option value="">— Select Course —</option>
+                    {leadForm.course && !COURSE_CATEGORIES.some((cat) => cat.courses?.some((c) => (c.code === c.name ? c.name : `${c.code} - ${c.name}`) === leadForm.course)) && (
+                      <option value={leadForm.course}>{leadForm.course}</option>
+                    )}
                     {COURSE_CATEGORIES.map((cat) => (
                       <optgroup key={cat.category} label={cat.title}>
-                        {cat.courses.map((c) => {
-                          const val = `${c.code} - ${c.name}`;
+                        {cat.courses?.map((c) => {
+                          const val = c.code === c.name ? c.name : `${c.code} - ${c.name}`;
                           return (
                             <option key={c.code} value={val}>
                               {val}
@@ -747,8 +916,12 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                     onChange={(e) => setLeadForm({ ...leadForm, budget: e.target.value })}
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 outline-none focus:border-[#0e6977] focus:bg-white"
                   >
-                    <option value="₹20K-30K">₹20K-30K</option>
+                    <option value="">— Select Budget —</option>
+                    {leadForm.budget && !['₹15K-20K', '₹20K-30K', '₹30K-40K', '₹40K+'].includes(leadForm.budget) && (
+                      <option value={leadForm.budget}>{leadForm.budget}</option>
+                    )}
                     <option value="₹15K-20K">₹15K-20K</option>
+                    <option value="₹20K-30K">₹20K-30K</option>
                     <option value="₹30K-40K">₹30K-40K</option>
                     <option value="₹40K+">₹40K+</option>
                   </select>
@@ -760,13 +933,30 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                 <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
                   BATCH TIMING
                 </label>
-                <input
-                  type="text"
+                <select
                   value={leadForm.batchTiming}
                   onChange={(e) => setLeadForm({ ...leadForm, batchTiming: e.target.value })}
-                  placeholder="e.g. Weekend (Sat-Sun) or 8-10 PM Weekdays"
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 outline-none focus:border-[#0e6977] focus:bg-white"
-                />
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 outline-none focus:border-[#0e6977] focus:bg-white cursor-pointer"
+                >
+                  <option value="">— Select timing slot —</option>
+                  {leadForm.batchTiming && !availableSlots.some(s => s.label === leadForm.batchTiming || s.value === leadForm.batchTiming || s.timing === leadForm.batchTiming) && (
+                    <option value={leadForm.batchTiming}>Current: {leadForm.batchTiming}</option>
+                  )}
+                  <optgroup label={`🎯 Available for ${leadForm.course || 'Selected Course'} (${availableSlots.length} Slots)`}>
+                    {availableSlots.map((s, idx) => (
+                      <option key={`call-avail-${idx}`} value={s.label}>
+                        {s.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="📋 All Other Schedule Slots">
+                    {BATCH_SCHEDULE.filter(s => !availableSlots.some(a => a.label === s.label)).map((s, idx) => (
+                      <option key={`call-other-${idx}`} value={s.label}>
+                        {s.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                </select>
               </div>
 
               {/* Decision Status */}
@@ -778,7 +968,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                   type="text"
                   value={leadForm.decisionStatus}
                   onChange={(e) => setLeadForm({ ...leadForm, decisionStatus: e.target.value })}
-                  placeholder="e.g. Will discuss with family"
+                  placeholder="e.g. Ready to join, Discussing with family, Needs demo..."
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 outline-none focus:border-[#0e6977] focus:bg-white"
                 />
               </div>
@@ -792,7 +982,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                   rows="3"
                   value={leadForm.notes}
                   onChange={(e) => setLeadForm({ ...leadForm, notes: e.target.value })}
-                  placeholder="What did the lead say? Any objections, budget, timing preference..."
+                  placeholder="What did the candidate say? Notes, preferences, objections..."
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs leading-relaxed text-slate-900 outline-none focus:border-[#0e6977] focus:bg-white transition-all font-sans"
                 />
               </div>

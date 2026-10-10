@@ -152,6 +152,12 @@ export const createStudent = async (studentData) => {
   return res.data;
 };
 
+// Check for duplicate student/lead registration by phone or email
+export const checkDuplicateStudent = async (params) => {
+  const res = await api.get('/students/check-duplicate', { params });
+  return res.data;
+};
+
 // Create / reset a student's portal login — returns { email, password } once
 export const resetStudentLogin = async (id) => {
   const res = await api.post(`/students/${encodeURIComponent(id)}/reset-login`);

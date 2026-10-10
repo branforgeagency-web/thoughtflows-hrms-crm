@@ -17,10 +17,12 @@ import {
   Phone,
   MessageSquare,
   BookOpen,
-  Briefcase
+  Briefcase,
+  Edit2
 } from 'lucide-react';
 import StudentProfileModal from './StudentProfileModal';
 import CompleteRegistrationModal from './CompleteRegistrationModal';
+import EditStudentModal from './EditStudentModal';
 
 import { getStudents, createStudent, updateStudent, resetStudentLogin } from '../services/api';
 import { getCurrentMonthYear, getCurrentMonthName, localDateKey } from '../utils/dateUtils';
@@ -49,6 +51,7 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
   const [showCompleteRegModal, setShowCompleteRegModal] = useState(false);
   const [completeRegInitialData, setCompleteRegInitialData] = useState(null);
   const [selectedStudent, setSelectedStudent] = useState(null);
+  const [editingStudent, setEditingStudent] = useState(null);
 
   const [students, setStudents] = useState(propStudents || []);
 
@@ -56,13 +59,12 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
     if (propStudents !== undefined) {
       setStudents(propStudents);
     } else {
-      const branchShort = String(currentUser?.branch || '').replace(/\s*branch\b.*$/i, '').replace(/\s*\(.*\)\s*$/, '').trim();
-      const params = currentUser?.name ? { hrName: currentUser.name, branch: branchShort } : undefined;
+      const params = currentUser?.name ? { hrName: currentUser.name } : undefined;
       getStudents(params).then(res => {
         if (Array.isArray(res)) setStudents(res);
       }).catch(err => console.error('Error fetching students:', err));
     }
-  }, [propStudents, currentUser?.name, currentUser?.branch]);
+  }, [propStudents, currentUser?.name]);
 
   const showToast = (msg) => {
     setToastMessage(msg);
@@ -488,7 +490,7 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
                 <th className="py-3 px-3">Certified</th>
                 <th className="py-3 px-3">Placed</th>
                 <th className="py-3 px-3">Fee</th>
-                <th className="py-3 px-3">Portal login</th>
+                <th className="py-3 px-3 text-center">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-[11px]">
@@ -558,8 +560,25 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
 
                   {/* Batch Timing */}
                   <td className="py-3 px-3 whitespace-nowrap text-slate-600">
-                    <div className="font-semibold">{s.batchTiming.split(' ')[0]}</div>
-                    <div className="text-[9.5px] text-slate-400">{s.batchTiming.split(' ').slice(1).join(' ')}</div>
+                    {s.batchTiming ? (
+                      s.batchTiming.includes('·') ? (
+                        <>
+                          <div className="font-semibold text-slate-800 text-xs">
+                            {s.batchTiming.split('·')[0].trim()}
+                          </div>
+                          <div className="text-[10px] font-medium text-teal-700 bg-teal-50 px-1.5 py-0.5 rounded inline-block mt-0.5">
+                            {s.batchTiming.split('·').slice(1).join('·').trim()}
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="font-semibold text-slate-800 text-xs">{s.batchTiming.split(' ')[0]}</div>
+                          <div className="text-[9.5px] text-slate-400">{s.batchTiming.split(' ').slice(1).join(' ')}</div>
+                        </>
+                      )
+                    ) : (
+                      <span className="text-slate-400 text-xs italic">—</span>
+                    )}
                   </td>
 
                   {/* Qualification */}
@@ -727,15 +746,31 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
                     })()}
                   </td>
 
-                  {/* Portal login */}
-                  <td className="py-3 px-3 whitespace-nowrap">
-                    <button
-                      onClick={(e) => handleResetLogin(e, s)}
-                      className="text-[10px] font-bold px-2.5 py-1 rounded-lg border border-teal-200 text-teal-700 hover:bg-teal-50"
-                      title="Create or reset this student's dashboard password"
-                    >
-                      Send login
-                    </button>
+                  {/* Actions: Edit + Portal login */}
+                  <td className="py-3 px-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingStudent(s);
+                        }}
+                        className="inline-flex items-center gap-1 text-[10.5px] font-bold px-2.5 py-1 rounded-lg bg-teal-50 hover:bg-[#00897b] text-[#00897b] hover:text-white border border-[#00897b]/30 hover:border-[#00897b] transition-all cursor-pointer shadow-2xs active:scale-95"
+                        title={`Edit details for ${s.name}`}
+                      >
+                        <Edit2 className="w-3 h-3" />
+                        <span>Edit</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={(e) => handleResetLogin(e, s)}
+                        className="text-[10px] font-bold px-2 py-1 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
+                        title="Create or reset this student's dashboard password"
+                      >
+                        Login
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -743,6 +778,25 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
           </table>
         </div>
       </div>
+
+      {/* Edit Student Modal */}
+      {editingStudent && (
+        <EditStudentModal
+          isOpen={!!editingStudent}
+          student={editingStudent}
+          onClose={() => setEditingStudent(null)}
+          onSuccess={(updated) => {
+            setStudents(prev => prev.map(item => {
+              const match = (item._id && item._id === updated._id) || 
+                            (item.studentId && item.studentId === updated.studentId) ||
+                            (item.id && item.id === updated.id);
+              return match ? { ...item, ...updated } : item;
+            }));
+            showToast(`✓ Updated details for ${updated.name}`);
+            if (onRefreshStudents) onRefreshStudents();
+          }}
+        />
+      )}
 
       {/* Complete Your Registration Modal */}
       {showCompleteRegModal && (
@@ -770,6 +824,7 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
           } catch (err) {
             console.error('Failed to create admitted student:', err);
             showToast(`⚠ Not saved: ${err?.response?.data?.error || err.message}`);
+            throw err;
           }
         }}
       />

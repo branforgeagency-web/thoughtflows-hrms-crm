@@ -50,6 +50,7 @@ import CompleteRegistrationModal from './CompleteRegistrationModal';
 import { getStudents, getLeads, createLead, updateLead, updateStudent, getDemos, createDemo, createStudent, getRecordings, getTodayClosure, saveDailyClosure, onDataUpdate, getNotifications, markNotificationRead, markNotificationsRead, getStudentRequests, getStudentTickets, getMyAttendance, setMyAttendance, logCall, getTodayCallLog, getHrTargets } from '../services/api';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 import { useIncentivePolicy, progressiveIncentive } from '../utils/incentive';
+import DashboardNavSwitcher from './DashboardNavSwitcher';
 
 export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, onSwitchDepartment, theme = 'classic' }) {
   // Persist active tab across browser refresh within this session
@@ -317,7 +318,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       const dKey = localDateKey();
 
       const [stRes, ldRes, dmRes, recRes, closureRes] = await Promise.all([
-        getStudents(shouldFilterOnServer ? { hrName: counselorFilter, branch: branchShort } : undefined),
+        getStudents(shouldFilterOnServer ? { hrName: counselorFilter } : undefined),
         getLeads(shouldFilterOnServer ? { counselor: counselorFilter } : undefined),
         getDemos(shouldFilterOnServer ? { counselor: counselorFilter, branch: branchShort } : undefined),
         getRecordings(shouldFilterOnServer ? { counselor: counselorFilter } : undefined).catch(() => []),
@@ -395,7 +396,9 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       showToast(created.studentLogin?.existing ? `✓ Added lead: ${created.fullName} (login already exists for this email)` : `✓ Added real lead: ${created.fullName}`);
     } catch (err) {
       console.error('Failed to create lead:', err);
-      showToast('Error saving lead to database');
+      const msg = err?.response?.data?.error || err.message || 'Error saving lead to database';
+      showToast(`⚠ ${msg}`);
+      throw err;
     }
   };
 
@@ -420,25 +423,67 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   // no owner belongs to nobody — it never shows up in every counsellor's list.
   const normName = (v) => String(v || '').trim().replace(/\s+/g, ' ').toLowerCase();
   const myName = normName(currentUser?.name);
-  const scopedLeads = useMemo(() => {
-    if (scopeMode === 'all' && isElevatedUser) return leads;
-    if (!myName) return leads;
-    return leads.filter(l => normName(l.counselorAssigned || l.allocatedTo) === myName);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [leads, scopeMode, isElevatedUser, myName]);
-
   const scopedStudents = useMemo(() => {
     if (scopeMode === 'all' && isElevatedUser) return students;
-    if (!myName && !branchShort) return students;
-    const bClean = (v) => String(v || '').toLowerCase().replace(/\s*(branch|\(.*\)|hq)\b/gi, '').replace(/[^a-z0-9]/g, '');
-    const myB = bClean(branchShort);
-    return students.filter(s => {
-      const isMyAdmission = myName && normName(s.hrName) === myName;
-      const isMyBranch = myB && (bClean(s.branch).includes(myB) || bClean(s.location).includes(myB) || bClean(s.leadBranch).includes(myB));
-      return isMyAdmission || isMyBranch;
-    });
+    if (!myName) return students;
+    return students.filter(s => normName(s.hrName) === myName);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [students, scopeMode, isElevatedUser, myName, branchShort]);
+  }, [students, scopeMode, isElevatedUser, myName]);
+
+  const scopedLeads = useMemo(() => {
+    let baseLeads = leads;
+    if (scopeMode === 'all' && isElevatedUser) {
+      baseLeads = leads;
+    } else if (myName) {
+      baseLeads = leads.filter(l => normName(l.counselorAssigned || l.allocatedTo) === myName);
+    }
+
+    // Ensure every admitted student belonging to this counselor is present in the pipeline
+    // even if a lead was not previously created or synced
+    const leadPhones = new Set(
+      baseLeads.map(l => (l.phone || '').replace(/\D/g, '').slice(-10)).filter(Boolean)
+    );
+    const leadStudentIds = new Set(
+      baseLeads.map(l => l.admittedStudentId).filter(Boolean)
+    );
+
+    const syntheticAdmittedLeads = scopedStudents
+      .filter(s => {
+        const ph = (s.phone || '').replace(/\D/g, '').slice(-10);
+        const hasByPhone = ph.length === 10 && leadPhones.has(ph);
+        const hasById = s.studentId && leadStudentIds.has(s.studentId);
+        return !hasByPhone && !hasById;
+      })
+      .map(s => ({
+        _id: s._id || `synth-${s.studentId}`,
+        id: s._id || `synth-${s.studentId}`,
+        fullName: s.name,
+        name: s.name,
+        phone: s.phone || '',
+        whatsappNumber: s.whatsappNumber || s.phone || '',
+        email: s.email || '',
+        course: s.course || '',
+        branch: s.branch || '',
+        location: s.location || s.branch || '',
+        education: s.qualification || '',
+        passoutYear: s.passoutYear || '',
+        source: s.source || 'Direct Admission',
+        sourceName: s.source || 'Direct Admission',
+        stage: 'admitted',
+        status: 'completed',
+        counselorAssigned: s.hrName || currentUser?.name || '',
+        allocatedTo: s.hrName || currentUser?.name || '',
+        admittedStudentId: s.studentId,
+        batchTiming: s.batchTiming || '',
+        followUpDate: '',
+        followUpTime: '',
+        notes: `Admitted Student ID: ${s.studentId}`,
+        createdAt: s.createdAt || s.registeredAt || new Date().toISOString()
+      }));
+
+    return [...baseLeads, ...syntheticAdmittedLeads];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leads, scopedStudents, scopeMode, isElevatedUser, myName, currentUser?.name]);
 
   const scopedDemos = useMemo(() => {
     if (scopeMode === 'all' && isElevatedUser) return demos;
@@ -1000,7 +1045,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
                     : 'rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white'
           }`}>
             <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
-            <span>Add Lead</span>
+            <span>Add Enquiry</span>
           </button>
 
           <div className="relative flex-shrink-0">
@@ -1124,6 +1169,9 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
               </div>
             </div>
           </div>
+
+          {/* Quick Cross-Dashboard Switcher */}
+          <DashboardNavSwitcher currentDepartment="hr" onSwitchDepartment={onSwitchDepartment} />
 
           {/* Break Button */}
           <button
@@ -1523,7 +1571,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
               <div className="space-y-2.5">
                 {priorityQueue.length === 0 ? (
                   <div className="p-6 text-center text-xs text-slate-400 bg-slate-50/50 rounded-xl border border-dashed border-slate-200">
-                    No urgent calls in queue. Click "+ Add Lead" above to record a new student enquiry.
+                    No urgent calls in queue. Click "+ Add Enquiry" above to record a new student enquiry.
                   </div>
                 ) : (
                   priorityQueue.map((item, idx) => (
@@ -1908,20 +1956,27 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
               followUpDate: data.followUpDate || undefined,
               followUpTime: data.followUpTime || undefined,
               ...(data.leadForm ? {
-                fullName: data.leadForm.name,
-                name: data.leadForm.name,
-                phone: data.leadForm.phone,
-                whatsappNumber: data.leadForm.whatsappNumber,
-                age: data.leadForm.age,
-                gender: data.leadForm.gender,
-                education: data.leadForm.education,
-                currentRole: data.leadForm.currentRole,
-                experienceYrs: data.leadForm.experienceYrs,
-                location: data.leadForm.location,
-                course: data.leadForm.course,
-                budget: data.leadForm.budget,
-                batchTiming: data.leadForm.batchTiming,
-                decisionStatus: data.leadForm.decisionStatus,
+                fullName: data.leadForm.name || undefined,
+                name: data.leadForm.name || undefined,
+                phone: data.leadForm.phone || undefined,
+                whatsappNumber: data.leadForm.whatsappNumber || undefined,
+                age: data.leadForm.age || undefined,
+                gender: data.leadForm.gender || undefined,
+                education: data.leadForm.education || undefined,
+                currentRole: data.leadForm.currentRole || undefined,
+                category: data.leadForm.currentRole || undefined,
+                experienceYrs: data.leadForm.experienceYrs || undefined,
+                location: data.leadForm.location || undefined,
+                course: data.leadForm.course || undefined,
+                budget: data.leadForm.budget || undefined,
+                batchTiming: data.leadForm.batchTiming || undefined,
+                decisionStatus: data.leadForm.decisionStatus || undefined,
+                source: data.leadForm.source || undefined,
+                sourceName: data.leadForm.source || undefined,
+                branch: data.leadForm.branch || undefined,
+                fetchedBy: data.leadForm.fetchedBy || undefined,
+                allocatedTo: data.leadForm.allocatedTo || undefined,
+                counselorAssigned: data.leadForm.allocatedTo || undefined,
               } : {})
             };
             if (data.stage) update.stage = data.stage;

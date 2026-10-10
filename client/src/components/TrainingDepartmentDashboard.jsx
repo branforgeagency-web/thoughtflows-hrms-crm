@@ -89,6 +89,7 @@ import {
 } from '../services/api';
 import { TRAINER_COURSES } from '../constants/courses';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
+import DashboardNavSwitcher from './DashboardNavSwitcher';
 
 export default function TrainingDepartmentDashboard({
   onClose,
@@ -1177,6 +1178,7 @@ export default function TrainingDepartmentDashboard({
           </div>
 
           <div className="flex items-center gap-3">
+            <DashboardNavSwitcher currentDepartment="training" onSwitchDepartment={onSwitchDepartment} />
             <div className="relative">
               <button
                 onClick={() => setShowNotifPanel(v => !v)}

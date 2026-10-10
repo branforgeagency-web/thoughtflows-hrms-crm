@@ -1354,7 +1354,11 @@ router.post('/attendance/me', async (req, res) => {
 // (case / spacing ignored) so "Ram" never matches "Ramesh".
 const normName = (v) => String(v || '').trim().replace(/\s+/g, ' ').toLowerCase();
 const exactNameRx = (v) => new RegExp(`^\\s*${escapeRegex(String(v || '').trim()).replace(/\s+/g, '\\s+')}\\s*$`, 'i');
-const isScopedHr = (req) => req.user?.department === 'hr';
+const isScopedHr = (req) => {
+  const dept = String(req.user?.department || '').toLowerCase();
+  const role = String(req.user?.role || '').toLowerCase();
+  return dept === 'hr' || role === 'hr' || dept.includes('counsel') || dept.includes('admission');
+};
 const leadOwner = (l) => l?.counselorAssigned || l?.allocatedTo || '';
 const leadOwnerQuery = (name) => ({
   $or: [
@@ -1366,16 +1370,30 @@ const bClean = (v) => String(v || '').toLowerCase().replace(/\s*(branch|\(.*\)|h
 
 const ownsStudent = (req, st) => {
   if (!isScopedHr(req)) return true;
-  if (normName(st?.hrName) === normName(req.user?.name)) return true;
-  const userBranch = branchShort(req.user?.branch || req.query?.branch);
-  if (userBranch) {
-    const ub = bClean(userBranch);
-    if (ub && (bClean(st?.branch).includes(ub) || bClean(st?.location).includes(ub) || bClean(st?.leadBranch).includes(ub))) {
-      return true;
-    }
-  }
-  return false;
+  return normName(st?.hrName) === normName(req.user?.name);
 };
+
+const ownsLead = (req, lead) => {
+  if (!lead) return false;
+  if (!isScopedHr(req) && !isScopedBranchManager(req)) return true;
+  if (isScopedHr(req)) {
+    const counselor = req.user?.name;
+    if (!counselor) return false;
+    const ca = normName(lead.counselorAssigned);
+    const at = normName(lead.allocatedTo);
+    const me = normName(counselor);
+    if (!ca && !at) return true; // Unassigned enquiries can be managed/edited
+    return ca === me || at === me;
+  }
+  if (isScopedBranchManager(req)) {
+    const targetBranch = getBranchManagerBranch(req);
+    if (!targetBranch) return true;
+    const ub = bClean(targetBranch);
+    return !lead.branch || bClean(lead.branch).includes(ub) || ub.includes(bClean(lead.branch));
+  }
+  return true;
+};
+
 
 const ownsDemo = (req, demo) => {
   if (!isScopedHr(req)) return true;
@@ -1440,20 +1458,13 @@ router.get('/students', async (req, res) => {
       andConditions.push({ $or: [{ branch: bRx }, { location: bRx }, { leadBranch: bRx }] });
     } else if (isScopedHr(req)) {
       const counselor = req.user?.name;
-      const hrOr = [];
-      if (counselor) hrOr.push({ hrName: exactNameRx(counselor) });
-      if (userBranch) {
-        const bRx = new RegExp(escapeRegex(userBranch), 'i');
-        hrOr.push({ branch: bRx }, { location: bRx }, { leadBranch: bRx });
+      if (counselor) {
+        andConditions.push({ hrName: exactNameRx(counselor) });
+      } else {
+        andConditions.push({ hrName: '__NEVER_MATCH__' });
       }
-      if (hrOr.length > 0) andConditions.push({ $or: hrOr });
     } else if (hrName && hrName !== 'all') {
-      const hrOr = [{ hrName: exactNameRx(hrName) }];
-      if (userBranch) {
-        const bRx = new RegExp(escapeRegex(userBranch), 'i');
-        hrOr.push({ branch: bRx }, { location: bRx }, { leadBranch: bRx });
-      }
-      andConditions.push({ $or: hrOr });
+      andConditions.push({ hrName: exactNameRx(hrName) });
     } else if (userBranch) {
       const bRx = new RegExp(escapeRegex(userBranch), 'i');
       andConditions.push({ $or: [{ branch: bRx }, { location: bRx }, { leadBranch: bRx }] });
@@ -1560,8 +1571,11 @@ async function generateStandardStudentId({ branch, course, mode, date }) {
 
   // Course code
   let c = 'C';
-  const cStr = String(course || '').toUpperCase();
   if (cStr.includes('CRASH')) c = 'F';
+  else if (cStr.includes('INTERNSHIP BEGINNER')) c = 'IB';
+  else if (cStr.includes('INTERNSHIP INTERMEDIATE')) c = 'II';
+  else if (cStr.includes('INTERNSHIP ADVANCED')) c = 'IA';
+  else if (cStr.includes('INTERNSHIP')) c = 'IB';
   else if (cStr.includes('AMCT BEGINNER')) c = 'AB';
   else if (cStr.includes('AMCT INTERMEDIATE')) c = 'AI';
   else if (cStr.includes('AMCT ADVANCED')) c = 'AA';
@@ -1620,11 +1634,281 @@ async function generateStandardStudentId({ branch, course, mode, date }) {
   return `${prefix}${serial}`;
 }
 
+// Finds which HR counselor lastly contacted this candidate/student
+async function findLastlyContactedHr({ student, lead, phone, email }) {
+  const digits = phoneDigits(phone || student?.phone || lead?.phone || student?.whatsappNumber || lead?.whatsappNumber);
+  const mail = String(email || student?.email || lead?.email || '').trim().toLowerCase();
+
+  let latestCall = null;
+  if (digits && digits.length === 10) {
+    const rx = new RegExp(`${digits.slice(-4).split('').join('\\D*')}\\D*$`);
+    const calls = await CallRecording.find({ leadPhone: rx }).sort({ createdAt: -1 }).limit(10).lean();
+    latestCall = calls.find(c => phoneDigits(c.leadPhone) === digits) || null;
+  }
+  if (!latestCall && lead?._id) {
+    latestCall = await CallRecording.findOne({ leadId: lead._id }).sort({ createdAt: -1 }).lean();
+  }
+
+  let latestCallLog = null;
+  if (lead?._id) {
+    latestCallLog = await CallLog.findOne({ leadId: String(lead._id) }).sort({ createdAt: -1 }).lean();
+  }
+  if (!latestCallLog && digits && digits.length === 10) {
+    const candName = student?.name || lead?.fullName;
+    if (candName) {
+      latestCallLog = await CallLog.findOne({ leadName: exactNameRx(candName) }).sort({ createdAt: -1 }).lean();
+    }
+  }
+
+  let latestCallHr = '';
+  let latestCallDate = null;
+  if (latestCall?.counselorName) {
+    latestCallHr = latestCall.counselorName;
+    latestCallDate = latestCall.createdAt;
+  }
+  if (latestCallLog?.counselorName) {
+    if (!latestCallDate || (latestCallLog.createdAt && new Date(latestCallLog.createdAt) > new Date(latestCallDate))) {
+      latestCallHr = latestCallLog.counselorName;
+      latestCallDate = latestCallLog.createdAt;
+    }
+  }
+
+  if (latestCallHr) {
+    return {
+      hrName: latestCallHr,
+      contactType: 'Call',
+      contactDate: latestCallDate
+    };
+  }
+
+  // Check demo booked
+  if (digits && digits.length === 10) {
+    const rx = new RegExp(`${digits.slice(-4).split('').join('\\D*')}\\D*$`);
+    const demo = await Demo.findOne({ phone: rx }).sort({ createdAt: -1 }).lean();
+    if (demo?.counselor) {
+      return {
+        hrName: demo.counselor,
+        contactType: 'Demo Booking',
+        contactDate: demo.createdAt
+      };
+    }
+  }
+
+  // Check WhatsApp messages on lead
+  if (lead?.whatsappMessages?.length) {
+    const counselorMsgs = lead.whatsappMessages
+      .filter(m => m.sender === 'counselor' && m.senderName)
+      .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+    if (counselorMsgs.length > 0) {
+      return {
+        hrName: counselorMsgs[0].senderName,
+        contactType: 'WhatsApp Message',
+        contactDate: counselorMsgs[0].createdAt
+      };
+    }
+  }
+
+  // Check student fee receipts (recordedBy)
+  if (student?.receipts?.length) {
+    const validReceipts = student.receipts.filter(r => r.recordedBy).sort((a, b) => new Date(b.at || b.date || 0) - new Date(a.at || a.date || 0));
+    if (validReceipts.length > 0) {
+      return {
+        hrName: validReceipts[0].recordedBy,
+        contactType: 'Fee Payment',
+        contactDate: validReceipts[0].at || validReceipts[0].date
+      };
+    }
+  }
+
+  // Check lead spokenBy
+  if (lead?.spokenBy) {
+    const cleanSpoken = lead.spokenBy.replace(/\s*·\s*YOU/i, '').trim();
+    if (cleanSpoken) {
+      return {
+        hrName: cleanSpoken,
+        contactType: 'Counselling Call',
+        contactDate: lead.updatedAt
+      };
+    }
+  }
+
+  // Check student hrName (the HR counselor who admitted the student)
+  if (student?.hrName) {
+    return {
+      hrName: student.hrName,
+      contactType: 'Student Admission',
+      contactDate: student.registeredAt || student.createdAt
+    };
+  }
+
+  // Check lead counselorAssigned or allocatedTo
+  if (lead?.counselorAssigned || lead?.allocatedTo) {
+    return {
+      hrName: lead.counselorAssigned || lead.allocatedTo,
+      contactType: 'Lead Allocation',
+      contactDate: lead.updatedAt || lead.createdAt
+    };
+  }
+
+  return {
+    hrName: 'Not Assigned',
+    contactType: 'Registration',
+    contactDate: null
+  };
+}
+
+// Checks whether a student or lead already exists with the given phone or email
+async function checkDuplicateRegistration({ phone, whatsappNumber, email, leadId = '', excludeStudentId = '' }) {
+  const digits = phoneDigits(phone || whatsappNumber);
+  const mail = String(email || '').trim().toLowerCase();
+
+  if ((!digits || digits.length < 10) && !mail) {
+    return null;
+  }
+
+  // 1. Search existing Student records
+  const studentQueries = [];
+  if (digits && digits.length === 10) {
+    const rx = new RegExp(`${digits.slice(-4).split('').join('\\D*')}\\D*$`);
+    studentQueries.push({ phone: rx });
+    studentQueries.push({ whatsappNumber: rx });
+  }
+  if (mail) {
+    studentQueries.push({ email: exactNameRx(mail) });
+  }
+
+  const existingStudents = await Student.find({ $or: studentQueries }).sort({ createdAt: -1 });
+  const matchedStudent = existingStudents.find((s) => {
+    if (excludeStudentId && (s.studentId === excludeStudentId || String(s._id) === String(excludeStudentId))) {
+      return false;
+    }
+    const sPhone = phoneDigits(s.phone);
+    const sWa = phoneDigits(s.whatsappNumber);
+    const sMail = String(s.email || '').trim().toLowerCase();
+    const phoneMatch = Boolean(digits && (sPhone === digits || sWa === digits));
+    const mailMatch = Boolean(mail && sMail === mail);
+    return phoneMatch || mailMatch;
+  });
+
+  // 2. Search existing StudentLead records
+  const leadQueries = [];
+  if (digits && digits.length === 10) {
+    const rx = new RegExp(`${digits.slice(-4).split('').join('\\D*')}\\D*$`);
+    leadQueries.push({ phone: rx });
+    leadQueries.push({ whatsappNumber: rx });
+  }
+  if (mail) {
+    leadQueries.push({ email: exactNameRx(mail) });
+  }
+
+  const existingLeads = await StudentLead.find({ $or: leadQueries }).sort({ createdAt: -1 });
+  const matchedLead = existingLeads.find((l) => {
+    if (leadId && String(l._id) === String(leadId)) return false;
+    const lPhone = phoneDigits(l.phone);
+    const lWa = phoneDigits(l.whatsappNumber);
+    const lMail = String(l.email || '').trim().toLowerCase();
+    const phoneMatch = Boolean(digits && (lPhone === digits || lWa === digits));
+    const mailMatch = Boolean(mail && lMail === mail);
+    return phoneMatch || mailMatch;
+  });
+
+  // If no match found in either Student or StudentLead
+  if (!matchedStudent && !matchedLead) {
+    return null;
+  }
+
+  const existingDoc = matchedStudent || matchedLead;
+  const isStudent = Boolean(matchedStudent);
+
+  const docPhone = phoneDigits(existingDoc.phone || existingDoc.whatsappNumber);
+  const docMail = String(existingDoc.email || '').trim().toLowerCase();
+  const phoneMatched = Boolean(digits && docPhone === digits);
+  const emailMatched = Boolean(mail && docMail === mail);
+  const bothMatched = phoneMatched && emailMatched;
+
+  const hrInfo = await findLastlyContactedHr({
+    student: matchedStudent,
+    lead: matchedLead,
+    phone: digits,
+    email: mail
+  });
+
+  const memberName = existingDoc.name || existingDoc.fullName || 'Registered Candidate';
+  const memberId = matchedStudent?.studentId || matchedLead?.admittedStudentId || '';
+
+  let fieldReason = '';
+  if (bothMatched) {
+    fieldReason = `mobile number (${digits}) and email ID (${mail})`;
+  } else if (phoneMatched) {
+    fieldReason = `mobile number (${digits})`;
+  } else {
+    fieldReason = `email ID (${mail})`;
+  }
+
+  const idText = memberId ? ` · ID: ${memberId}` : '';
+  const hrText = hrInfo.hrName && hrInfo.hrName !== 'Not Assigned'
+    ? `Lastly contacted by HR: ${hrInfo.hrName}`
+    : 'Assigned HR: Not Assigned';
+
+  const errorMessage = `Duplicate record: A student is already registered with ${fieldReason} (${memberName}${idText}). ${hrText}.`;
+
+  return {
+    isDuplicate: true,
+    error: errorMessage,
+    duplicateFields: {
+      phone: phoneMatched,
+      email: emailMatched,
+      both: bothMatched
+    },
+    firstRegistrationMember: {
+      name: memberName,
+      studentId: memberId,
+      phone: existingDoc.phone,
+      email: existingDoc.email,
+      course: existingDoc.course,
+      branch: existingDoc.branch,
+      type: isStudent ? 'Admitted Student' : 'Enquiry / Lead',
+      registeredAt: existingDoc.registeredAt || existingDoc.createdAt,
+      lastContactedHr: hrInfo.hrName,
+      contactType: hrInfo.contactType,
+      contactDate: hrInfo.contactDate
+    }
+  };
+}
+
+router.get('/students/check-duplicate', async (req, res) => {
+  try {
+    const { phone, whatsappNumber, email, leadId, excludeStudentId } = req.query;
+    const dup = await checkDuplicateRegistration({ phone, whatsappNumber, email, leadId, excludeStudentId });
+    if (dup) {
+      return res.json(dup);
+    }
+    return res.json({ isDuplicate: false });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/students', async (req, res) => {
   try {
     let payload = { ...req.body };
     if (payload.studentId && await Student.exists({ studentId: payload.studentId })) {
       return res.status(409).json({ error: `Student ID ${payload.studentId} is already in use` });
+    }
+
+    // Check for duplicate registration by mobile number and/or email ID
+    const dup = await checkDuplicateRegistration({
+      phone: payload.phone,
+      whatsappNumber: payload.whatsappNumber,
+      email: payload.email,
+      leadId: payload.leadId
+    });
+    if (dup) {
+      return res.status(409).json({
+        error: dup.error,
+        isDuplicate: true,
+        duplicate: dup
+      });
     }
     if (!payload.studentId) {
       payload.studentId = await generateStandardStudentId({
@@ -1695,8 +1979,32 @@ router.post('/students', async (req, res) => {
       lead.stage = 'admitted';
       lead.status = 'completed';
       lead.admittedStudentId = newStudent.studentId;
+      if (!lead.counselorAssigned && newStudent.hrName) lead.counselorAssigned = newStudent.hrName;
       await lead.save();
       await creditReferralReward(lead);
+    } else {
+      // Auto-create an admitted lead record so the admission is ALWAYS tracked in Pipeline & Follow-ups!
+      lead = new StudentLead({
+        fullName: newStudent.name,
+        phone: newStudent.phone,
+        whatsappNumber: newStudent.whatsappNumber || newStudent.phone,
+        email: newStudent.email || '',
+        location: newStudent.location || newStudent.branch || '',
+        education: newStudent.qualification || '',
+        passoutYear: newStudent.passoutYear || '',
+        branch: newStudent.branch || '',
+        course: newStudent.course || '',
+        sourceName: newStudent.source || 'Direct Admission',
+        sourceId: 'admission',
+        stage: 'admitted',
+        status: 'completed',
+        counselorAssigned: newStudent.hrName || req.user?.name || '',
+        allocatedTo: newStudent.hrName || req.user?.name || '',
+        batchTiming: newStudent.batchTiming || '',
+        admittedStudentId: newStudent.studentId,
+        notes: `Admitted Student ID: ${newStudent.studentId}`
+      });
+      await lead.save();
     }
 
     // Create student login user email + password in User collection upon student admission/registration
@@ -1984,6 +2292,20 @@ router.post('/leads', async (req, res) => {
       payload.stage = 'new';
     }
 
+    // Check for duplicate enquiry by mobile number and/or email ID
+    const dup = await checkDuplicateRegistration({
+      phone: payload.phone || payload.whatsappNumber,
+      whatsappNumber: payload.whatsappNumber,
+      email: payload.email
+    });
+    if (dup) {
+      return res.status(409).json({
+        error: dup.error,
+        isDuplicate: true,
+        duplicate: dup
+      });
+    }
+
     // A counsellor adding a lead without naming an owner keeps it; Branch Manager auto-sets branch
     if (isScopedHr(req) && !payload.counselorAssigned && !payload.allocatedTo) payload.counselorAssigned = req.user?.name || "";
     if (isScopedBranchManager(req) && !payload.branch) payload.branch = req.user.branch;
@@ -2004,7 +2326,7 @@ router.post('/leads', async (req, res) => {
 router.put('/leads/:id', async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Lead not found' });
-    const current = await StudentLead.findById(req.params.id).select('allocatedTo counselorAssigned course');
+    const current = await StudentLead.findById(req.params.id).select('allocatedTo counselorAssigned course branch');
     if (!current) return res.status(404).json({ error: 'Lead not found' });
     if (!ownsLead(req, current)) return res.status(403).json(NOT_YOURS);
     const body = { ...(req.body || {}) };
@@ -2804,6 +3126,14 @@ router.get('/fees/rates', async (req, res) => {
       }
       rates = await CourseFeeRate.find().sort({ createdAt: 1 });
     }
+    // Ensure canonical ordering matching DEFAULT_COURSE_FEE_RATES (AMCT first)
+    const orderMap = new Map();
+    DEFAULT_COURSE_FEE_RATES.forEach((c, idx) => orderMap.set(c.code.toUpperCase(), idx));
+    rates.sort((a, b) => {
+      const idxA = orderMap.has((a.code || '').toUpperCase()) ? orderMap.get((a.code || '').toUpperCase()) : 999;
+      const idxB = orderMap.has((b.code || '').toUpperCase()) ? orderMap.get((b.code || '').toUpperCase()) : 999;
+      return idxA - idxB;
+    });
     res.json(rates);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -3145,33 +3475,36 @@ router.post('/auth/login', async (req, res) => {
     if (dbUser) {
       if (dbUser.status && /inactive|disabled|suspended/i.test(dbUser.status)) return deny('This account is disabled. Contact your admin.');
       const { ok } = await checkPassword(password, dbUser.password);
-      if (!ok) return deny();
-      dbUser.lastLogin = new Date().toLocaleString('en-IN');
-      await dbUser.save().catch(() => {});
+      if (ok) {
+        dbUser.lastLogin = new Date().toLocaleString('en-IN');
+        await dbUser.save().catch(() => {});
 
-      const mapping = mapRoleOrDeptToDashboard(dbUser.role, dbUser.department);
-      const rosterFields = mapping.department === 'training' ? dropUndefined(await trainerRosterFields(normalizedEmail, dbUser.name)) : {};
-      let studentId;
-      if (mapping.department === 'student') {
-        const st = await Student.findOne({ email: new RegExp(`^${escapeRegex(normalizedEmail)}$`, 'i') }).select('studentId');
-        studentId = st?.studentId;
+        const mapping = mapRoleOrDeptToDashboard(dbUser.role, dbUser.department);
+        const rosterFields = mapping.department === 'training' ? dropUndefined(await trainerRosterFields(normalizedEmail, dbUser.name)) : {};
+        let studentId;
+        if (mapping.department === 'student') {
+          const st = await Student.findOne({ email: new RegExp(`^${escapeRegex(normalizedEmail)}$`, 'i') }).select('studentId');
+          studentId = st?.studentId;
+        }
+        return grant({
+          id: dbUser._id.toString(),
+          name: dbUser.name,
+          userName: dbUser.name,
+          email: dbUser.email,
+          phone: dbUser.phone || '',
+          role: dbUser.role,
+          branch: dbUser.branch || '',
+          status: dbUser.status || 'Active',
+          department: mapping.department,
+          departmentCode: mapping.departmentCode,
+          departmentName: mapping.departmentName,
+          color: mapping.color,
+          ...rosterFields,
+          ...(studentId ? { studentId } : {})
+        }, `Welcome ${dbUser.name}`);
       }
-      return grant({
-        id: dbUser._id.toString(),
-        name: dbUser.name,
-        userName: dbUser.name,
-        email: dbUser.email,
-        phone: dbUser.phone || '',
-        role: dbUser.role,
-        branch: dbUser.branch || '',
-        status: dbUser.status || 'Active',
-        department: mapping.department,
-        departmentCode: mapping.departmentCode,
-        departmentName: mapping.departmentName,
-        color: mapping.color,
-        ...rosterFields,
-        ...(studentId ? { studentId } : {})
-      }, `Welcome ${dbUser.name}`);
+      const isBuiltIn = normalizedEmail === 'admin' || Object.values(DEPARTMENT_PORTALS).some(d => d.defaultEmail.toLowerCase() === normalizedEmail);
+      if (!isBuiltIn) return deny();
     }
 
     // 2. Built-in department portal accounts (incl. Admin) — enabled only when

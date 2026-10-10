@@ -14,11 +14,14 @@ import {
   AlertTriangle,
   Kanban,
   LayoutGrid,
+  LayoutList,
+  Edit2,
   ArrowRight
 } from 'lucide-react';
 
 import { getLeads, updateLead } from '../services/api';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
+import EditLeadModal from './EditLeadModal';
 
 // Classifies a lead's follow-up against real dates instead of guessing.
 function classifyFollowUp(lead) {
@@ -60,12 +63,13 @@ export default function HrPipelineView({
   initialViewMode = 'kanban',
   currentUser
 }) {
-  const [viewMode, setViewMode] = useState(initialViewMode); // 'kanban' | 'followup'
+  const [viewMode, setViewMode] = useState(initialViewMode); // 'kanban' | 'followup' | 'table'
   const [activeFilter, setActiveFilter] = useState('all'); // all, overdue, today, tomorrow, this_week, demo, fee, admitted
   const [searchQuery, setSearchQuery] = useState('');
   const [completedIds, setCompletedIds] = useState(new Set());
   const [actionNotice, setActionNotice] = useState(null);
   const [leads, setLeads] = useState(propLeads || []);
+  const [editingLead, setEditingLead] = useState(null);
 
   useEffect(() => {
     if (propLeads !== undefined) {
@@ -193,10 +197,18 @@ export default function HrPipelineView({
       const { timeframe, hasDate, isOverdue } = classifyFollowUp(lead);
 
       let badge;
-      if (hasDate) {
+      let badgeClass = isOverdue ? 'bg-rose-100 text-rose-700 font-bold' : 'bg-slate-100 text-slate-700 font-semibold';
+      let borderColor = isOverdue ? 'border-l-rose-500' : timeframe === 'today' ? 'border-l-amber-500' : 'border-l-slate-300';
+
+      if (lead.stage === 'admitted') {
+        badge = 'Admitted & Enrolled';
+        badgeClass = 'bg-emerald-100 text-emerald-800 font-bold';
+        borderColor = 'border-l-emerald-500';
+      } else if (hasDate) {
         badge = lead.followUpTime ? `${lead.followUpDate} · ${lead.followUpTime}` : lead.followUpDate;
       } else if (lead.stage === 'new') {
         badge = 'First call needed';
+        borderColor = 'border-l-teal-500';
       } else {
         badge = 'No follow-up scheduled';
       }
@@ -207,15 +219,18 @@ export default function HrPipelineView({
         phone: lead.phone || '',
         whatsappNumber: lead.whatsappNumber || lead.phone || '',
         badge,
-        badgeClass: isOverdue ? 'bg-rose-100 text-rose-700 font-bold' : 'bg-slate-100 text-slate-700 font-semibold',
-        borderColor: isOverdue ? 'border-l-rose-500' : timeframe === 'today' ? 'border-l-amber-500' : 'border-l-slate-300',
+        badgeClass,
+        borderColor,
         timeframe,
         stage: lead.stage || 'new',
         type: lead.stage === 'fee_followup' ? 'fee' : (lead.stage && lead.stage.includes('demo')) ? 'demo' : 'general',
         tags: [
+          lead.stage === 'admitted'
+            ? { label: 'ENROLLED', class: 'bg-emerald-50 text-emerald-700 border-emerald-300 font-bold' }
+            : null,
           { label: lead.course || 'CPC', class: 'bg-cyan-50 text-cyan-700 border-cyan-200' },
           { label: (lead.sourceName || lead.source || 'LEAD').toUpperCase(), class: 'bg-indigo-50 text-indigo-700 border-indigo-200' }
-        ],
+        ].filter(Boolean),
         note: lead.followUpNote || lead.notes || `${lead.education || 'Graduate'} · Stage: ${(lead.stage || 'new').replace('_', ' ').toUpperCase()}`,
         assigned: lead.counselorAssigned || '',
         rawLead: lead
@@ -254,6 +269,21 @@ export default function HrPipelineView({
       return true;
     });
   }, [FOLLOW_UPS, activeFilter]);
+
+  // Filtered leads for Table view
+  const tableLeads = useMemo(() => {
+    return searchFilteredLeads.filter(lead => {
+      if (activeFilter === 'all') return true;
+      const flags = classifyFollowUp(lead);
+      if (activeFilter === 'overdue') return flags.timeframe === 'overdue';
+      if (activeFilter === 'today') return flags.timeframe === 'today';
+      if (activeFilter === 'tomorrow') return flags.timeframe === 'tomorrow';
+      if (activeFilter === 'demo') return (lead.stage || '').includes('demo');
+      if (activeFilter === 'fee') return lead.stage === 'fee_followup';
+      if (activeFilter === 'admitted') return lead.stage === 'admitted';
+      return true;
+    });
+  }, [searchFilteredLeads, activeFilter]);
 
   const FILTERS = [
     { key: 'all', label: 'All', count: stageCounts.total, activeClass: 'bg-slate-900 text-white' },
@@ -316,6 +346,19 @@ export default function HrPipelineView({
               <LayoutGrid className="w-3.5 h-3.5 text-amber-600" />
               <span>Follow-up Board</span>
             </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('table')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                viewMode === 'table'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+              title="View Enquiries Table"
+            >
+              <LayoutList className="w-3.5 h-3.5 text-teal-600" />
+              <span>Enquiries Table</span>
+            </button>
           </div>
 
           {onAddLeadClick && (
@@ -324,7 +367,7 @@ export default function HrPipelineView({
               className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-[#00897b] hover:bg-[#00796b] text-white shadow-xs transition-all active:scale-95 cursor-pointer"
             >
               <UserPlus className="w-4 h-4" />
-              <span>Add Lead</span>
+              <span>Add Enquiry</span>
             </button>
           )}
         </div>
@@ -462,19 +505,33 @@ export default function HrPipelineView({
                             <div className="font-extrabold text-slate-900 text-[13px] leading-snug">
                               {card.name}
                             </div>
-                            {card.isNew ? (
-                              <span className="bg-[#00897b] text-white text-[9px] font-black uppercase px-1.5 py-0.5 rounded tracking-wide shrink-0">
-                                NEW
-                              </span>
-                            ) : card.isOverdue ? (
-                              <span className="bg-rose-100 text-rose-700 text-[9px] font-black uppercase px-1.5 py-0.5 rounded tracking-wide shrink-0">
-                                OVERDUE
-                              </span>
-                            ) : card.isToday ? (
-                              <span className="bg-amber-100 text-amber-800 text-[9px] font-black uppercase px-1.5 py-0.5 rounded tracking-wide shrink-0">
-                                TODAY
-                              </span>
-                            ) : null}
+                            <div className="flex items-center gap-1 shrink-0">
+                              {card.isNew ? (
+                                <span className="bg-[#00897b] text-white text-[9px] font-black uppercase px-1.5 py-0.5 rounded tracking-wide shrink-0">
+                                  NEW
+                                </span>
+                              ) : card.isOverdue ? (
+                                <span className="bg-rose-100 text-rose-700 text-[9px] font-black uppercase px-1.5 py-0.5 rounded tracking-wide shrink-0">
+                                  OVERDUE
+                                </span>
+                              ) : card.isToday ? (
+                                <span className="bg-amber-100 text-amber-800 text-[9px] font-black uppercase px-1.5 py-0.5 rounded tracking-wide shrink-0">
+                                  TODAY
+                                </span>
+                              ) : null}
+
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setEditingLead(card.rawLead || card);
+                                }}
+                                className="p-1 rounded-md text-slate-400 hover:text-[#00897b] hover:bg-teal-50 transition-colors cursor-pointer"
+                                title={`Edit enquiry for ${card.name}`}
+                              >
+                                <Edit2 className="w-3 h-3" />
+                              </button>
+                            </div>
                           </div>
 
                           {/* Sub info */}
@@ -580,9 +637,22 @@ export default function HrPipelineView({
                         <span>{card.name}</span>
                         {isDone && <Check className="w-3.5 h-3.5 text-emerald-600" />}
                       </div>
-                      <span className={`text-[10px] px-2 py-0.5 rounded-md whitespace-nowrap font-medium ${card.badgeClass}`}>
-                        {card.badge}
-                      </span>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span className={`text-[10px] px-2 py-0.5 rounded-md whitespace-nowrap font-medium ${card.badgeClass}`}>
+                          {card.badge}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEditingLead(card.rawLead || card);
+                          }}
+                          className="p-1 rounded-md text-slate-400 hover:text-[#00897b] hover:bg-teal-50 transition-colors cursor-pointer"
+                          title={`Edit enquiry for ${card.name}`}
+                        >
+                          <Edit2 className="w-3 h-3" />
+                        </button>
+                      </div>
                     </div>
 
                     {/* Phone number */}
@@ -655,32 +725,39 @@ export default function HrPipelineView({
                         </button>
                       </div>
 
-                      {/* Row 2: Follow-up Status (Done & Escalate) */}
-                      <div className="grid grid-cols-2 gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => toggleDone(card.id, card.name)}
-                          className={`font-bold text-[10.5px] py-1 px-2 rounded-lg flex items-center justify-center gap-1 transition-all active:scale-95 cursor-pointer border ${
-                            isDone
-                              ? 'bg-emerald-600 text-white border-emerald-700 shadow-2xs'
-                              : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
-                          }`}
-                          title="Mark Done"
-                        >
-                          <Check className="w-3 h-3" />
-                          <span>Done</span>
-                        </button>
+                      {/* Row 2: Follow-up Status or Admitted Badge */}
+                      {card.stage === 'admitted' ? (
+                        <div className="bg-emerald-50 text-emerald-800 border border-emerald-200/80 font-bold text-[11px] py-1.5 px-3 rounded-lg flex items-center justify-center gap-1.5">
+                          <Check className="w-3.5 h-3.5 text-emerald-600" />
+                          <span>Student Admitted & Enrolled</span>
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-2 gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => toggleDone(card.id, card.name)}
+                            className={`font-bold text-[10.5px] py-1 px-2 rounded-lg flex items-center justify-center gap-1 transition-all active:scale-95 cursor-pointer border ${
+                              isDone
+                                ? 'bg-emerald-600 text-white border-emerald-700 shadow-2xs'
+                                : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
+                            }`}
+                            title="Mark Done"
+                          >
+                            <Check className="w-3 h-3" />
+                            <span>Done</span>
+                          </button>
 
-                        <button
-                          type="button"
-                          onClick={() => triggerAction(`Escalated follow-up for ${card.name} to Team Lead`)}
-                          className="bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-bold text-[10.5px] py-1 px-2 rounded-lg flex items-center justify-center gap-1 transition-all active:scale-95 cursor-pointer"
-                          title="Escalate to Supervisor"
-                        >
-                          <AlertTriangle className="w-3 h-3" />
-                          <span>Escalate</span>
-                        </button>
-                      </div>
+                          <button
+                            type="button"
+                            onClick={() => triggerAction(`Escalated follow-up for ${card.name} to Team Lead`)}
+                            className="bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-bold text-[10.5px] py-1 px-2 rounded-lg flex items-center justify-center gap-1 transition-all active:scale-95 cursor-pointer"
+                            title="Escalate to Supervisor"
+                          >
+                            <AlertTriangle className="w-3 h-3" />
+                            <span>Escalate</span>
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -688,6 +765,187 @@ export default function HrPipelineView({
             })
           )}
         </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODE 3: ENQUIRIES TABLE VIEW                                              */}
+      {/* ========================================================================= */}
+      {viewMode === 'table' && (
+        <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="bg-slate-50/80 border-b border-slate-200 text-[10.5px] font-bold font-mono tracking-wider text-slate-500 uppercase whitespace-nowrap">
+                  <th className="py-3 px-3.5">Candidate Name</th>
+                  <th className="py-3 px-3.5">Contact</th>
+                  <th className="py-3 px-3.5">Interested Course</th>
+                  <th className="py-3 px-3.5">Preferred Branch</th>
+                  <th className="py-3 px-3.5">Stage</th>
+                  <th className="py-3 px-3.5">Source</th>
+                  <th className="py-3 px-3.5">Follow-up</th>
+                  <th className="py-3 px-3.5">Counsellor</th>
+                  <th className="py-3 px-3.5 text-center">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-[11px]">
+                {tableLeads.length === 0 ? (
+                  <tr>
+                    <td colSpan="9" className="py-12 text-center text-slate-400">
+                      <div className="text-3xl mb-1">📭</div>
+                      <div className="font-bold text-slate-600">No student enquiries found</div>
+                      <p className="text-xs text-slate-400 mt-0.5">Try adjusting your search query or filter</p>
+                    </td>
+                  </tr>
+                ) : (
+                  tableLeads.map((lead, idx) => {
+                    const flags = classifyFollowUp(lead);
+                    const leadId = lead._id || lead.id || idx;
+                    const stageLabel = (lead.stage || 'new').replace('_', ' ').toUpperCase();
+                    const stageColor = lead.stage === 'admitted'
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : lead.stage === 'fee_followup'
+                        ? 'bg-amber-100 text-amber-900'
+                        : lead.stage?.includes('demo')
+                          ? 'bg-purple-100 text-purple-900'
+                          : lead.stage === 'contacted'
+                            ? 'bg-blue-100 text-blue-900'
+                            : 'bg-slate-100 text-slate-700';
+
+                    return (
+                      <tr key={leadId} className="hover:bg-teal-50/50 transition-colors group">
+                        {/* Name */}
+                        <td className="py-3 px-3.5 whitespace-nowrap">
+                          <div className="font-extrabold text-slate-900 group-hover:text-[#00897b] transition-colors">
+                            {lead.fullName || lead.name}
+                          </div>
+                          <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+                            {lead.education || 'Graduate'} {lead.passoutYear ? `(${lead.passoutYear})` : ''}
+                          </div>
+                        </td>
+
+                        {/* Contact */}
+                        <td className="py-3 px-3.5 whitespace-nowrap">
+                          <div className="font-mono text-slate-700 font-bold">{lead.phone}</div>
+                          <div className="flex items-center gap-1.5 mt-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (onCallLead) onCallLead(lead);
+                                else if (lead.phone) window.location.href = `tel:${lead.phone}`;
+                              }}
+                              className="p-1 rounded-md bg-[#00897b]/10 hover:bg-[#00897b] text-[#00897b] hover:text-white transition-colors cursor-pointer"
+                              title={`Call ${lead.fullName || lead.name}`}
+                            >
+                              <Phone className="w-2.5 h-2.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => redirectToWhatsAppWeb(lead.whatsappNumber || lead.phone)}
+                              className="p-1 rounded-md bg-[#25d366]/15 hover:bg-[#25d366] text-[#25d366] hover:text-white transition-colors cursor-pointer"
+                              title={`WhatsApp ${lead.fullName || lead.name}`}
+                            >
+                              <MessageSquare className="w-2.5 h-2.5" />
+                            </button>
+                          </div>
+                        </td>
+
+                        {/* Course */}
+                        <td className="py-3 px-3.5 whitespace-nowrap">
+                          <span className="font-bold text-slate-800">{lead.course || 'AMCT'}</span>
+                          {lead.batchTiming && (
+                            <div className="text-[10px] text-slate-400 truncate max-w-[150px]">{lead.batchTiming}</div>
+                          )}
+                        </td>
+
+                        {/* Branch */}
+                        <td className="py-3 px-3.5 whitespace-nowrap text-slate-600 font-medium">
+                          {lead.branch || '—'}
+                        </td>
+
+                        {/* Stage */}
+                        <td className="py-3 px-3.5 whitespace-nowrap">
+                          <span className={`text-[10px] font-black px-2 py-0.5 rounded-md ${stageColor}`}>
+                            {stageLabel}
+                          </span>
+                        </td>
+
+                        {/* Source */}
+                        <td className="py-3 px-3.5 whitespace-nowrap">
+                          <span className="bg-purple-50 text-purple-800 text-[10px] font-bold px-2 py-0.5 rounded-md border border-purple-200">
+                            {lead.sourceName || lead.source || 'DIRECT'}
+                          </span>
+                        </td>
+
+                        {/* Follow-up */}
+                        <td className="py-3 px-3.5 whitespace-nowrap">
+                          {lead.followUpDate ? (
+                            <div>
+                              <div className={`font-bold font-mono text-[10.5px] ${flags.isOverdue ? 'text-rose-600' : 'text-slate-800'}`}>
+                                {lead.followUpDate}
+                              </div>
+                              <div className="text-[9.5px] text-slate-400">{lead.followUpTime || 'Morning'}</div>
+                            </div>
+                          ) : (
+                            <span className="text-slate-400 text-[10px]">No schedule</span>
+                          )}
+                        </td>
+
+                        {/* Counsellor */}
+                        <td className="py-3 px-3.5 whitespace-nowrap text-slate-600 font-medium">
+                          {lead.counselorAssigned || '—'}
+                        </td>
+
+                        {/* Actions */}
+                        <td className="py-3 px-3.5 whitespace-nowrap text-center">
+                          <div className="inline-flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => setEditingLead(lead)}
+                              className="inline-flex items-center gap-1 text-[10.5px] font-bold px-2.5 py-1 rounded-lg bg-teal-50 hover:bg-[#00897b] text-[#00897b] hover:text-white border border-[#00897b]/30 hover:border-[#00897b] transition-all cursor-pointer shadow-2xs active:scale-95"
+                              title={`Edit enquiry for ${lead.fullName || lead.name}`}
+                            >
+                              <Edit2 className="w-3 h-3" />
+                              <span>Edit</span>
+                            </button>
+
+                            {lead.stage !== 'admitted' && (
+                              <button
+                                type="button"
+                                onClick={() => handleAdvanceStage(leadId, lead.stage || 'new')}
+                                className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 transition-all cursor-pointer"
+                                title="Advance Stage"
+                              >
+                                <span>Advance</span>
+                                <ArrowRight className="w-2.5 h-2.5 text-[#00897b]" />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Lead Modal */}
+      {editingLead && (
+        <EditLeadModal
+          isOpen={!!editingLead}
+          lead={editingLead}
+          onClose={() => setEditingLead(null)}
+          onSuccess={(updated) => {
+            setLeads(prev => prev.map(l => {
+              const match = (l._id && l._id === updated._id) || (l.id && l.id === updated.id);
+              return match ? { ...l, ...updated } : l;
+            }));
+            triggerAction(`✓ Updated enquiry details for ${updated.fullName || updated.name}`);
+            if (onRefreshLeads) onRefreshLeads();
+          }}
+        />
       )}
     </div>
   );

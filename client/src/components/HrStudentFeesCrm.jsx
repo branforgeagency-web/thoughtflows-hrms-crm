@@ -19,6 +19,7 @@ import {
 import { getCourseFeeRates, saveCourseFeeRate, getStudents, updateStudent, recordStudentPayment } from '../services/api';
 import { localDateKey } from '../utils/dateUtils';
 import AddCourseRateModal from './AddCourseRateModal';
+import EditStudentFeeModal from './EditStudentFeeModal';
 
 export default function HrStudentFeesCrm({ students: propStudents, onRefreshStudents, currentUser }) {
   const [toastMsg, setToastMsg] = useState(null);
@@ -26,6 +27,7 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
   const [showAddModal, setShowAddModal] = useState(false);
   const [showCourseRateModal, setShowCourseRateModal] = useState(false);
   const [editingCourse, setEditingCourse] = useState(null);
+  const [editingFeeStudent, setEditingFeeStudent] = useState(null);
   const [viewingReceiptsStudent, setViewingReceiptsStudent] = useState(null);
   const [copiedTxnId, setCopiedTxnId] = useState(null);
   const [feeStatusFilter, setFeeStatusFilter] = useState('all'); // 'all' | 'pending' | 'overdue' | 'cleared'
@@ -41,8 +43,7 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
 
   const refreshStudents = async () => {
     try {
-      const branchShort = String(currentUser?.branch || '').replace(/\s*branch\b.*$/i, '').replace(/\s*\(.*\)\s*$/, '').trim();
-      const params = currentUser?.name ? { hrName: currentUser.name, branch: branchShort } : undefined;
+      const params = currentUser?.name ? { hrName: currentUser.name } : undefined;
       const res = await getStudents(params);
       if (Array.isArray(res)) {
         setStudents(res);
@@ -339,17 +340,6 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
         <div className="flex items-center gap-2.5 flex-wrap">
           <button
             onClick={() => {
-              setEditingCourse(null);
-              setShowCourseRateModal(true);
-            }}
-            className="bg-[#0f2537] hover:bg-[#0a1926] text-white font-bold text-xs px-4 py-2 rounded-xl shadow-xs transition-all active:scale-95 flex items-center gap-1.5 flex-shrink-0 cursor-pointer"
-          >
-            <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
-            <span>Add Fees Rate</span>
-          </button>
-
-          <button
-            onClick={() => {
               refreshStudents();
               setShowAddModal(true);
             }}
@@ -549,6 +539,15 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
                     </td>
                     <td className="py-3 px-4 text-center">
                       <div className="flex items-center justify-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setEditingFeeStudent(stu)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-teal-50 hover:text-teal-800 text-slate-700 font-bold text-[11px] border border-slate-200 transition-all cursor-pointer whitespace-nowrap shadow-2xs"
+                          title="Edit Fee Record"
+                        >
+                          <Edit2 className="w-3 h-3" />
+                          <span>Edit</span>
+                        </button>
                         {Array.isArray(stu.receipts) && stu.receipts.length > 0 && (
                           <button
                             type="button"
@@ -611,21 +610,10 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
               <span>Fee Structure by Course</span>
               <span className="text-slate-400 font-normal">·</span>
               <span className="text-slate-500 text-xs font-semibold">
-                edit a rate and it auto-updates every student of that course + the CCCP head
+                Official course fee rates & CCCP exam fees
               </span>
             </h3>
           </div>
-
-          <button
-            onClick={() => {
-              setEditingCourse(null);
-              setShowCourseRateModal(true);
-            }}
-            className="bg-[#0e6977] hover:bg-[#0a4f5a] text-white font-bold text-xs px-3.5 py-1.5 rounded-xl shadow-xs transition-all active:scale-95 flex items-center gap-1.5 flex-shrink-0 cursor-pointer"
-          >
-            <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
-            <span>Add Fees Rate</span>
-          </button>
         </div>
 
         <div className="overflow-x-auto no-scrollbar">
@@ -638,7 +626,6 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
                 <th className="py-3 px-4 text-right">STANDARD FEE</th>
                 <th className="py-3 px-4 text-right">DISCOUNTED FEE</th>
                 <th className="py-3 px-4 text-right">EXAM FEE (CCCP)</th>
-                <th className="py-3 px-4 text-center">ACTION</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -666,15 +653,6 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
                         CCCP
                       </span>
                     </span>
-                  </td>
-                  <td className="py-3 px-4 text-center">
-                    <button
-                      onClick={() => setEditingCourse({ ...cr })}
-                      className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-slate-100 hover:bg-teal-50 hover:text-teal-800 text-slate-700 font-bold text-[11px] border border-slate-200 transition-all cursor-pointer"
-                    >
-                      <Edit2 className="w-3 h-3" />
-                      <span>Edit</span>
-                    </button>
                   </td>
                 </tr>
               ))}
@@ -897,6 +875,7 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
       <AddCourseRateModal
         isOpen={showCourseRateModal || Boolean(editingCourse)}
         initialData={editingCourse}
+        existingCourses={courseRates}
         onClose={() => {
           setShowCourseRateModal(false);
           setEditingCourse(null);
@@ -916,6 +895,25 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
             console.error('Failed to save course fee rate:', err);
             showToast('Error saving course rate to database');
           }
+        }}
+      />
+
+      {/* Modal: Edit Student Fee Record */}
+      <EditStudentFeeModal
+        isOpen={Boolean(editingFeeStudent)}
+        student={editingFeeStudent}
+        courseRates={courseRates}
+        onClose={() => setEditingFeeStudent(null)}
+        onSave={(updatedStudent) => {
+          setStudents((prev) =>
+            prev.map((s) =>
+              (s._id && s._id === updatedStudent._id) ||
+              (s.studentId && s.studentId === updatedStudent.studentId)
+                ? { ...s, ...updatedStudent }
+                : s
+            )
+          );
+          if (onRefreshStudents) onRefreshStudents();
         }}
       />
 
