@@ -44,7 +44,8 @@ import {
   ChevronDown,
   LogOut,
   ListChecks,
-  Menu
+  Menu,
+  UserPlus
 } from 'lucide-react';
 import TrainerBatchDesk from './TrainerBatchDesk';
 import OnlineTestBuilder from './OnlineTestBuilder';
@@ -85,7 +86,9 @@ import {
   getFeedbackSummary,
   markNotificationRead,
   onDataUpdate,
-  notifyDataUpdate
+  notifyDataUpdate,
+  allocateTrainerToStudent,
+  getBatches
 } from '../services/api';
 import { TRAINER_COURSES } from '../constants/courses';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
@@ -111,7 +114,7 @@ export default function TrainingDepartmentDashboard({
   const trainerShift = trainerProfile?.shift || currentUser?.shift || '';
   const trainerCourseKey = String(trainerProfile?.courseKey || currentUser?.courseKey || '').toUpperCase();
   const trainerEmail = trainerProfile?.email || currentUser?.email || '';
-  const isChiefFaculty = trainerCourseKey === 'ALL' || /chief|training head|head of training/i.test(trainerRole || '');
+  const isChiefFaculty = trainerCourseKey === 'ALL' || /chief|training head|head of training|head of trainer|faculty lead|lead trainer/i.test(trainerRole || '') || currentUser?.department === 'training' || currentUser?.role === 'Faculty Lead & Chief Trainer' || currentUser?.role === 'Head of Trainer';
 
   const courseMatches = React.useCallback((text) => {
     if (!trainerCourseKey || trainerCourseKey === 'ALL') return false;
@@ -198,6 +201,14 @@ export default function TrainingDepartmentDashboard({
     passMark: 35
   });
   const [newTestForm, setNewTestForm] = useState(emptyTestForm);
+
+  // Allocation Desk states (Head of Trainer)
+  const [allocationStudent, setAllocationStudent] = useState(null);
+  const [allocationForm, setAllocationForm] = useState({ trainerId: '', batchName: '', trainerNote: '' });
+  const [allocationTabFilter, setAllocationTabFilter] = useState('pending'); // 'pending', 'all', 'allocated'
+  const [allocationSearch, setAllocationSearch] = useState('');
+  const [allocationBatches, setAllocationBatches] = useState([]);
+  const [allocationToast, setAllocationToast] = useState(null);
 
   // Resolve the trainer's roster record once per login
   useEffect(() => {
@@ -299,6 +310,97 @@ export default function TrainingDepartmentDashboard({
       return isChiefFaculty || courseMatches(st.course);
     });
   }, [students, trainerId, isChiefFaculty, courseMatches]);
+
+  // Head of Trainer allocation datasets
+  const pendingAllocationStudents = React.useMemo(() => {
+    return (students || []).filter(st => {
+      const isHandedOver = st.handoverStatus === 'Handed Over to Head of Trainer' || (st.handoverStatus === 'Sent to Training' && !st.trainerId);
+      return isHandedOver && !st.trainerId;
+    });
+  }, [students]);
+
+  const allocatedStudents = React.useMemo(() => {
+    return (students || []).filter(st => Boolean(st.trainerId));
+  }, [students]);
+
+  const allHandedOverStudents = React.useMemo(() => {
+    return (students || []).filter(st => st.handoverStatus === 'Handed Over to Head of Trainer' || st.handoverStatus === 'Sent to Training');
+  }, [students]);
+
+  const trainerStudentCounts = React.useMemo(() => {
+    const map = {};
+    (students || []).forEach(st => {
+      if (st.trainerId) {
+        map[st.trainerId] = (map[st.trainerId] || 0) + 1;
+      }
+    });
+    return map;
+  }, [students]);
+
+  const filteredAllocationList = React.useMemo(() => {
+    let list = [];
+    if (allocationTabFilter === 'pending') list = pendingAllocationStudents;
+    else if (allocationTabFilter === 'allocated') list = allocatedStudents;
+    else list = allHandedOverStudents;
+
+    if (!allocationSearch.trim()) return list;
+    const q = allocationSearch.toLowerCase();
+    return list.filter(st =>
+      (st.name || '').toLowerCase().includes(q) ||
+      (st.studentId || '').toLowerCase().includes(q) ||
+      (st.course || '').toLowerCase().includes(q) ||
+      (st.branch || '').toLowerCase().includes(q) ||
+      (st.hrName || '').toLowerCase().includes(q) ||
+      (st.trainerName || '').toLowerCase().includes(q)
+    );
+  }, [allocationTabFilter, pendingAllocationStudents, allocatedStudents, allHandedOverStudents, allocationSearch]);
+
+  // Load existing batches for chosen trainer in allocation modal
+  useEffect(() => {
+    if (!allocationStudent || !allocationForm.trainerId) { setAllocationBatches([]); return undefined; }
+    let alive = true;
+    getBatches({ trainerId: allocationForm.trainerId })
+      .then(rows => { if (alive) setAllocationBatches(Array.isArray(rows) ? rows : []); })
+      .catch(() => { if (alive) setAllocationBatches([]); });
+    return () => { alive = false; };
+  }, [allocationStudent, allocationForm.trainerId]);
+
+  const openAllocationModal = (stu) => {
+    const code = String(stu.course || '').toUpperCase();
+    const match = trainerRoster.find(t => t.active !== false && t.courseKey && code.includes(t.courseKey.toUpperCase()) && (!stu.branch || !t.branchName || t.branchName === stu.branch))
+      || trainerRoster.find(t => t.active !== false && t.courseKey && code.includes(t.courseKey.toUpperCase()))
+      || trainerRoster.find(t => t.active !== false);
+
+    setAllocationForm({
+      trainerId: stu.trainerId || match?.trainerId || '',
+      batchName: stu.batchName || [stu.course, stu.batchTiming].filter(Boolean).join(' · '),
+      trainerNote: stu.trainerNote || ''
+    });
+    setAllocationStudent(stu);
+  };
+
+  const handleConfirmAllocation = async () => {
+    if (!allocationStudent) return;
+    if (!allocationForm.trainerId) {
+      setAllocationToast('Please select a trainer to allocate');
+      setTimeout(() => setAllocationToast(null), 3000);
+      return;
+    }
+    try {
+      const updated = await allocateTrainerToStudent(studentKeyOf(allocationStudent), {
+        ...allocationForm,
+        allocatedBy: trainerName || 'Head of Trainer'
+      });
+      setStudents(prev => prev.map(s => (studentKeyOf(s) === studentKeyOf(allocationStudent) ? { ...s, ...updated } : s)));
+      const targetTrainer = trainerRoster.find(t => t.trainerId === allocationForm.trainerId);
+      setAllocationToast(`✓ ${allocationStudent.name} allocated to ${targetTrainer?.trainerName || updated.trainerName} · batch ${updated.batchName}`);
+      setTimeout(() => setAllocationToast(null), 4000);
+      setAllocationStudent(null);
+    } catch (err) {
+      setAllocationToast(`Error: ${err?.response?.data?.error || err.message}`);
+      setTimeout(() => setAllocationToast(null), 4000);
+    }
+  };
 
   // Batches = HR-assigned batch names of the trainer's students
   const batches = React.useMemo(() => {
@@ -817,7 +919,7 @@ export default function TrainingDepartmentDashboard({
     }
     if (n.type === 'demo') setActiveNav('demos');
     else if (n.type === 'doubt') setActiveNav('doubts');
-    else if (n.type === 'handover') setActiveNav('students');
+    else if (n.type === 'handover') setActiveNav(isChiefFaculty ? 'allocation' : 'students');
     else if (n.type === 'submission' || String(n.type || '').startsWith('request_')) setActiveNav('student_desk');
     setShowNotifPanel(false);
   };
@@ -974,6 +1076,27 @@ export default function TrainingDepartmentDashboard({
                 ACADEMIC
               </div>
               <div className="space-y-1">
+                {isChiefFaculty && (
+                  <button
+                    onClick={() => setActiveNav('allocation')}
+                    className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all ${
+                      activeNav === 'allocation'
+                        ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                        : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <UserPlus className="w-4 h-4 shrink-0" />
+                      <span>Student Allocation</span>
+                    </div>
+                    {pendingAllocationStudents.length > 0 && (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-500 text-slate-900">
+                        {pendingAllocationStudents.length}
+                      </span>
+                    )}
+                  </button>
+                )}
+
                 <button
                   onClick={() => setActiveNav('batches')}
                   className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold transition-all ${
@@ -1137,6 +1260,7 @@ export default function TrainingDepartmentDashboard({
           <div className="min-w-0 flex-1">
             <h1 className="text-xl font-extrabold text-[#0f242d] tracking-tight">
               {activeNav === 'home' && 'Home'}
+              {activeNav === 'allocation' && 'Student Handover & Trainer Allocation Desk'}
               {activeNav === 'session_room' && 'Class Session Room'}
               {activeNav === 'batch_desk' && 'Syllabus & Announcements'}
               {activeNav === 'attendance' && 'Daily Student Attendance'}
@@ -1157,6 +1281,7 @@ export default function TrainingDepartmentDashboard({
             </h1>
             <p className="text-xs text-slate-500 font-medium">
               {activeNav === 'home' && 'Your day at a glance'}
+              {activeNav === 'allocation' && `${pendingAllocationStudents.length} student(s) awaiting allocation · ${allocatedStudents.length} allocated`}
               {activeNav === 'session_room' && 'Run a live session'}
               {activeNav === 'batch_desk' && 'Syllabus tracker · batch announcements · class recordings'}
               {activeNav === 'demos' && 'HR–allocated demos'}
@@ -1173,7 +1298,7 @@ export default function TrainingDepartmentDashboard({
               {activeNav === 'profile' && `${trainerName} · ${trainerId} · ${trainerRole} · ${trainerBranch}`}
               {activeNav === 'skills' && 'L1 Assistant · L2 Regular · L3 Senior · L4 Lead. You can be allocated to a subject only at L2 or above.'}
               {activeNav === 'shift' && `${trainerShift} · Max load protection`}
-              {activeNav !== 'home' && activeNav !== 'session_room' && activeNav !== 'batch_desk' && activeNav !== 'demos' && activeNav !== 'doubts' && activeNav !== 'scorecard' && activeNav !== 'incentives' && activeNav !== 'batches' && activeNav !== 'students' && activeNav !== 'weak_students' && activeNav !== 'assessments' && activeNav !== 'library' && activeNav !== 'placement' && activeNav !== 'profile' && activeNav !== 'skills' && activeNav !== 'shift' && `Thoughtflows Medical Coding Academy · ${trainerBranch}`}
+              {activeNav !== 'home' && activeNav !== 'allocation' && activeNav !== 'session_room' && activeNav !== 'batch_desk' && activeNav !== 'demos' && activeNav !== 'doubts' && activeNav !== 'scorecard' && activeNav !== 'incentives' && activeNav !== 'batches' && activeNav !== 'students' && activeNav !== 'weak_students' && activeNav !== 'assessments' && activeNav !== 'library' && activeNav !== 'placement' && activeNav !== 'profile' && activeNav !== 'skills' && activeNav !== 'shift' && `Thoughtflows Medical Coding Academy · ${trainerBranch}`}
             </p>
           </div>
 
@@ -1414,7 +1539,7 @@ export default function TrainingDepartmentDashboard({
                       <p className="text-xs text-slate-300 font-medium">
                         {batches[0]
                           ? [batches[0].timing, batches[0].mode, `${batches[0].students.length} students enrolled`].filter(Boolean).join(' · ')
-                          : 'HR allocates students to you from the Handover Desk.'}
+                          : 'Head of Trainer allocates students to you from the Allocation Desk.'}
                       </p>
                     </div>
 
@@ -1692,6 +1817,236 @@ export default function TrainingDepartmentDashboard({
 
               </div>
 
+            </div>
+          )}
+
+          {/* ================= TAB: STUDENT ALLOCATION (HEAD OF TRAINER) ================= */}
+          {activeNav === 'allocation' && (
+            <div className="space-y-5 max-w-[1280px] animate-fadeIn">
+              {/* Toast notification */}
+              {allocationToast && (
+                <div className="p-3.5 rounded-2xl bg-slate-900 text-white text-xs font-semibold flex items-center justify-between shadow-lg animate-fadeIn border border-slate-700">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-teal-400 animate-ping"></span>
+                    <span>{allocationToast}</span>
+                  </div>
+                  <button onClick={() => setAllocationToast(null)} className="text-slate-400 hover:text-white">✕</button>
+                </div>
+              )}
+
+              {/* Metric Overview Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+                <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-amber-700">Awaiting Allocation</span>
+                    <span className="w-8 h-8 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center font-bold text-sm">⏳</span>
+                  </div>
+                  <div className="text-3xl font-black text-slate-900 mt-2">{pendingAllocationStudents.length}</div>
+                  <div className="text-xs text-slate-500 font-medium mt-1">Handed over by HR counsellors</div>
+                </div>
+
+                <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-700">Allocated to Trainers</span>
+                    <span className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold text-sm">✓</span>
+                  </div>
+                  <div className="text-3xl font-black text-slate-900 mt-2">{allocatedStudents.length}</div>
+                  <div className="text-xs text-slate-500 font-medium mt-1">Active in trainer batches</div>
+                </div>
+
+                <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-teal-700">Total Handed Over</span>
+                    <span className="w-8 h-8 rounded-xl bg-teal-50 text-teal-600 flex items-center justify-center font-bold text-sm">🎓</span>
+                  </div>
+                  <div className="text-3xl font-black text-slate-900 mt-2">{allHandedOverStudents.length}</div>
+                  <div className="text-xs text-slate-500 font-medium mt-1">From HR Counselling Desk</div>
+                </div>
+
+                <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-slate-700">Active Trainers</span>
+                    <span className="w-8 h-8 rounded-xl bg-slate-100 text-slate-700 flex items-center justify-center font-bold text-sm">👥</span>
+                  </div>
+                  <div className="text-3xl font-black text-slate-900 mt-2">{trainerRoster.filter(t => t.active !== false).length}</div>
+                  <div className="text-xs text-slate-500 font-medium mt-1">Available for student batch allocation</div>
+                </div>
+              </div>
+
+              {/* Main Container Card */}
+              <div className="bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-7 shadow-sm space-y-4">
+                {/* Title & Toolbar */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-slate-100">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <UserPlus className="w-5 h-5 text-teal-700" />
+                      <h2 className="text-base font-bold text-slate-900">Student Handover & Trainer Allocation Desk</h2>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Sole authority of Head of Trainer to assign students to specific faculty members and batches.
+                    </p>
+                  </div>
+
+                  {/* Filter Tabs */}
+                  <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl">
+                    <button
+                      onClick={() => setAllocationTabFilter('pending')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                        allocationTabFilter === 'pending'
+                          ? 'bg-white text-slate-900 shadow-sm'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Awaiting Allocation ({pendingAllocationStudents.length})
+                    </button>
+                    <button
+                      onClick={() => setAllocationTabFilter('allocated')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                        allocationTabFilter === 'allocated'
+                          ? 'bg-white text-slate-900 shadow-sm'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Allocated ({allocatedStudents.length})
+                    </button>
+                    <button
+                      onClick={() => setAllocationTabFilter('all')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                        allocationTabFilter === 'all'
+                          ? 'bg-white text-slate-900 shadow-sm'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      All Handed Over ({allHandedOverStudents.length})
+                    </button>
+                  </div>
+                </div>
+
+                {/* Search Input */}
+                <div className="relative">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={allocationSearch}
+                    onChange={(e) => setAllocationSearch(e.target.value)}
+                    placeholder="Search by student name, roll ID, course, branch, HR counsellor, or allocated trainer..."
+                    className="w-full pl-10 pr-4 py-2.5 text-xs rounded-xl border border-slate-200 focus:outline-none focus:border-teal-500 bg-slate-50/50"
+                  />
+                  {allocationSearch && (
+                    <button
+                      onClick={() => setAllocationSearch('')}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-slate-600 font-bold"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+
+                {/* Student List */}
+                {filteredAllocationList.length === 0 ? (
+                  <div className="py-12 text-center text-xs text-slate-500 space-y-1">
+                    <div className="text-2xl">📋</div>
+                    <div className="font-bold text-slate-700">No students found</div>
+                    <p>
+                      {allocationTabFilter === 'pending'
+                        ? 'Great job! There are no students currently awaiting trainer allocation.'
+                        : 'No student records match the search filter.'}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {filteredAllocationList.map((st) => {
+                      const sKey = studentKeyOf(st);
+                      const isAllocated = Boolean(st.trainerId);
+                      return (
+                        <div
+                          key={st._id || sKey}
+                          className="rounded-2xl border border-slate-200/90 p-4 sm:p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 hover:border-slate-300 transition-all bg-white group"
+                        >
+                          {/* Student Info */}
+                          <div className="flex items-start sm:items-center gap-3.5 min-w-0">
+                            <div className={`w-11 h-11 rounded-xl flex items-center justify-center text-base shrink-0 ${
+                              isAllocated ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : 'bg-amber-50 text-amber-700 border border-amber-200'
+                            }`}>
+                              {isAllocated ? '🎓' : '⏳'}
+                            </div>
+
+                            <div className="min-w-0 space-y-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-sm font-bold text-slate-900 group-hover:text-teal-700 transition-colors">
+                                  {st.name}
+                                </span>
+                                <span className="text-xs font-mono text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">
+                                  {st.studentId || 'ID Pending'}
+                                </span>
+                                {isAllocated ? (
+                                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                    ✓ Allocated to {st.trainerName}
+                                  </span>
+                                ) : (
+                                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200 animate-pulse">
+                                    ⏳ Awaiting Trainer Allocation
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="text-xs text-slate-600 font-medium flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                                <span className="font-semibold text-slate-800">{st.course}</span>
+                                {st.branch && <span>· Branch: {st.branch}</span>}
+                                {st.mode && <span>· {st.mode}</span>}
+                                {st.batchTiming && <span>· Timing: {st.batchTiming}</span>}
+                              </div>
+
+                              <div className="text-[11px] text-slate-500 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                                {st.hrName && <span>HR: <strong className="text-slate-700">{st.hrName}</strong></span>}
+                                {st.handedOverAt && (
+                                  <span>· Handed over: {new Date(st.handedOverAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
+                                )}
+                                {st.batchName && isAllocated && (
+                                  <span>· Batch: <strong className="text-slate-700">{st.batchName}</strong></span>
+                                )}
+                                {st.allocatedByHead && isAllocated && (
+                                  <span>· Assigned by: <strong className="text-slate-700">{st.allocatedByHead}</strong></span>
+                                )}
+                              </div>
+
+                              {/* HR Handover Note */}
+                              {(st.trainerNote || st.handoverNote) && (
+                                <div className="text-[11px] text-amber-900 bg-amber-50/80 border border-amber-200/80 rounded-xl px-2.5 py-1.5 mt-1">
+                                  <span className="font-bold text-amber-800">HR Handover Note: </span>
+                                  {st.trainerNote || st.handoverNote}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Action Button */}
+                          <div className="shrink-0 flex items-center gap-2 self-end md:self-center">
+                            <button
+                              onClick={() => openAllocationModal(st)}
+                              className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm active:scale-[0.98] ${
+                                isAllocated
+                                  ? 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200'
+                                  : 'bg-[#009688] hover:bg-[#00897b] text-white'
+                              }`}
+                            >
+                              <UserPlus className="w-3.5 h-3.5" />
+                              <span>{isAllocated ? 'Reassign Trainer & Batch' : 'Assign Trainer & Batch →'}</span>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Footer Notes */}
+                <div className="pt-3 border-t border-slate-100 text-xs text-slate-500 space-y-1">
+                  <p>
+                    💡 <strong>Head of Trainer Governance:</strong> HR counsellors hand over students with verified admission checklists. Trainers receive students and batch materials only after you assign them here.
+                  </p>
+                </div>
+              </div>
             </div>
           )}
 
@@ -2770,6 +3125,27 @@ export default function TrainingDepartmentDashboard({
                 </div>
               )}
 
+              {/* Head of Trainer Banner if pending allocations */}
+              {isChiefFaculty && pendingAllocationStudents.length > 0 && (
+                <div className="p-4 rounded-2xl bg-teal-50 border border-teal-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm">
+                  <div className="flex items-center gap-3">
+                    <span className="w-8 h-8 rounded-xl bg-[#00897b] text-white flex items-center justify-center font-bold text-sm">
+                      {pendingAllocationStudents.length}
+                    </span>
+                    <div>
+                      <div className="text-xs font-bold text-teal-900">Students awaiting trainer allocation</div>
+                      <div className="text-[11px] text-teal-700">Handed over by HR counsellors — assign them to respective trainers and batches.</div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setActiveNav('allocation')}
+                    className="px-4 py-2 rounded-xl bg-[#00897b] hover:bg-[#00897b]/90 text-white text-xs font-bold shadow-sm transition-all shrink-0"
+                  >
+                    Open Allocation Desk →
+                  </button>
+                </div>
+              )}
+
               {/* Main White Card: My Students */}
               <div className="bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-7 shadow-sm space-y-3.5">
                 <div className="flex items-center justify-between pb-1">
@@ -2785,7 +3161,7 @@ export default function TrainingDepartmentDashboard({
                 {/* Real Students Rows */}
                 <div className="space-y-3">
                   {myStudents.length === 0 && (
-                    <div className="py-8 text-center text-xs text-slate-500">No students allocated to you yet. HR allocates students from the Handover Desk.</div>
+                    <div className="py-8 text-center text-xs text-slate-500">No students allocated to you yet. Head of Trainer allocates students from the Allocation Desk.</div>
                   )}
                   {myStudents.map((student) => {
                     const weakInfo = weakStudents.find(w => w.id === (student._id || studentKeyOf(student)));
@@ -2823,7 +3199,16 @@ export default function TrainingDepartmentDashboard({
                           </div>
                         </div>
 
-                        <div className="shrink-0 ml-3">
+                        <div className="shrink-0 ml-3 flex items-center gap-2">
+                          {isChiefFaculty && (
+                            <button
+                              onClick={() => openAllocationModal(student)}
+                              className="px-3 py-2 rounded-full text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 transition-all flex items-center gap-1 shadow-sm"
+                            >
+                              <UserPlus className="w-3 h-3" />
+                              <span>Reassign</span>
+                            </button>
+                          )}
                           <button
                             disabled={isSent}
                             onClick={async () => {
@@ -3592,6 +3977,152 @@ export default function TrainingDepartmentDashboard({
                 className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold"
               >
                 Close Summary
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================= MODAL: ALLOCATE TRAINER & BATCH (HEAD OF TRAINER) ================= */}
+      {allocationStudent && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-white rounded-3xl max-w-xl w-full p-6 sm:p-7 shadow-2xl space-y-4 border border-slate-100 max-h-[90vh] overflow-y-auto">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-lg">🎯</span>
+                  <h3 className="text-base font-bold text-slate-900">
+                    {allocationStudent.trainerId ? 'Reassign Trainer & Batch' : 'Allocate Student to Trainer'}
+                  </h3>
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Assign {allocationStudent.name} ({allocationStudent.studentId || 'ID Pending'}) to a faculty trainer and batch
+                </p>
+              </div>
+              <button
+                onClick={() => setAllocationStudent(null)}
+                className="w-8 h-8 rounded-full hover:bg-slate-100 text-slate-400 hover:text-slate-600 flex items-center justify-center font-bold"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Student Details Card */}
+            <div className="bg-slate-50 rounded-2xl p-4 border border-slate-200/80 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-bold text-slate-900">{allocationStudent.name}</span>
+                <span className="text-xs font-mono font-semibold text-slate-600 bg-white px-2 py-0.5 rounded border border-slate-200">
+                  {allocationStudent.studentId || 'ID Pending'}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-xs text-slate-600">
+                <div><span className="text-slate-400">Course:</span> <strong className="text-slate-800">{allocationStudent.course}</strong></div>
+                <div><span className="text-slate-400">Branch:</span> <strong className="text-slate-800">{allocationStudent.branch || '—'}</strong></div>
+                <div><span className="text-slate-400">Mode:</span> <strong className="text-slate-800">{allocationStudent.mode || 'Offline'}</strong></div>
+                <div><span className="text-slate-400">Timing:</span> <strong className="text-slate-800">{allocationStudent.batchTiming || 'Flexible'}</strong></div>
+                <div><span className="text-slate-400">HR Counsellor:</span> <strong className="text-slate-800">{allocationStudent.hrName || '—'}</strong></div>
+                <div><span className="text-slate-400">Checklist:</span> <strong className="text-emerald-700">✓ 10-Point Verified</strong></div>
+              </div>
+
+              {(allocationStudent.trainerNote || allocationStudent.handoverNote) && (
+                <div className="pt-2 border-t border-slate-200/60 text-[11px] text-amber-900">
+                  <span className="font-bold">HR Handover Notes:</span> {allocationStudent.trainerNote || allocationStudent.handoverNote}
+                </div>
+              )}
+            </div>
+
+            {/* Form Fields */}
+            <div className="space-y-4">
+              {/* Select Trainer */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                  Select Respective Trainer *
+                </label>
+                <select
+                  value={allocationForm.trainerId}
+                  onChange={(e) => setAllocationForm(prev => ({ ...prev, trainerId: e.target.value }))}
+                  className="w-full p-3 text-xs rounded-xl border border-slate-200 focus:outline-none focus:border-teal-500 bg-white font-medium"
+                >
+                  <option value="">-- Choose Trainer from Roster --</option>
+                  {trainerRoster
+                    .filter(t => t.active !== false)
+                    .map(t => {
+                      const count = trainerStudentCounts[t.trainerId] || 0;
+                      const matchCourse = allocationStudent.course && t.courseKey && String(allocationStudent.course).toUpperCase().includes(t.courseKey.toUpperCase());
+                      return (
+                        <option key={t.trainerId} value={t.trainerId}>
+                          {t.trainerName} ({t.role || t.courseKey || 'Trainer'}) · {count} student(s) · {t.branchName || 'All branches'}{matchCourse ? ' ★ Recommended' : ''}
+                        </option>
+                      );
+                    })}
+                </select>
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Student counts are displayed next to each trainer to assist in workload balancing.
+                </p>
+              </div>
+
+              {/* Batch Name */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                  Batch Name *
+                </label>
+                <input
+                  type="text"
+                  list="allocation-batch-suggestions"
+                  value={allocationForm.batchName}
+                  onChange={(e) => setAllocationForm(prev => ({ ...prev, batchName: e.target.value }))}
+                  placeholder="e.g. Medical Coding - Morning Batch A"
+                  className="w-full p-3 text-xs rounded-xl border border-slate-200 focus:outline-none focus:border-teal-500 bg-white"
+                />
+                <datalist id="allocation-batch-suggestions">
+                  {allocationBatches.map(b => (
+                    <option key={b._id || b.name} value={b.name} />
+                  ))}
+                  {allocationStudent.course && (
+                    <>
+                      <option value={`${allocationStudent.course} - Regular`} />
+                      <option value={`${allocationStudent.course} - Weekend`} />
+                      <option value={`${allocationStudent.course} · ${allocationStudent.batchTiming || 'Morning'}`} />
+                    </>
+                  )}
+                </datalist>
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Pick from trainer's existing batches or enter a new batch name.
+                </p>
+              </div>
+
+              {/* Note / Instructions for the Trainer */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                  Instructions / Notes for Assigned Trainer (Optional)
+                </label>
+                <textarea
+                  rows={3}
+                  value={allocationForm.trainerNote}
+                  onChange={(e) => setAllocationForm(prev => ({ ...prev, trainerNote: e.target.value }))}
+                  placeholder="e.g. Student prefers Tamil explanation for anatomy concepts; start from module 1..."
+                  className="w-full p-3 text-xs rounded-xl border border-slate-200 focus:outline-none focus:border-teal-500 bg-white"
+                />
+              </div>
+            </div>
+
+            {/* Modal Actions */}
+            <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setAllocationStudent(null)}
+                className="px-4 py-2.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-600 text-xs font-bold transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmAllocation}
+                className="px-5 py-2.5 rounded-xl bg-[#009688] hover:bg-[#00897b] text-white text-xs font-bold shadow-md shadow-teal-700/20 transition-all flex items-center gap-1.5"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>Confirm Trainer Allocation</span>
               </button>
             </div>
           </div>

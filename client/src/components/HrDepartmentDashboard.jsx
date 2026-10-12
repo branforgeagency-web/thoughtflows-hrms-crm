@@ -702,7 +702,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     const pipelineCount = scopedLeads.length.toString();
     const followUpCount = scopedLeads.filter(l => l.stage !== 'admitted' && l.stage !== 'closed').length.toString();
     const admittedCount = scopedStudents.length.toString();
-    const handoverCount = scopedStudents.filter(s => s.handoverStatus !== 'Sent to Training').length.toString();
+    const handoverCount = scopedStudents.filter(s => s.handoverStatus !== 'Sent to Training' && s.handoverStatus !== 'Handed Over to Head of Trainer').length.toString();
 
     return [
       { name: 'Home', badge: null, icon: Home, iconBg: 'bg-[#0e6977]', color: 'teal' },
@@ -1379,7 +1379,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
               onRefreshStudents={loadAllData} 
               currentUser={currentUser} 
             />
-            <TrainerQualityBoard title="Trainer ratings — use when allocating" />
+            <TrainerQualityBoard title="Faculty roster & quality overview" />
           </div>
         ) : activeTab === 'Home' ? (
           <>

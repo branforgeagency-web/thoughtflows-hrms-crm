@@ -517,7 +517,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                   ? `Started ${new Date(live.startedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })} · join from here`
                   : trainer
                     ? `${trainer.trainerName}${st.batchTiming ? ` · ${st.batchTiming}` : ''} · this banner turns live when your trainer starts class`
-                    : 'Your HR counsellor will allocate a trainer and batch. Class links will appear here.'}
+                    : 'The Head of Trainer will allocate a trainer and batch. Class links will appear here.'}
               </p>
             </div>
           </div>
@@ -629,7 +629,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                   </div>
                   <Btn onClick={() => openModal('doubt')}>Ask doubt</Btn>
                 </div>
-              ) : <Empty icon="⏳" title="Trainer not allocated yet" text={`${st.hrName || 'Your HR counsellor'} will allocate your trainer at handover.`} />}
+              ) : <Empty icon="⏳" title="Trainer not allocated yet" text="The Head of Trainer will allocate your trainer shortly." />}
             </Card>
 
             <div className="bg-gradient-to-br from-[#0f3b40] to-[#0a2a2e] rounded-3xl p-6 text-white space-y-3">
@@ -1019,7 +1019,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                     <Btn tone="light" onClick={() => openModal('request', { reqType: 'consultation', title: `Request 1-on-1 with ${trainer.trainerName}` })}>📅 Request 1-on-1</Btn>
                   </div>
                 </>
-              ) : <Empty icon="⏳" title="Trainer not allocated yet" text={`${st.hrName || 'Your HR counsellor'} allocates your trainer at handover. Doubts you post now will be routed once allocated.`} />}
+              ) : <Empty icon="⏳" title="Trainer not allocated yet" text="The Head of Trainer allocates your trainer after handover. Doubts you post now will be routed once allocated." />}
             </Card>
             {trainer && (
               <Card>

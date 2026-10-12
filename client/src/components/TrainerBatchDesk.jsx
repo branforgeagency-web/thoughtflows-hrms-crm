@@ -63,7 +63,7 @@ export default function TrainerBatchDesk({ batches = [] }) {
   useEffect(() => { load(); }, [load]);
 
   if (!batch) {
-    return <div className={`${card} text-center text-xs text-slate-500 py-10`}>No batch has been allocated to you yet. HR allocates students to you from the Handover Desk.</div>;
+    return <div className={`${card} text-center text-xs text-slate-500 py-10`}>No batch has been allocated to you yet. Head of Trainer allocates students to you from the Allocation Desk.</div>;
   }
 
   const doneCount = modules.filter((m) => m.done).length;

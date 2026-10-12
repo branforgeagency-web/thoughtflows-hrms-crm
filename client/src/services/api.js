@@ -471,6 +471,25 @@ export const recordStudentPayment = async (id, data) => {
   return res.data;
 };
 
+export const handoverStudentToHead = async (id, data) => {
+  const res = await api.post(`/students/${id}/handover-to-head`, data);
+  notifyDataUpdate('students');
+  notifyDataUpdate('notifications');
+  return res.data;
+};
+
+export const allocateTrainerToStudent = async (id, data) => {
+  const res = await api.post(`/students/${id}/allocate-trainer`, data);
+  notifyDataUpdate('students');
+  notifyDataUpdate('notifications');
+  return res.data;
+};
+
+export const getHeadOfTrainers = async () => {
+  const res = await api.get('/trainer/heads');
+  return res.data;
+};
+
 export const handoverStudentToTrainer = async (id, data) => {
   const res = await api.post(`/students/${id}/handover`, data);
   notifyDataUpdate('students');

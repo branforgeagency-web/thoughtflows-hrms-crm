@@ -2156,7 +2156,7 @@ router.put('/students/:id', async (req, res) => {
     }
     // Handover to training happens only through POST /students/:id/handover,
     // and a checklist edit never pulls a handed-over student back
-    if (payload.handoverStatus === 'Sent to Training' || existing.handoverStatus === 'Sent to Training') delete payload.handoverStatus;
+    if (['Sent to Training', 'Handed Over to Head of Trainer'].includes(payload.handoverStatus) || ['Sent to Training', 'Handed Over to Head of Trainer'].includes(existing.handoverStatus)) delete payload.handoverStatus;
     // Placement pipeline: status / group always follow the stage (set by the model)
     delete payload.placementStatus;
     if (payload.statusGroup === 'placed') delete payload.statusGroup;
@@ -2659,6 +2659,45 @@ async function findEligibleTrainers({ language, location, preferredDate, timeSlo
 
   return { eligible, reason: '' };
 }
+
+// Head of Trainer list (Trainers with head/lead/chief roles + Department Head)
+router.get('/trainer/heads', async (req, res) => {
+  try {
+    const trainers = await Trainer.find().lean();
+    const depts = await Department.find({ $or: [{ code: 'ACAD' }, { dashboard: 'training' }] }).lean();
+    const deptHeadName = depts.find((d) => d.head)?.head || 'Dr. Vikram C.';
+
+    // Trainers with Head/Chief/Lead in their role or courseKey ALL
+    const trainerHeads = trainers.filter(
+      (t) => t.active !== false && (/head|chief|lead|faculty lead/i.test(t.role || '') || t.courseKey === 'ALL')
+    );
+
+    const heads = [];
+    trainerHeads.forEach((t) => {
+      heads.push({
+        id: t.trainerId,
+        name: t.trainerName,
+        role: t.role || 'Head of Trainer',
+        email: t.email || '',
+        branch: t.branchName || ''
+      });
+    });
+
+    if (!heads.some((h) => h.name.toLowerCase() === deptHeadName.toLowerCase())) {
+      heads.unshift({
+        id: 'HEAD_FACULTY_001',
+        name: deptHeadName,
+        role: 'Faculty Lead & Head of Training',
+        email: 'training@thoughtflows.in',
+        branch: 'All Branches'
+      });
+    }
+
+    res.json(heads);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // Trainer Settings Endpoints — the admin-editable demo trainer roster
 router.get('/trainer/settings', async (req, res) => {
@@ -4150,23 +4189,76 @@ router.get('/batches', async (req, res) => {
   }
 });
 
-router.post('/students/:id/handover', async (req, res) => {
+// HR hands over student to Head of Trainer (or legacy direct trainer assignment)
+async function processHandoverToHead(req, res) {
   try {
-    const { trainerId, batchName = '', trainerNote = '', handedOverBy = '' } = req.body || {};
-    if (!trainerId) return res.status(400).json({ error: 'Select a trainer to hand the student over to' });
-    const trainer = await Trainer.findOne({ trainerId });
-    if (!trainer) return res.status(404).json({ error: 'Trainer not found in the roster' });
+    const { headOfTrainer = '', headOfTrainerId = '', trainerNote = '', handedOverBy = '' } = req.body || {};
     const st = await findStudentByAnyId(req.params.id);
     if (!st) return res.status(404).json({ error: 'Student not found' });
     if (!ownsStudent(req, st)) return res.status(403).json(NOT_YOURS);
-    // First handover needs a complete checklist (a trainer note given here counts);
-    // moving an already-handed-over student to another trainer does not.
-    if (st.handoverStatus !== 'Sent to Training') {
+
+    // Verify handover checklist
+    if (st.handoverStatus !== 'Sent to Training' && st.handoverStatus !== 'Handed Over to Head of Trainer') {
       const cl = { ...(st.checklist?.toObject?.() || st.checklist || {}) };
       if (trainerNote) cl.trainerNote = true;
       const missing = Object.entries(cl).filter(([, v]) => v !== true).map(([k]) => k);
       if (missing.length) return res.status(400).json({ error: `Complete the handover checklist first — missing: ${missing.join(', ')}` });
     }
+
+    const assignedHead = headOfTrainer || st.headOfTrainer || 'Dr. Vikram C.';
+    st.handoverStatus = 'Handed Over to Head of Trainer';
+    st.headOfTrainer = assignedHead;
+    st.headOfTrainerId = headOfTrainerId || st.headOfTrainerId || '';
+    if (trainerNote) st.trainerNote = trainerNote;
+    st.handedOverBy = handedOverBy || req.user?.name || 'HR';
+    st.handedOverAt = new Date();
+    if (st.checklist) st.checklist.trainerNote = Boolean(trainerNote) || st.checklist.trainerNote;
+    await st.save();
+
+    await pushNotification({
+      audience: 'training', type: 'handover',
+      title: `New student handed over: ${st.name}`,
+      message: `${st.handedOverBy} handed over ${st.name} (${st.studentId}) · ${st.course} to Head of Trainer (${assignedHead}). Pending trainer & batch allocation.${trainerNote ? ` Note: ${trainerNote}` : ''}`,
+      studentId: st.studentId, createdBy: st.handedOverBy
+    });
+
+    await notifyStudent(st.studentId, {
+      type: 'handover', title: 'Handover complete · Training Department',
+      message: `Your admission profile has been verified by HR and handed over to Head of Trainer (${assignedHead}). Your trainer and batch will be allocated shortly.`,
+      createdBy: st.handedOverBy
+    });
+
+    res.json(st);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+}
+
+router.post('/students/:id/handover-to-head', processHandoverToHead);
+
+router.post('/students/:id/handover', async (req, res) => {
+  const { trainerId } = req.body || {};
+  // If no trainerId is provided or handoverToHead is set, execute handover to Head of Trainer
+  if (!trainerId || req.body?.handoverToHead) {
+    return processHandoverToHead(req, res);
+  }
+
+  // Legacy direct handover fallback
+  try {
+    const { batchName = '', trainerNote = '', handedOverBy = '' } = req.body || {};
+    const trainer = await Trainer.findOne({ trainerId });
+    if (!trainer) return res.status(404).json({ error: 'Trainer not found in the roster' });
+    const st = await findStudentByAnyId(req.params.id);
+    if (!st) return res.status(404).json({ error: 'Student not found' });
+    if (!ownsStudent(req, st)) return res.status(403).json(NOT_YOURS);
+
+    if (st.handoverStatus !== 'Sent to Training' && st.handoverStatus !== 'Handed Over to Head of Trainer') {
+      const cl = { ...(st.checklist?.toObject?.() || st.checklist || {}) };
+      if (trainerNote) cl.trainerNote = true;
+      const missing = Object.entries(cl).filter(([, v]) => v !== true).map(([k]) => k);
+      if (missing.length) return res.status(400).json({ error: `Complete the handover checklist first — missing: ${missing.join(', ')}` });
+    }
+
     const previousBatch = st.handedOverAt ? studentBatchOf(st) : '';
     st.trainerId = trainer.trainerId;
     st.trainerName = trainer.trainerName;
@@ -4178,7 +4270,6 @@ router.post('/students/:id/handover', async (req, res) => {
     if (st.checklist) st.checklist.trainerNote = Boolean(trainerNote) || st.checklist.trainerNote;
     await st.save();
 
-    // Re-link any existing doubts, submissions or requests that had no trainer assigned
     await Promise.all([
       StudentSubmission.updateMany(
         { studentId: st.studentId, $or: [{ trainerId: '' }, { trainerId: { $exists: false } }] },
@@ -4205,6 +4296,76 @@ router.post('/students/:id/handover', async (req, res) => {
       message: `You've been allocated to ${trainer.trainerName} · batch ${st.batchName}. Your classes, materials and tests will appear here.`,
       createdBy: handedOverBy
     });
+    res.json(st);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Head of Trainer assigns students to respective trainers & batches
+router.post('/students/:id/allocate-trainer', async (req, res) => {
+  try {
+    const { trainerId, batchName = '', trainerNote = '', allocatedBy = '' } = req.body || {};
+    if (!trainerId) return res.status(400).json({ error: 'Select a trainer to allocate the student to' });
+    const trainer = await Trainer.findOne({ trainerId });
+    if (!trainer) return res.status(404).json({ error: 'Trainer not found in the roster' });
+    const st = await findStudentByAnyId(req.params.id);
+    if (!st) return res.status(404).json({ error: 'Student not found' });
+
+    const previousBatch = st.allocatedTrainerAt || st.handedOverAt ? studentBatchOf(st) : '';
+    const previousTrainer = st.trainerName;
+    st.trainerId = trainer.trainerId;
+    st.trainerName = trainer.trainerName;
+    st.batchName = await canonicalBatchName(batchName || st.batchName || `${st.course}${st.batchTiming ? ` · ${st.batchTiming}` : ''}`, trainer.trainerId);
+    if (trainerNote) st.trainerNote = trainerNote;
+    st.handoverStatus = 'Sent to Training';
+    st.allocatedByHead = allocatedBy || req.user?.name || 'Head of Trainer';
+    st.allocatedByHeadAt = new Date();
+    st.allocatedTrainerAt = new Date();
+    if (!st.handedOverAt) st.handedOverAt = new Date();
+    await st.save();
+
+    // Re-link any existing doubts, submissions or requests that had no trainer assigned or mismatched
+    await Promise.all([
+      StudentSubmission.updateMany(
+        { studentId: st.studentId, $or: [{ trainerId: '' }, { trainerId: { $exists: false } }, { trainerId: { $ne: trainer.trainerId } }] },
+        { $set: { trainerId: trainer.trainerId, trainerName: trainer.trainerName } }
+      ).catch(() => {}),
+      TrainerDoubt.updateMany(
+        { studentId: st.studentId, $or: [{ trainerId: '' }, { trainerId: { $exists: false } }, { trainerId: { $ne: trainer.trainerId } }] },
+        { $set: { trainerId: trainer.trainerId, trainerName: trainer.trainerName } }
+      ).catch(() => {}),
+      StudentRequest.updateMany(
+        { studentId: st.studentId, $or: [{ trainerId: '' }, { trainerId: { $exists: false } }, { trainerId: { $ne: trainer.trainerId } }] },
+        { $set: { trainerId: trainer.trainerId, trainerName: trainer.trainerName } }
+      ).catch(() => {})
+    ]);
+
+    // Notify assigned trainer
+    await pushNotification({
+      audience: 'trainer', recipientId: trainer.trainerId, recipientName: trainer.trainerName, type: 'handover',
+      title: `New student allocated: ${st.name}`,
+      message: `${st.allocatedByHead} (Head of Trainer) allocated ${st.name} (${st.studentId}) · ${st.course} to your batch "${st.batchName}".${previousTrainer && previousTrainer !== trainer.trainerName ? ` Transferred from ${previousTrainer}.` : ''}${st.trainerNote ? ` Note: ${st.trainerNote}` : ''}`,
+      studentId: st.studentId, createdBy: st.allocatedByHead
+    });
+
+    // Notify student
+    await notifyStudent(st.studentId, {
+      type: 'handover', title: `Your trainer is ${trainer.trainerName}`,
+      message: `You've been allocated to trainer ${trainer.trainerName} · batch ${st.batchName}. Your classes, materials and tests will appear here.`,
+      createdBy: st.allocatedByHead
+    });
+
+    // Notify HR counsellor
+    if (st.hrName) {
+      await pushNotification({
+        audience: 'hr', recipientName: st.hrName, type: 'handover',
+        title: `Trainer allocated: ${st.name}`,
+        message: `${st.allocatedByHead} (Head of Trainer) allocated ${st.name} (${st.studentId}) to trainer ${trainer.trainerName} · batch ${st.batchName}.`,
+        studentId: st.studentId, createdBy: st.allocatedByHead
+      }).catch(() => {});
+    }
+
     res.json(st);
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -6019,7 +6180,14 @@ router.get('/students/:id/timeline', async (req, res) => {
     const ev = [];
     const add = (at, kind, title, detail = '', by = '', status = '') => at && ev.push({ at, kind, title, detail, by, status });
     add(st.createdAt, 'admission', 'Admitted', `${st.course || ''}${st.batchDate ? ` · batch ${st.batchDate}` : ''}`, st.hrName || '');
-    add(st.handedOverAt, 'handover', `Handed over to ${st.trainerName || 'trainer'}`, st.trainerNote || '', st.handedOverBy || '');
+    if (st.handedOverAt) {
+      add(st.handedOverAt, 'handover', `Handed over to Head of Trainer${st.headOfTrainer ? ` (${st.headOfTrainer})` : ''}`, st.trainerNote || '', st.handedOverBy || 'HR');
+    }
+    if (st.allocatedTrainerAt && st.trainerName) {
+      add(st.allocatedTrainerAt, 'handover', `Allocated to ${st.trainerName}${st.batchName ? ` · ${st.batchName}` : ''}`, '', st.allocatedByHead || 'Head of Trainer');
+    } else if (st.trainerName && !st.allocatedTrainerAt && st.handedOverAt) {
+      add(st.handedOverAt, 'handover', `Allocated to ${st.trainerName}${st.batchName ? ` · ${st.batchName}` : ''}`, st.trainerNote || '', st.handedOverBy || '');
+    }
     (st.remedialActions || []).forEach((r) => add(r.at, 'remedial', `Remedial: ${r.action}`, r.note || '', r.by || ''));
     add(st.syllabusCompletedAt, 'syllabus', 'Syllabus completed', '', st.trainerName || '');
     add(st.trainerRecommendationAt, 'recommendation', `Trainer recommendation: ${st.trainerRecommendation}`, typeof st.readinessScore === 'number' ? `Readiness ${st.readinessScore}%` : '', st.trainerName || '');

@@ -193,6 +193,11 @@ const studentSchema = new mongoose.Schema({
   trainerNote: { type: String, default: '' },
   handedOverBy: { type: String, default: '' },
   handedOverAt: { type: Date, default: null },
+  headOfTrainer: { type: String, default: '' },
+  headOfTrainerId: { type: String, default: '' },
+  allocatedByHead: { type: String, default: '' },
+  allocatedByHeadAt: { type: Date, default: null },
+  allocatedTrainerAt: { type: Date, default: null },
   // ---- Trainer → HR / CCCP progress ----
   assessmentScore: { type: Number, default: null },
   mockScore: { type: Number, default: null },
