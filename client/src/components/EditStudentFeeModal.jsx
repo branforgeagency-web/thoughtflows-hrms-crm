@@ -44,9 +44,16 @@ export default function EditStudentFeeModal({ isOpen, onClose, student, courseRa
   // When course changes, allow picking rate from courseRates catalog
   const handleCourseChange = (newCourse) => {
     setCourse(newCourse);
+    const clean = (newCourse || '').toUpperCase();
     const matchedRate = courseRates.find(
-      cr => (cr.code || '').toUpperCase() === newCourse.toUpperCase() ||
-            (cr.name || '').toUpperCase() === newCourse.toUpperCase()
+      cr => {
+        const code = (cr.code || '').toUpperCase();
+        const name = (cr.name || '').toUpperCase();
+        return (code && code === clean) ||
+               (name && name === clean) ||
+               (code && clean.startsWith(code)) ||
+               (code && clean.includes(code));
+      }
     );
     if (matchedRate) {
       if (matchedRate.courseFee !== undefined && matchedRate.courseFee !== null) {
@@ -205,7 +212,7 @@ export default function EditStudentFeeModal({ isOpen, onClose, student, courseRa
               className="w-full bg-slate-50 border border-slate-200 hover:border-[#0e6977] rounded-xl px-3 py-2.5 text-slate-900 font-bold outline-none focus:border-[#0e6977] focus:bg-white text-xs cursor-pointer"
             >
               {/* Fallback option if custom course */}
-              {course && !COURSE_CATEGORIES.some(cat => cat.courses?.some(c => c.name === course || c.code === course || `${c.code} - ${c.name}` === course)) && (
+              {course && !COURSE_CATEGORIES.some(cat => cat.courses?.some(c => c.name === course || c.code === course || (c.code === c.name ? c.name : `${c.code} - ${c.name}`) === course)) && (
                 <option value={course}>{course}</option>
               )}
               {COURSE_CATEGORIES.map((cat) => (
@@ -213,7 +220,7 @@ export default function EditStudentFeeModal({ isOpen, onClose, student, courseRa
                   {cat.courses?.map((c) => {
                     const val = c.code === c.name ? c.name : `${c.code} - ${c.name}`;
                     return (
-                      <option key={c.code} value={c.code}>
+                      <option key={c.code} value={val}>
                         {val}
                       </option>
                     );

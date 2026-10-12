@@ -60,7 +60,7 @@ export default function EditLeadModal({ isOpen, onClose, lead, onSuccess }) {
       setEducation(lead.education || lead.qualification || '');
       setPassoutYear(lead.passoutYear || '');
       setLocation(lead.location || '');
-      setSourceName(lead.sourceName || lead.source || SOURCE_OPTIONS[0]);
+      setSourceName(lead.sourceName || lead.source || 'Google Calls / GMB');
       setBatchTiming(lead.batchTiming || TIMING_OPTIONS[2]);
       setBudget(lead.budget || '₹20K-30K');
       setFollowUpDate(lead.followUpDate || '');

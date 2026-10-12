@@ -59,7 +59,6 @@ import {
 import { effectiveStage } from '../utils/placement';
 import { COURSE_CATEGORIES } from '../constants/courses';
 import NotificationBell from './NotificationBell';
-import DashboardNavSwitcher from './DashboardNavSwitcher';
 
 // Readiness comes from the Training dashboard (tests + attendance + mock +
 // trainer scores → Student.readinessScore). Older records fall back to the
@@ -892,7 +891,6 @@ export default function CccpDashboard({
               ThoughtFlows · CCCP &amp; Placements Desk
             </div>
             <div className="flex items-center gap-2.5 ml-auto">
-              <DashboardNavSwitcher currentDepartment="cccp" onSwitchDepartment={onSwitchDepartment} />
               <NotificationBell audience="cccp" onOpenItem={(n) => setActiveNav(n?.type === 'exam' ? 'certification' : 'placement')} />
             </div>
           </div>

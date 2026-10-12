@@ -19,6 +19,7 @@ import { getStudents, updateStudent, getHeadOfTrainers, handoverStudentToHead } 
 export default function HrHandoverDesk({ students: propStudents, onRefreshStudents, currentUser }) {
   const [toastMsg, setToastMsg] = useState(null);
   const [activeTabFilter, setActiveTabFilter] = useState('ALL'); // ALL, PENDING, READY, SENT
+  const [searchQuery, setSearchQuery] = useState('');
   const [editingStudent, setEditingStudent] = useState(null);
   const [students, setStudents] = useState(propStudents || []);
   const [headsOfTrainer, setHeadsOfTrainer] = useState([]);
@@ -108,8 +109,8 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
       ...currentChecklist,
       [itemKey]: !currentChecklist[itemKey]
     };
-    const allGreen = Object.values(updatedChecklist).every(v => v === true);
-    const newStatus = allGreen ? 'Ready' : 'Pending Handover';
+    const isAllGreen = CHECKLIST_KEYS.every(k => Boolean(updatedChecklist[k.key] === true));
+    const newStatus = isAllGreen ? 'Ready' : 'Pending Handover';
     const updatedStudent = {
       ...editingStudent,
       checklist: updatedChecklist,
@@ -130,15 +131,64 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
     }
   };
 
+  // Verify all 10 checklist items in one click
+  const handleVerifyAllChecklist = async () => {
+    if (!editingStudent) return;
+    const verifiedChecklist = {};
+    CHECKLIST_KEYS.forEach(k => {
+      verifiedChecklist[k.key] = true;
+    });
+    const updatedStudent = {
+      ...editingStudent,
+      checklist: verifiedChecklist,
+      handoverStatus: 'Ready',
+      status: 'Ready'
+    };
+    setEditingStudent(updatedStudent);
+    setStudents(prev => prev.map(s => (s._id === updatedStudent._id || s.studentId === updatedStudent.studentId || s.id === updatedStudent.id) ? updatedStudent : s));
+
+    try {
+      await updateStudent(editingStudent._id || editingStudent.studentId || editingStudent.id, {
+        checklist: verifiedChecklist,
+        handoverStatus: 'Ready'
+      });
+      if (onRefreshStudents) onRefreshStudents();
+      showToast('✓ All 10 checklist items verified');
+    } catch (err) {
+      console.error('Failed to persist checklist:', err);
+    }
+  };
+
   // Normalize status accessor
   const isHandedOver = (s) => s.handoverStatus === 'Handed Over to Head of Trainer' || s.handoverStatus === 'Sent to Training';
   const getStudentStatus = (s) => s.handoverStatus || 'Pending Handover';
-  const allGreen = (s) => Object.values(s.checklist || {}).length > 0 && Object.values(s.checklist || {}).every(v => v === true);
+  const allGreen = (s) => CHECKLIST_KEYS.every(k => Boolean((s?.checklist || {})[k.key] === true));
 
   // Metrics calculation
   const pendingCount = students.filter(s => getStudentStatus(s) === 'Pending Handover').length;
   const readyCount = students.filter(s => getStudentStatus(s) === 'Ready').length;
   const sentCount = students.filter(s => isHandedOver(s)).length;
+
+  // Filter students based on activeTabFilter and searchQuery
+  const filteredStudents = useMemo(() => {
+    return students.filter(s => {
+      const status = getStudentStatus(s);
+      if (activeTabFilter === 'PENDING' && status !== 'Pending Handover') return false;
+      if (activeTabFilter === 'READY' && status !== 'Ready') return false;
+      if (activeTabFilter === 'SENT' && !isHandedOver(s)) return false;
+
+      if (!searchQuery.trim()) return true;
+      const q = searchQuery.toLowerCase().trim();
+      return (
+        (s.name || '').toLowerCase().includes(q) ||
+        (s.studentId || s.id || '').toLowerCase().includes(q) ||
+        (s.course || '').toLowerCase().includes(q) ||
+        (s.branch || '').toLowerCase().includes(q) ||
+        (s.trainerName || '').toLowerCase().includes(q) ||
+        (s.headOfTrainer || '').toLowerCase().includes(q)
+      );
+    });
+  }, [students, activeTabFilter, searchQuery]);
 
   return (
     <div className="w-full space-y-5 pb-16">
@@ -163,7 +213,13 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
       {/* 3 Metric Cards in a Row */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         {/* Card 1: Pending Handover */}
-        <div className="bg-white rounded-2xl p-5 border border-slate-200/90 shadow-xs border-l-4 border-l-amber-500 flex flex-col justify-between">
+        <button
+          type="button"
+          onClick={() => setActiveTabFilter(prev => prev === 'PENDING' ? 'ALL' : 'PENDING')}
+          className={`bg-white rounded-2xl p-5 border shadow-xs border-l-4 border-l-amber-500 flex flex-col justify-between text-left transition-all cursor-pointer hover:shadow-md ${
+            activeTabFilter === 'PENDING' ? 'ring-2 ring-amber-400 border-amber-300' : 'border-slate-200/90'
+          }`}
+        >
           <div className="text-[10.5px] font-extrabold uppercase tracking-wider text-slate-500 font-mono">
             PENDING HANDOVER
           </div>
@@ -171,12 +227,18 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
             {pendingCount}
           </div>
           <div className="text-xs text-slate-400 font-mono font-medium mt-0.5">
-            incomplete profile
+            incomplete profile · click to filter
           </div>
-        </div>
+        </button>
 
         {/* Card 2: Ready to Handover */}
-        <div className="bg-white rounded-2xl p-5 border border-slate-200/90 shadow-xs border-l-4 border-l-teal-500 flex flex-col justify-between">
+        <button
+          type="button"
+          onClick={() => setActiveTabFilter(prev => prev === 'READY' ? 'ALL' : 'READY')}
+          className={`bg-white rounded-2xl p-5 border shadow-xs border-l-4 border-l-teal-500 flex flex-col justify-between text-left transition-all cursor-pointer hover:shadow-md ${
+            activeTabFilter === 'READY' ? 'ring-2 ring-teal-500 border-teal-300' : 'border-slate-200/90'
+          }`}
+        >
           <div className="text-[10.5px] font-extrabold uppercase tracking-wider text-slate-500 font-mono">
             READY FOR HANDOVER
           </div>
@@ -184,12 +246,18 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
             {readyCount}
           </div>
           <div className="text-xs text-slate-400 font-mono font-medium mt-0.5">
-            checklist verified
+            checklist verified · click to filter
           </div>
-        </div>
+        </button>
 
         {/* Card 3: Handed Over */}
-        <div className="bg-white rounded-2xl p-5 border border-slate-200/90 shadow-xs border-l-4 border-l-emerald-500 flex flex-col justify-between">
+        <button
+          type="button"
+          onClick={() => setActiveTabFilter(prev => prev === 'SENT' ? 'ALL' : 'SENT')}
+          className={`bg-white rounded-2xl p-5 border shadow-xs border-l-4 border-l-emerald-500 flex flex-col justify-between text-left transition-all cursor-pointer hover:shadow-md ${
+            activeTabFilter === 'SENT' ? 'ring-2 ring-emerald-500 border-emerald-300' : 'border-slate-200/90'
+          }`}
+        >
           <div className="text-[10.5px] font-extrabold uppercase tracking-wider text-slate-500 font-mono">
             HANDED OVER
           </div>
@@ -197,14 +265,78 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
             {sentCount}
           </div>
           <div className="text-xs text-slate-400 font-mono font-medium mt-0.5">
-            with head of trainer / in training
+            with head of trainer · click to filter
           </div>
+        </button>
+      </div>
+
+      {/* Filter Pills & Search Input Bar */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
+        {/* Filter Pills */}
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+          {[
+            { id: 'ALL', label: 'All Students', count: students.length },
+            { id: 'PENDING', label: 'Pending Checklist', count: pendingCount },
+            { id: 'READY', label: 'Ready for Handover', count: readyCount },
+            { id: 'SENT', label: 'Handed Over', count: sentCount }
+          ].map(tab => {
+            const isActive = activeTabFilter === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTabFilter(tab.id)}
+                className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold transition-all cursor-pointer ${
+                  isActive
+                    ? 'bg-[#00897b] text-white shadow-xs'
+                    : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                <span>{tab.label}</span>
+                <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-black ${
+                  isActive ? 'bg-white/25 text-white' : 'bg-slate-100 text-slate-700'
+                }`}>
+                  {tab.count}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Search Input */}
+        <div className="relative min-w-[240px] max-w-xs w-full sm:w-auto">
+          <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search student, ID, course..."
+            className="w-full bg-white border border-slate-200 rounded-xl pl-9 pr-8 py-1.5 text-xs text-slate-800 placeholder-slate-400 outline-none focus:border-[#00897b] transition-all"
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery('')}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs font-bold"
+            >
+              ✕
+            </button>
+          )}
         </div>
       </div>
 
       {/* Student Handover Cards List */}
       <div className="space-y-4">
-        {students.map((stu) => {
+        {filteredStudents.length === 0 ? (
+          <div className="bg-white rounded-2xl border border-slate-200/90 p-12 text-center text-slate-400 space-y-2">
+            <div className="text-3xl">📋</div>
+            <div className="font-bold text-sm text-slate-700">No students found matching this criteria</div>
+            <p className="text-xs text-slate-400">
+              {searchQuery ? `No results for "${searchQuery}". Clear your search.` : 'No admitted students in this handover bucket.'}
+            </p>
+          </div>
+        ) : (
+          filteredStudents.map((stu) => {
           const isAllGreen = allGreen(stu);
           const isSent = isHandedOver(stu);
 
@@ -329,7 +461,7 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
               </div>
             </div>
           );
-        })}
+        }))}
       </div>
 
       {/* Checklist Completion Modal */}
@@ -386,15 +518,23 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
 
             <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-100">
               <button
+                type="button"
+                onClick={handleVerifyAllChecklist}
+                className="px-3.5 py-2 rounded-xl bg-teal-50 hover:bg-teal-100 text-teal-800 font-bold text-xs transition-all border border-teal-200 cursor-pointer"
+                title="Mark all 10 checklist requirements as verified"
+              >
+                ✓ Verify All 10
+              </button>
+              <button
                 onClick={() => setEditingStudent(null)}
-                className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs transition-all"
+                className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs transition-all cursor-pointer"
               >
                 Close
               </button>
               {allGreen(editingStudent) && !isHandedOver(editingStudent) && (
                 <button
                   onClick={() => openHandover(editingStudent)}
-                  className="px-5 py-2 rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs transition-all shadow-sm"
+                  className="px-5 py-2 rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs transition-all shadow-sm cursor-pointer"
                 >
                   Handover to Head of Trainer →
                 </button>

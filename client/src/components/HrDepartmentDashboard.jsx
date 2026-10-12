@@ -50,7 +50,6 @@ import CompleteRegistrationModal from './CompleteRegistrationModal';
 import { getStudents, getLeads, createLead, updateLead, updateStudent, getDemos, createDemo, createStudent, getRecordings, getTodayClosure, saveDailyClosure, onDataUpdate, getNotifications, markNotificationRead, markNotificationsRead, getStudentRequests, getStudentTickets, getMyAttendance, setMyAttendance, logCall, getTodayCallLog, getHrTargets } from '../services/api';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 import { useIncentivePolicy, progressiveIncentive } from '../utils/incentive';
-import DashboardNavSwitcher from './DashboardNavSwitcher';
 
 export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, onSwitchDepartment, theme = 'classic' }) {
   // Persist active tab across browser refresh within this session
@@ -1169,9 +1168,6 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
               </div>
             </div>
           </div>
-
-          {/* Quick Cross-Dashboard Switcher */}
-          <DashboardNavSwitcher currentDepartment="hr" onSwitchDepartment={onSwitchDepartment} />
 
           {/* Break Button */}
           <button

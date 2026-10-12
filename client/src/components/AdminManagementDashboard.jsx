@@ -58,7 +58,6 @@ import { onDataUpdate, notifyDataUpdate, getCompanies, getStats, getAuditLogs, c
 import { progressiveIncentive } from '../utils/incentive';
 import { COURSE_CATEGORIES, ALL_COURSES, TRAINER_COURSES } from '../constants/courses';
 import TrainerScheduleEditor from './TrainerScheduleEditor';
-import DashboardNavSwitcher from './DashboardNavSwitcher';
 
 // Exact Academy Roles matching User screenshot
 const ACADEMY_ROLES = [
@@ -160,7 +159,6 @@ export default function AdminManagementDashboard({
   const [activeModule, setActiveModule] = useState('overview');
   const [searchQuery, setSearchQuery] = useState('');
   const [toastMessage, setToastMessage] = useState(null);
-  const [dashboardsMenuOpen, setDashboardsMenuOpen] = useState(false);
 
   // Live Executive Stats (null until loaded — no placeholder figures)
   const [executiveStats, setExecutiveStats] = useState(null);
@@ -696,9 +694,6 @@ export default function AdminManagementDashboard({
 
         {/* Right: Quick Controls & Session Actions */}
         <div className="flex items-center gap-2.5 relative">
-
-          {/* Quick Cross-Dashboard Switcher */}
-          <DashboardNavSwitcher currentDepartment="admin" onSwitchDepartment={onSwitchDepartment} />
 
           {/* User Profile Pill */}
           <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200">
