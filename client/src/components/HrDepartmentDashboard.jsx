@@ -374,8 +374,8 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   useEffect(() => {
     loadAllData();
     const unsub = onDataUpdate((entity) => {
-      if (entity === 'leads' || entity === 'students' || entity === 'demos' || entity === 'recordings' || entity === 'closures') {
-        loadAllData();
+      if (entity === 'leads' || entity === 'students' || entity === 'demos' || entity === 'recordings' || entity === 'closures' || entity === 'placements') {
+        loadAllData(true);
       }
     });
     return unsub;

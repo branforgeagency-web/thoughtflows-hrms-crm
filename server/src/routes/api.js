@@ -797,8 +797,8 @@ router.get('/leadership/approvals', async (req, res) => {
     const { departmentCode, branchName, status, requestedBy } = req.query;
     const query = departmentCode ? deptCodeQuery(departmentCode) : {};
     const isBM = isScopedBranchManager(req);
-    const effectiveBranch = isBM ? req.user.branch : branchName;
-    if (effectiveBranch) query.branchName = new RegExp(`^${escapeRegex(effectiveBranch)}$`, 'i');
+    const effectiveBranch = isBM ? req.user.branch : (branchName || req.query.branch);
+    if (effectiveBranch) query.branchName = new RegExp(escapeRegex(branchShort(effectiveBranch)), 'i');
     if (status) query.status = String(status).toLowerCase();
     if (requestedBy) query.requestedBy = exactNameRx(requestedBy);
     res.json(await Approval.find(query).sort({ createdAt: -1 }));
@@ -874,8 +874,8 @@ router.get('/leadership/escalations', async (req, res) => {
     const { departmentCode, branchName, status } = req.query;
     const query = departmentCode ? deptCodeQuery(departmentCode) : {};
     const isBM = isScopedBranchManager(req);
-    const effectiveBranch = isBM ? req.user.branch : branchName;
-    if (effectiveBranch) query.branchName = effectiveBranch;
+    const effectiveBranch = isBM ? req.user.branch : (branchName || req.query.branch);
+    if (effectiveBranch) query.branchName = new RegExp(escapeRegex(branchShort(effectiveBranch)), 'i');
     if (status) query.status = status;
     // HR desk: student tickets of one counsellor (hrName) or all student tickets (studentsOnly=1)
     if (req.query.hrName) query.hrName = new RegExp(`^${escapeRegex(String(req.query.hrName).trim())}$`, 'i');
@@ -1032,9 +1032,9 @@ router.get('/leadership/team', async (req, res) => {
     await syncTeamFromUsers();
     const { departmentCode, branchName } = req.query;
     const isBM = isScopedBranchManager(req);
-    const effectiveBranch = isBM ? req.user.branch : branchName;
+    const effectiveBranch = isBM ? req.user.branch : (branchName || req.query.branch);
     const query = departmentCode ? deptCodeQuery(departmentCode) : {};
-    if (effectiveBranch) query.branchName = effectiveBranch;
+    if (effectiveBranch) query.branchName = new RegExp(escapeRegex(branchShort(effectiveBranch)), 'i');
     const team = await TeamMember.find(query).sort({ name: 1 });
     const withMetrics = await teamMetrics(team);
     withMetrics.sort((a, b) => (b.quality ?? -1) - (a.quality ?? -1));
@@ -1133,8 +1133,10 @@ router.get('/leadership/attendance/branch/:branchName', async (req, res) => {
     const isBM = isScopedBranchManager(req);
     const branchName = isBM ? req.user.branch : req.params.branchName;
     const date = todayStr();
-    const team = await TeamMember.find({ branchName });
-    const existing = await Attendance.find({ branchName, date });
+    const cleanB = branchShort(branchName);
+    const bRx = new RegExp(escapeRegex(cleanB), 'i');
+    const team = await TeamMember.find({ branchName: bRx });
+    const existing = await Attendance.find({ branchName: bRx, date });
     const byName = {};
     existing.forEach((r) => { byName[r.employeeName] = r; });
     const rows = team.map((m) => byName[m.name] || { branchName, employeeName: m.name, date, status: 'absent', checkIn: null, checkOut: null, hoursWorked: 0 });
@@ -1444,7 +1446,7 @@ router.get('/students', async (req, res) => {
     const { statusGroup, search, trainerId, handoverStatus } = req.query;
     const hrName = isScopedHr(req) ? req.user?.name : req.query.hrName;
     const isBM = isScopedBranchManager(req);
-    const userBranch = isBM ? getBranchManagerBranch(req) : branchShort(req.user?.branch || req.query.branch);
+    const userBranch = isBM ? getBranchManagerBranch(req) : branchShort(req.query.branch || req.user?.branch);
 
     const andConditions = [];
     if (trainerId) andConditions.push({ trainerId });
@@ -2195,6 +2197,76 @@ router.put('/students/:id', async (req, res) => {
       applyFeeTotals(updated);
       await updated.save();
     }
+
+    // Cascade student updates across linked collections (StudentLead, PlacementRecord, User, Portal activity)
+    try {
+      const leadMatches = [];
+      if (existing.leadId && mongoose.isValidObjectId(existing.leadId)) leadMatches.push({ _id: existing.leadId });
+      if (existing.studentId) leadMatches.push({ admittedStudentId: existing.studentId });
+      if (existing.phone) leadMatches.push({ phone: existing.phone });
+      if (existing.email) leadMatches.push({ email: existing.email });
+
+      if (leadMatches.length > 0) {
+        const leadUpdates = {};
+        if (payload.name) leadUpdates.fullName = payload.name;
+        if (payload.phone) leadUpdates.phone = payload.phone;
+        if (payload.whatsappNumber) leadUpdates.whatsappNumber = payload.whatsappNumber;
+        if (payload.email) leadUpdates.email = payload.email;
+        if (payload.course) leadUpdates.course = payload.course;
+        if (payload.branch) leadUpdates.branch = payload.branch;
+        if (payload.location || payload.branch) leadUpdates.location = payload.location || payload.branch;
+        if (payload.qualification) leadUpdates.qualification = payload.qualification;
+        if (payload.collegeCompany) leadUpdates.college = payload.collegeCompany;
+        if (payload.batchTiming) leadUpdates.batchTiming = payload.batchTiming;
+        if (payload.batchType) leadUpdates.batchType = payload.batchType;
+        if (payload.address) leadUpdates.address = payload.address;
+
+        if (Object.keys(leadUpdates).length > 0) {
+          await StudentLead.updateMany({ $or: leadMatches }, { $set: leadUpdates });
+        }
+      }
+
+      // Sync CCCP Placement Record
+      if (existing.studentId) {
+        const plcUpdates = {};
+        if (payload.name) plcUpdates.name = payload.name;
+        if (payload.placementCompany) plcUpdates.company = payload.placementCompany;
+        if (payload.placementRole) plcUpdates.role = payload.placementRole;
+        if (Object.keys(plcUpdates).length > 0) {
+          await PlacementRecord.updateMany(
+            { $or: [{ studentId: existing.studentId }, { tfId: existing.studentId }] },
+            { $set: plcUpdates }
+          );
+        }
+      }
+
+      // Sync Student Scholar user login account
+      const userMatches = [];
+      if (existing.email) userMatches.push({ email: existing.email });
+      if (existing.studentId) userMatches.push({ studentId: existing.studentId });
+      if (userMatches.length > 0) {
+        const userUpdates = {};
+        if (payload.name) userUpdates.name = payload.name;
+        if (payload.email) userUpdates.email = payload.email;
+        if (payload.location || payload.branch) userUpdates.branch = payload.location || payload.branch;
+        if (Object.keys(userUpdates).length > 0) {
+          await User.updateMany({ $or: userMatches }, { $set: userUpdates });
+        }
+      }
+
+      // Sync denormalized student name in submissions, requests, feedback, tests
+      if (existing.studentId && payload.name) {
+        await Promise.all([
+          StudentRequest.updateMany({ studentId: existing.studentId }, { $set: { studentName: payload.name } }),
+          StudentSubmission.updateMany({ studentId: existing.studentId }, { $set: { studentName: payload.name } }),
+          TestAttempt.updateMany({ studentId: existing.studentId }, { $set: { studentName: payload.name } }),
+          ClassFeedback.updateMany({ studentId: existing.studentId }, { $set: { studentName: payload.name } })
+        ]);
+      }
+    } catch (cascadeErr) {
+      console.warn('Student update cascade error:', cascadeErr.message);
+    }
+
     res.json(updated);
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -2203,12 +2275,20 @@ router.put('/students/:id', async (req, res) => {
 
 router.delete('/students/:id', async (req, res) => {
   try {
-    const isObjectId = mongoose.isValidObjectId(req.params.id);
-    if (isObjectId) {
-      await Student.findByIdAndDelete(req.params.id);
-    } else {
-      await Student.findOneAndDelete({ studentId: req.params.id });
-    }
+    const existing = await findStudentByAnyId(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Student not found' });
+    if (!ownsStudent(req, existing)) return res.status(403).json(NOT_YOURS);
+    await Student.findByIdAndDelete(existing._id);
+    // Detach admittedStudentId from any linked lead so the lead is not orphaned
+    try {
+      await StudentLead.updateMany(
+        { $or: [{ admittedStudentId: existing.studentId }, { _id: existing.leadId }] },
+        { $unset: { admittedStudentId: 1 } }
+      );
+      if (existing.studentId) {
+        await PlacementRecord.deleteMany({ $or: [{ studentId: existing.studentId }, { tfId: existing.studentId }] });
+      }
+    } catch (_) {}
     res.json({ message: 'Student removed successfully' });
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -2818,7 +2898,7 @@ router.get('/demos', async (req, res) => {
       andConditions.push({ $or: [{ location: bRx }, { branch: bRx }] });
     } else if (isScopedHr(req)) {
       const counselor = req.user?.name;
-      const userBranch = branchShort(req.user?.branch || req.query.branch);
+      const userBranch = branchShort(req.query.branch || req.user?.branch);
       const orConditions = [];
       if (counselor) {
         orConditions.push(

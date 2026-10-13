@@ -16,10 +16,11 @@ import {
   LayoutGrid,
   LayoutList,
   Edit2,
-  ArrowRight
+  ArrowRight,
+  Trash2
 } from 'lucide-react';
 
-import { getLeads, updateLead } from '../services/api';
+import { getLeads, updateLead, deleteLead } from '../services/api';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 import EditLeadModal from './EditLeadModal';
 
@@ -70,6 +71,26 @@ export default function HrPipelineView({
   const [actionNotice, setActionNotice] = useState(null);
   const [leads, setLeads] = useState(propLeads || []);
   const [editingLead, setEditingLead] = useState(null);
+  const [deletingLead, setDeletingLead] = useState(null);
+  const [isDeletingLead, setIsDeletingLead] = useState(false);
+
+  const handleConfirmDeleteLead = async () => {
+    if (!deletingLead) return;
+    setIsDeletingLead(true);
+    try {
+      const targetId = deletingLead._id || deletingLead.id;
+      await deleteLead(targetId);
+      setLeads(prev => prev.filter(l => (l._id || l.id) !== targetId));
+      triggerAction(`✓ Deleted enquiry for ${deletingLead.fullName || deletingLead.name}`);
+      setDeletingLead(null);
+      if (onRefreshLeads) onRefreshLeads();
+    } catch (err) {
+      console.error('Failed to delete enquiry:', err);
+      triggerAction(`⚠ ${err?.response?.data?.error || 'Could not delete enquiry'}`);
+    } finally {
+      setIsDeletingLead(false);
+    }
+  };
 
   useEffect(() => {
     if (propLeads !== undefined) {
@@ -531,6 +552,18 @@ export default function HrPipelineView({
                               >
                                 <Edit2 className="w-3 h-3" />
                               </button>
+
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setDeletingLead(card.rawLead || card);
+                                }}
+                                className="p-1 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                                title={`Delete enquiry for ${card.name}`}
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
                             </div>
                           </div>
 
@@ -651,6 +684,18 @@ export default function HrPipelineView({
                           title={`Edit enquiry for ${card.name}`}
                         >
                           <Edit2 className="w-3 h-3" />
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDeletingLead(card.rawLead || card);
+                          }}
+                          className="p-1 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                          title={`Delete enquiry for ${card.name}`}
+                        >
+                          <Trash2 className="w-3 h-3" />
                         </button>
                       </div>
                     </div>
@@ -919,6 +964,16 @@ export default function HrPipelineView({
                                 <ArrowRight className="w-2.5 h-2.5 text-[#00897b]" />
                               </button>
                             )}
+
+                            <button
+                              type="button"
+                              onClick={() => setDeletingLead(lead)}
+                              className="inline-flex items-center gap-1 text-[10.5px] font-bold px-2 py-1 rounded-lg bg-rose-50 hover:bg-rose-600 text-rose-600 hover:text-white border border-rose-200 hover:border-rose-600 transition-all cursor-pointer shadow-2xs active:scale-95"
+                              title={`Delete enquiry for ${lead.fullName || lead.name}`}
+                            >
+                              <Trash2 className="w-3 h-3" />
+                              <span>Delete</span>
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -945,7 +1000,51 @@ export default function HrPipelineView({
             triggerAction(`✓ Updated enquiry details for ${updated.fullName || updated.name}`);
             if (onRefreshLeads) onRefreshLeads();
           }}
+          onDelete={(targetId) => {
+            setLeads(prev => prev.filter(l => (l._id || l.id) !== targetId));
+            triggerAction('✓ Enquiry removed');
+            if (onRefreshLeads) onRefreshLeads();
+          }}
         />
+      )}
+
+      {/* Delete Enquiry Confirmation Modal */}
+      {deletingLead && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4 text-left animate-in zoom-in-95">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-100 flex items-center justify-center text-rose-600 shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-extrabold text-slate-900">Delete Enquiry</h3>
+                <p className="text-xs text-slate-500">This action cannot be undone</p>
+              </div>
+            </div>
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Are you sure you want to permanently delete enquiry for <strong className="text-slate-900">{deletingLead.fullName || deletingLead.name}</strong> ({deletingLead.phone || deletingLead.email || 'No contact'})?
+            </p>
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setDeletingLead(null)}
+                disabled={isDeletingLead}
+                className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50 transition-all cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeleteLead}
+                disabled={isDeletingLead}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-md transition-all cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>{isDeletingLead ? 'Deleting...' : 'Delete Enquiry'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

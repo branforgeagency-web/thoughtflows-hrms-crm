@@ -60,7 +60,7 @@ export default function TrainerStudentDesk({ trainerId, trainerName }) {
   useEffect(() => {
     load();
     const poll = setInterval(load, 60000);
-    const unsub = onDataUpdate((entity) => { if (['student_submissions', 'student_requests'].includes(entity)) load(); });
+    const unsub = onDataUpdate((entity) => { if (['student_submissions', 'student_requests', 'students'].includes(entity)) load(); });
     return () => { clearInterval(poll); unsub(); };
   }, [trainerId]);
 

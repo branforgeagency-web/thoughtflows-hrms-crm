@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { X, Save, User, Phone, Mail, GraduationCap, Building2, MapPin, Calendar, Clock, BookOpen, AlertCircle, Sparkles, Check } from 'lucide-react';
-import { updateStudent } from '../services/api';
+import { X, Save, User, Phone, Mail, GraduationCap, Building2, MapPin, Calendar, Clock, BookOpen, AlertCircle, Sparkles, Check, Trash2 } from 'lucide-react';
+import { updateStudent, deleteStudent } from '../services/api';
 import { COURSE_CATEGORIES } from '../constants/courses';
 import { QUALIFICATION_GROUPS } from '../constants/qualifications';
 import { LEAD_SOURCE_GROUPS } from '../constants/leadSources';
@@ -26,7 +26,7 @@ export const BRANCH_OPTIONS = [
 
 export const TIMING_OPTIONS = CANONICAL_TIMING_OPTIONS;
 
-export default function EditStudentModal({ isOpen, onClose, student, onSuccess }) {
+export default function EditStudentModal({ isOpen, onClose, student, onSuccess, onDelete }) {
   if (!isOpen || !student) return null;
 
   const studentIdentifier = student._id || student.id || student.studentId;
@@ -57,7 +57,24 @@ export default function EditStudentModal({ isOpen, onClose, student, onSuccess }
   const [nextDueDate, setNextDueDate] = useState(student.nextDueDate || '');
 
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [errorMessage, setErrorMessage] = useState(null);
+
+  const handleDelete = async () => {
+    if (!window.confirm(`Are you sure you want to permanently delete admitted student "${student.name}" (${student.studentId || student.id})?`)) {
+      return;
+    }
+    setDeleting(true);
+    try {
+      await deleteStudent(studentIdentifier);
+      if (onDelete) onDelete(studentIdentifier);
+      onClose();
+    } catch (err) {
+      console.error('Failed to delete student:', err);
+      setErrorMessage(err?.response?.data?.error || err.message || 'Could not delete student');
+      setDeleting(false);
+    }
+  };
 
   useEffect(() => {
     if (student) {
@@ -503,24 +520,36 @@ export default function EditStudentModal({ isOpen, onClose, student, onSuccess }
           </div>
 
           {/* Form Actions Footer */}
-          <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-2.5">
+          <div className="pt-4 border-t border-slate-100 flex items-center justify-between gap-2.5">
             <button
               type="button"
-              onClick={onClose}
-              disabled={saving}
-              className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50 transition-all cursor-pointer"
+              onClick={handleDelete}
+              disabled={saving || deleting}
+              className="px-4 py-2 rounded-xl bg-rose-50 hover:bg-rose-600 text-rose-600 hover:text-white border border-rose-200 hover:border-rose-600 text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
             >
-              Cancel
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>{deleting ? 'Deleting...' : 'Delete Student'}</span>
             </button>
 
-            <button
-              type="submit"
-              disabled={saving}
-              className="px-5 py-2 rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white text-xs font-bold shadow-xs transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-            >
-              <Save className="w-3.5 h-3.5" />
-              <span>{saving ? 'Saving Changes...' : 'Save Student Details'}</span>
-            </button>
+            <div className="flex items-center gap-2.5">
+              <button
+                type="button"
+                onClick={onClose}
+                disabled={saving || deleting}
+                className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50 transition-all cursor-pointer"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="submit"
+                disabled={saving || deleting}
+                className="px-5 py-2 rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white text-xs font-bold shadow-xs transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                <Save className="w-3.5 h-3.5" />
+                <span>{saving ? 'Saving Changes...' : 'Save Student Details'}</span>
+              </button>
+            </div>
           </div>
         </form>
       </div>

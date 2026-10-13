@@ -14,7 +14,7 @@ import {
   Filter
 } from 'lucide-react';
 
-import { getStudents, updateStudent, getHeadOfTrainers, handoverStudentToHead } from '../services/api';
+import { getStudents, updateStudent, getHeadOfTrainers, handoverStudentToHead, onDataUpdate } from '../services/api';
 
 export default function HrHandoverDesk({ students: propStudents, onRefreshStudents, currentUser }) {
   const [toastMsg, setToastMsg] = useState(null);
@@ -51,6 +51,22 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
       }).catch(err => console.error('Error fetching students for handover:', err));
     }
   }, [propStudents, currentUser?.name]);
+
+  useEffect(() => {
+    const unsub = onDataUpdate((entity) => {
+      if (entity === 'students') {
+        if (onRefreshStudents) {
+          onRefreshStudents();
+        } else {
+          const params = currentUser?.name ? { hrName: currentUser.name } : undefined;
+          getStudents(params).then(res => {
+            if (Array.isArray(res)) setStudents(res);
+          }).catch(() => {});
+        }
+      }
+    });
+    return () => unsub();
+  }, [onRefreshStudents, currentUser?.name]);
 
   const showToast = (msg) => {
     setToastMsg(msg);

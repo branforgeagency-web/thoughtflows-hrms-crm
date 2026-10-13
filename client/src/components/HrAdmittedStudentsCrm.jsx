@@ -18,13 +18,14 @@ import {
   MessageSquare,
   BookOpen,
   Briefcase,
-  Edit2
+  Edit2,
+  Trash2
 } from 'lucide-react';
 import StudentProfileModal from './StudentProfileModal';
 import CompleteRegistrationModal from './CompleteRegistrationModal';
 import EditStudentModal from './EditStudentModal';
 
-import { getStudents, createStudent, updateStudent, resetStudentLogin } from '../services/api';
+import { getStudents, createStudent, updateStudent, deleteStudent, resetStudentLogin, onDataUpdate } from '../services/api';
 import { getCurrentMonthYear, getCurrentMonthName, localDateKey } from '../utils/dateUtils';
 import { copyToClipboard } from '../utils/clipboard';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
@@ -52,8 +53,28 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
   const [completeRegInitialData, setCompleteRegInitialData] = useState(null);
   const [selectedStudent, setSelectedStudent] = useState(null);
   const [editingStudent, setEditingStudent] = useState(null);
+  const [deletingStudent, setDeletingStudent] = useState(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const [students, setStudents] = useState(propStudents || []);
+
+  const handleConfirmDeleteStudent = async () => {
+    if (!deletingStudent) return;
+    setIsDeleting(true);
+    try {
+      const targetId = deletingStudent._id || deletingStudent.id || deletingStudent.studentId;
+      await deleteStudent(targetId);
+      setStudents(prev => prev.filter(s => (s._id || s.id || s.studentId) !== targetId));
+      showToast(`✓ Removed student ${deletingStudent.name}`);
+      setDeletingStudent(null);
+      if (onRefreshStudents) onRefreshStudents();
+    } catch (err) {
+      console.error('Failed to delete student:', err);
+      showToast(`⚠ ${err?.response?.data?.error || 'Could not delete student'}`);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   useEffect(() => {
     if (propStudents !== undefined) {
@@ -65,6 +86,22 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
       }).catch(err => console.error('Error fetching students:', err));
     }
   }, [propStudents, currentUser?.name]);
+ 
+  useEffect(() => {
+    const unsub = onDataUpdate((entity) => {
+      if (entity === 'students') {
+        if (onRefreshStudents) {
+          onRefreshStudents();
+        } else {
+          const params = currentUser?.name ? { hrName: currentUser.name } : undefined;
+          getStudents(params).then(res => {
+            if (Array.isArray(res)) setStudents(res);
+          }).catch(() => {});
+        }
+      }
+    });
+    return () => unsub();
+  }, [onRefreshStudents, currentUser?.name]);
 
   const showToast = (msg) => {
     setToastMessage(msg);
@@ -770,6 +807,19 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
                       >
                         Login
                       </button>
+
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDeletingStudent(s);
+                        }}
+                        className="inline-flex items-center gap-1 text-[10.5px] font-bold px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-600 text-rose-600 hover:text-white border border-rose-200 hover:border-rose-600 transition-all cursor-pointer shadow-2xs active:scale-95"
+                        title={`Delete admitted student ${s.name}`}
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        <span>Delete</span>
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -793,6 +843,11 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
               return match ? { ...item, ...updated } : item;
             }));
             showToast(`✓ Updated details for ${updated.name}`);
+            if (onRefreshStudents) onRefreshStudents();
+          }}
+          onDelete={(targetId) => {
+            setStudents(prev => prev.filter(s => (s._id || s.id || s.studentId) !== targetId));
+            showToast('✓ Admitted student removed');
             if (onRefreshStudents) onRefreshStudents();
           }}
         />
@@ -837,9 +892,55 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
         student={selectedStudent}
         onUpdateStudent={(updated) => {
           setSelectedStudent(updated);
-          setStudents(prev => prev.map(s => (s._id === updated._id || s.studentId === updated.studentId) ? updated : s));
+          setStudents(prev => prev.map(s => (s._id === updated._id || s.studentId === updated.studentId) ? { ...s, ...updated } : s));
+          if (onRefreshStudents) onRefreshStudents();
+        }}
+        onDeleteStudent={(targetId) => {
+          setSelectedStudent(null);
+          setStudents(prev => prev.filter(s => (s._id || s.id || s.studentId) !== targetId));
+          showToast('✓ Admitted student removed');
+          if (onRefreshStudents) onRefreshStudents();
         }}
       />
+
+      {/* Delete Student Confirmation Modal */}
+      {deletingStudent && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4 text-left animate-in zoom-in-95">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-100 flex items-center justify-center text-rose-600 shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-extrabold text-slate-900">Delete Admitted Student</h3>
+                <p className="text-xs text-slate-500">This action cannot be undone</p>
+              </div>
+            </div>
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Are you sure you want to permanently delete admitted student <strong className="text-slate-900">{deletingStudent.name}</strong> (<span className="font-mono font-bold text-teal-700">{deletingStudent.studentId || deletingStudent.id}</span>)? All associated records will be removed.
+            </p>
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setDeletingStudent(null)}
+                disabled={isDeleting}
+                className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50 transition-all cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeleteStudent}
+                disabled={isDeleting}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-md transition-all cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>{isDeleting ? 'Deleting...' : 'Delete Student'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

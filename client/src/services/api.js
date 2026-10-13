@@ -167,12 +167,22 @@ export const resetStudentLogin = async (id) => {
 export const updateStudent = async (id, studentData) => {
   const res = await api.put(`/students/${id}`, studentData);
   notifyDataUpdate('students');
+  notifyDataUpdate('leads');
+  notifyDataUpdate('placements');
+  notifyDataUpdate('student_requests');
+  notifyDataUpdate('student_submissions');
+  notifyDataUpdate('users');
   return res.data;
 };
 
 export const deleteStudent = async (id) => {
   const res = await api.delete(`/students/${id}`);
   notifyDataUpdate('students');
+  notifyDataUpdate('leads');
+  notifyDataUpdate('placements');
+  notifyDataUpdate('student_requests');
+  notifyDataUpdate('student_submissions');
+  notifyDataUpdate('users');
   return res.data;
 };
 
@@ -207,6 +217,7 @@ export const updateLead = async (id, leadData) => {
 export const deleteLead = async (id) => {
   const res = await api.delete(`/leads/${id}`);
   notifyDataUpdate('leads');
+  notifyDataUpdate('students');
   return res.data;
 };
 

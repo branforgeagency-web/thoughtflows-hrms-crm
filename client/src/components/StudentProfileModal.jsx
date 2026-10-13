@@ -19,14 +19,15 @@ import {
   ChevronDown, 
   Edit2, 
   ExternalLink,
-  Phone
+  Phone,
+  Trash2
 } from 'lucide-react';
-import { updateStudent } from '../services/api';
+import { updateStudent, deleteStudent } from '../services/api';
 import StudentTimeline from './StudentTimeline';
 import EditStudentModal from './EditStudentModal';
 import { effectiveStage, autoStage, stageChecks, blockReason, PLACEMENT_EDITORS, ATTENDANCE_MIN, MOCK_PASS } from '../utils/placement';
 
-export default function StudentProfileModal({ isOpen, onClose, student: propStudent, onUpdateStudent }) {
+export default function StudentProfileModal({ isOpen, onClose, student: propStudent, onUpdateStudent, onDeleteStudent }) {
   if (!isOpen || !propStudent) return null;
 
   const [student, setStudent] = useState(propStudent);
@@ -236,6 +237,24 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
     }
   };
 
+  const [deleting, setDeleting] = useState(false);
+  const handleDeleteFromProfile = async () => {
+    if (!window.confirm(`Are you sure you want to permanently delete admitted student "${student.name}" (${student.studentId || student.id})? This action cannot be undone.`)) {
+      return;
+    }
+    setDeleting(true);
+    try {
+      const targetId = student._id || student.id || student.studentId;
+      await deleteStudent(targetId);
+      if (onDeleteStudent) onDeleteStudent(targetId);
+      onClose();
+    } catch (err) {
+      console.error('Failed to delete student:', err);
+      showToast(`⚠ ${err?.response?.data?.error || 'Could not delete student'}`);
+      setDeleting(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/65 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 overflow-y-auto animate-in fade-in">
       <div className="bg-white rounded-[28px] max-w-4xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[92vh] my-auto text-left animate-in zoom-in-95">
@@ -270,6 +289,17 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
             >
               <Edit2 className="w-3.5 h-3.5" />
               <span>Edit</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleDeleteFromProfile}
+              disabled={deleting}
+              className="px-3 py-1.5 rounded-xl bg-rose-500/80 hover:bg-rose-600 text-white flex items-center gap-1.5 text-xs font-bold transition-all cursor-pointer shadow-2xs active:scale-95 disabled:opacity-50"
+              title="Delete Admitted Student"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>{deleting ? 'Deleting...' : 'Delete'}</span>
             </button>
 
             <button
@@ -1154,6 +1184,11 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
             setStudent(updated);
             if (onUpdateStudent) onUpdateStudent(updated);
             showToast(`✓ Updated details for ${updated.name}`);
+          }}
+          onDelete={(targetId) => {
+            setShowEditModal(false);
+            if (onDeleteStudent) onDeleteStudent(targetId);
+            onClose();
           }}
         />
       )}

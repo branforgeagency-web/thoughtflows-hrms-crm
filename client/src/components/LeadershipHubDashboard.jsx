@@ -3114,21 +3114,21 @@ function RegionDetail({ region, onBack, onSelectBranch }) {
 // ---- Branch tier: Comprehensive 15-Campus Picker ----
 
 const ALL_15_BRANCH_METADATA = [
-  { name: 'CBE-Gandhipuram', code: 'CBE-GPM', city: 'Coimbatore', state: 'Tamil Nadu', activeStudents: 89, staffCount: 7, leads: 41 },
-  { name: 'CBE-Saravanampatti', code: 'CBE-SVM', city: 'Coimbatore', state: 'Tamil Nadu', activeStudents: 45, staffCount: 5, leads: 17 },
-  { name: 'CBE-Hopes', code: 'CBE-HPS', city: 'Coimbatore', state: 'Tamil Nadu', activeStudents: 38, staffCount: 4, leads: 22 },
-  { name: 'Salem', code: 'TND-SLM', city: 'Salem', state: 'Tamil Nadu', activeStudents: 52, staffCount: 6, leads: 19 },
-  { name: 'Trichy', code: 'TND-TRY', city: 'Trichy', state: 'Tamil Nadu', activeStudents: 31, staffCount: 4, leads: 15 },
-  { name: 'Theni', code: 'TND-THN', city: 'Theni', state: 'Tamil Nadu', activeStudents: 24, staffCount: 3, leads: 12 },
-  { name: 'Kochi', code: 'KER-KOC', city: 'Kochi', state: 'Kerala', activeStudents: 41, staffCount: 4, leads: 18 },
-  { name: 'Trivandrum', code: 'KER-TRV', city: 'Trivandrum', state: 'Kerala', activeStudents: 36, staffCount: 3, leads: 14 },
-  { name: 'HYD-Ameerpet', code: 'HYD-AMP', city: 'Hyderabad', state: 'Telangana', activeStudents: 64, staffCount: 9, leads: 33 },
-  { name: 'HYD-Dilsukhnagar', code: 'HYD-DSN', city: 'Hyderabad', state: 'Telangana', activeStudents: 48, staffCount: 5, leads: 20 },
-  { name: 'HYD-Madhapur', code: 'HYD-MDP', city: 'Hyderabad', state: 'Telangana', activeStudents: 57, staffCount: 6, leads: 25 },
-  { name: 'Tirupati', code: 'AND-TPT', city: 'Tirupati', state: 'Andhra Pradesh', activeStudents: 29, staffCount: 4, leads: 16 },
-  { name: 'Vizag', code: 'AND-VZG', city: 'Visakhapatnam', state: 'Andhra Pradesh', activeStudents: 35, staffCount: 4, leads: 18 },
-  { name: 'Kollapur', code: 'MAH-KLP', city: 'Kolhapur', state: 'Maharashtra', activeStudents: 28, staffCount: 3, leads: 11 },
-  { name: 'Pune', code: 'MAH-PUN', city: 'Pune', state: 'Maharashtra', activeStudents: 44, staffCount: 5, leads: 23 }
+  { name: 'CBE-Gandhipuram', code: 'CBE-GPM', city: 'Coimbatore', state: 'Tamil Nadu' },
+  { name: 'CBE-Saravanampatti', code: 'CBE-SVM', city: 'Coimbatore', state: 'Tamil Nadu' },
+  { name: 'CBE-Hopes', code: 'CBE-HPS', city: 'Coimbatore', state: 'Tamil Nadu' },
+  { name: 'Salem', code: 'TND-SLM', city: 'Salem', state: 'Tamil Nadu' },
+  { name: 'Trichy', code: 'TND-TRY', city: 'Trichy', state: 'Tamil Nadu' },
+  { name: 'Theni', code: 'TND-THN', city: 'Theni', state: 'Tamil Nadu' },
+  { name: 'Kochi', code: 'KER-KOC', city: 'Kochi', state: 'Kerala' },
+  { name: 'Trivandrum', code: 'KER-TRV', city: 'Trivandrum', state: 'Kerala' },
+  { name: 'HYD-Ameerpet', code: 'HYD-AMP', city: 'Hyderabad', state: 'Telangana' },
+  { name: 'HYD-Dilsukhnagar', code: 'HYD-DSN', city: 'Hyderabad', state: 'Telangana' },
+  { name: 'HYD-Madhapur', code: 'HYD-MDP', city: 'Hyderabad', state: 'Telangana' },
+  { name: 'Tirupati', code: 'AND-TPT', city: 'Tirupati', state: 'Andhra Pradesh' },
+  { name: 'Vizag', code: 'AND-VZG', city: 'Visakhapatnam', state: 'Andhra Pradesh' },
+  { name: 'Kollapur', code: 'MAH-KLP', city: 'Kolhapur', state: 'Maharashtra' },
+  { name: 'Pune', code: 'MAH-PUN', city: 'Pune', state: 'Maharashtra' }
 ];
 
 function BranchPicker({ branches, onSelect }) {
@@ -3136,8 +3136,9 @@ function BranchPicker({ branches, onSelect }) {
   const [regionFilter, setRegionFilter] = useState('All');
 
   const allBranchesList = useMemo(() => {
+    const liveList = Array.isArray(branches) ? branches : [];
     return ALL_15_BRANCH_METADATA.map((master) => {
-      const match = (branches || []).find((b) => {
+      const match = liveList.find((b) => {
         const bn = String(b.name || '').toLowerCase();
         const mn = master.name.toLowerCase();
         const mc = master.code.toLowerCase();
@@ -3150,8 +3151,11 @@ function BranchPicker({ branches, onSelect }) {
         code: match?.code || master.code,
         city: match?.city || master.city,
         state: match?.state || master.state,
-        activeStudents: match?.activeStudents ?? master.activeStudents,
-        staffCount: match?.staffCount ?? master.staffCount
+        activeStudents: match?.activeStudents || 0,
+        staffCount: match?.staffCount || 0,
+        leadCount: match?.leadCount || match?.openLeads || 0,
+        admissionsThisMonth: match?.admissionsThisMonth || 0,
+        conversionPct: match?.conversionPct != null ? match.conversionPct : null
       };
     });
   }, [branches]);
@@ -3261,11 +3265,19 @@ function BranchPicker({ branches, onSelect }) {
               <div className="grid grid-cols-2 gap-2 mt-4 pt-3.5 border-t border-slate-100 text-xs">
                 <div className="bg-slate-50/70 p-2 rounded-xl">
                   <span className="text-slate-400 block text-[10px] font-bold uppercase tracking-wider">Students</span>
-                  <strong className="text-emerald-600 font-extrabold text-sm">{b.activeStudents}</strong>
+                  <strong className="text-emerald-600 font-extrabold text-sm">{b.activeStudents || 0}</strong>
                 </div>
                 <div className="bg-slate-50/70 p-2 rounded-xl">
                   <span className="text-slate-400 block text-[10px] font-bold uppercase tracking-wider">Staff</span>
-                  <strong className="text-slate-900 font-extrabold text-sm">{b.staffCount}</strong>
+                  <strong className="text-slate-900 font-extrabold text-sm">{b.staffCount || 0}</strong>
+                </div>
+                <div className="bg-slate-50/70 p-2 rounded-xl">
+                  <span className="text-slate-400 block text-[10px] font-bold uppercase tracking-wider">Leads</span>
+                  <strong className="text-purple-600 font-extrabold text-sm">{b.leadCount || 0}</strong>
+                </div>
+                <div className="bg-slate-50/70 p-2 rounded-xl">
+                  <span className="text-slate-400 block text-[10px] font-bold uppercase tracking-wider">Admissions</span>
+                  <strong className="text-blue-600 font-extrabold text-sm">{b.admissionsThisMonth || 0}</strong>
                 </div>
               </div>
             </div>

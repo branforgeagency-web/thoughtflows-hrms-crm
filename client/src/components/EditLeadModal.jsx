@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { X, Save, User, Phone, Mail, GraduationCap, MapPin, Calendar, Clock, BookOpen, AlertCircle, FileText, CheckCircle2 } from 'lucide-react';
-import { updateLead } from '../services/api';
+import { X, Save, User, Phone, Mail, GraduationCap, MapPin, Calendar, Clock, BookOpen, AlertCircle, FileText, CheckCircle2, Trash2 } from 'lucide-react';
+import { updateLead, deleteLead } from '../services/api';
 import { COURSE_CATEGORIES } from '../constants/courses';
 import { QUALIFICATION_GROUPS } from '../constants/qualifications';
 import { LEAD_SOURCE_GROUPS, ALL_CATEGORIES } from '../constants/leadSources';
@@ -18,7 +18,7 @@ const STAGE_OPTIONS = [
   { value: 'closed', label: 'Closed / Lost' }
 ];
 
-export default function EditLeadModal({ isOpen, onClose, lead, onSuccess }) {
+export default function EditLeadModal({ isOpen, onClose, lead, onSuccess, onDelete }) {
   if (!isOpen || !lead) return null;
 
   const leadId = lead._id || lead.id;
@@ -46,7 +46,24 @@ export default function EditLeadModal({ isOpen, onClose, lead, onSuccess }) {
   const [category, setCategory] = useState(lead.category || 'Fresh Graduate');
 
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [errorMessage, setErrorMessage] = useState(null);
+
+  const handleDelete = async () => {
+    if (!window.confirm(`Are you sure you want to permanently delete enquiry for "${lead.fullName || lead.name}"? This action cannot be undone.`)) {
+      return;
+    }
+    setDeleting(true);
+    try {
+      await deleteLead(leadId);
+      if (onDelete) onDelete(leadId);
+      onClose();
+    } catch (err) {
+      console.error('Failed to delete enquiry:', err);
+      setErrorMessage(err?.response?.data?.error || err.message || 'Could not delete enquiry');
+      setDeleting(false);
+    }
+  };
 
   useEffect(() => {
     if (lead) {
@@ -450,24 +467,36 @@ export default function EditLeadModal({ isOpen, onClose, lead, onSuccess }) {
           </div>
 
           {/* Form Actions Footer */}
-          <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-2.5">
+          <div className="pt-4 border-t border-slate-100 flex items-center justify-between gap-2.5">
             <button
               type="button"
-              onClick={onClose}
-              disabled={saving}
-              className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50 transition-all cursor-pointer"
+              onClick={handleDelete}
+              disabled={saving || deleting}
+              className="px-4 py-2 rounded-xl bg-rose-50 hover:bg-rose-600 text-rose-600 hover:text-white border border-rose-200 hover:border-rose-600 text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
             >
-              Cancel
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>{deleting ? 'Deleting...' : 'Delete Enquiry'}</span>
             </button>
 
-            <button
-              type="submit"
-              disabled={saving}
-              className="px-5 py-2 rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white text-xs font-bold shadow-xs transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-            >
-              <Save className="w-3.5 h-3.5" />
-              <span>{saving ? 'Saving Changes...' : 'Save Enquiry Details'}</span>
-            </button>
+            <div className="flex items-center gap-2.5">
+              <button
+                type="button"
+                onClick={onClose}
+                disabled={saving || deleting}
+                className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50 transition-all cursor-pointer"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="submit"
+                disabled={saving || deleting}
+                className="px-5 py-2 rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white text-xs font-bold shadow-xs transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                <Save className="w-3.5 h-3.5" />
+                <span>{saving ? 'Saving Changes...' : 'Save Enquiry Details'}</span>
+              </button>
+            </div>
           </div>
         </form>
       </div>

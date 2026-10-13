@@ -16,7 +16,7 @@ import {
   Copy,
   Check
 } from 'lucide-react';
-import { getCourseFeeRates, saveCourseFeeRate, getStudents, updateStudent, recordStudentPayment } from '../services/api';
+import { getCourseFeeRates, saveCourseFeeRate, getStudents, updateStudent, recordStudentPayment, onDataUpdate } from '../services/api';
 import { localDateKey } from '../utils/dateUtils';
 import AddCourseRateModal from './AddCourseRateModal';
 import EditStudentFeeModal from './EditStudentFeeModal';
@@ -68,6 +68,19 @@ export default function HrStudentFeesCrm({ students: propStudents, onRefreshStud
       refreshStudents();
     }
   }, [propStudents, currentUser?.name]);
+
+  useEffect(() => {
+    const unsub = onDataUpdate((entity) => {
+      if (entity === 'students') {
+        if (onRefreshStudents) {
+          onRefreshStudents();
+        } else {
+          refreshStudents();
+        }
+      }
+    });
+    return () => unsub();
+  }, [onRefreshStudents]);
 
   // Unique admitted students with valid IDs for the selector
   const admittedStudentsList = useMemo(() => {
