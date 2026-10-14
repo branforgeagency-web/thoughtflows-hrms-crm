@@ -19,7 +19,9 @@ import {
   Plus,
   RefreshCw,
   ShieldAlert,
-  X
+  X,
+  Lock,
+  LogOut
 } from 'lucide-react';
 import {
   getTeam,
@@ -66,7 +68,7 @@ export default function BranchManagerDashboard({
   onSwitchBranch,
   currentUser = null
 }) {
-  const isBranchManager = currentUser?.role === 'Branch Manager' || currentUser?.isBranchManager || !onSwitchBranch;
+  const isBranchManager = !onSwitchBranch && !onBack && (currentUser?.role === 'Branch Manager' || currentUser?.isBranchManager);
   const branchName = branch?.name || currentUser?.branch || 'CBE-Gandhipuram';
   const branchCode = branch?.code || currentUser?.branchCode || branch?.id || branchName.slice(0, 3).toUpperCase();
   const branchCity = branch?.city || 'Tamil Nadu';
@@ -531,6 +533,17 @@ export default function BranchManagerDashboard({
               <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin text-purple-600' : ''}`} />
               <span className="hidden sm:inline text-[11px] font-semibold">Live Sync</span>
             </button>
+
+            {!isBranchManager && onBack && (
+              <button
+                onClick={() => onBack && onBack()}
+                className="p-1.5 px-2.5 rounded-lg bg-white border border-slate-200 hover:bg-rose-50 hover:border-rose-200 hover:text-rose-700 text-slate-600 text-xs flex items-center gap-1.5 cursor-pointer shadow-2xs font-semibold transition-colors"
+                title="Lock this branch and return to all branches"
+              >
+                <Lock className="w-3.5 h-3.5 text-slate-400" />
+                <span className="hidden sm:inline text-[11px]">Lock Branch</span>
+              </button>
+            )}
 
             {toastMessage && (
               <div className="px-4 py-1.5 rounded-full bg-slate-900 text-white text-xs font-semibold shadow-lg animate-bounce">
@@ -1753,8 +1766,8 @@ export default function BranchManagerDashboard({
                 <button
                   key={b.name}
                   onClick={() => {
-                    if (onSwitchBranch) onSwitchBranch(b);
                     setIsSwitchModalOpen(false);
+                    if (onSwitchBranch) onSwitchBranch(b);
                   }}
                   className={`w-full text-left p-3 rounded-xl border text-xs flex items-center justify-between transition-all cursor-pointer ${
                     b.name === branchName
@@ -1766,7 +1779,15 @@ export default function BranchManagerDashboard({
                     <div className="font-extrabold">{b.name}</div>
                     <div className="text-[10px] text-slate-400">{b.city}</div>
                   </div>
-                  {b.name === branchName && <Check className="w-4 h-4 text-purple-700" />}
+                  {b.name === branchName ? (
+                    <span className="flex items-center gap-1 text-[11px] font-bold text-purple-700">
+                      <Check className="w-4 h-4 text-purple-700" /> Current
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1 text-[10px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200/80">
+                      <Lock className="w-2.5 h-2.5" /> Login Required
+                    </span>
+                  )}
                 </button>
               ))}
             </div>

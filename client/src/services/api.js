@@ -280,6 +280,14 @@ export const saveRecording = async (recordingData) => {
   return res.data;
 };
 
+// Phone-sync: upload one call recording from the counsellor's phone; the server
+// matches it to a lead by the number in the file name
+export const syncPhoneRecording = async (data) => {
+  const res = await api.post('/recordings/phone-sync', data);
+  notifyDataUpdate('recordings');
+  return res.data;
+};
+
 export const deleteRecording = async (id) => {
   const res = await api.delete(`/recordings/${id}`);
   notifyDataUpdate('recordings');

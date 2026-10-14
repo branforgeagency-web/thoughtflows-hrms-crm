@@ -43,8 +43,17 @@ const callRecordingSchema = new mongoose.Schema({
   },
   source: {
     type: String,
-    enum: ['exotel', 'browser_mic', 'uploaded', 'phone_upload'],
+    enum: ['exotel', 'browser_mic', 'uploaded', 'phone_upload', 'phone_sync'],
     default: 'browser_mic'
+  },
+  // Phone-sync: original file name on the counsellor's phone (used to skip duplicates)
+  originalFileName: {
+    type: String,
+    default: ''
+  },
+  // When the call actually happened (parsed from the phone's file name)
+  recordedAt: {
+    type: Date
   }
 }, {
   timestamps: true

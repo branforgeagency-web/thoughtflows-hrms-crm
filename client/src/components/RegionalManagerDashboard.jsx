@@ -76,8 +76,8 @@ const REGIONAL_ZONES_CONFIG = [
     role: 'Regional Manager',
     regionName: 'AP / Telangana',
     code: 'REG-AP-TG',
-    subBranchesText: 'Madhapur, Dilsukhnagar, Vijayawada, Vizag',
-    branchMatcher: (name = '', city = '') => /telangana|andhra|hyderabad|madhapur|dilsukhnagar|vijayawada|vizag/i.test(`${name} ${city}`),
+    subBranchesText: 'Ameerpet, Dilsukhnagar, Vijayawada, Vizag',
+    branchMatcher: (name = '', city = '') => /telangana|andhra|hyderabad|ameerpet|dilsukhnagar|vijayawada|vizag/i.test(`${name} ${city}`),
     theme: {
       accentColor: '#EA580C',
       topBorder: 'bg-orange-600',

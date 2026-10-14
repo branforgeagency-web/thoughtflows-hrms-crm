@@ -103,6 +103,7 @@ const STAFF_RULES = [
   ['POST', /^\/closures$/, ['hr']],
   ['*', /^\/calls\/(dial|log|[^/]+\/hangup)$/, ['hr']],
   ['POST', /^\/recordings$/, ['hr']],
+  ['POST', /^\/recordings\/phone-sync$/, ['hr']],
   ['DELETE', /^\/recordings\/[^/]+$/, ['hr']],
   ['POST', /^\/hr\/targets$/, ['hr']],
   ['PUT', /^\/hr\/targets\/[^/]+$/, ['hr']],

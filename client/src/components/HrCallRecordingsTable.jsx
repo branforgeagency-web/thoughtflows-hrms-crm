@@ -14,9 +14,12 @@ import {
   Sparkles,
   RefreshCw,
   Volume2,
-  AlertCircle
+  AlertCircle,
+  Smartphone
 } from 'lucide-react';
 import { getRecordings, deleteRecording, onDataUpdate, recordingUrl } from '../services/api';
+import RecordingAudio from './RecordingAudio';
+import PhoneRecordingSync from './PhoneRecordingSync';
 
 export default function HrCallRecordingsTable({ currentUser }) {
   useFileToken(); // keeps file links (downloads / audio) signed with a fresh short-lived token
@@ -30,6 +33,8 @@ export default function HrCallRecordingsTable({ currentUser }) {
     setToastMsg(msg);
     setTimeout(() => setToastMsg(null), 3000);
   };
+
+  const [showPhoneSync, setShowPhoneSync] = useState(false);
 
   const loadRecordings = async () => {
     try {
@@ -174,13 +179,23 @@ export default function HrCallRecordingsTable({ currentUser }) {
           </p>
         </div>
 
-        <button
-          onClick={loadRecordings}
-          className="bg-white hover:bg-slate-50 text-slate-700 font-bold text-xs px-3.5 py-2 rounded-xl shadow-xs border border-slate-200 transition-all flex items-center gap-1.5 self-start sm:self-auto cursor-pointer"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-teal-600' : ''}`} />
-          <span>Refresh Audio Logs</span>
-        </button>
+        <div className="flex items-center gap-2 self-start sm:self-auto">
+          <button
+            onClick={() => setShowPhoneSync(true)}
+            className="bg-[#0e6977] hover:bg-[#0b5560] text-white font-bold text-xs px-3.5 py-2 rounded-xl shadow-xs transition-all flex items-center gap-1.5 cursor-pointer"
+          >
+            <Smartphone className="w-3.5 h-3.5" />
+            <span>Sync Phone Recordings</span>
+          </button>
+          <button
+            onClick={loadRecordings}
+            className="bg-white hover:bg-slate-50 text-slate-700 font-bold text-xs px-3.5 py-2 rounded-xl shadow-xs border border-slate-200 transition-all flex items-center gap-1.5 cursor-pointer"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-teal-600' : ''}`} />
+            <span>Refresh Audio Logs</span>
+          </button>
+        </div>
+        <PhoneRecordingSync isOpen={showPhoneSync} onClose={() => setShowPhoneSync(false)} onDone={loadRecordings} />
       </div>
 
       {/* Metric Cards Summary */}
@@ -318,6 +333,8 @@ export default function HrCallRecordingsTable({ currentUser }) {
                       <span className="text-[9.5px] text-slate-400 font-mono">
                         {rec.source === 'exotel'
                           ? '📞 Exotel Bridge'
+                          : rec.source === 'phone_sync'
+                            ? '📱 Phone Call (synced)'
                           : (rec.source === 'phone_upload' || rec.source === 'uploaded')
                             ? '📤 Uploaded from Phone'
                             : '🎙️ Mic Audio'}
@@ -326,7 +343,7 @@ export default function HrCallRecordingsTable({ currentUser }) {
 
                     {/* Date & Time */}
                     <td className="py-3.5 px-4 text-slate-600 font-mono text-[11px] whitespace-nowrap">
-                      {formatDate(rec.createdAt)}
+                      {formatDate(rec.recordedAt || rec.createdAt)}
                     </td>
 
                     {/* Duration */}
@@ -347,7 +364,7 @@ export default function HrCallRecordingsTable({ currentUser }) {
                     <td className="py-3.5 px-4">
                       {rec.audioUrl ? (
                         <div className="flex items-center gap-2">
-                          <audio
+                          <RecordingAudio
                             controls
                             src={recordingUrl(rec.audioUrl)}
                             preload="metadata"

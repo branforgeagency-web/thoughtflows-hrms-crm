@@ -403,6 +403,121 @@ router.post('/recordings', async (req, res) => {
   }
 });
 
+// ── Phone recording sync ─────────────────────────────────────────────
+// Counsellors call from their own phone/SIM (no cloud telephony, no KYC) and
+// upload the phone's call-recording files here. We read the number + time from
+// the file name, match the lead, and store it like any other call recording.
+const AUDIO_EXTS_SYNC = ['m4a', 'mp3', 'amr', 'aac', 'wav', 'ogg', 'opus', '3gp', 'webm', 'mp4', 'flac'];
+
+const parsePhoneRecordingName = (fileName = '') => {
+  let base = String(fileName).replace(/\.[^.]+$/, '');
+  let recordedAt = null;
+  const datePatterns = [
+    // 2026-10-13 14-30-20 / 2026_10_13_14_30_20 / 20261013_143020 / 20261013143020
+    { rx: /(20\d{2})[-_.]?(\d{2})[-_.]?(\d{2})[\s_T-]*(\d{2})[-_.:]?(\d{2})[-_.:]?(\d{2})/, y4: true },
+    // 261013_143020 (Samsung: YYMMDD_HHMMSS)
+    { rx: /(?<!\d)(\d{2})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})(?!\d)/, y4: false }
+  ];
+  for (const { rx, y4 } of datePatterns) {
+    const m = base.match(rx);
+    if (m) {
+      const year = y4 ? Number(m[1]) : 2000 + Number(m[1]);
+      // Phone file names are in India time (IST, UTC+5:30); the server may run in UTC
+      const d = new Date(Date.UTC(year, Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6])) - 330 * 60000);
+      if (!Number.isNaN(d.getTime()) && Number(m[2]) <= 12 && Number(m[3]) <= 31) {
+        recordedAt = d;
+        base = base.replace(m[0], ' ');
+        break;
+      }
+    }
+  }
+  // Phone number: longest run of digits (allowing +, spaces, dashes, brackets)
+  let phone = '';
+  const runs = base.match(/\+?\(?\d[\d\s()-]{7,18}\d/g) || [];
+  const candidates = runs.flatMap((r) => [r, ...r.split(/[-_]/)]);
+  for (const r of candidates) {
+    const digits = r.replace(/\D/g, '');
+    if (digits.length >= 10 && digits.length <= 13) { phone = digits.slice(-10); break; }
+  }
+  // Contact name (when the phone saved the contact's name instead of a number)
+  const name = base
+    .replace(/call\s*recording|call\s*with|recording|record|call|voice|audio/gi, ' ')
+    .replace(/\+?\(?\d[\d\s()-]*\d/g, ' ')
+    .replace(/[_()[\]{}@#-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return { phone, name, recordedAt };
+};
+
+const digitsLooseRx = (digits) => new RegExp(digits.split('').join('\\D*') + '$');
+
+router.post('/recordings/phone-sync', async (req, res) => {
+  try {
+    const { fileName, audioBase64, durationSeconds, lastModified, leadId: forcedLeadId } = req.body || {};
+    if (!fileName || !audioBase64) return res.status(400).json({ error: 'fileName and audioBase64 are required' });
+
+    const counselorName = req.user?.name || '';
+    const ext = path.extname(String(fileName)).slice(1).toLowerCase();
+    if (!AUDIO_EXTS_SYNC.includes(ext)) return res.status(400).json({ error: `Not an audio file (.${ext || '?'})` });
+
+    // Skip files this counsellor already synced
+    const dup = await CallRecording.findOne({ originalFileName: fileName, counselorName });
+    if (dup) return res.json({ status: 'duplicate', recording: dup });
+
+    const parsed = parsePhoneRecordingName(fileName);
+    const recordedAt = parsed.recordedAt || (lastModified ? new Date(Number(lastModified)) : null);
+
+    // Match the lead: chosen lead → phone number → exact contact name
+    let lead = null;
+    if (forcedLeadId && mongoose.isValidObjectId(forcedLeadId)) lead = await StudentLead.findById(forcedLeadId);
+    if (!lead && parsed.phone) {
+      const rx = digitsLooseRx(parsed.phone);
+      lead = await StudentLead.findOne({ $or: [{ phone: rx }, { whatsappNumber: rx }, { alternatePhone: rx }] }).sort({ updatedAt: -1 });
+    }
+    if (!lead && parsed.name && parsed.name.length >= 3) {
+      lead = await StudentLead.findOne({ fullName: exactNameRx(parsed.name) }).sort({ updatedAt: -1 });
+    }
+
+    const buffer = Buffer.from(String(audioBase64).replace(/^data:[^,]*,/, ''), 'base64');
+    const filename = `phone_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.${ext}`;
+    const uploadsDir = path.join(process.cwd(), 'uploads/recordings');
+    if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+    fs.writeFileSync(path.join(uploadsDir, filename), buffer);
+
+    const recording = await CallRecording.create({
+      leadId: lead?._id,
+      leadName: lead?.fullName || parsed.name || 'Unknown caller',
+      leadPhone: lead?.phone || parsed.phone || 'unknown',
+      counselorName,
+      counselorPhone: req.user?.phone || '',
+      durationSeconds: Number(durationSeconds) || 0,
+      outcome: 'Phone Call',
+      notes: '',
+      audioUrl: `/recordings/${filename}`,
+      source: 'phone_sync',
+      originalFileName: fileName,
+      recordedAt: recordedAt || undefined
+    });
+
+    if (lead) {
+      await StudentLead.findByIdAndUpdate(lead._id, {
+        $inc: { callCount: 1 },
+        lastCallTime: recordedAt || new Date()
+      });
+    }
+
+    res.status(201).json({
+      status: lead ? 'matched' : 'unmatched',
+      parsed: { phone: parsed.phone, name: parsed.name, recordedAt },
+      lead: lead ? { _id: lead._id, fullName: lead.fullName, phone: lead.phone } : null,
+      recording
+    });
+  } catch (err) {
+    console.error('Phone recording sync error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.delete('/recordings/:id', async (req, res) => {
   try {
     const recording = await CallRecording.findByIdAndDelete(req.params.id);
@@ -3409,7 +3524,6 @@ const BRANCH_ACCOUNTS = {
   'trivandrum@thoughtflows.in': { branch: 'Trivandrum', code: 'KER-TRV', manager: 'Trivandrum Manager', defaultPass: 'Trivandrum@123' },
   'ameerpet@thoughtflows.in': { branch: 'Ameerpet', code: 'HYD-AMP', manager: 'Ameerpet Manager', defaultPass: 'Ameerpet@123' },
   'dilsukhnagar@thoughtflows.in': { branch: 'Dilsukhnagar', code: 'HYD-DSN', manager: 'Dilsukhnagar Manager', defaultPass: 'Dilsukhnagar@123' },
-  'madhapur@thoughtflows.in': { branch: 'Madhapur', code: 'HYD-MDP', manager: 'Madhapur Manager', defaultPass: 'Madhapur@123' },
   'vijayawada@thoughtflows.in': { branch: 'Vijayawada', code: 'AND-VJA', manager: 'Vijayawada Manager', defaultPass: 'Vijayawada@123' },
   'vizag@thoughtflows.in': { branch: 'Vizag', code: 'AND-VZG', manager: 'Vizag Manager', defaultPass: 'Vizag@123' },
   'trichy@thoughtflows.in': { branch: 'Trichy', code: 'TND-TRY', manager: 'Trichy Manager', defaultPass: 'Trichy@123' },

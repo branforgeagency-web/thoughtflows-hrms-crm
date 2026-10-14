@@ -30,6 +30,7 @@ import { createDemo, getRecordings, saveRecording, recordingUrl } from '../servi
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 import { copyToClipboard } from '../utils/clipboard';
 import { COURSE_CATEGORIES } from '../constants/courses';
+import RecordingAudio from './RecordingAudio';
 
 // Maps a real call outcome to a real pipeline stage change.
 const OUTCOME_STAGE = {
@@ -73,8 +74,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
   const [loadingRecordings, setLoadingRecordings] = useState(false);
 
   const mediaRecorderRef = useRef(null);
-  const audioChunksRef = useRef([]);
-  const streamRef = useRef(null);
+    const streamRef = useRef(null);
   const fileInputRef = useRef(null);
   const timerRef = useRef(null);
   const hasBeenAnsweredRef = useRef(false);
@@ -147,60 +147,92 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
     }
   };
 
-  // Start in-browser audio recording with Voice Isolation (Noise Suppression & Echo Cancellation)
+  // ── Call recorder ───────────────────────────────────────────────
+  // Starts on dial so a call is never lost. Tapping CONNECTED restarts it,
+  // dropping the ringing part. HANG UP / End Call & Save stops it.
+  const getMicStream = async () => {
+    if (streamRef.current && streamRef.current.getAudioTracks().some((t) => t.readyState === 'live')) {
+      return streamRef.current;
+    }
+    // Echo cancellation OFF: with Phone Link the student's voice plays through the
+    // laptop speakers — echo cancellation would strip it out of the recording.
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true }
+    });
+    streamRef.current = stream;
+    return stream;
+  };
+
+  const releaseMic = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+  };
+
   const startAudioRecording = async () => {
+    let stream;
     try {
-      audioChunksRef.current = [];
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        }
-      });
-      streamRef.current = stream;
-      const mediaRecorder = new MediaRecorder(stream);
-      mediaRecorderRef.current = mediaRecorder;
-
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data && event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
-        }
-      };
-
-      mediaRecorder.onstop = () => {
-        if (audioChunksRef.current.length > 0) {
-          const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-          setRecordedAudioBlob(blob);
-          const url = URL.createObjectURL(blob);
-          setRecordedAudioUrl(url);
-          setUploadedFileName('mic_voice_recording.webm');
-        }
-        setIsRecording(false);
-        if (streamRef.current) {
-          streamRef.current.getTracks().forEach(track => track.stop());
-          streamRef.current = null;
-        }
-      };
-
-      mediaRecorder.start(250);
-      setIsRecording(true);
+      stream = await getMicStream();
     } catch (err) {
       console.warn('Microphone permission not granted or audio constraint error:', err);
       setIsRecording(false);
+      showToast('⚠ Microphone blocked — call will NOT be recorded. Allow mic access for this site.');
+      return;
     }
+
+    // Restart: throw away whatever was recorded so far (ringing)
+    const prev = mediaRecorderRef.current;
+    if (prev && prev.state !== 'inactive') {
+      prev._discard = true;
+      try { prev.stop(); } catch { /* ignore */ }
+    }
+
+    let rec;
+    try {
+      rec = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus', audioBitsPerSecond: 32000 });
+    } catch {
+      rec = new MediaRecorder(stream);
+    }
+    const chunks = [];
+    rec.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+    rec.onstop = () => {
+      if (rec._discard) return;
+      let blob = null;
+      if (chunks.length > 0) {
+        blob = new Blob(chunks, { type: 'audio/webm' });
+        setRecordedAudioBlob(blob);
+        setRecordedAudioUrl(URL.createObjectURL(blob));
+        setUploadedFileName('mic_voice_recording.webm');
+      }
+      if (mediaRecorderRef.current === rec) mediaRecorderRef.current = null;
+      releaseMic();
+      setIsRecording(false);
+      if (rec._resolve) rec._resolve(blob);
+    };
+    mediaRecorderRef.current = rec;
+    rec.start(250);
+    setIsRecording(true);
   };
 
-  const stopAudioRecording = () => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+  // Resolves with the final audio Blob once MediaRecorder has flushed its data
+  const stopAudioRecording = () => new Promise((resolve) => {
+    const rec = mediaRecorderRef.current;
+    if (rec && rec.state !== 'inactive') {
+      rec._resolve = resolve;
       try {
-        mediaRecorderRef.current.stop();
+        rec.stop();
       } catch (e) {
         console.warn('Error stopping mediaRecorder:', e);
+        releaseMic();
+        resolve(null);
       }
+    } else {
+      releaseMic();
+      resolve(null);
     }
     setIsRecording(false);
-  };
+  });
 
   const handleClearRecording = () => {
     setRecordedAudioBlob(null);
@@ -314,6 +346,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
     // A tel: call gives the browser no connect/disconnect events, so the timer
     // waits until the counsellor marks the call as connected.
     if (callStatus !== 'in-progress') setCallStatus('dialing');
+    if (!mediaRecorderRef.current) startAudioRecording();
     showToast(`Dialing ${leadForm.phone} via Phone / Phone Link… Tap "Connected" once the student picks up.`);
   };
 
@@ -322,15 +355,16 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
     hasBeenAnsweredRef.current = true;
     startTimer();
     startAudioRecording();
-    showToast('Call connected. Timer started.');
+    showToast('🔴 Call connected — recording started. Tap HANG UP when the call ends.');
   };
 
-  const handleEndCall = () => {
+  const handleEndCall = async () => {
     const wasConnected = callStatus === 'in-progress';
     clearTimers();
-    stopAudioRecording();
+    const blob = await stopAudioRecording();
     setCallStatus('completed');
-    showToast(wasConnected ? '✓ Call ended. Audio recording ready.' : 'Call ended before it connected.');
+    showToast(blob ? '✓ Call ended. Audio recording ready.' : (wasConnected ? 'Call ended — no audio captured.' : 'Call ended before it connected.'));
+    return blob;
   };
 
   // Handle local file upload
@@ -356,8 +390,10 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
   };
 
   const handleSaveAndClose = async () => {
-    if (['dialing', 'in-progress'].includes(callStatus)) {
-      handleEndCall();
+    let audioBlob = recordedAudioBlob;
+    if (['dialing', 'in-progress'].includes(callStatus) || mediaRecorderRef.current) {
+      const fresh = await handleEndCall();
+      if (fresh && !(audioBlob instanceof File)) audioBlob = fresh;
     }
 
     if (NEEDS_FOLLOW_UP_DATE.includes(selectedOutcome) && !followUpDate) {
@@ -369,20 +405,21 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
 
     // Convert audio blob to base64 if available
     let audioBase64 = null;
-    if (recordedAudioBlob) {
+    if (audioBlob) {
       try {
         audioBase64 = await new Promise((resolve) => {
           const reader = new FileReader();
           reader.onloadend = () => resolve(reader.result);
-          reader.readAsDataURL(recordedAudioBlob);
+          reader.readAsDataURL(audioBlob);
         });
       } catch (e) {
         console.warn('Could not encode audio blob:', e);
       }
     }
 
+    let recordingFailed = false;
     if (audioBase64) {
-      const isPhoneUpload = recordedAudioBlob instanceof File;
+      const isPhoneUpload = audioBlob instanceof File;
       try {
         await saveRecording({
           leadId: leadData?._id || leadData?.id,
@@ -394,12 +431,13 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
           outcome: selectedOutcome,
           notes: leadForm.notes,
           audioBase64,
-          fileName: uploadedFileName,
+          fileName: isPhoneUpload ? uploadedFileName : 'mic_voice_recording.webm',
           source: isPhoneUpload ? 'phone_upload' : 'browser_mic'
         });
         await fetchLeadRecordings(leadForm.phone);
       } catch (err) {
         console.error('Failed to save call recording:', err);
+        recordingFailed = true;
         showToast(`Could not save call recording: ${err.response?.data?.error || err.message}`);
       }
     }
@@ -417,8 +455,13 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
 
     try {
       if (onSave) await onSave(payload);
-      showToast('✓ Call log & all student details saved!');
-      setTimeout(() => onClose(), 600);
+      if (recordingFailed) {
+        // Keep the window open so the error is visible and the audio can be re-saved
+        setTimeout(() => showToast('⚠ Call log saved but the RECORDING upload failed — press Save again to retry.'), 3600);
+      } else {
+        showToast(audioBase64 ? '✓ Call log & recording saved!' : '✓ Call log saved (no recording).');
+        setTimeout(() => onClose(), 600);
+      }
     } catch (e) {
       showToast(`Could not save: ${e.message}`);
     } finally {
@@ -1135,7 +1178,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                   </div>
                 </div>
                 <div className="flex items-center gap-2 w-full sm:w-auto">
-                  <audio controls src={recordedAudioUrl} className="h-8 max-w-xs w-full accent-[#0e6977]" />
+                  <RecordingAudio src={recordedAudioUrl} className="h-8 max-w-xs w-full accent-[#0e6977]" />
                   <button
                     type="button"
                     onClick={handleClearRecording}
@@ -1209,7 +1252,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                         </td>
                         <td className="py-2.5 px-3">
                           {rec.audioUrl ? (
-                            <audio controls src={recordingUrl(rec.audioUrl)} className="h-7 w-56 max-w-full accent-[#0e6977]" />
+                            <RecordingAudio src={recordingUrl(rec.audioUrl)} className="h-7 w-56 max-w-full accent-[#0e6977]" />
                           ) : (
                             <span className="text-slate-400 italic text-[10.5px]">No audio file</span>
                           )}
