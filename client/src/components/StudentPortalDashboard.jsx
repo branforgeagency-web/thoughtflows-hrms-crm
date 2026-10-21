@@ -22,13 +22,16 @@ import {
   X,
   AlertCircle,
   ArrowRight,
+  Info,
   MapPin,
   ExternalLink,
   LogOut,
   RefreshCw,
   MessageSquare,
   Menu,
-  PlayCircle
+  PlayCircle,
+  Sparkles,
+  Star
 } from 'lucide-react';
 import StudentOnlineTest from './StudentOnlineTest';
 import BookNewDemoModal from './BookNewDemoModal';
@@ -40,11 +43,13 @@ import {
   createStudentSubmission,
   studentSubmissionFileUrl,
   createStudentRequest,
+  studentRequestDocumentUrl,
   createTrainerDoubt,
   createEscalation,
   createDemo,
   trainingMaterialFileUrl,
   joinStudentLiveClass,
+  sendLiveClassHeartbeat,
   submitStudentFeedback,
   followUpDoubt,
   resolveDoubt,
@@ -76,7 +81,15 @@ const PLACEMENT_STAGES = [
 ];
 const LOCATION_OPTIONS = ['Coimbatore', 'Chennai', 'Bangalore', 'Hyderabad', 'Kochi', 'Madurai', 'Trichy', 'Remote / Work From Home'];
 const EXAM_OPTIONS = ['CPC', 'COC', 'CIC', 'CRC', 'CPB', 'CPMA', 'CCS', 'Other'];
-const TICKET_CATEGORIES = ['Fees & Receipts', 'Certificate Release', 'Batch Timing or Classroom Change', 'LMS / Materials Access', 'Attendance Correction', 'Placement Team Inquiry', 'Other'];
+const TICKET_CATEGORIES = ['Fees & Receipts', 'Certificate Release', 'Batch Conversion', 'Batch Timing or Classroom Change', 'LMS / Materials Access', 'Attendance Correction', 'Placement Team Inquiry', 'Other'];
+const BREAK_REASON_CATEGORIES = [
+  'Medical Emergency / Health Condition',
+  'University / Academic Examinations',
+  'Family Emergency / Personal Urgent Matter',
+  'Official Relocation / Travel',
+  'Work / Professional Commitment',
+  'Other Valid Grounds'
+];
 
 // ----------------------------------------------------------------------------
 // Helpers
@@ -234,6 +247,8 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
   const setF = (k) => (e) => setForm((f) => ({ ...f, [k]: e?.target ? (e.target.type === 'file' ? e.target.files[0] : e.target.value) : e }));
   const [quickDoubt, setQuickDoubt] = useState('');
   const [newSkill, setNewSkill] = useState('');
+  const [liveAttendedMins, setLiveAttendedMins] = useState(0);
+  const [eligibleForPresent, setEligibleForPresent] = useState(false);
 
   const showToast = (msg, ms = 3500) => {
     setToast(msg);
@@ -244,6 +259,27 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
     setModal({ type, ...payload });
   };
   const closeModal = () => { setModal(null); setForm({}); };
+
+  // Heartbeat tracking student attendance duration during live class (1 hr 45 min rule)
+  useEffect(() => {
+    if (modal?.type !== 'liveClass' || !live?.sessionId || !st?.studentId) return undefined;
+    const sendPulse = async () => {
+      try {
+        const res = await sendLiveClassHeartbeat({
+          sessionId: live.sessionId,
+          studentId: st.studentId,
+          email: st.email
+        });
+        if (res?.ok) {
+          if (typeof res.durationMinutes === 'number') setLiveAttendedMins(res.durationMinutes);
+          if (typeof res.eligibleForPresent === 'boolean') setEligibleForPresent(res.eligibleForPresent);
+        }
+      } catch (_) {}
+    };
+    sendPulse();
+    const timer = setInterval(sendPulse, 30000);
+    return () => clearInterval(timer);
+  }, [modal?.type, live?.sessionId, st?.studentId, st?.email]);
 
   // --------------------------------------------------------------------------
   // Load everything for the signed-in student from the server
@@ -297,6 +333,15 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
   const classNotes = portal?.classNotes || [];
   const partners = portal?.hiringPartners || [];
   const timetable = portal?.timetable || [];
+
+  // Batch Conversion Ticket — Student is permitted to raise only once
+  const hasBatchConversionTicket = Boolean(
+    st?.batchConversionTicketRaised ||
+    tickets.some((t) => /batch\s*conversion/i.test(t?.type || '') || /batch\s*conversion/i.test(t?.category || '') || /batch\s*conversion/i.test(t?.title || '')) ||
+    requests.some((r) => r?.type === 'batch_conversion' || /batch\s*conversion/i.test(r?.subject || ''))
+  );
+  const existingBatchConversionTicket = tickets.find((t) => /batch\s*conversion/i.test(t?.type || '') || /batch\s*conversion/i.test(t?.category || '') || /batch\s*conversion/i.test(t?.title || ''))
+    || requests.find((r) => r?.type === 'batch_conversion' || /batch\s*conversion/i.test(r?.subject || ''));
   const rateableClasses = portal?.rateableClasses || [];
   const trainerFeedback = portal?.trainerFeedback || null;
   const syllabus = portal?.syllabus || null;
@@ -305,6 +350,32 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
   const sylModules = syllabus?.modules || [];
   const sylDone = sylModules.filter((m) => m.done).length;
   const sylPct = sylModules.length ? Math.round((sylDone / sylModules.length) * 100) : null;
+
+  const displaySylModules = useMemo(() => {
+    const rawList = sylModules.length > 0 ? sylModules : [
+      { name: 'Module 1 — Foundations & Medical Terminology', done: Boolean(st?.syllabusModule && st.syllabusModule !== 'Module 1') || Boolean(st?.syllabusCompleted) },
+      { name: 'Module 2 — Anatomy, Physiology & Body Systems', done: Boolean(st?.syllabusCompleted) || ['Module 3', 'Module 4', 'Module 5'].includes(st?.syllabusModule) },
+      { name: 'Module 3 — Core Coding Guidelines & Classification', done: Boolean(st?.syllabusCompleted) || ['Module 4', 'Module 5'].includes(st?.syllabusModule) },
+      { name: 'Module 4 — Specialty Case Studies & Scenarios', done: Boolean(st?.syllabusCompleted) || st?.syllabusModule === 'Module 5' },
+      { name: 'Module 5 — Comprehensive Mock Exams & AAPC Review', done: Boolean(st?.syllabusCompleted) }
+    ];
+
+    return rawList.map((m, idx) => {
+      // Check if student has completed Anatomy foundation or completed modules
+      const isAnatomyMod = idx < 2 || /anatomy|physiology|terminology|foundations/i.test(m.name);
+      const isCompletedInRecord = Boolean(
+        st?.anatomyCompleted ||
+        (st?.completedModules || []).some((cm) => cm.toLowerCase().includes(m.name.toLowerCase()) || (isAnatomyMod && (cm.includes('1') || cm.includes('2')))) ||
+        (isAnatomyMod && ['Module 3', 'Module 4', 'Module 5'].includes(st?.syllabusModule))
+      );
+      return {
+        ...m,
+        done: Boolean(m.done || isCompletedInRecord || st?.syllabusCompleted)
+      };
+    });
+  }, [sylModules, st?.syllabusModule, st?.syllabusCompleted, st?.anatomyCompleted, st?.completedModules]);
+  const effectiveSylDone = sylModules.length > 0 ? sylDone : displaySylModules.filter(m => m.done).length;
+  const effectiveSylPct = st?.syllabusCompleted ? 100 : (sylModules.length ? sylPct : Math.round((effectiveSylDone / displaySylModules.length) * 100));
 
   const sendFollowUp = async (q) => {
     const text = String(followText[q.id] || '').trim();
@@ -352,11 +423,21 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
 
     const latestOf = (type) => submissions.find((s) => s.type === type) || null;
 
+    const todayDateKey = new Date().toISOString().split('T')[0];
+    const todayAttendance = attendance.find((a) => a.date === todayDateKey) || null;
+    const latestAttendance = attendance[0] || null;
+    const isSyllabusDone = Boolean(st.syllabusCompleted) || (sylModules.length > 0 && sylDone === sylModules.length);
+
     return {
       name,
       initials: name.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase() || 'S',
       batch: portal?.batch || '',
       attended, absent, late, attendancePct, testAvg, readiness,
+      todayAttendance,
+      latestAttendance,
+      isSyllabusDone,
+      effectiveSylPct,
+      effectiveSylDone,
       courseFee, paid, balance,
       topics,
       placementStage,
@@ -368,7 +449,50 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
       openMock: requests.find((r) => r.type === 'mock_interview' && ['Open', 'Scheduled'].includes(r.status)) || null,
       pendingPoints: requests.filter((r) => r.type === 'redeem_points' && ['Open', 'Scheduled'].includes(r.status)).reduce((a, r) => a + Number(r.details?.points || 0), 0)
     };
-  }, [st, portal?.batch, attendance, assessments, referrals, submissions, requests, placements, currentUser?.name]);
+  }, [st, portal?.batch, attendance, assessments, referrals, submissions, requests, placements, currentUser?.name, sylModules, sylDone, effectiveSylPct, effectiveSylDone]);
+
+  // Weekly Star Rating (derived from backend sync or live 4-pillar computation)
+  const weeklyRating = useMemo(() => {
+    if (portal?.weeklyRating?.stars) return portal.weeklyRating;
+    if (st?.weeklyRating?.stars) return st.weeklyRating;
+
+    const attRate = d?.attendancePct ?? (attendance.length ? Math.round((d?.attended / attendance.length) * 100) : 85);
+    const attScore = attRate >= 95 ? 5.0 : attRate >= 85 ? 4.5 : attRate >= 75 ? 4.0 : attRate >= 60 ? 3.0 : 2.0;
+    const testRate = d?.testAvg ?? (assessments.length ? 80 : 75);
+    const assScore = testRate >= 90 ? 5.0 : testRate >= 80 ? 4.5 : testRate >= 70 ? 3.8 : testRate >= 55 ? 3.0 : 2.0;
+    const sylRate = d?.effectiveSylPct ?? (d?.isSyllabusDone ? 100 : 50);
+    const sylScore = d?.isSyllabusDone ? 5.0 : sylRate >= 80 ? 4.8 : sylRate >= 60 ? 4.2 : sylRate >= 40 ? 3.6 : 3.0;
+    const partScore = (doubts.length >= 2 && submissions.length >= 2) ? 5.0 : (doubts.length >= 1 || submissions.length >= 1) ? 4.4 : 3.6;
+    const overall = Number(((attScore + assScore + sylScore + partScore) / 4).toFixed(1));
+    const roundedStars = Math.round(overall);
+
+    let tier = 'On-Track Learner';
+    if (overall >= 4.5) tier = 'Outstanding Star';
+    else if (overall >= 3.8) tier = 'High Performer';
+    else if (overall >= 3.0) tier = 'On-Track Learner';
+    else if (overall >= 2.0) tier = 'Needs Focus';
+    else tier = 'Action Required';
+
+    return {
+      stars: overall,
+      roundedStars,
+      tier,
+      weekLabel: 'Current Academic Week',
+      weekNumber: 42,
+      year: 2026,
+      attendanceScore: attScore,
+      attendanceDetail: `${attRate}% weekly attendance rate (target: 75%+)`,
+      assessmentScore: assScore,
+      assessmentDetail: `${testRate}% average score across evaluations`,
+      syllabusScore: sylScore,
+      syllabusDetail: `${d?.effectiveSylDone ?? 0} modules covered (${sylRate}% syllabus progress)`,
+      participationScore: partScore,
+      participationDetail: `${doubts.length} doubts · ${submissions.length} submissions uploaded`,
+      feedback: 'Maintain your consistent class attendance and syllabus pacing this week to secure high placement eligibility.',
+      evaluatedBy: 'Automated Weekly Audit',
+      history: []
+    };
+  }, [portal?.weeklyRating, st?.weeklyRating, d, attendance, assessments, doubts, submissions]);
 
   // --------------------------------------------------------------------------
   // Actions (all persisted to the server)
@@ -527,6 +651,489 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
           </button>
         </div>
 
+        {/* Break Status Banner (if student has an active approved break or pending break request) */}
+        {st?.breakStatus === 'approved' && (
+          <div className="p-4 sm:p-5 bg-emerald-50/90 border-2 border-emerald-300 rounded-3xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-sm">
+            <div className="flex items-start sm:items-center gap-3.5">
+              <div className="w-11 h-11 rounded-2xl bg-emerald-100 border border-emerald-300 text-2xl flex items-center justify-center flex-shrink-0">
+                🌴
+              </div>
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h4 className="font-black text-emerald-950 text-sm sm:text-base">Official Academic Break Active</h4>
+                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-emerald-200 text-emerald-900">
+                    Status: On Hold
+                  </span>
+                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-white text-emerald-800 border border-emerald-300">
+                    Prior Approval Granted
+                  </span>
+                </div>
+                <p className="text-xs text-emerald-900 mt-1 font-medium">
+                  Approved period: <strong>{fmtDate(st.breakStartDate)}</strong> to <strong>{fmtDate(st.breakEndDate)}</strong>
+                  {st.breakReason && <> · Reason: <em>{st.breakReason}</em></>}
+                  {st.breakApprovedBy && <> · Approved by: <strong>{st.breakApprovedBy}</strong></>}
+                </p>
+                <p className="text-[11px] text-emerald-700 mt-0.5">
+                  Your syllabus progress and attendance are protected on official hold. Please reach out to your branch HR on your return date to resume classes.
+                </p>
+              </div>
+            </div>
+            <Btn tone="light" onClick={() => setActiveNav('help')} className="text-xs flex-shrink-0 cursor-pointer">
+              Break Details
+            </Btn>
+          </div>
+        )}
+
+        {st?.breakStatus === 'pending_approval' && (
+          <div className="p-4 sm:p-5 bg-amber-50/90 border-2 border-amber-300 rounded-3xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-sm">
+            <div className="flex items-start sm:items-center gap-3.5">
+              <div className="w-11 h-11 rounded-2xl bg-amber-100 border border-amber-300 text-2xl flex items-center justify-center flex-shrink-0">
+                ⏳
+              </div>
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h4 className="font-black text-amber-950 text-sm sm:text-base">Break Request Pending Prior Approval</h4>
+                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-amber-200 text-amber-900">
+                    Under Review
+                  </span>
+                </div>
+                <p className="text-xs text-amber-900 mt-1 font-medium">
+                  Requested break: <strong>{fmtDate(st.breakStartDate)}</strong> to <strong>{fmtDate(st.breakEndDate)}</strong>
+                  {st.breakReason && <> · Reason: <em>{st.breakReason}</em></>}
+                </p>
+                <p className="text-[11px] text-amber-700 mt-0.5">
+                  Your supporting documentation is under review by HR / Operations authority. Prior approval is required before leave commences.
+                </p>
+              </div>
+            </div>
+            <Btn tone="light" onClick={() => setActiveNav('help')} className="text-xs flex-shrink-0 cursor-pointer">
+              View Request
+            </Btn>
+          </div>
+        )}
+
+        {/* ======================================================== */}
+        {/* WEEKLY STAR RATING - STUDENT DASHBOARD                    */}
+        {/* Updated weekly based on 4 pillars:                        */}
+        {/* 1. Attendance                                             */}
+        {/* 2. Assessment Performance                                 */}
+        {/* 3. Syllabus Progress                                      */}
+        {/* 4. Participation                                          */}
+        {/* ======================================================== */}
+        <div className="bg-gradient-to-br from-[#121633] via-[#1c224f] to-[#0d1029] rounded-3xl p-5 sm:p-7 text-white shadow-[0_8px_32px_rgba(20,25,60,0.35)] border border-indigo-500/30 space-y-6">
+          {/* Card Header */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-indigo-400/20">
+            <div className="flex items-center gap-3.5">
+              <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-amber-500 to-amber-300 text-slate-950 font-black text-2xl flex items-center justify-center shadow-md flex-shrink-0">
+                ⭐
+              </div>
+              <div>
+                <div className="flex items-center gap-2.5 flex-wrap">
+                  <h3 className="text-lg sm:text-xl font-black tracking-tight text-white flex items-center gap-2">
+                    Weekly Star Rating
+                  </h3>
+                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black tracking-wide uppercase bg-amber-400/20 text-amber-300 border border-amber-400/40">
+                    {weeklyRating.tier}
+                  </span>
+                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-white/10 text-indigo-200 border border-white/10">
+                    {weeklyRating.weekLabel}
+                  </span>
+                </div>
+                <p className="text-xs text-indigo-200 mt-1">
+                  Updated weekly based on attendance, assessment performance, syllabus progress, and participation
+                </p>
+              </div>
+            </div>
+
+            {weeklyRating.history?.length > 0 && (
+              <button
+                onClick={() => openModal('ratingHistory')}
+                className="self-start sm:self-auto text-xs font-bold text-amber-300 hover:text-white bg-white/10 hover:bg-white/20 border border-amber-300/30 px-3.5 py-1.5 rounded-xl transition-all cursor-pointer flex items-center gap-1.5"
+              >
+                <span>Weekly Trend</span>
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          {/* Hero Star Score & Feedback */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-center">
+            {/* Left: Star Badge & Big Numerical Score */}
+            <div className="lg:col-span-5 bg-white/5 border border-white/10 rounded-2xl p-5 flex flex-col sm:flex-row items-center sm:items-start gap-4">
+              <div className="text-center sm:text-left">
+                <div className="flex items-baseline justify-center sm:justify-start gap-2">
+                  <span className="text-4xl sm:text-5xl font-black text-amber-400 tracking-tight">
+                    {Number(weeklyRating.stars || 0).toFixed(1)}
+                  </span>
+                  <span className="text-indigo-300 font-bold text-sm">/ 5.0</span>
+                </div>
+
+                {/* 5-Star Visual Display */}
+                <div className="flex items-center gap-1 my-2 justify-center sm:justify-start">
+                  {[1, 2, 3, 4, 5].map((starNum) => {
+                    const isFull = weeklyRating.stars >= starNum;
+                    const isHalf = !isFull && weeklyRating.stars >= starNum - 0.5;
+                    return (
+                      <span
+                        key={starNum}
+                        className={`text-2xl transition-transform hover:scale-110 ${
+                          isFull
+                            ? 'text-amber-400 drop-shadow-[0_0_8px_rgba(251,191,36,0.5)]'
+                            : isHalf
+                            ? 'text-amber-300'
+                            : 'text-slate-600'
+                        }`}
+                      >
+                        ★
+                      </span>
+                    );
+                  })}
+                </div>
+
+                <div className="text-[11px] text-indigo-200 font-medium">
+                  Comprehensive Weekly Evaluation Score
+                </div>
+              </div>
+            </div>
+
+            {/* Right: Weekly Feedback / Tip Callout */}
+            <div className="lg:col-span-7 bg-amber-500/10 border border-amber-400/30 rounded-2xl p-4 sm:p-5 flex items-start gap-3">
+              <span className="text-2xl flex-shrink-0">💡</span>
+              <div className="space-y-1">
+                <h4 className="text-xs font-black text-amber-300 uppercase tracking-wider">
+                  Weekly Performance Guidance
+                </h4>
+                <p className="text-xs text-indigo-100 leading-relaxed font-medium">
+                  {weeklyRating.feedback || 'Maintain your strong attendance and syllabus pace this week to stay on track for placement readiness.'}
+                </p>
+                <div className="text-[10px] text-indigo-300 pt-1">
+                  Evaluated via {weeklyRating.evaluatedBy || 'Automated Weekly Audit'} · Updates weekly
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* The 4 Core Evaluation Pillars */}
+          <div>
+            <div className="text-xs font-bold text-indigo-200 mb-3 flex items-center justify-between">
+              <span className="uppercase tracking-wider text-[10px] font-black text-indigo-300">
+                4 Core Evaluation Pillars (Equal 25% Weightage)
+              </span>
+              <span className="text-[10px] text-indigo-300">Target: ≥ 4.0★ per pillar</span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+              {/* PILLAR 1: ATTENDANCE */}
+              <div className="bg-white/5 border border-white/10 rounded-2xl p-4 flex flex-col justify-between hover:bg-white/10 transition-colors">
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                      <span>📋</span> Attendance
+                    </span>
+                    <span className="text-xs font-black text-amber-400 flex items-center gap-0.5">
+                      {Number(weeklyRating.attendanceScore || 0).toFixed(1)} <span className="text-[10px] text-amber-300">★</span>
+                    </span>
+                  </div>
+
+                  <div className="w-full bg-slate-700/60 rounded-full h-1.5 overflow-hidden my-2">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-teal-400"
+                      style={{ width: `${Math.min(100, Math.max(10, ((weeklyRating.attendanceScore || 0) / 5) * 100))}%` }}
+                    />
+                  </div>
+
+                  <p className="text-[11px] text-indigo-200 line-clamp-2 mt-1">
+                    {weeklyRating.attendanceDetail || 'Weekly class attendance'}
+                  </p>
+                </div>
+                <div className="text-[10px] text-indigo-400 pt-2 border-t border-white/5 mt-3 flex justify-between font-mono">
+                  <span>Target: 75%+</span>
+                  <span>25% Weight</span>
+                </div>
+              </div>
+
+              {/* PILLAR 2: ASSESSMENT PERFORMANCE */}
+              <div className="bg-white/5 border border-white/10 rounded-2xl p-4 flex flex-col justify-between hover:bg-white/10 transition-colors">
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                      <span>📝</span> Assessments
+                    </span>
+                    <span className="text-xs font-black text-amber-400 flex items-center gap-0.5">
+                      {Number(weeklyRating.assessmentScore || 0).toFixed(1)} <span className="text-[10px] text-amber-300">★</span>
+                    </span>
+                  </div>
+
+                  <div className="w-full bg-slate-700/60 rounded-full h-1.5 overflow-hidden my-2">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-amber-400 to-orange-400"
+                      style={{ width: `${Math.min(100, Math.max(10, ((weeklyRating.assessmentScore || 0) / 5) * 100))}%` }}
+                    />
+                  </div>
+
+                  <p className="text-[11px] text-indigo-200 line-clamp-2 mt-1">
+                    {weeklyRating.assessmentDetail || 'Evaluated tests and scores'}
+                  </p>
+                </div>
+                <div className="text-[10px] text-indigo-400 pt-2 border-t border-white/5 mt-3 flex justify-between font-mono">
+                  <span>Target: 70%+</span>
+                  <span>25% Weight</span>
+                </div>
+              </div>
+
+              {/* PILLAR 3: SYLLABUS PROGRESS */}
+              <div className="bg-white/5 border border-white/10 rounded-2xl p-4 flex flex-col justify-between hover:bg-white/10 transition-colors">
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                      <span>🧭</span> Syllabus Pace
+                    </span>
+                    <span className="text-xs font-black text-amber-400 flex items-center gap-0.5">
+                      {Number(weeklyRating.syllabusScore || 0).toFixed(1)} <span className="text-[10px] text-amber-300">★</span>
+                    </span>
+                  </div>
+
+                  <div className="w-full bg-slate-700/60 rounded-full h-1.5 overflow-hidden my-2">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-indigo-400 to-cyan-400"
+                      style={{ width: `${Math.min(100, Math.max(10, ((weeklyRating.syllabusScore || 0) / 5) * 100))}%` }}
+                    />
+                  </div>
+
+                  <p className="text-[11px] text-indigo-200 line-clamp-2 mt-1">
+                    {weeklyRating.syllabusDetail || 'Module progression speed'}
+                  </p>
+                </div>
+                <div className="text-[10px] text-indigo-400 pt-2 border-t border-white/5 mt-3 flex justify-between font-mono">
+                  <span>On-track pacing</span>
+                  <span>25% Weight</span>
+                </div>
+              </div>
+
+              {/* PILLAR 4: PARTICIPATION */}
+              <div className="bg-white/5 border border-white/10 rounded-2xl p-4 flex flex-col justify-between hover:bg-white/10 transition-colors">
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                      <span>💬</span> Participation
+                    </span>
+                    <span className="text-xs font-black text-amber-400 flex items-center gap-0.5">
+                      {Number(weeklyRating.participationScore || 0).toFixed(1)} <span className="text-[10px] text-amber-300">★</span>
+                    </span>
+                  </div>
+
+                  <div className="w-full bg-slate-700/60 rounded-full h-1.5 overflow-hidden my-2">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-purple-400 to-pink-400"
+                      style={{ width: `${Math.min(100, Math.max(10, ((weeklyRating.participationScore || 0) / 5) * 100))}%` }}
+                    />
+                  </div>
+
+                  <p className="text-[11px] text-indigo-200 line-clamp-2 mt-1">
+                    {weeklyRating.participationDetail || 'Doubts & assignments'}
+                  </p>
+                </div>
+                <div className="text-[10px] text-indigo-400 pt-2 border-t border-white/5 mt-3 flex justify-between font-mono">
+                  <span>Interactive</span>
+                  <span>25% Weight</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* ======================================================== */}
+        {/* 03. STUDENT DASHBOARD - DAILY UPDATES                     */}
+        {/* Priority fields: Student Attendance & Syllabus Completion */}
+        {/* ======================================================== */}
+        <div className="bg-white border-2 border-indigo-100/90 rounded-3xl p-5 sm:p-7 shadow-[0_4px_24px_rgba(72,62,199,0.06)] space-y-5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-indigo-50 border border-indigo-200/80 flex items-center justify-center text-xl shadow-xs">
+                📅
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-base sm:text-lg font-black text-slate-900 tracking-tight">
+                    Daily Updates
+                  </h3>
+                  <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                    Updated Today
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500 font-medium mt-0.5">
+                  Priority fields: Student Attendance &amp; Syllabus Completion Status
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 text-xs font-semibold text-slate-600 bg-slate-50 px-3.5 py-1.5 rounded-xl border border-slate-200 self-start sm:self-auto">
+              <Calendar className="w-3.5 h-3.5 text-indigo-600" />
+              <span>{fmtDate(new Date())}</span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            {/* PRIORITY FIELD 1: STUDENT ATTENDANCE */}
+            <div className="bg-gradient-to-br from-emerald-50/50 to-teal-50/30 border border-emerald-200/80 rounded-2xl p-5 flex flex-col justify-between space-y-4">
+              <div>
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <span className="text-[11px] font-extrabold uppercase tracking-wider text-emerald-800 font-mono flex items-center gap-1.5">
+                    <span>📋</span> Priority 1: Student Attendance
+                  </span>
+                  <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full border ${
+                    (d.attendancePct ?? 0) >= ATTENDANCE_TARGET
+                      ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                      : 'bg-amber-100 text-amber-800 border-amber-300'
+                  }`}>
+                    {(d.attendancePct ?? 0) >= ATTENDANCE_TARGET ? '✓ Target Met (75%+)' : '⚠ Below 75% Target'}
+                  </span>
+                </div>
+
+                <div className="flex items-baseline gap-3 my-2">
+                  <div className="text-3xl sm:text-4xl font-black text-emerald-950">
+                    {pct(d.attendancePct)}
+                  </div>
+                  <div className="text-xs text-slate-500 font-semibold">
+                    Overall Attendance Rate
+                  </div>
+                </div>
+
+                {/* Today's Attendance Status */}
+                <div className="p-3 bg-white/95 rounded-xl border border-emerald-200/70 text-xs space-y-1.5 shadow-2xs">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500 font-medium">Today's Class Status:</span>
+                    {d.todayAttendance ? (
+                      <span className={`font-bold px-2 py-0.5 rounded-md text-[11px] border ${
+                        d.todayAttendance.status === 'Present'
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                          : d.todayAttendance.status === 'Late'
+                          ? 'bg-amber-50 text-amber-700 border-amber-200'
+                          : 'bg-rose-50 text-rose-700 border-rose-200'
+                      }`}>
+                        {d.todayAttendance.status === 'Present' ? '✓ Present' : d.todayAttendance.status === 'Late' ? '⏱ Late' : '✕ Absent'}
+                      </span>
+                    ) : live ? (
+                      <span className="font-bold px-2 py-0.5 rounded-md text-[11px] bg-emerald-50 text-emerald-700 border border-emerald-200 animate-pulse">
+                        ● Class Live Now — Join to log
+                      </span>
+                    ) : (
+                      <span className="font-semibold text-slate-500 text-[11px]">
+                        Scheduled / Awaiting Today's Session
+                      </span>
+                    )}
+                  </div>
+                  {d.todayAttendance?.topic && (
+                    <div className="text-[11px] text-slate-600">
+                      Today's Topic: <strong className="text-slate-800">{d.todayAttendance.topic}</strong>
+                    </div>
+                  )}
+                  {d.latestAttendance && !d.todayAttendance && (
+                    <div className="text-[10.5px] text-slate-500">
+                      Last logged session: <strong>{fmtDate(d.latestAttendance.date)}</strong> · {d.latestAttendance.status}
+                    </div>
+                  )}
+                </div>
+
+                {/* Attendance Metric Breakdown */}
+                <div className="grid grid-cols-3 gap-2 text-center mt-3 text-xs">
+                  <div className="bg-white/80 p-2 rounded-xl border border-emerald-100">
+                    <div className="font-black text-emerald-700 text-sm">{d.attended}</div>
+                    <div className="text-[10px] text-slate-400 font-medium">Present</div>
+                  </div>
+                  <div className="bg-white/80 p-2 rounded-xl border border-emerald-100">
+                    <div className="font-black text-amber-700 text-sm">{d.late}</div>
+                    <div className="text-[10px] text-slate-400 font-medium">Late</div>
+                  </div>
+                  <div className="bg-white/80 p-2 rounded-xl border border-emerald-100">
+                    <div className="font-black text-rose-700 text-sm">{d.absent}</div>
+                    <div className="text-[10px] text-slate-400 font-medium">Absent</div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-2 border-t border-emerald-100 flex items-center justify-between text-xs">
+                <span className="text-[11px] text-slate-500">
+                  Total classes held: <strong>{attendance.length}</strong>
+                </span>
+                <button
+                  onClick={() => setActiveNav('progress')}
+                  className="text-emerald-700 font-bold hover:underline flex items-center gap-1 cursor-pointer"
+                >
+                  View Attendance Log <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+
+            {/* PRIORITY FIELD 2: SYLLABUS COMPLETION STATUS */}
+            <div className="bg-gradient-to-br from-indigo-50/50 to-blue-50/30 border border-indigo-200/80 rounded-2xl p-5 flex flex-col justify-between space-y-4">
+              <div>
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <span className="text-[11px] font-extrabold uppercase tracking-wider text-[#483ec7] font-mono flex items-center gap-1.5">
+                    <span>🧭</span> Priority 2: Syllabus Completion
+                  </span>
+                  <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full border ${
+                    d.isSyllabusDone
+                      ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                      : 'bg-indigo-100 text-indigo-800 border-indigo-300'
+                  }`}>
+                    {d.isSyllabusDone ? '✓ 100% Completed' : 'In Progress'}
+                  </span>
+                </div>
+
+                <div className="flex items-baseline gap-3 my-2">
+                  <div className="text-3xl sm:text-4xl font-black text-[#1e1b4b]">
+                    {d.effectiveSylPct}%
+                  </div>
+                  <div className="text-xs text-slate-500 font-semibold">
+                    {d.isSyllabusDone ? 'Full Syllabus Cleared' : `${d.effectiveSylDone} of ${displaySylModules.length} Modules Covered`}
+                  </div>
+                </div>
+
+                {/* Progress bar */}
+                <div className="w-full bg-slate-200/70 rounded-full h-2.5 overflow-hidden my-2">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-[#483ec7] to-teal-500 transition-all duration-500"
+                    style={{ width: `${Math.min(100, Math.max(d.effectiveSylPct, 5))}%` }}
+                  />
+                </div>
+
+                {/* Current module & topics details */}
+                <div className="p-3 bg-white/95 rounded-xl border border-indigo-200/70 text-xs space-y-1.5 shadow-2xs">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500 font-medium">Current Module:</span>
+                    <strong className="text-slate-900 font-bold">{st.syllabusModule || 'Module 1'}</strong>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500 font-medium">Placement Eligibility:</span>
+                    <span className={`font-semibold text-[11px] ${d.isSyllabusDone ? 'text-emerald-700 font-bold' : 'text-slate-600'}`}>
+                      {d.isSyllabusDone ? '✓ Eligible (Sent to CCCP)' : 'Requires Syllabus Completion'}
+                    </span>
+                  </div>
+                  {d.topics.length > 0 && (
+                    <div className="text-[11px] text-slate-600 truncate">
+                      Latest Topic Covered: <strong className="text-slate-800">{d.topics[d.topics.length - 1]}</strong>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="pt-2 border-t border-indigo-100 flex items-center justify-between text-xs">
+                <span className="text-[11px] text-slate-500">
+                  Batch: <strong>{st.batchName || 'Allocated Batch'}</strong>
+                </span>
+                <button
+                  onClick={() => setActiveNav('classes')}
+                  className="text-[#483ec7] font-bold hover:underline flex items-center gap-1 cursor-pointer"
+                >
+                  View Module Tracker <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
         {/* Stats */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-6">
           {[
@@ -556,23 +1163,44 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                 <Row label="Current module" value={st.syllabusModule} />
               </div>
             </Card>
-            {sylModules.length > 0 && (
-              <Card>
-                <CardTitle icon="🧭" title="Syllabus Progress" sub={`${sylDone} of ${sylModules.length} modules covered by your trainer`} right={<Pill tone={sylPct === 100 ? 'green' : 'indigo'}>{sylPct}%</Pill>} />
-                <div className="w-full bg-slate-100 rounded-full h-2.5 overflow-hidden mb-4"><div className="h-full rounded-full bg-gradient-to-r from-[#483ec7] to-[#0d9488]" style={{ width: bar(sylPct) }} /></div>
-                <div className="space-y-1.5">
-                  {sylModules.map((m, i) => {
-                    const isNext = !m.done && sylModules.findIndex((x) => !x.done) === i;
-                    return (
-                      <div key={`${m.name}-${i}`} className={`flex items-center justify-between gap-3 text-xs px-3 py-2 rounded-xl border ${m.done ? 'bg-emerald-50/60 border-emerald-100' : isNext ? 'bg-indigo-50 border-indigo-200' : 'bg-white border-slate-100'}`}>
-                        <span className={`font-semibold ${m.done ? 'text-emerald-800' : isNext ? 'text-[#483ec7]' : 'text-slate-500'}`}>{m.done ? '✓' : isNext ? '●' : '○'} {m.name}</span>
-                        <span className="text-[10px] text-slate-400 shrink-0">{m.done ? fmtDate(m.doneAt) : isNext ? 'Up next' : ''}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </Card>
-            )}
+            <Card>
+              <CardTitle
+                icon="🧭"
+                title="Syllabus Progress"
+                sub={`${d.effectiveSylDone} of ${displaySylModules.length} modules covered by your trainer`}
+                right={<Pill tone={d.effectiveSylPct === 100 ? 'green' : 'indigo'}>{d.effectiveSylPct}%</Pill>}
+              />
+              <div className="w-full bg-slate-100 rounded-full h-2.5 overflow-hidden mb-4">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-[#483ec7] to-[#0d9488]"
+                  style={{ width: bar(d.effectiveSylPct) }}
+                />
+              </div>
+              <div className="space-y-1.5">
+                {displaySylModules.map((m, i) => {
+                  const isNext = !m.done && displaySylModules.findIndex((x) => !x.done) === i;
+                  return (
+                    <div
+                      key={`${m.name}-${i}`}
+                      className={`flex items-center justify-between gap-3 text-xs px-3 py-2 rounded-xl border ${
+                        m.done
+                          ? 'bg-emerald-50/60 border-emerald-100'
+                          : isNext
+                          ? 'bg-indigo-50 border-indigo-200'
+                          : 'bg-white border-slate-100'
+                      }`}
+                    >
+                      <span className={`font-semibold ${m.done ? 'text-emerald-800' : isNext ? 'text-[#483ec7]' : 'text-slate-500'}`}>
+                        {m.done ? '✓' : isNext ? '●' : '○'} {m.name}
+                      </span>
+                      <span className="text-[10px] text-slate-400 shrink-0">
+                        {m.done ? fmtDate(m.doneAt) : isNext ? 'Up next' : ''}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
             <Card>
               <CardTitle icon="📍" title="Topics Covered in Class" sub="Logged by your trainer with each attendance" right={<button onClick={() => setActiveNav('progress')} className="text-xs font-bold text-[#483ec7] hover:underline cursor-pointer">Progress ›</button>} />
               {d.topics.length === 0 ? <Empty icon="🗂" title="No classes logged yet" text="Topics appear here as your trainer records each class." /> : (
@@ -1068,19 +1696,62 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
     );
   };
 
-  const RequestRow = ({ r }) => (
-    <div className="border border-slate-200 rounded-xl p-3 text-xs">
-      <div className="flex items-center justify-between gap-2"><span className="font-bold text-slate-900 truncate">{r.subject || r.type.replace(/_/g, ' ')}</span><Pill tone={statusTone(r.status)}>{r.status}</Pill></div>
-      <div className="text-[10px] text-slate-400 mt-0.5">Raised {fmtDate(r.createdAt)}{r.preferredDate ? ` · preferred ${r.preferredDate}` : ''}{r.scheduledFor ? ` · scheduled ${r.scheduledFor}` : ''}</div>
-      {r.response && <div className="mt-2 bg-slate-50 rounded-lg px-2 py-1.5 text-slate-700">💬 {r.respondedBy ? `${r.respondedBy}: ` : ''}{r.response}</div>}
-    </div>
-  );
+  const RequestRow = ({ r }) => {
+    const isMock = r.type === 'mock_interview';
+    const attemptNum = r.attemptNumber || r.details?.attemptNumber || 1;
+    const score = r.details?.mockScore ?? (isMock && r.status === 'Resolved' && st.mockScore != null ? st.mockScore : null);
+    return (
+      <div className="border border-slate-200 rounded-xl p-3 text-xs">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 truncate">
+            {isMock && (
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-100 text-indigo-800 shrink-0">
+                Attempt {attemptNum}/2
+              </span>
+            )}
+            <span className="font-bold text-slate-900 truncate">{r.subject || r.type.replace(/_/g, ' ')}</span>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {score != null && (
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">
+                Score: {score}%
+              </span>
+            )}
+            <Pill tone={statusTone(r.status)}>{r.status}</Pill>
+          </div>
+        </div>
+        <div className="text-[10px] text-slate-400 mt-0.5">Raised {fmtDate(r.createdAt)}{r.preferredDate ? ` · preferred ${r.preferredDate}` : ''}{r.scheduledFor ? ` · scheduled ${r.scheduledFor}` : ''}</div>
+        {r.details?.improvements && <div className="mt-1 text-[11px] text-slate-600 italic">Target improvements: “{r.details.improvements}”</div>}
+        {r.response && <div className="mt-2 bg-slate-50 rounded-lg px-2 py-1.5 text-slate-700">💬 {r.respondedBy ? `${r.respondedBy}: ` : ''}{r.response}</div>}
+      </div>
+    );
+  };
 
   // ==========================================================================
   // PLACEMENT PREP
   // ==========================================================================
   const renderPlacementPrep = () => {
     const mocks = requests.filter((r) => r.type === 'mock_interview');
+    const validMocks = mocks.filter((r) => ['Open', 'Scheduled', 'Resolved'].includes(r.status));
+    const completedMocks = mocks.filter((r) => r.status === 'Resolved');
+    const openMock = mocks.find((r) => ['Open', 'Scheduled'].includes(r.status));
+    const attemptsUsed = validMocks.length;
+    const nextAttempt = Math.min(2, completedMocks.length + 1);
+
+    // Attempt 1 details
+    const att1 = (st.mockInterviewAttempts || []).find((a) => a.attemptNumber === 1) || completedMocks.find((m) => (m.attemptNumber || m.details?.attemptNumber) === 1);
+    const att1Score = att1?.score ?? att1?.details?.mockScore;
+    const att1Req = mocks.find((m) => (m.attemptNumber || m.details?.attemptNumber || 1) === 1);
+    const att1Status = att1 ? 'Completed' : (att1Req?.status || 'Not Booked');
+
+    // Attempt 2 details
+    const att2 = (st.mockInterviewAttempts || []).find((a) => a.attemptNumber === 2) || completedMocks.find((m) => (m.attemptNumber || m.details?.attemptNumber) === 2);
+    const att2Score = att2?.score ?? att2?.details?.mockScore;
+    const att2Req = mocks.find((m) => (m.attemptNumber || m.details?.attemptNumber) === 2);
+    const att2Status = att2 ? 'Completed' : (att2Req?.status || (att1Status === 'Completed' ? 'Available' : 'Locked'));
+
+    const canBook = !openMock && attemptsUsed < 2 && Boolean(trainer);
+
     const SubStatus = ({ label, sub, type }) => (
       <div className="border border-slate-200 rounded-2xl p-4">
         <div className="flex items-center justify-between gap-2"><span className="text-sm font-bold text-slate-900">{label}</span>{sub ? <Pill tone={statusTone(sub.status)}>{sub.status}</Pill> : <Pill tone="slate">Not submitted</Pill>}</div>
@@ -1098,8 +1769,126 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
           <div className="lg:col-span-7 space-y-6">
             <Card>
-              <CardTitle icon="🎤" title="Mock Interviews" right={<Btn onClick={() => openModal('request', { reqType: 'mock_interview', title: 'Book a mock interview' })} disabled={!trainer || Boolean(d.openMock)}>{d.openMock ? 'Request open' : 'Book mock'}</Btn>} />
-              {mocks.length === 0 ? <Empty icon="🎤" title="No mock interview booked" text={trainer ? 'Request one — your trainer schedules it and enters your mock score.' : 'Available once a trainer is allocated.'} /> : <div className="space-y-2">{mocks.map((r) => <RequestRow key={r._id} r={r} />)}</div>}
+              <div className="flex items-center justify-between gap-2 mb-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-xl">🎤</span>
+                  <div>
+                    <h3 className="text-base font-bold text-slate-900">Mock Interviews</h3>
+                    <div className="text-[11px] text-slate-500 font-medium">Two-Attempt Readiness Assessment & Improvement Plan</div>
+                  </div>
+                </div>
+                <div>
+                  {attemptsUsed >= 2 ? (
+                    <span className="px-3 py-1.5 rounded-full text-xs font-bold bg-slate-100 text-slate-600 border border-slate-200">
+                      2 / 2 Attempts Used
+                    </span>
+                  ) : openMock ? (
+                    <span className="px-3 py-1.5 rounded-full text-xs font-bold bg-amber-100 text-amber-800 border border-amber-300">
+                      Attempt {openMock.attemptNumber || openMock.details?.attemptNumber || 1} in Progress
+                    </span>
+                  ) : (
+                    <Btn
+                      onClick={() => openModal('request', {
+                        reqType: 'mock_interview',
+                        title: `Book Mock Interview — Attempt ${nextAttempt} of 2`,
+                        attemptNumber: nextAttempt
+                      })}
+                      disabled={!canBook}
+                    >
+                      Book Attempt {nextAttempt} of 2
+                    </Btn>
+                  )}
+                </div>
+              </div>
+
+              {/* Policy Banner */}
+              <div className="bg-indigo-50/70 border border-indigo-100 rounded-2xl p-3 mb-4 text-xs text-indigo-900 flex items-start gap-2.5">
+                <span className="text-base leading-none">🎯</span>
+                <div className="leading-relaxed">
+                  <strong className="font-bold">Two-Attempt Policy:</strong> Students receive up to two mock interview attempts to assess and improve interview readiness. <strong>Attempt 1</strong> benchmarks initial performance; <strong>Attempt 2</strong> evaluates improvements made from your trainer's feedback.
+                </div>
+              </div>
+
+              {/* Two Attempts Overview Grid */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+                {/* Attempt 1 Card */}
+                <div className={`p-3.5 rounded-2xl border transition-all ${
+                  att1Status === 'Completed'
+                    ? 'bg-emerald-50/40 border-emerald-200'
+                    : att1Status === 'Scheduled' || att1Status === 'Open'
+                    ? 'bg-amber-50/40 border-amber-200'
+                    : 'bg-slate-50/60 border-slate-200'
+                }`}>
+                  <div className="flex items-center justify-between gap-1 mb-1">
+                    <span className="text-[11px] font-bold text-slate-800 uppercase tracking-wider">
+                      Attempt 1: Initial Assessment
+                    </span>
+                    <Pill tone={statusTone(att1Status)}>{att1Status}</Pill>
+                  </div>
+                  <div className="mt-2 flex items-baseline gap-2">
+                    <span className="text-2xl font-black text-slate-900">
+                      {att1Score != null ? `${att1Score}%` : '—'}
+                    </span>
+                    <span className="text-[10px] text-slate-400 font-medium">Readiness Score</span>
+                  </div>
+                  {att1?.feedback && (
+                    <div className="mt-2 text-[11px] text-slate-600 bg-white/80 p-2 rounded-xl border border-slate-100 line-clamp-2">
+                      💬 {att1.feedback}
+                    </div>
+                  )}
+                </div>
+
+                {/* Attempt 2 Card */}
+                <div className={`p-3.5 rounded-2xl border transition-all ${
+                  att2Status === 'Completed'
+                    ? 'bg-emerald-50/40 border-emerald-200'
+                    : att2Status === 'Scheduled' || att2Status === 'Open'
+                    ? 'bg-amber-50/40 border-amber-200'
+                    : att2Status === 'Available'
+                    ? 'bg-indigo-50/40 border-indigo-200'
+                    : 'bg-slate-50/60 border-slate-200 opacity-70'
+                }`}>
+                  <div className="flex items-center justify-between gap-1 mb-1">
+                    <span className="text-[11px] font-bold text-slate-800 uppercase tracking-wider">
+                      Attempt 2: Improvement
+                    </span>
+                    <Pill tone={statusTone(att2Status)}>{att2Status}</Pill>
+                  </div>
+                  <div className="mt-2 flex items-baseline gap-2">
+                    <span className="text-2xl font-black text-slate-900">
+                      {att2Score != null ? `${att2Score}%` : '—'}
+                    </span>
+                    <span className="text-[10px] text-slate-400 font-medium">Readiness Score</span>
+                    {att1Score != null && att2Score != null && (
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                        att2Score >= att1Score ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                      }`}>
+                        {att2Score >= att1Score ? `+${att2Score - att1Score}%` : `${att2Score - att1Score}%`}
+                      </span>
+                    )}
+                  </div>
+                  {att2?.feedback ? (
+                    <div className="mt-2 text-[11px] text-slate-600 bg-white/80 p-2 rounded-xl border border-slate-100 line-clamp-2">
+                      💬 {att2.feedback}
+                    </div>
+                  ) : att2Status === 'Available' ? (
+                    <div className="mt-2 text-[11px] text-indigo-700 bg-white/80 p-2 rounded-xl border border-indigo-100">
+                      ✨ Ready to re-assess after practicing feedback
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+
+              {/* Request rows */}
+              {mocks.length === 0 ? (
+                <Empty
+                  icon="🎤"
+                  title="No mock interview booked"
+                  text={trainer ? 'Request Attempt 1 — your trainer schedules it and enters your readiness assessment.' : 'Available once a trainer is allocated.'}
+                />
+              ) : (
+                <div className="space-y-2">{mocks.map((r) => <RequestRow key={r._id} r={r} />)}</div>
+              )}
               <div className="grid grid-cols-2 gap-3 mt-4 text-xs">
                 <div className="bg-slate-50 border border-slate-200 rounded-xl p-3"><div className="text-[10px] font-bold text-slate-500 uppercase">Mock score</div><div className="text-lg font-black">{typeof st.mockScore === 'number' ? st.mockScore : '—'}</div></div>
                 <div className="bg-slate-50 border border-slate-200 rounded-xl p-3"><div className="text-[10px] font-bold text-slate-500 uppercase">Technical score</div><div className="text-lg font-black">{typeof st.technicalScore === 'number' ? st.technicalScore : '—'}</div></div>
@@ -1146,7 +1935,10 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
   const renderCertification = () => {
     const interviews = st.interviews || [];
     const examReqs = requests.filter((r) => r.type === 'exam_booking');
-    const certReady = st.syllabusCompleted && d.balance === 0;
+    const isCertApproved = Boolean(st.courseCompletionApproved);
+    const isExamApproved = Boolean(st.examApprovedByTrainer);
+    const certReady = isCertApproved && st.syllabusCompleted && d.balance === 0;
+
     return (
       <div className="space-y-6 pb-12">
         <PageHeader title="Certificate & Placement" sub="Updated by HR and the placement cell (CCCP)" right={<HeaderStat label="Current phase" value={d.placementStage ? `${d.placementStage}. ${PLACEMENT_STAGES[d.placementStage - 1].label}` : 'In training'} />} />
@@ -1189,22 +1981,117 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
           </div>
           <div className="lg:col-span-5 space-y-6">
             <Card>
-              <CardTitle icon="📜" title="Certification" />
+              <CardTitle
+                icon="📜"
+                title="Course Completion Certificate"
+                right={
+                  isCertApproved ? (
+                    <Pill tone="green">Trainer Approved ✓</Pill>
+                  ) : st.courseCompletionStatus === 'Declined' ? (
+                    <Pill tone="red">Declined by Trainer</Pill>
+                  ) : (
+                    <Pill tone="amber">Awaiting Trainer Approval</Pill>
+                  )
+                }
+              />
               <div className="divide-y divide-slate-100">
                 <Row label="Syllabus" value={st.syllabusCompleted ? `Completed ${fmtDate(st.syllabusCompletedAt)}` : 'In progress'} />
+                <Row
+                  label="Trainer Approval"
+                  value={
+                    isCertApproved
+                      ? `✓ Approved by ${st.courseCompletionApprovedBy || 'Trainer'} (${fmtDate(st.courseCompletionApprovedAt)})`
+                      : st.courseCompletionStatus === 'Declined'
+                      ? `Declined · ${st.courseCompletionTrainerNotes || 'Needs revision'}`
+                      : 'Pending trainer verification (Syllabus, Tests, Readiness)'
+                  }
+                />
                 <Row label="Exam status" value={st.examStatus} />
                 <Row label="Certification" value={st.certified} />
                 <Row label="Fee clearance" value={d.balance === 0 ? 'Cleared' : `${inr(d.balance)} pending`} />
               </div>
-              <p className={`text-[11px] mt-3 rounded-xl px-3 py-2 border ${certReady ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-slate-50 border-slate-200 text-slate-600'}`}>{certReady ? 'Eligible for course certificate — contact your branch for release.' : 'Course certificate is released after syllabus completion and zero fee dues.'}</p>
+
+              {st.courseCompletionTrainerNotes && (
+                <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-[11px] text-slate-700 mt-3">
+                  <strong>Trainer Note:</strong> {st.courseCompletionTrainerNotes}
+                </div>
+              )}
+
+              <p className={`text-[11px] mt-3 rounded-xl px-3 py-2 border ${
+                certReady
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                  : !isCertApproved
+                  ? 'bg-amber-50 border-amber-200 text-amber-900'
+                  : 'bg-slate-50 border-slate-200 text-slate-600'
+              }`}>
+                {certReady
+                  ? '✓ All criteria met: Trainer approved course completion certificate and zero fee balance. Contact branch office for certificate release.'
+                  : !isCertApproved
+                  ? '⚠️ Policy Requirement: Your respective trainer must verify syllabus completion, assessments, and overall readiness before the course completion certificate can be approved and released.'
+                  : 'Course completion certificate approved by trainer. Zero fee balance required for final certificate release.'}
+              </p>
             </Card>
+
             <Card>
-              <CardTitle icon="🗓" title="AAPC Exam Slot" sub="Booked by your HR counsellor with the exam cell" right={<Btn tone="light" disabled={examReqs.some((r) => ['Open', 'Scheduled'].includes(r.status))} onClick={() => openModal('request', { reqType: 'exam_booking', title: 'Request an AAPC exam slot', subjects: EXAM_OPTIONS.map((x) => `${x} exam`) }, { subject: `${EXAM_OPTIONS.includes(shortCourse(st.course)) ? shortCourse(st.course) : 'Other'} exam` })}>{examReqs.some((r) => ['Open', 'Scheduled'].includes(r.status)) ? 'Requested' : 'Request slot'}</Btn>} />
+              <CardTitle
+                icon="🗓"
+                title="AAPC Exam Slot"
+                sub="Booked by your HR counsellor with the exam cell"
+                right={
+                  <Btn
+                    tone={isExamApproved ? 'light' : 'slate'}
+                    disabled={!isExamApproved || examReqs.some((r) => ['Open', 'Scheduled'].includes(r.status))}
+                    onClick={() => {
+                      if (!isExamApproved) {
+                        showToast('⚠ Trainer approval required before requesting an exam slot');
+                        return;
+                      }
+                      openModal(
+                        'request',
+                        { reqType: 'exam_booking', title: 'Request an AAPC exam slot', subjects: EXAM_OPTIONS.map((x) => `${x} exam`) },
+                        { subject: `${EXAM_OPTIONS.includes(shortCourse(st.course)) ? shortCourse(st.course) : 'Other'} exam` }
+                      );
+                    }}
+                  >
+                    {!isExamApproved
+                      ? 'Trainer Approval Required'
+                      : examReqs.some((r) => ['Open', 'Scheduled'].includes(r.status))
+                      ? 'Slot Requested'
+                      : 'Request slot'}
+                  </Btn>
+                }
+              />
               <div className="divide-y divide-slate-100">
+                <Row
+                  label="Trainer Exam Approval"
+                  value={
+                    isExamApproved
+                      ? `✓ Approved by ${st.examApprovedBy || 'Trainer'} (${fmtDate(st.examApprovedAt)})`
+                      : st.examApprovalStatus === 'Declined'
+                      ? `Declined · ${st.examTrainerNotes || 'Needs improvement'}`
+                      : 'Pending respective trainer verification'
+                  }
+                />
                 <Row label="Exam status" value={st.examStatus} />
                 {st.examDate && <Row label="Exam date" value={fmtDateTime(st.examDate)} />}
               </div>
-              {!st.syllabusCompleted && <p className="text-[11px] text-slate-500 mt-2">Tip: book once your syllabus is nearly complete and your test average is above the pass mark.</p>}
+
+              {!isExamApproved ? (
+                <div className="p-3 bg-amber-50/80 border border-amber-200 rounded-xl text-[11px] text-amber-900 mt-2.5 space-y-1">
+                  <div className="font-bold flex items-center gap-1.5">
+                    <span>⚠️</span> Trainer Verification Required
+                  </div>
+                  <p className="text-amber-800 leading-relaxed">
+                    Per academy rules, students cannot request an AAPC exam slot until their respective trainer has verified syllabus completion, passed assessments, and overall exam readiness.
+                  </p>
+                </div>
+              ) : (
+                <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-[11px] text-emerald-800 mt-2.5 flex items-center gap-2">
+                  <span className="font-bold text-sm">✓</span>
+                  <span>Trainer exam approval granted. You are eligible to schedule your AAPC / certification exam slot.</span>
+                </div>
+              )}
+
               {examReqs.length > 0 && <div className="mt-3 space-y-2">{examReqs.map((r) => <RequestRow key={r._id} r={r} />)}</div>}
             </Card>
             <Card>
@@ -1330,10 +2217,180 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
   // ==========================================================================
   // HELP
   // ==========================================================================
-  const renderHelp = () => (
-    <div className="space-y-6 pb-12">
-      <PageHeader title="Help & Support" sub="Academic doubts go to your trainer; everything else to the branch team" right={<HeaderStat label="Open tickets" value={tickets.filter((t) => !['resolved', 'closed'].includes(t.status)).length} />} />
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+  const renderHelp = () => {
+    const breakRequests = requests.filter((r) => r.type === 'break_request');
+
+    return (
+      <div className="space-y-6 pb-12">
+        <PageHeader title="Help & Support" sub="Academic doubts go to your trainer; official requests and operations to the branch team" right={<HeaderStat label="Open tickets" value={tickets.filter((t) => !['resolved', 'closed'].includes(t.status)).length} />} />
+
+        {/* ------------------------------------------------------------------ */}
+        {/* STUDENT BREAK REQUEST AND PRIOR APPROVAL                           */}
+        {/* Policy: Students planning a break must submit a request with a     */}
+        {/* valid reason & supporting documentation. Prior approval required.  */}
+        {/* ------------------------------------------------------------------ */}
+        <Card className="border-2 border-indigo-100/90 shadow-[0_4px_24px_rgba(72,62,199,0.06)]">
+          <CardTitle
+            icon="⏸️"
+            title="Student Break Request &amp; Approval"
+            sub="Academy Policy: Students planning a break must submit a request with a valid reason and supporting documentation. Prior approval is required."
+            right={
+              <Btn onClick={() => openModal('break_request', {}, { reasonCategory: BREAK_REASON_CATEGORIES[0] })}>
+                + Apply for Break
+              </Btn>
+            }
+          />
+
+          {/* Current Break Status Callout */}
+          <div className="mb-5">
+            {st.breakStatus === 'approved' ? (
+              <div className="p-4 bg-emerald-50/90 border border-emerald-300 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs shadow-2xs">
+                <div className="flex items-start gap-3">
+                  <span className="text-2xl flex-shrink-0">🌴</span>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-extrabold text-emerald-950 text-sm">Official Break Approved (Prior Approval Granted)</span>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-100 text-emerald-800 border border-emerald-300">
+                        Status: On Hold
+                      </span>
+                    </div>
+                    <p className="text-xs text-emerald-900 mt-1 font-medium">
+                      Duration: <strong>{fmtDate(st.breakStartDate)}</strong> to <strong>{fmtDate(st.breakEndDate)}</strong>
+                      {st.breakReason && <> · Reason: <em>{st.breakReason}</em></>}
+                      {st.breakApprovedBy && <> · Approved by: <strong>{st.breakApprovedBy}</strong></>}
+                    </p>
+                    <p className="text-[11px] text-emerald-700 mt-0.5">
+                      Your attendance and batch schedules are placed on official hold without negative penalties. Please contact your branch HR on your return date to resume classes.
+                    </p>
+                  </div>
+                </div>
+                <Pill tone="green">Approved</Pill>
+              </div>
+            ) : st.breakStatus === 'pending_approval' ? (
+              <div className="p-4 bg-amber-50/90 border border-amber-300 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs shadow-2xs">
+                <div className="flex items-start gap-3">
+                  <span className="text-2xl flex-shrink-0">⏳</span>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-extrabold text-amber-950 text-sm">Break Request Pending Prior Approval</span>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-100 text-amber-800 border border-amber-300">
+                        Under Review
+                      </span>
+                    </div>
+                    <p className="text-xs text-amber-900 mt-1 font-medium">
+                      Requested: <strong>{fmtDate(st.breakStartDate)}</strong> to <strong>{fmtDate(st.breakEndDate)}</strong>
+                      {st.breakReason && <> · Reason: <em>{st.breakReason}</em></>}
+                    </p>
+                    <p className="text-[11px] text-amber-700 mt-0.5">
+                      Your supporting documentation has been forwarded to the HR Counsellor / Operations authority for review. <strong>Please continue attending classes until prior approval is officially granted.</strong>
+                    </p>
+                  </div>
+                </div>
+                <Pill tone="amber">Pending Approval</Pill>
+              </div>
+            ) : (
+              <div className="p-3.5 bg-indigo-50/70 border border-indigo-100 rounded-2xl flex items-start gap-3 text-xs">
+                <Info className="w-5 h-5 text-[#483ec7] flex-shrink-0 mt-0.5" />
+                <div className="text-[11px] text-slate-600 leading-relaxed">
+                  <strong>Academy Break Policy:</strong> Students planning a break must submit a request with a valid reason and supporting documentation. <strong>Prior approval from the relevant authority is required</strong> before taking leave. Unapproved pauses disrupt syllabus progress and trigger absence alerts.
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* List of Submitted Break Requests */}
+          <div>
+            <div className="text-xs font-bold text-slate-700 mb-2.5 flex items-center justify-between">
+              <span>My Break Requests</span>
+              <span className="text-[11px] font-normal text-slate-400">{breakRequests.length} submitted</span>
+            </div>
+
+            {breakRequests.length === 0 ? (
+              <div className="py-6 text-center text-xs text-slate-400 border border-dashed border-slate-200 rounded-2xl">
+                No break requests submitted yet. Use "+ Apply for Break" if you need to schedule an official leave.
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                {breakRequests.map((r) => {
+                  const isApproved = r.status === 'Resolved';
+                  const isDeclined = r.status === 'Declined';
+                  return (
+                    <div key={r._id} className="border border-slate-200 rounded-2xl p-3.5 text-xs bg-white hover:border-indigo-200 transition-colors">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-100">
+                        <div className="flex items-center gap-2">
+                          <span className="text-base">{isApproved ? '🌴' : isDeclined ? '❌' : '⏳'}</span>
+                          <div>
+                            <span className="font-extrabold text-slate-900">
+                              {r.details?.reasonCategory || r.reasonCategory || r.subject || 'Student Break Request'}
+                            </span>
+                            <span className="text-[10px] text-slate-400 ml-2">
+                              #{String(r._id).slice(-6).toUpperCase()} · Submitted {fmtDate(r.createdAt)}
+                            </span>
+                          </div>
+                        </div>
+                        <Pill tone={isApproved ? 'green' : isDeclined ? 'red' : 'amber'}>
+                          {isApproved ? 'Prior Approval Granted' : isDeclined ? 'Declined' : 'Pending Prior Approval'}
+                        </Pill>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2.5 text-[11px]">
+                        <div>
+                          <span className="text-slate-400 font-medium">Leave Dates: </span>
+                          <span className="font-bold text-slate-800">
+                            {fmtDate(r.startDate || r.preferredDate || r.details?.startDate)} to {fmtDate(r.endDate || r.details?.endDate || r.details?.returnDate)}
+                          </span>
+                          {r.details?.durationDays ? (
+                            <span className="ml-1 text-indigo-600 font-semibold">({r.details.durationDays} days)</span>
+                          ) : null}
+                        </div>
+                        <div>
+                          <span className="text-slate-400 font-medium">Reviewing Authority: </span>
+                          <span className="font-semibold text-slate-700">{r.hrName ? `HR ${r.hrName}` : 'Branch HR / Operations'}</span>
+                        </div>
+                      </div>
+
+                      {r.message && (
+                        <p className="mt-2 text-[11px] text-slate-600 bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+                          <strong className="text-slate-700">Reason / Details: </strong>
+                          {r.message}
+                        </p>
+                      )}
+
+                      <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100 text-[11px]">
+                        {(r.documentUrl || r.documentName || r.details?.documentName) ? (
+                          <a
+                            href={studentRequestDocumentUrl(r._id)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1.5 font-bold text-[#483ec7] hover:underline bg-indigo-50/70 border border-indigo-100 px-2.5 py-1 rounded-lg"
+                          >
+                            <span>📎</span>
+                            <span>View Supporting Document</span>
+                            <span className="text-[10px] font-normal text-slate-500">
+                              ({r.documentName || r.details?.documentName || 'Document'})
+                            </span>
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        ) : (
+                          <span className="text-slate-400 italic">No document attached</span>
+                        )}
+
+                        {r.response && (
+                          <div className="text-[11px] text-slate-700 font-medium bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200">
+                            <strong>Decision Note:</strong> {r.response}
+                            {r.respondedBy && <span className="text-slate-400 text-[10px]"> — {r.respondedBy}</span>}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </Card>
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         <Card className="lg:col-span-6">
           <CardTitle icon="💭" title="Ask your trainer" sub={trainer ? `Goes to ${trainer.trainerName} · 24h SLA` : 'Routed once a trainer is allocated'} />
           <form onSubmit={(e) => { e.preventDefault(); if (quickDoubt.trim()) submitDoubt(quickDoubt.trim()).then((ok) => ok && setQuickDoubt('')); }} className="space-y-3">
@@ -1344,11 +2401,67 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
         </Card>
         <Card className="lg:col-span-6">
           <CardTitle icon="🏢" title="Branch support tickets" sub={[st.location, st.hrName && `HR: ${st.hrName}`].filter(Boolean).join(' · ')} right={<Btn onClick={() => openModal('ticket', {}, { category: TICKET_CATEGORIES[0] })}>+ Ticket</Btn>} />
+          
+          {/* One-time Batch Conversion Ticket Callout */}
+          <div className="mb-4">
+            {hasBatchConversionTicket ? (
+              <div className="p-3 bg-amber-50/80 border border-amber-200/90 rounded-2xl flex items-center justify-between gap-3 text-xs shadow-2xs">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <span className="text-base flex-shrink-0">🔄</span>
+                  <div className="min-w-0">
+                    <div className="font-bold text-amber-950 flex items-center gap-2 flex-wrap">
+                      <span>Batch Conversion Ticket</span>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-100 text-amber-800 border border-amber-300 whitespace-nowrap">
+                        1-Time Request Used
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-amber-800 mt-0.5 truncate">
+                      Repeat requests not permitted per policy{existingBatchConversionTicket ? ` · Status: ${existingBatchConversionTicket.status}` : ''}
+                    </p>
+                  </div>
+                </div>
+                {existingBatchConversionTicket && (
+                  <Pill tone={statusTone(existingBatchConversionTicket.status)}>{existingBatchConversionTicket.status}</Pill>
+                )}
+              </div>
+            ) : (
+              <div className="p-3 bg-indigo-50/70 border border-indigo-100 rounded-2xl flex items-center justify-between gap-3 text-xs shadow-2xs">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <span className="text-base flex-shrink-0">🔄</span>
+                  <div className="min-w-0">
+                    <div className="font-bold text-slate-900 flex items-center gap-2 flex-wrap">
+                      <span>Batch Conversion Ticket</span>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-100 text-[#483ec7] border border-indigo-200 whitespace-nowrap">
+                        1 Allowed
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 mt-0.5 truncate">
+                      Need to shift batch timing or schedule? Students may raise this once.
+                    </p>
+                  </div>
+                </div>
+                <Btn
+                  tone="light"
+                  onClick={() => openModal('ticket', {}, { category: 'Batch Conversion', subject: 'Request for Batch Conversion' })}
+                  className="whitespace-nowrap text-xs cursor-pointer flex-shrink-0"
+                >
+                  Convert Batch
+                </Btn>
+              </div>
+            )}
+          </div>
+
           {tickets.length === 0 ? <Empty icon="🎫" title="No tickets raised" /> : (
             <div className="space-y-2">
               {tickets.map((t) => (
                 <div key={t._id} className="border border-slate-200 rounded-xl p-3 text-xs">
-                  <div className="flex justify-between gap-2"><b className="truncate">{t.title}</b><Pill tone={statusTone(t.status === 'open' ? 'open' : t.status)}>{t.status}</Pill></div>
+                  <div className="flex justify-between gap-2">
+                    <b className="truncate flex items-center gap-1.5">
+                      {/batch\s*conversion/i.test(t.type || t.category || t.title || '') && <span title="Batch Conversion Ticket">🔄</span>}
+                      {t.title}
+                    </b>
+                    <Pill tone={statusTone(t.status === 'open' ? 'open' : t.status)}>{t.status}</Pill>
+                  </div>
                   <div className="text-[10px] text-slate-400 mt-0.5">#{String(t._id).slice(-6).toUpperCase()} · {t.type} · {fmtDate(t.createdAt)}</div>
                 </div>
               ))}
@@ -1358,6 +2471,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
       </div>
     </div>
   );
+};
 
   // ==========================================================================
   // PROFILE
@@ -1389,12 +2503,46 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
               {edits.length > 0 && <div className="mt-4 space-y-2">{edits.map((r) => <RequestRow key={r._id} r={r} />)}</div>}
             </Card>
             <Card>
-              <CardTitle title="Academic & batch" />
+              <CardTitle
+                title="Academic & batch"
+                right={
+                  hasBatchConversionTicket ? (
+                    <Pill tone="amber">Batch Conversion: 1x Used</Pill>
+                  ) : (
+                    <button
+                      onClick={() => openModal('ticket', {}, { category: 'Batch Conversion', subject: 'Request for Batch Conversion' })}
+                      className="text-xs font-bold text-[#483ec7] hover:underline cursor-pointer flex items-center gap-1"
+                    >
+                      Convert Batch (1x)
+                    </button>
+                  )
+                }
+              />
               <div className="divide-y divide-slate-100">
                 <Row label="Batch" value={st.batchName} />
                 <Row label="Timing" value={st.batchTiming} />
                 <Row label="Mode" value={st.mode} />
                 <Row label="Trainer" value={st.trainerName} />
+                {st.anatomyCompleted && (
+                  <Row
+                    label="Anatomy Foundation"
+                    value={`✓ Completed (${fmtDate(st.anatomyCompletedAt) || 'Verified'}) · Progress Preserved`}
+                  />
+                )}
+                {st.codingBatchEnrolledAt && (
+                  <Row
+                    label="Medical Coding Track"
+                    value={`Active since ${fmtDate(st.codingBatchEnrolledAt)} · Module 3+`}
+                  />
+                )}
+                <Row
+                  label="Batch Conversion"
+                  value={
+                    hasBatchConversionTicket
+                      ? `Used (1-time request raised · ${existingBatchConversionTicket?.status || 'Logged'})`
+                      : 'Available (1 request permitted during course)'
+                  }
+                />
               </div>
             </Card>
           </div>
@@ -1485,16 +2633,56 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
       case 'request': {
         const toTrainer = modal.reqType === 'mock_interview' || modal.reqType === 'consultation';
         const needsDate = toTrainer || modal.reqType === 'exam_booking';
+        const isMock = modal.reqType === 'mock_interview';
+        const attemptNum = modal.attemptNumber || 1;
         return (
-          <Modal title={modal.title} sub={toTrainer ? `Goes to ${trainer?.trainerName || 'your trainer'}` : modal.reqType === 'exam_booking' ? `Goes to ${st.hrName || 'your HR counsellor'} and the exam cell` : `Goes to ${st.hrName || 'your HR counsellor'}`} onClose={closeModal}>
+          <Modal
+            title={modal.title}
+            sub={isMock
+              ? `Attempt ${attemptNum} of 2 · Evaluated by ${trainer?.trainerName || 'your trainer'} to ${attemptNum === 1 ? 'assess baseline interview readiness' : 'verify post-feedback readiness improvement'}`
+              : toTrainer
+              ? `Goes to ${trainer?.trainerName || 'your trainer'}`
+              : modal.reqType === 'exam_booking'
+              ? `Goes to ${st.hrName || 'your HR counsellor'} and the exam cell`
+              : `Goes to ${st.hrName || 'your HR counsellor'}`}
+            onClose={closeModal}
+          >
             <div className="space-y-3">
+              {isMock && (
+                <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-3 text-xs text-indigo-900">
+                  <div className="font-bold flex items-center justify-between">
+                    <span>Mock Interview — Attempt {attemptNum} of 2</span>
+                    <span className="text-[10px] bg-indigo-200 text-indigo-800 px-2 py-0.5 rounded-full font-mono font-bold">
+                      {attemptNum === 1 ? 'Baseline Assessment' : 'Readiness Improvement'}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-[11px] text-indigo-700">
+                    {attemptNum === 1
+                      ? 'Your trainer will conduct a comprehensive round to evaluate medical coding knowledge, presentation clarity, and interview preparedness.'
+                      : 'Focus on demonstrating improvements on the weak spots and recommendations identified during Attempt 1.'}
+                  </p>
+                </div>
+              )}
               {modal.subjects && (
                 <Field label="Subject"><select value={form.subject || ''} onChange={setF('subject')} className={inputCls}>{modal.subjects.map((s) => <option key={s}>{s}</option>)}</select></Field>
               )}
               {needsDate && <Field label={modal.reqType === 'exam_booking' ? 'Preferred exam date' : 'Preferred date & time'}><input type="datetime-local" value={form.preferredDate || ''} onChange={setF('preferredDate')} className={inputCls} /></Field>}
-              <Field label={modal.reqType === 'profile_edit' ? 'What should be changed? (new phone / email / reason)' : modal.reqType === 'exam_booking' ? 'Online or test centre? Any other details' : 'Message'}><textarea rows={4} value={form.message || ''} onChange={setF('message')} className={inputCls} /></Field>
+              {isMock && attemptNum === 2 && (
+                <Field label="Key improvements & topics prepared since Attempt 1">
+                  <input
+                    type="text"
+                    value={form.improvements || ''}
+                    onChange={setF('improvements')}
+                    placeholder="e.g. Revised ICD-10 guidelines, practiced scenario questions..."
+                    className={inputCls}
+                  />
+                </Field>
+              )}
+              <Field label={modal.reqType === 'profile_edit' ? 'What should be changed? (new phone / email / reason)' : modal.reqType === 'exam_booking' ? 'Online or test centre? Any other details' : 'Message'}>
+                <textarea rows={3} value={form.message || ''} onChange={setF('message')} placeholder={isMock ? 'Mention any specific topics or questions you would like to practice...' : ''} className={inputCls} />
+              </Field>
             </div>
-            {footer('Send request', () => submitRequest(modal.reqType, form.subject || modal.subject || modal.title), !form.message?.trim() && !form.preferredDate)}
+            {footer('Send request', () => submitRequest(modal.reqType, form.subject || modal.subject || modal.title, { details: { attemptNumber: attemptNum, improvements: form.improvements || '' } }), !form.message?.trim() && !form.preferredDate)}
           </Modal>
         );
       }
@@ -1542,23 +2730,327 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
         );
       }
 
-      case 'ticket':
+      case 'ticket': {
+        const isBatchConv = form.category === 'Batch Conversion';
+        const isSubmitDisabled = !form.subject?.trim() || (isBatchConv && hasBatchConversionTicket);
+
         return (
           <Modal title="Raise a support ticket" sub={`${st.location || 'Branch'} operations desk`} onClose={closeModal}>
             <div className="space-y-3">
-              <Field label="Category"><select value={form.category || TICKET_CATEGORIES[0]} onChange={setF('category')} className={inputCls}>{TICKET_CATEGORIES.map((c) => <option key={c}>{c}</option>)}</select></Field>
-              <Field label="Subject"><input value={form.subject || ''} onChange={setF('subject')} className={inputCls} /></Field>
-              <Field label="Details"><textarea rows={4} value={form.description || ''} onChange={setF('description')} className={inputCls} /></Field>
+              <Field label="Category">
+                <select
+                  value={form.category || TICKET_CATEGORIES[0]}
+                  onChange={setF('category')}
+                  className={inputCls}
+                >
+                  {TICKET_CATEGORIES.map((c) => (
+                    <option key={c} value={c} disabled={c === 'Batch Conversion' && hasBatchConversionTicket}>
+                      {c === 'Batch Conversion' && hasBatchConversionTicket ? `${c} (1-time request already used)` : c}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+
+              {isBatchConv && hasBatchConversionTicket && (
+                <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-2xl text-xs text-amber-900 flex items-start gap-3 shadow-2xs">
+                  <AlertCircle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <p className="font-extrabold text-amber-950">One-Time Policy Limit Reached</p>
+                    <p className="text-amber-800 leading-relaxed">
+                      You have already submitted a Batch Conversion ticket{existingBatchConversionTicket ? ` (#${String(existingBatchConversionTicket._id).slice(-6).toUpperCase()} · Status: ${existingBatchConversionTicket.status})` : ''}.
+                      As per academy policy, students are permitted to raise a batch conversion ticket <strong>only once</strong>. Repeat batch conversion ticket requests are not permitted.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {isBatchConv && !hasBatchConversionTicket && (
+                <div className="p-3.5 bg-indigo-50 border border-indigo-200 rounded-2xl text-xs text-indigo-900 flex items-start gap-3 shadow-2xs">
+                  <Info className="w-5 h-5 text-[#483ec7] flex-shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <p className="font-extrabold text-indigo-950">Important Policy Notice: 1-Time Request Only</p>
+                    <p className="text-indigo-800 leading-relaxed">
+                      Students are permitted to raise a batch conversion ticket <strong>only once</strong> throughout their course duration. Please specify your current batch, preferred target batch timing, and reason clearly in the details below.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              <Field label="Subject">
+                <input
+                  value={form.subject || ''}
+                  onChange={setF('subject')}
+                  placeholder={isBatchConv ? 'e.g. Request to convert from Morning to Evening batch' : ''}
+                  className={inputCls}
+                />
+              </Field>
+              <Field label="Details">
+                <textarea
+                  rows={4}
+                  value={form.description || ''}
+                  onChange={setF('description')}
+                  placeholder={isBatchConv ? 'Please state your current batch name, desired new batch/timing, and reason for conversion…' : ''}
+                  className={inputCls}
+                />
+              </Field>
             </div>
-            {footer('Submit ticket', () => run(() => createEscalation({
-              title: form.subject || `${form.category} — ${st.name}`,
-              description: form.description || '',
-              type: form.category,
-              priority: 'normal',
-              departmentCode: /fee/i.test(form.category) ? 'FIN' : /class|batch|attendance|lms/i.test(form.category) ? 'ACAD' : 'ADM',
-              branchName: st.location || '',
-              raisedBy: `${st.name} (${st.studentId})`
-            }), '✓ Ticket raised'), !form.subject?.trim())}
+            {footer(
+              isBatchConv && hasBatchConversionTicket ? '1-Time Limit Reached' : 'Submit ticket',
+              () => run(() => createEscalation({
+                title: form.subject || `${form.category} — ${st.name}`,
+                description: form.description || '',
+                type: form.category,
+                category: form.category,
+                studentId: st.studentId,
+                priority: isBatchConv ? 'high' : 'normal',
+                departmentCode: /fee/i.test(form.category) ? 'FIN' : /class|batch|attendance|lms/i.test(form.category) ? 'ACAD' : 'ADM',
+                branchName: st.location || '',
+                raisedBy: `${st.name} (${st.studentId})`
+              }), '✓ Ticket raised'),
+              isSubmitDisabled
+            )}
+          </Modal>
+        );
+      }
+
+      case 'break_request': {
+        const reason = form.reasonCategory || BREAK_REASON_CATEGORIES[0];
+        const startDate = form.startDate || '';
+        const endDate = form.endDate || '';
+        const explanation = form.explanation || '';
+        const file = form.file || null;
+
+        let durationDays = 0;
+        if (startDate && endDate) {
+          const s = new Date(startDate);
+          const e = new Date(endDate);
+          if (!isNaN(s) && !isNaN(e) && e >= s) {
+            durationDays = Math.round((e - s) / (1000 * 60 * 60 * 24)) + 1;
+          }
+        }
+
+        const isDatesInvalid = Boolean(startDate && endDate && new Date(endDate) < new Date(startDate));
+        const isValid = Boolean(
+          reason &&
+          startDate &&
+          endDate &&
+          !isDatesInvalid &&
+          explanation.trim().length >= 5 &&
+          file
+        );
+
+        const handleSubmit = async () => {
+          if (!isValid) return;
+          if (file && file.size > 12 * 1024 * 1024) {
+            showToast('⚠ File size exceeds 12 MB limit');
+            return;
+          }
+          await run(async () => {
+            let documentData = '';
+            if (file) {
+              documentData = await fileToBase64(file);
+            }
+            await createStudentRequest(st.studentId, {
+              type: 'break_request',
+              subject: `Student Break Request: ${reason} (${startDate} to ${endDate})`,
+              message: explanation.trim(),
+              preferredDate: startDate,
+              details: {
+                reasonCategory: reason,
+                explanation: explanation.trim(),
+                startDate,
+                endDate,
+                returnDate: endDate,
+                durationDays,
+                documentName: file?.name || '',
+                documentMimeType: file?.type || '',
+                documentData
+              }
+            });
+          }, '✓ Break request submitted for prior approval');
+        };
+
+        return (
+          <Modal title="Apply for Student Break" sub="Prior approval from relevant authority is mandatory per academy policy" onClose={closeModal}>
+            <div className="space-y-4">
+              {/* Policy Callout */}
+              <div className="p-3.5 bg-indigo-50/80 border border-indigo-200 rounded-2xl text-xs text-indigo-950 flex items-start gap-3 shadow-2xs">
+                <Info className="w-5 h-5 text-[#483ec7] flex-shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <p className="font-extrabold text-indigo-950">Student Break Policy &amp; Prior Approval</p>
+                  <p className="text-indigo-800 leading-relaxed text-[11px]">
+                    Students planning a break must submit a request with a valid reason and supporting documentation.
+                    <strong> Prior approval from the relevant authority is strictly required</strong> before any break begins.
+                    Once approved, your student status will be placed on official hold to protect your attendance and training schedule.
+                  </p>
+                </div>
+              </div>
+
+              {/* Reason Category */}
+              <Field label="Reason Category *">
+                <select
+                  value={form.reasonCategory || BREAK_REASON_CATEGORIES[0]}
+                  onChange={setF('reasonCategory')}
+                  className={inputCls}
+                >
+                  {BREAK_REASON_CATEGORIES.map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+              </Field>
+
+              {/* Dates */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <Field label="Break Start Date *">
+                  <input
+                    type="date"
+                    value={form.startDate || ''}
+                    onChange={setF('startDate')}
+                    className={inputCls}
+                  />
+                </Field>
+                <Field label="Expected Return Date *">
+                  <input
+                    type="date"
+                    min={form.startDate || ''}
+                    value={form.endDate || ''}
+                    onChange={setF('endDate')}
+                    className={inputCls}
+                  />
+                </Field>
+              </div>
+
+              {isDatesInvalid && (
+                <div className="text-[11px] font-bold text-rose-600 bg-rose-50 border border-rose-200 rounded-xl p-2.5 flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                  Expected return date cannot be before the break start date.
+                </div>
+              )}
+
+              {durationDays > 0 && !isDatesInvalid && (
+                <div className="text-[11px] font-semibold text-slate-600 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 flex items-center justify-between">
+                  <span>Planned Break Duration:</span>
+                  <span className="font-black text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-md">
+                    {durationDays} {durationDays === 1 ? 'day' : 'days'}
+                  </span>
+                </div>
+              )}
+
+              {/* Detailed Reason */}
+              <Field label="Valid Reason & Detailed Explanation * (minimum 5 characters)">
+                <textarea
+                  rows={3}
+                  value={form.explanation || ''}
+                  onChange={setF('explanation')}
+                  placeholder="Provide specific details regarding the necessity of this break..."
+                  className={inputCls}
+                />
+              </Field>
+
+              {/* Supporting Documentation */}
+              <Field label="Supporting Documentation * (Mandatory)">
+                <div className="space-y-2">
+                  <input
+                    type="file"
+                    accept=".pdf,.jpg,.jpeg,.png,.doc,.docx"
+                    onChange={setF('file')}
+                    className="block w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-indigo-50 file:text-[#483ec7] hover:file:bg-indigo-100 cursor-pointer"
+                  />
+                  <p className="text-[11px] text-slate-500">
+                    Upload medical certificate, university exam timetable, employer letter, or official proof (PDF, JPG, PNG, DOC - max 12 MB).
+                  </p>
+                  {form.file ? (
+                    <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center justify-between text-xs text-emerald-800">
+                      <span className="truncate font-semibold flex items-center gap-1.5">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+                        {form.file.name}
+                      </span>
+                      <span className="text-[10px] text-emerald-700 ml-2 font-mono flex-shrink-0">
+                        {fmtSize(form.file.size)}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-2 flex items-center gap-1.5">
+                      <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                      Supporting documentation is strictly required to submit a break request.
+                    </div>
+                  )}
+                </div>
+              </Field>
+            </div>
+            {footer(
+              'Submit Break Request for Prior Approval',
+              handleSubmit,
+              !isValid
+            )}
+          </Modal>
+        );
+      }
+
+      case 'ratingHistory':
+        return (
+          <Modal title="Weekly Star Rating History & Trend" sub="Week-over-week performance evaluation across the 4 core pillars" onClose={closeModal}>
+            <div className="space-y-3.5">
+              <div className="p-3 bg-indigo-50 border border-indigo-200 rounded-2xl flex items-center justify-between text-xs text-indigo-950">
+                <div className="flex items-center gap-2">
+                  <span className="text-xl">⭐</span>
+                  <div>
+                    <div className="font-extrabold">Current Week: {Number(weeklyRating.stars || 0).toFixed(1)} / 5.0 ★</div>
+                    <div className="text-[10.5px] text-indigo-700">{weeklyRating.tier} · {weeklyRating.weekLabel}</div>
+                  </div>
+                </div>
+                <span className="px-2.5 py-1 rounded-full text-[10px] font-black bg-indigo-100 text-indigo-900 border border-indigo-300">
+                  Active Rating
+                </span>
+              </div>
+
+              {weeklyRating.history?.length > 0 ? (
+                <div className="space-y-2.5">
+                  <div className="text-xs font-bold text-slate-700">Archived Weekly Audits ({weeklyRating.history.length})</div>
+                  {weeklyRating.history.map((h, idx) => (
+                    <div key={idx} className="p-3.5 border border-slate-200 rounded-2xl bg-white space-y-2.5 text-xs">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <span className="font-extrabold text-slate-900">{h.weekLabel || `Week ${h.weekNumber}`}</span>
+                          <span className="text-[10px] text-slate-400 ml-2">{fmtDate(h.evaluatedAt)}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-sm font-black text-amber-600">{Number(h.stars || 0).toFixed(1)}★</span>
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200">{h.tier || 'Rated'}</span>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[10px] pt-1">
+                        <div className="bg-slate-50 p-1.5 rounded-lg border border-slate-200 text-center">
+                          <span className="text-slate-400 block font-medium">Attendance</span>
+                          <span className="font-bold text-slate-800">{h.attendanceScore ? `${Number(h.attendanceScore).toFixed(1)}★` : '—'}</span>
+                        </div>
+                        <div className="bg-slate-50 p-1.5 rounded-lg border border-slate-200 text-center">
+                          <span className="text-slate-400 block font-medium">Assessments</span>
+                          <span className="font-bold text-slate-800">{h.assessmentScore ? `${Number(h.assessmentScore).toFixed(1)}★` : '—'}</span>
+                        </div>
+                        <div className="bg-slate-50 p-1.5 rounded-lg border border-slate-200 text-center">
+                          <span className="text-slate-400 block font-medium">Syllabus</span>
+                          <span className="font-bold text-slate-800">{h.syllabusScore ? `${Number(h.syllabusScore).toFixed(1)}★` : '—'}</span>
+                        </div>
+                        <div className="bg-slate-50 p-1.5 rounded-lg border border-slate-200 text-center">
+                          <span className="text-slate-400 block font-medium">Participation</span>
+                          <span className="font-bold text-slate-800">{h.participationScore ? `${Number(h.participationScore).toFixed(1)}★` : '—'}</span>
+                        </div>
+                      </div>
+                      {h.feedback && (
+                        <p className="text-[11px] text-slate-600 bg-slate-50 p-2 rounded-xl border border-slate-100">
+                          <strong>Note:</strong> {h.feedback}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-8 text-xs text-slate-400 border border-dashed border-slate-200 rounded-2xl">
+                  No previous weekly audit archives yet. Weekly evaluations are archived every Monday automatically.
+                </div>
+              )}
+            </div>
           </Modal>
         );
 
@@ -1602,7 +3094,34 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                   isTrainerHost={false}
                   height={560}
                 />
-                <p className="text-[11px] text-slate-500 mt-3">Your attendance is recorded when you join. If the video doesn't load, use Retry, or ask your trainer for the Zoom link.</p>
+                <div className="mt-3 p-3 rounded-xl border bg-slate-50 border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                  <div className="flex items-center gap-2.5">
+                    <div className={`w-3 h-3 rounded-full shrink-0 ${eligibleForPresent ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
+                    <div>
+                      <div className="text-xs font-bold text-slate-800 flex items-center gap-2">
+                        Online Session Attendance: <span className="font-mono text-teal-700 font-extrabold">{liveAttendedMins} min</span>
+                        {eligibleForPresent ? (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">✓ Present Ready</span>
+                        ) : (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300">Requires 1h 45m</span>
+                        )}
+                      </div>
+                      <span className="text-[11px] text-slate-500 mt-0.5 block">
+                        {eligibleForPresent
+                          ? '✓ 1 hour and 45 minutes attendance requirement reached. Trainer can mark attendance as Present.'
+                          : `⏱ Minimum 1 hour and 45 minutes (105 mins) required before attendance can be marked as Present. (${Math.max(0, 105 - liveAttendedMins)} mins remaining)`}
+                      </span>
+                    </div>
+                  </div>
+                  <span className={`text-xs font-bold px-2.5 py-1 rounded-lg border self-start sm:self-auto shrink-0 ${
+                    eligibleForPresent
+                      ? 'bg-emerald-50 text-emerald-700 border-emerald-300'
+                      : 'bg-amber-50 text-amber-700 border-amber-300'
+                  }`}>
+                    {eligibleForPresent ? '✓ Eligible for Present' : `${liveAttendedMins}m / 105m`}
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-400 mt-2">Active online duration updates continuously every 30 seconds. Minimum 1h 45m required for full attendance credit.</p>
               </>
             ) : (
               <div className="text-center">

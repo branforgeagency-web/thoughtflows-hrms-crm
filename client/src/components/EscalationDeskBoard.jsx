@@ -17,7 +17,24 @@ import {
 } from 'lucide-react';
 import { getEscalations, createEscalation, updateEscalationStatus, onDataUpdate } from '../services/api';
 
+const DEPT_MAP = {
+  'DEP-HR-001': 'HR & Admissions',
+  'HR': 'HR & Admissions',
+  'ADM': 'HR & Admissions',
+  'ACAD': 'Training / Academic',
+  'TRAIN': 'Training / Academic',
+  'TRAINING': 'Training / Academic',
+  'FIN': 'Finance & Accounts',
+  'SYS': 'Systems & IT',
+  'SUCC': 'Student Support',
+  'DEP-STU-001': 'Student Support',
+  'CCCP': 'CCCP / Placement',
+  'MKT': 'Marketing',
+  'OPS': 'Operations'
+};
+
 export default function EscalationDeskBoard({ 
+  filter,
   customScopeLabel = "HR issues",
   onEscalationChange = null 
 }) {
@@ -31,7 +48,8 @@ export default function EscalationDeskBoard({
 
   const loadEscalations = async () => {
     try {
-      const data = await getEscalations({ departmentCode: 'DEP-HR-001' });
+      const params = filter !== undefined ? filter : (customScopeLabel?.toLowerCase().includes('hr') ? { departmentCode: 'DEP-HR-001' } : {});
+      const data = await getEscalations(params);
       if (Array.isArray(data)) {
         setEscalations(data.map(e => ({
           id: e._id || e.id,
@@ -41,7 +59,7 @@ export default function EscalationDeskBoard({
           description: [e.description, e.response && `Response: ${e.response}`].filter(Boolean).join(' — '),
           owner: e.raisedBy || '—',
           timeAgo: e.createdAt ? new Date(e.createdAt).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '',
-          department: 'HR Department',
+          department: DEPT_MAP[e.departmentCode] || e.department || e.departmentCode || 'Operations',
           departmentCode: e.departmentCode || 'DEP-HR-001',
           status: ['resolved', 'closed'].includes(e.status) ? 'RESOLVED' : e.status === 'in-progress' ? 'MGMT_ESCALATED' : 'ESCALATED',
           branch: e.branchName || '—'
@@ -60,7 +78,7 @@ export default function EscalationDeskBoard({
       }
     });
     return unsub;
-  }, []);
+  }, [filter, customScopeLabel]);
 
   // Form for New Escalation
   const [newTitle, setNewTitle] = useState('');
@@ -290,6 +308,12 @@ export default function EscalationDeskBoard({
                     <h4 className="text-sm sm:text-base font-bold text-[#0f172a] group-hover:text-rose-900 transition-colors">
                       {item.title}
                     </h4>
+                    {/batch\s*conversion/i.test(item.title || item.description || '') && (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">
+                        <span>🔄</span>
+                        <span>Batch Conversion Request</span>
+                      </span>
+                    )}
                     {item.priority === 'urgent' && !isResolved && (
                       <span className="inline-flex items-center gap-1 text-xs font-bold text-rose-500">
                         <span className="w-1.5 h-1.5 rounded-full bg-rose-500 inline-block" />

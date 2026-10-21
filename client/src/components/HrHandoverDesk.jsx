@@ -11,7 +11,8 @@ import {
   X,
   Plus,
   Search,
-  Filter
+  Filter,
+  Building2
 } from 'lucide-react';
 
 import { getStudents, updateStudent, getHeadOfTrainers, handoverStudentToHead, onDataUpdate } from '../services/api';
@@ -91,10 +92,21 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
   const studentKey = (s) => s?._id || s?.studentId;
 
   const openHandover = (stu) => {
-    const defaultHead = headsOfTrainer[0] || { name: 'Dr. Vikram C.', id: 'HEAD_FACULTY_001', role: 'Faculty Lead & Head of Training' };
+    const studentBranch = stu.branch || stu.location || stu.leadBranch || '';
+    const branchHead = headsOfTrainer.find(h => 
+      h.branch && studentBranch && (
+        h.branch.toLowerCase() === studentBranch.toLowerCase() ||
+        h.branch.toLowerCase().includes(studentBranch.toLowerCase()) ||
+        studentBranch.toLowerCase().includes(h.branch.toLowerCase())
+      )
+    );
+    const defaultHead = branchHead || headsOfTrainer.find(h => h.branch === 'All Branches') || headsOfTrainer[0] || { name: 'Dr. Vikram C.', id: 'HEAD_FACULTY_001', role: 'Faculty Lead & Head of Training', branch: 'All Branches' };
+
     setAssignForm({
       headOfTrainer: stu.headOfTrainer || defaultHead.name,
       headOfTrainerId: stu.headOfTrainerId || defaultHead.id,
+      headOfTrainerBranch: defaultHead.branch || studentBranch || 'Branch',
+      branch: studentBranch,
       trainerNote: stu.trainerNote || ''
     });
     setAssigning(stu);
@@ -103,13 +115,15 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
   const handleSendToHead = async () => {
     if (!assigning) return;
     try {
+      const studentBranch = assigning.branch || assigning.location || assigning.leadBranch || assignForm.branch || '';
       const updated = await handoverStudentToHead(studentKey(assigning), {
         ...assignForm,
+        branch: studentBranch,
         handedOverBy: currentUser?.name || currentUser?.userName || 'HR'
       });
       setStudents(prev => prev.map(s => (studentKey(s) === studentKey(assigning) ? { ...s, ...updated } : s)));
       if (onRefreshStudents) onRefreshStudents();
-      showToast(`✓ ${assigning.name} handed over to Head of Trainer (${assignForm.headOfTrainer || 'Dr. Vikram C.'})`);
+      showToast(`✓ ${assigning.name} handed over to ${assignForm.headOfTrainer || 'Head of Trainer'} (${assignForm.headOfTrainerBranch || studentBranch || 'Branch'})`);
       setAssigning(null);
       setEditingStudent(null);
     } catch (err) {
@@ -573,17 +587,17 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
             </div>
 
             <div className="bg-teal-50/70 border border-teal-200/80 rounded-2xl p-3 text-xs text-teal-900 leading-relaxed">
-              <div className="font-bold flex items-center gap-1.5 mb-0.5 text-teal-800">
+              <div className="font-bold flex items-center gap-1.5 mb-1 text-teal-800">
                 <CheckCircle2 className="w-4 h-4 text-teal-600" />
-                Handover Protocol
+                Handover Protocol · {assigning.branch || assigning.location || 'Branch'} Head of Trainer
               </div>
-              The student record will be transferred to the Head of Trainer. The Head of Trainer will review the profile, student preferences, and assign the respective trainer and batch.
+              The student will be transferred to the Head of Trainer for <strong>{assigning.branch || assigning.location || 'this branch'}</strong>. The Head of Trainer will review the profile and allocate the student to designated faculty trainers and batches.
             </div>
 
             <div className="space-y-3.5 text-xs">
               <div>
                 <label className="font-bold text-slate-700 block mb-1">
-                  Head of Trainer <span className="text-rose-500">*</span>
+                  Head of Trainer ({assigning.branch || assigning.location || 'Branch'}) <span className="text-rose-500">*</span>
                 </label>
                 {headsOfTrainer.length > 1 ? (
                   <select
@@ -593,16 +607,25 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
                       setAssignForm(prev => ({
                         ...prev,
                         headOfTrainer: e.target.value,
-                        headOfTrainerId: selected?.id || ''
+                        headOfTrainerId: selected?.id || '',
+                        headOfTrainerBranch: selected?.branch || ''
                       }));
                     }}
                     className="w-full p-2.5 rounded-xl border border-slate-200 bg-white font-medium"
                   >
-                    {headsOfTrainer.map(h => (
-                      <option key={h.id || h.name} value={h.name}>
-                        {h.name} · {h.role || 'Head of Trainer'}{h.branch ? ` (${h.branch})` : ''}
-                      </option>
-                    ))}
+                    {headsOfTrainer.map(h => {
+                      const stuBranch = assigning.branch || assigning.location || assigning.leadBranch || '';
+                      const isMatch = stuBranch && h.branch && (
+                        h.branch.toLowerCase() === stuBranch.toLowerCase() ||
+                        h.branch.toLowerCase().includes(stuBranch.toLowerCase()) ||
+                        stuBranch.toLowerCase().includes(h.branch.toLowerCase())
+                      );
+                      return (
+                        <option key={h.id || h.name} value={h.name}>
+                          {isMatch ? '★ [Branch Match] ' : ''}{h.name} · {h.role || 'Head of Trainer'}{h.branch ? ` (${h.branch})` : ''}
+                        </option>
+                      );
+                    })}
                   </select>
                 ) : (
                   <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between">
@@ -611,7 +634,7 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
                         {assignForm.headOfTrainer || headsOfTrainer[0]?.name || 'Dr. Vikram C.'}
                       </div>
                       <div className="text-[11px] text-slate-500">
-                        {headsOfTrainer[0]?.role || 'Faculty Lead & Head of Training'} · All Branches
+                        {headsOfTrainer[0]?.role || 'Faculty Lead & Head of Training'} · {headsOfTrainer[0]?.branch || assigning.branch || 'All Branches'}
                       </div>
                     </div>
                     <span className="px-2.5 py-1 rounded-md bg-[#00897b] text-white text-[10px] font-bold">
@@ -635,9 +658,9 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
               </div>
 
               <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-[11px] text-slate-500 space-y-1">
-                <div className="flex justify-between">
-                  <span>Branch:</span>
-                  <span className="font-semibold text-slate-700">{assigning.branch || 'Headquarters'}</span>
+                <div className="flex justify-between items-center">
+                  <span className="flex items-center gap-1"><Building2 className="w-3.5 h-3.5 text-slate-400" /> Student Branch:</span>
+                  <span className="font-bold text-teal-700 bg-teal-50 px-2 py-0.5 rounded border border-teal-200">{assigning.branch || assigning.location || assigning.leadBranch || 'Headquarters'}</span>
                 </div>
                 <div className="flex justify-between">
                   <span>Admitted By:</span>

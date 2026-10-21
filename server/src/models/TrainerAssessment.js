@@ -54,7 +54,16 @@ const trainerAssessmentSchema = new mongoose.Schema({
   mode: { type: String, enum: ['offline', 'online'], default: 'offline' },
   durationMin: { type: Number, default: null },
   questions: {
-    type: [{ q: String, options: [String], answer: Number, marks: { type: Number, default: 1 } }],
+    type: [{
+      q: String,
+      options: [String],
+      answer: Number,
+      marks: { type: Number, default: 1 },
+      chapter: { type: String, default: '' },
+      rationale: { type: String, default: '' },
+      audioRationaleUrl: { type: String, default: '' },
+      audioRationaleText: { type: String, default: '' }
+    }],
     default: []
   }
 }, {

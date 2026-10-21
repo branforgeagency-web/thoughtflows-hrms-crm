@@ -54,20 +54,49 @@ export const minutesToLabel = (min) => {
   return `${h12}:${String(m).padStart(2, '0')} ${period}`;
 };
 
-// Same rules the server applies before notifying a trainer about a demo
-export function evaluateDemoSlot(trainer, slotStr) {
+// Check if a course is a Specialty Course vs a Fresher / Foundation Track
+export function isSpecialtyCourse(course) {
+  if (!course) return false;
+  const c = String(course).toLowerCase();
+  if (c.includes('fresher') || c.includes('beginner') || c.includes('foundation')) {
+    return false;
+  }
+  const specialtyKeys = [
+    'surgery', 'cgsc', 'cpma', 'auditing', 'emergency', 'ed profee', 'ed facility',
+    'em ip', 'cedc', 'cemc', 'e/m', 'ed&e/m', 'cpc+ed', 'cpc+e/m', 'ip-drg', 'ipdrg',
+    'ip specialty', 'ccs', 'hcc', 'crc', 'risk adjustment', 'ivr', 'radiology',
+    'anesthesia', 'canpc', 'cobgc', 'cpcd', 'cardiology', 'orthopedic', 'pediatrics',
+    'specialty', 'exp in ipdrg'
+  ];
+  return specialtyKeys.some((k) => c.includes(k));
+}
+
+// Rules applied before notifying a trainer about a demo:
+// - Fresher demo experts: available throughout the day
+// - Specialty course demos: scheduled according to trainer availability (shift & classes)
+export function evaluateDemoSlot(trainer, slotStr, course = '') {
   if (!trainer) return { ok: false, reason: 'No trainer roster record.' };
   if (trainer.active === false) return { ok: false, reason: 'You are marked inactive for demo bookings.' };
+  
+  const specialty = isSpecialtyCourse(course);
+  const isFresherExpert = trainer.experienceLevel === 'fresher_expert' || /fresher/i.test(trainer.role || '') || !specialty;
+
+  // Fresher demo experts are available throughout the day
+  if (!specialty && isFresherExpert) {
+    return { ok: true, reason: 'Fresher Demo Expert — available throughout the day across all demo slots.' };
+  }
+
+  // Specialty course demo: evaluate shift and scheduled classes
   const slot = parseSlotToRange(slotStr);
   if (!slot) return { ok: false, reason: `Could not read the time "${slotStr}".` };
   const start = Number.isFinite(trainer.shiftStartMin) ? trainer.shiftStartMin : 0;
   const end = Number.isFinite(trainer.shiftEndMin) ? trainer.shiftEndMin : 1440;
   const inShift = end > start ? slot.startMin >= start && slot.endMin <= end : slot.startMin >= start || slot.endMin <= end;
-  if (!inShift) return { ok: false, reason: `Outside your shift (${trainer.shift || `${minutesToLabel(start)} – ${minutesToLabel(end)}`}).` };
+  if (!inShift) return { ok: false, reason: `Outside shift (${trainer.shift || `${minutesToLabel(start)} – ${minutesToLabel(end)}`}). Specialty demos must follow trainer availability.` };
   const clash = (trainer.scheduledClasses || []).find((c) => {
     const r = Number.isFinite(c.startMin) && Number.isFinite(c.endMin) ? { startMin: c.startMin, endMin: c.endMin } : parseSlotToRange(c.timeSlot);
     return r && Math.max(r.startMin, slot.startMin) < Math.min(r.endMin, slot.endMin);
   });
-  if (clash) return { ok: false, reason: `Overlaps your class "${clash.name}" (${clash.timeSlot}).` };
-  return { ok: true, reason: 'In shift and no class overlap — you would be notified (if language & branch match).' };
+  if (clash) return { ok: false, reason: `Overlaps class "${clash.name}" (${clash.timeSlot}). Specialty demos must follow trainer availability.` };
+  return { ok: true, reason: 'In shift and no class overlap — scheduled according to trainer availability.' };
 }

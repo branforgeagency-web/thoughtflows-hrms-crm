@@ -860,3 +860,21 @@ export const formatCourseDisplay = (courseStr = '') => {
   }
   return courseStr;
 };
+
+// Check if a course is a Specialty Course vs a Fresher / Foundation Track
+export function isSpecialtyCourse(course) {
+  if (!course) return false;
+  const c = String(course).toLowerCase();
+  if (c.includes('fresher') || c.includes('beginner') || c.includes('foundation')) {
+    return false;
+  }
+  const specialtyKeys = [
+    'surgery', 'cgsc', 'cpma', 'auditing', 'emergency', 'ed profee', 'ed facility',
+    'em ip', 'cedc', 'cemc', 'e/m', 'ed&e/m', 'cpc+ed', 'cpc+e/m', 'ip-drg', 'ipdrg',
+    'ip specialty', 'ccs', 'hcc', 'crc', 'risk adjustment', 'ivr', 'radiology',
+    'anesthesia', 'canpc', 'cobgc', 'cpcd', 'cardiology', 'orthopedic', 'pediatrics',
+    'specialty', 'exp in ipdrg'
+  ];
+  return specialtyKeys.some((k) => c.includes(k));
+}
+

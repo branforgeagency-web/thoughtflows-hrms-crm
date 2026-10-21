@@ -107,7 +107,17 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
       const marks = {};
       (b?.students || []).forEach((s) => {
         const j = joins[studentKeyOf(s)];
-        marks[studentKeyOf(s)] = j ? (j.late ? 'Late' : 'Present') : 'Absent';
+        const dur = typeof j?.durationMinutes === 'number' && j.durationMinutes > 0
+          ? j.durationMinutes
+          : (j?.joinedAt ? Math.max(0, Math.round(((j.lastJoinAt ? new Date(j.lastJoinAt) : new Date(ended.endedAt || Date.now())) - new Date(j.joinedAt)) / 60000)) : 0);
+        // Online sessions: Present is only available after student attends at least 1 hr 45 min (105 mins)
+        if (dur >= 105) {
+          marks[studentKeyOf(s)] = 'Present';
+        } else if (j) {
+          marks[studentKeyOf(s)] = 'Late';
+        } else {
+          marks[studentKeyOf(s)] = 'Absent';
+        }
       });
       setLive(null);
       setEndReview({ session: ended, batch: b, marks });
@@ -120,17 +130,21 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
     if (!endReview?.batch) return;
     setSavingAtt(true);
     try {
+      const topic = endReview.session.topic || endReview.batch.module || '';
       await recordTrainerAttendance({
         trainerId,
         trainerName,
         batch: endReview.batch.name,
         date: todayKey(),
-        topic: endReview.session.topic || endReview.batch.module || '',
-        records: endReview.marks
+        topic,
+        records: endReview.marks,
+        isOnline: true,
+        sessionId: endReview.session.sessionId || endReview.session._id
       });
       await markLiveClassAttendanceSaved(endReview.session.sessionId).catch(() => {});
       setEndReview(null);
-      flash('✓ Attendance saved — student, HR and Leadership dashboards updated');
+      const sylMsg = topic ? ` · Syllabus tracker marked & updated for "${topic}"` : '';
+      flash(`✓ Attendance saved${sylMsg} — student, HR and Leadership dashboards updated`);
       onAttendanceSaved?.();
     } catch (e) {
       flash(`⚠ Could not save attendance: ${e?.response?.data?.error || e.message}`, 5000);
@@ -268,24 +282,34 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
             <div className="lg:col-span-4 space-y-4">
               <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-sm">
                 <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-                  <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5"><CheckSquare className="w-4 h-4 text-[#00897b]" />Who joined</span>
+                  <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5"><CheckSquare className="w-4 h-4 text-[#00897b]" />Who joined (Live Duration)</span>
                   <button onClick={refreshLive} className="text-slate-400 hover:text-slate-700" title="Refresh"><RefreshCw className="w-3.5 h-3.5" /></button>
                 </div>
                 <div className="divide-y divide-slate-100 max-h-72 overflow-y-auto">
                   {roster.length === 0 && <div className="py-6 text-center text-xs text-slate-400">No students in this batch.</div>}
                   {roster.map((s) => {
                     const j = joinedMap[studentKeyOf(s)];
+                    const dur = typeof j?.durationMinutes === 'number' && j.durationMinutes > 0
+                      ? j.durationMinutes
+                      : (j?.joinedAt ? Math.max(0, Math.round((Date.now() - new Date(j.joinedAt)) / 60000)) : 0);
                     return (
                       <div key={studentKeyOf(s)} className="py-2 flex items-center justify-between text-xs">
-                        <span className="font-semibold text-slate-800 truncate">{s.name}</span>
+                        <div className="min-w-0 pr-2">
+                          <span className="font-semibold text-slate-800 truncate block">{s.name}</span>
+                          {j && (
+                            <span className="text-[10px] text-slate-400">
+                              Joined {fmtTime(j.joinedAt)} · <span className={dur >= 105 ? 'text-emerald-600 font-bold' : 'text-amber-600 font-medium'}>{dur}m attended</span>
+                            </span>
+                          )}
+                        </div>
                         {j
-                          ? <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${j.late ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}>{j.late ? 'Late' : 'Joined'} {fmtTime(j.joinedAt)}</span>
+                          ? <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${dur >= 105 ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' : (j.late ? 'bg-amber-50 text-amber-700' : 'bg-teal-50 text-teal-700')}`}>{dur >= 105 ? '✓ 1h 45m+ (Present)' : (j.late ? 'Late' : 'Active')}</span>
                           : <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">Not yet</span>}
                       </div>
                     );
                   })}
                 </div>
-                <p className="text-[10px] text-slate-400 mt-2">Tracks students who join from the portal. Joins after 15 min count as Late. Students who join with a direct Zoom link are not tracked — check them in the attendance review.</p>
+                <p className="text-[10px] text-slate-400 mt-2">Tracks active online duration in real-time. Students must attend at least 1 hour and 45 minutes (105 mins) before the Present option unlocks in attendance review.</p>
               </div>
 
               <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-sm flex flex-col">
@@ -315,19 +339,69 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
             <button onClick={() => setEndReview(null)} className="absolute top-4 right-4 p-1 rounded-lg text-slate-400 hover:bg-slate-100"><X className="w-5 h-5" /></button>
             <h3 className="text-base font-bold text-slate-900">Class ended — confirm attendance</h3>
             <p className="text-xs text-slate-500 mt-0.5">{endReview.batch?.name} · {endReview.session.topic || 'Class'} · pre-filled from who joined</p>
+
+            <div className="bg-teal-50/80 border border-teal-200 rounded-xl p-3 my-3 text-xs text-teal-950 space-y-1">
+              <div className="font-bold flex items-center gap-1.5 text-teal-900">
+                <span>🛡</span> Online Attendance & Syllabus Policy
+              </div>
+              <div className="text-[11px] text-teal-800">
+                • <strong>Online Attendance Rule:</strong> Option to mark attendance as Present is available <strong>only after attending at least 1 hour and 45 minutes</strong> (105 mins).
+              </div>
+              <div className="text-[11px] text-teal-800">
+                • <strong>Syllabus Tracker:</strong> Confirming attendance automatically marks and updates <strong>"{endReview.session.topic || endReview.batch.module || 'Session Topic'}"</strong> in the batch syllabus tracker.
+              </div>
+            </div>
+
             <div className="divide-y divide-slate-100 mt-4">
               {(endReview.batch?.students || []).map((s) => {
                 const k = studentKeyOf(s);
+                const j = (endReview.session?.joins || []).find((x) => x.studentId === k || x.name === s.name);
+                const dur = typeof j?.durationMinutes === 'number' && j.durationMinutes > 0
+                  ? j.durationMinutes
+                  : (j?.joinedAt ? Math.max(0, Math.round(((j.lastJoinAt ? new Date(j.lastJoinAt) : new Date(endReview.session.endedAt || Date.now())) - new Date(j.joinedAt)) / 60000)) : 0);
+                const canMarkPresent = dur >= 105;
                 return (
-                  <div key={k} className="py-2 flex items-center justify-between gap-3 text-xs">
-                    <span className="font-semibold text-slate-800 truncate">{s.name}</span>
-                    <div className="flex gap-1">
-                      {['Present', 'Late', 'Absent'].map((v) => (
-                        <button key={v} onClick={() => setEndReview((r) => ({ ...r, marks: { ...r.marks, [k]: v } }))}
-                          className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border ${endReview.marks[k] === v
-                            ? (v === 'Present' ? 'bg-emerald-600 text-white border-emerald-600' : v === 'Late' ? 'bg-amber-500 text-white border-amber-500' : 'bg-rose-600 text-white border-rose-600')
-                            : 'bg-white text-slate-600 border-slate-200'}`}>{v}</button>
-                      ))}
+                  <div key={k} className="py-2.5 flex items-center justify-between gap-3 text-xs">
+                    <div className="min-w-0">
+                      <span className="font-semibold text-slate-800 truncate block">{s.name}</span>
+                      <div className="mt-0.5">
+                        {canMarkPresent ? (
+                          <span className="text-[10px] text-emerald-700 font-bold bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded">
+                            ✓ {Math.floor(dur / 60)}h {dur % 60}m (Eligible for Present)
+                          </span>
+                        ) : j ? (
+                          <span className="text-[10px] text-amber-700 font-medium bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
+                            ⏱ {dur}m / 105m (Under 1h 45m req)
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-slate-400">Did not join online</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex gap-1 shrink-0">
+                      {['Present', 'Late', 'Absent'].map((v) => {
+                        const isPresentDisabled = v === 'Present' && !canMarkPresent;
+                        return (
+                          <button
+                            key={v}
+                            disabled={isPresentDisabled}
+                            title={isPresentDisabled ? `Present is locked: student attended ${dur}m (requires at least 1 hr 45 min)` : `Mark ${v}`}
+                            onClick={() => {
+                              if (isPresentDisabled) return;
+                              setEndReview((r) => ({ ...r, marks: { ...r.marks, [k]: v } }));
+                            }}
+                            className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-all ${
+                              isPresentDisabled
+                                ? 'opacity-40 cursor-not-allowed bg-slate-100 text-slate-400 border-slate-200'
+                                : endReview.marks[k] === v
+                                  ? (v === 'Present' ? 'bg-emerald-600 text-white border-emerald-600' : v === 'Late' ? 'bg-amber-500 text-white border-amber-500' : 'bg-rose-600 text-white border-rose-600')
+                                  : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                            }`}
+                          >
+                            {isPresentDisabled ? '🔒 ' : ''}{v}
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
                 );
@@ -335,7 +409,7 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
             </div>
             <div className="flex justify-end gap-2 mt-5">
               <button onClick={() => setEndReview(null)} className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100">Skip for now</button>
-              <button onClick={saveReviewedAttendance} disabled={savingAtt} className="px-5 py-2.5 rounded-xl text-xs font-bold bg-[#009688] hover:bg-[#00897b] text-white disabled:opacity-50">{savingAtt ? 'Saving…' : 'Save attendance'}</button>
+              <button onClick={saveReviewedAttendance} disabled={savingAtt} className="px-5 py-2.5 rounded-xl text-xs font-bold bg-[#009688] hover:bg-[#00897b] text-white disabled:opacity-50">{savingAtt ? 'Saving…' : 'Save attendance & update syllabus'}</button>
             </div>
           </div>
         </div>

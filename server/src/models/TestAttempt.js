@@ -19,7 +19,23 @@ const testAttemptSchema = new mongoose.Schema(
     late: { type: Boolean, default: false },
     score: { type: Number, default: null },
     totalMarks: { type: Number, default: 0 },
-    correct: { type: Number, default: 0 }
+    correct: { type: Number, default: 0 },
+    attemptIteration: { type: Number, default: 1 },
+    reallocated: { type: Boolean, default: false },
+    reallocatedAt: { type: Date, default: null },
+    reallocatedBy: { type: String, default: '' },
+    reallocationReason: { type: String, default: '' },
+    chapterScores: { type: Object, default: {} },
+    attemptHistory: [
+      {
+        attemptIteration: { type: Number, default: 1 },
+        score: { type: Number, default: 0 },
+        totalMarks: { type: Number, default: 0 },
+        correct: { type: Number, default: 0 },
+        submittedAt: { type: Date, default: Date.now },
+        chapterScores: { type: Object, default: {} }
+      }
+    ]
   },
   { timestamps: true }
 );

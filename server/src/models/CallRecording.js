@@ -43,7 +43,7 @@ const callRecordingSchema = new mongoose.Schema({
   },
   source: {
     type: String,
-    enum: ['exotel', 'browser_mic', 'uploaded', 'phone_upload', 'phone_sync'],
+    enum: ['knowlarity', 'exotel', 'edesy', 'browser_mic', 'uploaded', 'phone_upload', 'phone_sync'],
     default: 'browser_mic'
   },
   // Phone-sync: original file name on the counsellor's phone (used to skip duplicates)

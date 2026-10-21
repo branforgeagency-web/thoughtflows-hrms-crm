@@ -246,8 +246,8 @@ export const getEligibleTrainers = async ({ language, location, preferredDate, t
   return res.data;
 };
 
-// Real Exotel click-to-call bridge — dials the HR's phone first, then the
-// lead, and bridges them. No simulated call state anywhere in this file.
+// Real click-to-call bridge (Knowlarity or Edesy — set by TELEPHONY_PROVIDER on the server) — dials
+// the HR's phone first, then the lead, and bridges them. No simulated call state anywhere in this file.
 export const getCallConfigStatus = async () => {
   const res = await api.get('/calls/config-status');
   return res.data;
@@ -530,6 +530,27 @@ export const setTrainerRecommendation = async (id, data) => {
   return res.data;
 };
 
+export const updateStudentReadiness = async (id, data) => {
+  const res = await api.put(`/students/${id}/readiness`, data);
+  notifyDataUpdate('students');
+  notifyDataUpdate('notifications');
+  return res.data;
+};
+
+export const updateStudentWeeklyRating = async (id, data) => {
+  const res = await api.put(`/students/${id}/weekly-rating`, data);
+  notifyDataUpdate('students');
+  notifyDataUpdate('notifications');
+  return res.data;
+};
+
+export const updateTrainerApproval = async (id, data) => {
+  const res = await api.put(`/students/${id}/trainer-approval`, data);
+  notifyDataUpdate('students');
+  notifyDataUpdate('notifications');
+  return res.data;
+};
+
 export const logRemedialAction = async (id, data) => {
   const res = await api.post(`/students/${id}/remedial`, data);
   notifyDataUpdate('students');
@@ -591,6 +612,11 @@ export const deleteTrainingMaterial = async (id) => {
 // Leadership Hub API
 export const getBranches = async () => {
   const res = await api.get('/branches');
+  return res.data;
+};
+
+export const getAdminUsers = async () => {
+  const res = await api.get('/admin/users');
   return res.data;
 };
 
@@ -1099,6 +1125,8 @@ export const respondStudentRequest = async (id, data) => {
   return res.data;
 };
 
+export const studentRequestDocumentUrl = (id) => `${apiBase}/api/student-portal/requests/${id}/document`;
+
 export const getLiveClasses = async (params) => {
   const res = await api.get('/trainer/live-class', { params });
   return res.data;
@@ -1137,6 +1165,13 @@ export const markLiveClassAttendanceSaved = async (sessionId) => {
 export const joinStudentLiveClass = async (data = {}) => {
   const payload = typeof data === 'object' && data !== null ? data : {};
   const res = await api.post('/student-portal/live-class/join', payload);
+  return res.data;
+};
+
+// Periodic heartbeat while in live class (tracks online duration for 1 hr 45 min Present rule)
+export const sendLiveClassHeartbeat = async (data = {}) => {
+  const payload = typeof data === 'object' && data !== null ? data : {};
+  const res = await api.post('/student-portal/live-class/heartbeat', payload);
   return res.data;
 };
 
@@ -1287,6 +1322,20 @@ export const saveStudentTestAnswers = async (id, answers) => {
 };
 export const submitStudentTest = async (id, answers) => {
   const res = await api.post(`/student-portal/tests/${id}/submit`, { answers });
+  notifyDataUpdate('assessments');
+  return res.data;
+};
+export const getTestLeaderboard = async (id, params) => {
+  const res = await api.get(`/student-portal/tests/${id}/leaderboard`, { params });
+  return res.data;
+};
+export const reallocateTestAttempt = async (id, data) => {
+  const res = await api.post(`/trainer/assessments/${id}/reallocate`, data);
+  notifyDataUpdate('assessments');
+  return res.data;
+};
+export const reallocateStudentTest = async (id, data) => {
+  const res = await api.post(`/student-portal/tests/${id}/reallocate`, data);
   notifyDataUpdate('assessments');
   return res.data;
 };

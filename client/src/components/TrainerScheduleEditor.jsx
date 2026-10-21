@@ -15,6 +15,8 @@ export default function TrainerScheduleEditor() {
   const [selected, setSelected] = useState('');
   const [rows, setRows] = useState([]);
   const [maxPerDay, setMaxPerDay] = useState('');
+  const [role, setRole] = useState('');
+  const [responsibilities, setResponsibilities] = useState('');
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
 
@@ -35,6 +37,8 @@ export default function TrainerScheduleEditor() {
       start: toHHMM(c.startMin), end: toHHMM(c.endMin)
     })));
     setMaxPerDay(trainer.maxSessionsPerDay || '');
+    setRole(trainer.role || '');
+    setResponsibilities(trainer.responsibilities || '');
   }, [trainer]);
 
   const setRow = (i, patch) => setRows((prev) => prev.map((r, j) => (j === i ? { ...r, ...patch } : r)));
@@ -48,7 +52,7 @@ export default function TrainerScheduleEditor() {
         name: r.name.trim(), batch: r.batch, days: r.days.join(','),
         startMin: toMin(r.start), endMin: toMin(r.end), timeSlot: `${label(toMin(r.start))} – ${label(toMin(r.end))}`
       }));
-      const updated = await updateTrainerSettings(selected, { scheduledClasses, maxSessionsPerDay: Number(maxPerDay) || 0 });
+      const updated = await updateTrainerSettings(selected, { scheduledClasses, maxSessionsPerDay: Number(maxPerDay) || 0, role: role.trim(), responsibilities: responsibilities.trim() });
       setTrainers((prev) => prev.map((t) => (t.trainerId === selected ? updated : t)));
       setMsg('✓ Saved. Students of each batch now see these slots on their timetable.');
     } catch (e) {
@@ -75,6 +79,20 @@ export default function TrainerScheduleEditor() {
       {trainer && (
         <>
           <div className="text-[11px] text-slate-500">Shift: <b>{trainer.shift || 'not set'}</b>{trainer.workingDays ? ` · ${trainer.workingDays}` : ''} · Batches with allocated students: <b>{batches.join(', ') || 'none yet'}</b></div>
+          <div className="flex flex-wrap items-end gap-3">
+            <label className="text-xs text-slate-600 flex items-center gap-2">Role
+              <input list="trainer-role-options" value={role} onChange={(e) => setRole(e.target.value)} placeholder="e.g. Intro Specialist" className={`${input} w-48`} />
+              <datalist id="trainer-role-options">
+                <option value="Intro Specialist" />
+                <option value="Lead Trainer" />
+                <option value="Head of Trainer" />
+                <option value="Faculty" />
+              </datalist>
+            </label>
+            <label className="text-xs text-slate-600 flex items-center gap-2 flex-1 min-w-[220px]">Responsibilities
+              <input value={responsibilities} onChange={(e) => setResponsibilities(e.target.value)} placeholder="What this role is responsible for" className={`${input} flex-1`} />
+            </label>
+          </div>
           <div className="space-y-2">
             {rows.length === 0 && <div className="text-xs text-slate-400 border border-dashed border-slate-200 rounded-xl p-4 text-center">No classes yet.</div>}
             {rows.map((r, i) => (

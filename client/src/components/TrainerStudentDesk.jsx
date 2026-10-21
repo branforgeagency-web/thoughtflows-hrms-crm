@@ -73,7 +73,7 @@ export default function TrainerStudentDesk({ trainerId, trainerName }) {
     setActive({ kind, item });
     setForm(kind === 'sub'
       ? { status: 'Approved', score: item.score ?? '', feedback: item.feedback || '' }
-      : { status: item.status === 'Open' ? 'Scheduled' : 'Resolved', scheduledFor: item.scheduledFor || item.preferredDate || '', response: item.response || '', mockScore: '' });
+      : { status: item.status === 'Open' ? 'Scheduled' : 'Resolved', scheduledFor: item.scheduledFor || item.preferredDate || '', response: item.response || '', mockScore: item.details?.mockScore ?? '', improvementNotes: item.details?.improvementNotes || '' });
   };
 
   const save = async () => {
@@ -191,8 +191,41 @@ export default function TrainerStudentDesk({ trainerId, trainerName }) {
               </>
             ) : (
               <>
-                <h3 className="text-base font-bold text-slate-900 pr-8">{REQ_LABEL[active.item.type]} — {active.item.studentName}</h3>
-                {active.item.message && <p className="text-xs text-slate-500 mt-1">“{active.item.message}”</p>}
+                <div className="pr-8">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="text-base font-bold text-slate-900">{REQ_LABEL[active.item.type]} — {active.item.studentName}</h3>
+                    {active.item.type === 'mock_interview' && (
+                      <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                        Attempt {active.item.attemptNumber || active.item.details?.attemptNumber || 1} of 2
+                      </span>
+                    )}
+                  </div>
+                  {active.item.type === 'mock_interview' && (
+                    <p className="text-[11px] text-indigo-700 font-medium mt-0.5">
+                      {(active.item.attemptNumber || active.item.details?.attemptNumber) === 2
+                        ? '🎯 Attempt 2: Readiness Improvement Assessment (compare progress with Attempt 1)'
+                        : '📋 Attempt 1: Baseline Interview Readiness Assessment'}
+                    </p>
+                  )}
+                  {active.item.message && <p className="text-xs text-slate-500 mt-1">“{active.item.message}”</p>}
+                </div>
+
+                {active.item.type === 'mock_interview' && (active.item.attemptNumber || active.item.details?.attemptNumber) === 2 && (
+                  <div className="bg-amber-50/80 border border-amber-200 rounded-xl p-3 text-xs text-amber-900 mt-3 space-y-1">
+                    <div className="font-bold flex items-center justify-between">
+                      <span>Prior Assessment (Attempt 1):</span>
+                      <span className="font-mono bg-amber-100 px-2 py-0.5 rounded text-amber-800">
+                        {active.item.details?.priorScore != null ? `${active.item.details.priorScore}%` : 'Graded'}
+                      </span>
+                    </div>
+                    {active.item.details?.improvements && (
+                      <div className="text-[11px] text-amber-800">
+                        <strong>Student reported prep:</strong> “{active.item.details.improvements}”
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <div className="space-y-3 mt-5 text-xs">
                   <label className="block"><span className="font-semibold text-slate-700 block mb-1">Status</span>
                     <select value={form.status} onChange={setF('status')} className={inputCls}>
@@ -207,9 +240,28 @@ export default function TrainerStudentDesk({ trainerId, trainerName }) {
                     </label>
                   )}
                   {active.item.type === 'mock_interview' && form.status === 'Resolved' && (
-                    <label className="block"><span className="font-semibold text-slate-700 block mb-1">Mock score out of 100 (updates readiness)</span>
-                      <input type="number" min={0} max={100} value={form.mockScore} onChange={setF('mockScore')} className={inputCls} />
-                    </label>
+                    <>
+                      <label className="block">
+                        <span className="font-semibold text-slate-700 block mb-1">
+                          Mock score out of 100 (Attempt {active.item.attemptNumber || active.item.details?.attemptNumber || 1} of 2) *
+                        </span>
+                        <input type="number" min={0} max={100} value={form.mockScore} onChange={setF('mockScore')} placeholder="Enter score 0–100..." className={inputCls} />
+                      </label>
+                      {(active.item.attemptNumber || active.item.details?.attemptNumber) === 2 && (
+                        <label className="block">
+                          <span className="font-semibold text-slate-700 block mb-1">
+                            Observed Improvements & Progression (vs Attempt 1)
+                          </span>
+                          <input
+                            type="text"
+                            value={form.improvementNotes || ''}
+                            onChange={setF('improvementNotes')}
+                            placeholder="e.g. Demonstrated significant improvement in ICD-10 accuracy and clinical scenario explanation"
+                            className={inputCls}
+                          />
+                        </label>
+                      )}
+                    </>
                   )}
                   <label className="block"><span className="font-semibold text-slate-700 block mb-1">Message to the student</span>
                     <textarea rows={3} value={form.response} onChange={setF('response')} placeholder={form.status === 'Scheduled' ? 'e.g. Join the class Zoom link at this time' : ''} className={inputCls} />

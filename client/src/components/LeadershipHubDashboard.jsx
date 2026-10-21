@@ -43,7 +43,10 @@ import {
   BookOpen,
   TrendingUp,
   Check,
-  Lock
+  Lock,
+  Shuffle,
+  LifeBuoy,
+  Bell
 } from 'lucide-react';
 import TeamPerformanceBoard from './TeamPerformanceBoard';
 import TrainerQualityBoard from './TrainerQualityBoard';
@@ -59,6 +62,7 @@ import RegionalManagerDashboard from './RegionalManagerDashboard';
 import BranchManagerDashboard from './BranchManagerDashboard';
 import BranchLoginModal from './BranchLoginModal';
 import DashboardNavSwitcher from './DashboardNavSwitcher';
+import DepartmentCoordinationBoard from './DepartmentCoordinationBoard';
 import {
   getBranches,
   getDepartments,
@@ -84,6 +88,9 @@ import {
   getTrainerSettings,
   getBatches,
   getStats,
+  getTeamTasks,
+  createEscalation,
+  sendStaffReminder,
   onDataUpdate
 } from '../services/api';
 
@@ -137,7 +144,7 @@ const OP_TABS = [
   { key: 'command', label: 'Command Desk', icon: Flame, iconColor: 'text-rose-500' },
   { key: 'connectivity', label: 'Connectivity Board', icon: GitBranch, iconColor: 'text-indigo-400' },
   { key: 'branches', label: 'Branch Ops', icon: Building2, iconColor: 'text-blue-500' },
-  { key: 'departments', label: 'Department Coordination', icon: LayoutGrid, iconColor: 'text-sky-500' },
+  { key: 'departments', label: 'Department Coordination', icon: Shuffle, iconColor: 'text-sky-500' },
   { key: 'students', label: 'Student Movement', icon: Activity, iconColor: 'text-amber-500' },
   { key: 'handover', label: 'Admission → Training', icon: HeartHandshake, iconColor: 'text-amber-500' },
   { key: 'escalations', label: 'Escalation Desk', icon: AlertTriangle, iconColor: 'text-rose-500', badgeKey: 'openEscalations', badgeBg: 'bg-rose-500' },
@@ -542,6 +549,7 @@ export default function LeadershipHubDashboard({ onClose, currentUser, onLogout,
             onSelectRegion={openRegion}
             onSelectBranch={openBranch}
             onChanged={refreshSummary}
+            onSwitchDepartment={onSwitchDepartment}
           />
         )}
 
@@ -601,7 +609,7 @@ export default function LeadershipHubDashboard({ onClose, currentUser, onLogout,
               deptId: 'marketing',
               code: 'DEP-MKT-001',
               title: 'Head of Marketing',
-              headName: 'Ramesh V.',
+              headName: 'Divya R.',
               accentBg: '#D97706',
               borderAccent: 'border-amber-600',
               icon: Megaphone,
@@ -619,11 +627,11 @@ export default function LeadershipHubDashboard({ onClose, currentUser, onLogout,
             deptConfig={{
               deptId: 'student',
               code: 'DEP-STU-001',
-              title: 'Head of Students',
-              headName: 'Priya S.',
+              title: 'Head of Student Support',
+              headName: 'Lakshmi N.',
               accentBg: '#DB2777',
               borderAccent: 'border-pink-600',
-              icon: Crown,
+              icon: LifeBuoy,
               targetGapLabel: 'ON "STUDENT SATISFACTION %"'
             }}
             onBack={() => setSelectedDept(null)}
@@ -655,9 +663,10 @@ export default function LeadershipHubDashboard({ onClose, currentUser, onLogout,
         {view === 'regional' && (
           <RegionalManagerDashboard
             onBack={backToLanding}
-            initialManagerId={selectedRegion?.id || null}
+            initialManagerId={selectedRegion?.id || selectedRegion?.state || null}
             liveBranches={branches}
             onSelectBranch={openBranch}
+            currentUser={currentUser}
           />
         )}
 
@@ -888,7 +897,8 @@ function ApprovalsDesk({ filter, scopeLabel, accent, onChanged }) {
 function EscalationsDesk({ filter, scopeLabel, accent, onChanged }) {
   return (
     <EscalationDeskBoard 
-      customScopeLabel={`${scopeLabel || 'HR'} issues`} 
+      filter={filter || {}}
+      customScopeLabel={`${scopeLabel || 'Org-wide'} issues`} 
       onEscalationChange={onChanged} 
     />
   );
@@ -1096,34 +1106,242 @@ function StudentMovementSection({ students }) {
   );
 }
 
-function HandoverSection({ students }) {
-  if (students === null) return <div className="py-8 text-center text-slate-500 text-xs">Loading student records…</div>;
-  const handoverPending = students.filter((s) => s.handoverStatus === 'Pending Handover');
-  const ready = students.filter((s) => s.handoverStatus && s.handoverStatus !== 'Pending Handover');
-  return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <Stat label="Pending Handover" value={handoverPending.length} color="text-orange-600" />
-        <Stat label="Ready / Sent" value={ready.length} color="text-emerald-600" />
+function HandoverSection({ students, escalations = [], onChanged }) {
+  const [pushedMap, setPushedMap] = useState(() => {
+    try {
+      const saved = localStorage.getItem('tf_pushed_handovers');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+  const [escalatedMap, setEscalatedMap] = useState({});
+  const [toastMsg, setToastMsg] = useState(null);
+
+  const showToast = (msg) => {
+    setToastMsg(msg);
+    setTimeout(() => setToastMsg(null), 3500);
+  };
+
+  const handoverList = useMemo(() => {
+    if (!Array.isArray(students)) return [];
+    return students
+      .filter((s) => s.handoverStatus || s.stage === 'admitted' || s.studentId)
+      .map((s) => {
+        let status = 'Pending Handover';
+        let actionType = 'push_training';
+        let pending = 'Trainer mapping';
+        let responsible = 'Training Mgr';
+
+        if (s.handoverStatus === 'Sent to Training' && s.trainerName && s.batchName) {
+          status = 'Training Accepted';
+          actionType = 'none';
+          pending = '—';
+          responsible = 'Training';
+        } else if (s.batchName) {
+          status = 'Batch Assigned';
+          actionType = 'push_training';
+          pending = s.trainerName ? 'Batch start' : 'Trainer mapping';
+          responsible = 'Training Mgr';
+        } else if (s.handoverStatus === 'Handed Over to Head of Trainer') {
+          status = 'Batch Assigned';
+          actionType = 'push_training';
+          pending = 'Trainer mapping';
+          responsible = 'Training Mgr';
+        } else if (!s.feeStatus || s.feeStatus === 'Pending') {
+          status = 'Profile Pending';
+          actionType = 'push_hr';
+          pending = 'Education + docs';
+          responsible = 'HR';
+        } else if (s.feeStatus === 'Fully Paid' || s.feeStatus === 'Part Paid') {
+          status = 'Fee Verified';
+          actionType = 'push_training';
+          pending = 'Batch assignment';
+          responsible = 'Training Mgr';
+        }
+
+        return {
+          id: s._id || s.studentId,
+          studentId: s.studentId || 'TF-PENDING',
+          name: s.name,
+          pending,
+          responsible,
+          status,
+          actionType,
+          branch: s.branch,
+          course: s.course,
+          headOfTrainer: s.headOfTrainer,
+          hrName: s.hrName
+        };
+      });
+  }, [students]);
+
+  const handlePush = async (item) => {
+    setPushedMap((prev) => {
+      const next = { ...prev, [item.id]: true, [item.studentId]: true };
+      try {
+        localStorage.setItem('tf_pushed_handovers', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+    const target = item.actionType === 'push_hr' ? 'HR' : 'Training Mgr';
+    const deptCode = item.actionType === 'push_hr' ? 'DEP-HR-001' : 'ACAD';
+    const recipientName = item.actionType === 'push_hr' ? (item.hrName || 'HR Team') : (item.headOfTrainer || 'Training Manager');
+
+    try {
+      await sendStaffReminder({
+        name: recipientName,
+        departmentCode: deptCode,
+        message: `Handover pending: Please complete ${item.pending} for student ${item.name} (${item.studentId}).`
+      });
+      showToast(`Nudge notification sent to ${target} for ${item.name}`);
+    } catch {
+      showToast(`Nudge logged for ${target} · ${item.name}`);
+    }
+  };
+
+  const handleEscalate = async (item) => {
+    setEscalatedMap((prev) => ({ ...prev, [item.id]: true, [item.studentId]: true }));
+
+    try {
+      await createEscalation({
+        title: `Handover Delay: ${item.name} (${item.studentId}) pending ${item.pending}`,
+        departmentCode: item.responsible === 'HR' ? 'DEP-HR-001' : 'ACAD',
+        branchName: item.branch || '',
+        studentId: item.studentId,
+        priority: 'urgent',
+        type: 'Operational Issue'
+      });
+      showToast(`Escalation ticket created for ${item.name} to Operations Desk`);
+      if (onChanged) onChanged();
+    } catch {
+      showToast(`Escalation recorded for ${item.name}`);
+    }
+  };
+
+  if (students === null) {
+    return (
+      <div className="bg-white rounded-3xl border border-slate-200/90 p-8 text-center text-slate-400 text-xs shadow-xs">
+        Loading live student handover records…
       </div>
-      <SectionCard title="🤝 Admission → Training Handover">
-        {handoverPending.length === 0 ? (
-          <div className="text-[11px] text-slate-400 py-3 text-center">Nothing pending handover.</div>
-        ) : (
-          <div className="space-y-2">
-            {handoverPending.map((s) => {
-              const items = s.checklist ? Object.values(s.checklist) : [];
-              const done = items.filter(Boolean).length;
-              return (
-                <div key={s._id} className="p-2.5 rounded-lg bg-orange-50 border border-orange-200">
-                  <div className="text-xs font-semibold text-slate-900">{s.name} <span className="text-slate-400 font-normal">· {s.studentId}</span></div>
-                  <div className="text-[10px] text-slate-500 mt-0.5">{s.course} · {done}/{items.length || 10} checklist items ready</div>
+    );
+  }
+
+  return (
+    <div className="relative bg-white rounded-3xl border border-slate-200/90 p-5 sm:p-7 shadow-xs space-y-4">
+      {/* Real-time Toast Notification */}
+      {toastMsg && (
+        <div className="absolute top-4 right-6 z-20 flex items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-900 text-white text-xs font-semibold shadow-lg animate-fadeIn">
+          <Bell className="w-3.5 h-3.5 text-amber-400" />
+          <span>{toastMsg}</span>
+        </div>
+      )}
+
+      {/* Header */}
+      <div>
+        <h3 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2">
+          <span>💛</span> Admission → Training Handover
+        </h3>
+        <p className="text-xs text-slate-400 font-mono mt-0.5">
+          Admitted students & where their handover stands · Live database records
+        </p>
+      </div>
+
+      {/* Real Cards List */}
+      {handoverList.length === 0 ? (
+        <div className="py-12 px-4 text-center rounded-2xl bg-slate-50 border border-slate-200/80">
+          <Check className="w-8 h-8 text-emerald-500 mx-auto mb-2" />
+          <h4 className="text-sm font-bold text-slate-800">All Handovers Complete</h4>
+          <p className="text-xs text-slate-500 mt-0.5">All admitted students have been assigned to trainers and batches.</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {handoverList.map((item) => {
+            const isPushed = Boolean(pushedMap[item.id] || pushedMap[item.studentId]);
+            const isEscalated = Boolean(
+              escalatedMap[item.id] ||
+              escalatedMap[item.studentId] ||
+              (escalations || []).some(
+                (e) =>
+                  !['resolved', 'closed'].includes(e.status) &&
+                  ((e.studentId && (e.studentId === item.studentId || e.studentId === item.id)) ||
+                    (e.title && e.title.includes(item.studentId)))
+              )
+            );
+
+            return (
+              <div
+                key={item.id}
+                className="bg-white rounded-2xl border border-slate-200/90 p-4 sm:p-5 hover:border-slate-300 hover:shadow-xs transition-all relative space-y-2.5"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="space-y-1">
+                    <span className="inline-block font-mono text-[10px] sm:text-[11px] font-bold text-teal-700 bg-teal-50 border border-teal-100 px-2 py-0.5 rounded">
+                      {item.studentId}
+                    </span>
+                    <h4 className="text-sm sm:text-base font-bold text-slate-900 tracking-tight">
+                      {item.name}
+                    </h4>
+                    <div className="text-xs text-slate-500 font-medium">
+                      <span>Pending: {item.pending}</span>
+                      <span className="mx-1.5 text-slate-300">·</span>
+                      <span>responsible: {item.responsible}</span>
+                    </div>
+                  </div>
+
+                  <span
+                    className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap border ${
+                      item.status === 'Training Accepted'
+                        ? 'bg-emerald-50 text-emerald-600 border-emerald-100'
+                        : item.status === 'Batch Assigned'
+                        ? 'bg-amber-50 text-amber-600 border-amber-100'
+                        : item.status === 'Profile Pending'
+                        ? 'bg-orange-50 text-orange-600 border-orange-100'
+                        : 'bg-amber-50 text-amber-600 border-amber-100'
+                    }`}
+                  >
+                    {item.status}
+                  </span>
                 </div>
-              );
-            })}
-          </div>
-        )}
-      </SectionCard>
+
+                {item.actionType !== 'none' && (
+                  <div className="flex items-center gap-2.5 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => !isPushed && handlePush(item)}
+                      disabled={isPushed}
+                      className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all shadow-2xs ${
+                        isPushed
+                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-300 cursor-default'
+                          : 'bg-[#059669] hover:bg-[#047857] text-white cursor-pointer active:scale-95'
+                      }`}
+                    >
+                      {isPushed
+                        ? 'Pushed ✓'
+                        : item.actionType === 'push_hr'
+                        ? 'Push HR'
+                        : 'Push Training Mgr'}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => !isEscalated && handleEscalate(item)}
+                      disabled={isEscalated}
+                      className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold border transition-all shadow-2xs ${
+                        isEscalated
+                          ? 'bg-rose-100 text-rose-700 border-rose-300 cursor-default'
+                          : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200/90 cursor-pointer active:scale-95'
+                      }`}
+                    >
+                      {isEscalated ? 'Escalated 🚨' : 'Escalate'}
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -1242,17 +1460,17 @@ function TrainingProgressPanel({ demos }) {
 }
 
 export const BRANCH_OPERATIONS_11_MASTER = [
-  { name: 'CBE-Gandhipuram', code: 'CBE-GPM', city: 'Coimbatore', state: 'Tamil Nadu', subtitle: 'COIMBATORE', defaultHealth: 'Good', defaultAdm: 48, defaultLeads: 41, defaultConv: '34%' },
-  { name: 'CBE-Hopes', code: 'CBE-HPS', city: 'Coimbatore', state: 'Tamil Nadu', subtitle: 'COIMBATORE', defaultHealth: 'Good', defaultAdm: 44, defaultLeads: 39, defaultConv: '31%' },
-  { name: 'CBE-Saravanampatti', code: 'CBE-SVM', city: 'Coimbatore', state: 'Tamil Nadu', subtitle: 'COIMBATORE', defaultHealth: 'Good', defaultAdm: 61, defaultLeads: 47, defaultConv: '38%' },
-  { name: 'Hyderabad-Ameerpet', code: 'HYD-AMP', city: 'Hyderabad', state: 'Telangana', subtitle: 'TELANGANA · 2 FACILITIES', defaultHealth: 'Good', defaultAdm: 64, defaultLeads: 62, defaultConv: '29%' },
-  { name: 'Hyderabad-Dilsukhnagar', code: 'HYD-DSN', city: 'Hyderabad', state: 'Telangana', subtitle: 'TELANGANA', defaultHealth: 'Needs Attention', defaultAdm: 28, defaultLeads: 38, defaultConv: '19%' },
-  { name: 'Kochi', code: 'KER-KOC', city: 'Kochi', state: 'Kerala', subtitle: 'KERALA', defaultHealth: 'Good', defaultAdm: 31, defaultLeads: 29, defaultConv: '25%' },
-  { name: 'Salem', code: 'TND-SLM', city: 'Salem', state: 'Tamil Nadu', subtitle: 'TAMIL NADU', defaultHealth: 'Good', defaultAdm: 42, defaultLeads: 36, defaultConv: '28%' },
-  { name: 'Tirupathi', code: 'AND-TPT', city: 'Tirupati', state: 'Andhra Pradesh', subtitle: 'ANDHRA', defaultHealth: 'Needs Attention', defaultAdm: 30, defaultLeads: 28, defaultConv: '24%' },
-  { name: 'Trichy', code: 'TND-TRY', city: 'Trichy', state: 'Tamil Nadu', subtitle: 'TAMIL NADU', defaultHealth: 'Good', defaultAdm: 35, defaultLeads: 33, defaultConv: '26%' },
-  { name: 'Trivandrum', code: 'KER-TRV', city: 'Trivandrum', state: 'Kerala', subtitle: 'KERALA', defaultHealth: 'Good', defaultAdm: 33, defaultLeads: 31, defaultConv: '27%' },
-  { name: 'Vizag', code: 'AND-VZG', city: 'Visakhapatnam', state: 'Andhra Pradesh', subtitle: 'ANDHRA', defaultHealth: 'Needs Attention', defaultAdm: 24, defaultLeads: 26, defaultConv: '21%' }
+  { name: 'CBE-Gandhipuram', code: 'CBE-GPM', city: 'Coimbatore', state: 'Tamil Nadu', subtitle: 'COIMBATORE' },
+  { name: 'CBE-Hopes', code: 'CBE-HPS', city: 'Coimbatore', state: 'Tamil Nadu', subtitle: 'COIMBATORE' },
+  { name: 'CBE-Saravanampatti', code: 'CBE-SVM', city: 'Coimbatore', state: 'Tamil Nadu', subtitle: 'COIMBATORE' },
+  { name: 'Hyderabad-Ameerpet', code: 'HYD-AMP', city: 'Hyderabad', state: 'Telangana', subtitle: 'TELANGANA · 2 FACILITIES' },
+  { name: 'Hyderabad-Dilsukhnagar', code: 'HYD-DSN', city: 'Hyderabad', state: 'Telangana', subtitle: 'TELANGANA' },
+  { name: 'Kochi', code: 'KER-KOC', city: 'Kochi', state: 'Kerala', subtitle: 'KERALA' },
+  { name: 'Salem', code: 'TND-SLM', city: 'Salem', state: 'Tamil Nadu', subtitle: 'TAMIL NADU' },
+  { name: 'Tirupathi', code: 'AND-TPT', city: 'Tirupati', state: 'Andhra Pradesh', subtitle: 'ANDHRA' },
+  { name: 'Trichy', code: 'TND-TRY', city: 'Trichy', state: 'Tamil Nadu', subtitle: 'TAMIL NADU' },
+  { name: 'Trivandrum', code: 'KER-TRV', city: 'Trivandrum', state: 'Kerala', subtitle: 'KERALA' },
+  { name: 'Vizag', code: 'AND-VZG', city: 'Visakhapatnam', state: 'Andhra Pradesh', subtitle: 'ANDHRA' }
 ];
 
 function BranchOpsGrid({ branches, onSelect }) {
@@ -1281,7 +1499,9 @@ function BranchOpsGrid({ branches, onSelect }) {
         return lb.includes(cleanCore);
       });
       const admittedCount = matchedLeads.filter((l) => l.stage === 'admitted').length;
-      const computedConv = matchedLeads.length ? `${Math.round((admittedCount / matchedLeads.length) * 100)}%` : m.defaultConv;
+      const computedConv = matchedLeads.length
+        ? `${Math.round((admittedCount / matchedLeads.length) * 100)}%`
+        : (match?.conversionPct !== null && match?.conversionPct !== undefined ? `${match.conversionPct}%` : '0%');
 
       const attRow = (attendanceRows || []).find((r) => {
         const rn = String(r.branchName || '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -1289,11 +1509,11 @@ function BranchOpsGrid({ branches, onSelect }) {
       });
       const attRate = attRow ? attRow.rate : null;
 
-      let health = m.defaultHealth;
+      let health = 'Good';
       if (attRate !== null && attRate < 70) health = 'Needs Attention';
 
-      const admCount = match?.activeStudents || match?.admissionsThisMonth || m.defaultAdm;
-      const leadsCount = matchedLeads.length || match?.leadCount || m.defaultLeads;
+      const admCount = match?.activeStudents ?? match?.admissionsThisMonth ?? 0;
+      const leadsCount = matchedLeads.length || match?.leadCount || 0;
 
       const mergedBranch = {
         ...m,
@@ -1447,85 +1667,128 @@ function StaffAttendancePanel() {
 // ---- Connectivity Board (Student Journey & Inter-department movement) ----
 
 function ConnectivityBoard({ students }) {
-  const [stuckStudents, setStuckStudents] = useState([
-    {
-      id: 'stuck-1',
-      name: 'Kaveri S',
-      code: 'TF-CBE-2026-CPC-0042',
-      stuckAt: 'Fee Verification Pending',
-      owner: 'Admission',
-      duration: '2 days ago',
-      resolved: false
-    },
-    {
-      id: 'stuck-2',
-      name: 'Rithanya M',
-      code: 'TF-CBE-2026-CPC-0019',
-      stuckAt: 'Training Handover Pending',
-      owner: 'HR',
-      duration: '3 days ago',
-      resolved: false
-    }
-  ]);
-
-  const [pipelineStudents, setPipelineStudents] = useState([
-    {
-      id: 'pipe-1',
-      name: 'Karthik V.',
-      code: 'L-TF-CBE-2026-0188',
-      status: 'Lead Assigned',
-      currentStep: 2,
-      totalSteps: 27,
-      course: 'CPC',
-      branch: 'Coimbatore',
-      nextDept: 'HR'
-    },
-    {
-      id: 'pipe-2',
-      name: 'Naveen Reddy',
-      code: 'L-TF-HYD-2026-0150',
-      status: 'Demo Booked',
-      currentStep: 4,
-      totalSteps: 27,
-      course: 'CPC',
-      branch: 'Hyderabad',
-      nextDept: 'Demo Desk'
-    }
-  ]);
-
+  const [leads, setLeads] = useState([]);
+  const [resolvedIds, setResolvedIds] = useState(new Set());
   const [toastMsg, setToastMsg] = useState(null);
+
+  useEffect(() => {
+    getLeads().then((d) => setLeads(d && Array.isArray(d.leads) ? d.leads : [])).catch(() => setLeads([]));
+  }, []);
 
   const showToast = (msg) => {
     setToastMsg(msg);
     setTimeout(() => setToastMsg(null), 3000);
   };
 
+  const stuckStudents = useMemo(() => {
+    if (!Array.isArray(students)) return [];
+    return students
+      .filter((s) => s.handoverStatus === 'Pending Handover' || s.feeStatus === 'Pending' || (typeof s.attendancePct === 'number' && s.attendancePct < 75))
+      .slice(0, 10)
+      .map((s) => {
+        const id = s._id || s.studentId;
+        const isResolved = resolvedIds.has(id);
+        let stuckAt = 'Handover Pending';
+        let owner = 'HR & Admissions';
+
+        if (s.handoverStatus === 'Pending Handover') {
+          stuckAt = 'Training Handover Pending';
+          owner = 'HR';
+        } else if (s.feeStatus === 'Pending') {
+          stuckAt = 'Fee Verification Pending';
+          owner = 'Accounts';
+        } else if (typeof s.attendancePct === 'number' && s.attendancePct < 75) {
+          stuckAt = `Low Attendance (${s.attendancePct}%)`;
+          owner = 'Training Faculty';
+        }
+
+        return {
+          id,
+          name: s.name,
+          code: s.studentId,
+          stuckAt: isResolved ? 'Handover Initiated' : stuckAt,
+          owner,
+          duration: s.course || 'Active Program',
+          resolved: isResolved
+        };
+      });
+  }, [students, resolvedIds]);
+
+  const pipelineStudents = useMemo(() => {
+    const list = [];
+    if (Array.isArray(leads) && leads.length > 0) {
+      leads.slice(0, 5).forEach((l, idx) => {
+        const isAdmitted = l.stage === 'admitted';
+        const isDemo = l.stage === 'demo_booked' || l.stage === 'demo_attended';
+        list.push({
+          id: l._id || `lead-${idx}`,
+          name: l.name || l.fullName,
+          code: l.leadId || `L-TF-${idx + 100}`,
+          status: isAdmitted ? 'Admitted' : (isDemo ? 'Demo Scheduled' : 'Lead Assigned'),
+          currentStep: isAdmitted ? 8 : (isDemo ? 5 : 2),
+          totalSteps: 27,
+          course: l.course || 'CPC',
+          branch: l.branch || 'Campus',
+          nextDept: isAdmitted ? 'Training' : 'HR'
+        });
+      });
+    }
+
+    if (Array.isArray(students) && students.length > 0) {
+      students.slice(0, 8).forEach((s) => {
+        let status = 'Training In Progress';
+        let currentStep = 15;
+        let nextDept = 'Academics';
+
+        if (s.placementStatus === 'Ready' || s.isPlacementReady) {
+          status = 'Placement Ready';
+          currentStep = 24;
+          nextDept = 'CCCP / Placement';
+        } else if (s.statusGroup === 'placed') {
+          status = 'Placed';
+          currentStep = 27;
+          nextDept = 'Alumni';
+        } else if (s.handoverStatus === 'Pending Handover') {
+          status = 'Handover to Training';
+          currentStep = 8;
+          nextDept = 'Training Head';
+        } else if (!s.batchName) {
+          status = 'Batch Allocation';
+          currentStep = 10;
+          nextDept = 'Training Faculty';
+        }
+
+        list.push({
+          id: s._id || s.studentId,
+          name: s.name,
+          code: s.studentId,
+          status,
+          currentStep,
+          totalSteps: 27,
+          course: s.course || 'CPC',
+          branch: s.location || s.branch || 'Campus',
+          nextDept
+        });
+      });
+    }
+
+    return list;
+  }, [leads, students]);
+
   const handleAdvanceStuck = (id) => {
-    setStuckStudents((prev) =>
-      prev.map((s) =>
-        s.id === id ? { ...s, resolved: true, stuckAt: 'Handover Initiated', duration: 'Just now' } : s
-      )
-    );
+    setResolvedIds((prev) => new Set([...prev, id]));
     showToast('Student workflow advanced to next department');
   };
 
-  const handleAdvancePipeline = (id) => {
-    setPipelineStudents((prev) =>
-      prev.map((s) => {
-        if (s.id === id) {
-          const nextStep = Math.min(s.currentStep + 1, s.totalSteps);
-          return {
-            ...s,
-            currentStep: nextStep,
-            status: nextStep === 3 ? 'Counseling Complete' : nextStep === 5 ? 'Demo Attended' : 'Advanced'
-          };
-        }
-        return s;
-      })
-    );
+  const handleAdvancePipeline = () => {
     showToast('Advanced to next milestone in student journey');
   };
 
+  const leadPhaseCount = (leads || []).filter((l) => l.stage !== 'admitted').length;
+  const admissionCount = (students || []).filter((s) => s.handoverStatus === 'Pending Handover' || s.stage === 'admitted').length;
+  const trainingCount = (students || []).filter((s) => s.batchName || s.handoverStatus === 'Sent to Training').length;
+  const certPrepCount = (students || []).filter((s) => s.certified || s.syllabusCompleted).length;
+  const placementCount = (students || []).filter((s) => s.placementStatus === 'Ready' || s.isPlacementReady).length;
   const activeStuckCount = stuckStudents.filter((s) => !s.resolved).length;
 
   return (
@@ -1537,35 +1800,35 @@ function ConnectivityBoard({ students }) {
         </div>
       )}
 
-      {/* 6 Metric KPI Cards */}
+      {/* 6 Metric KPI Cards — 100% Live DB values */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4">
         {/* Card 1: Lead Phase */}
         <div className="bg-white rounded-xl border border-slate-200/90 border-t-2 border-t-blue-500 p-4 shadow-2xs hover:shadow-sm transition-all">
-          <div className="text-2xl font-bold text-blue-600 leading-none">2</div>
+          <div className="text-2xl font-bold text-blue-600 leading-none">{leadPhaseCount}</div>
           <div className="text-xs font-bold text-slate-800 mt-1.5">Lead Phase</div>
         </div>
 
         {/* Card 2: Admission */}
         <div className="bg-white rounded-xl border border-slate-200/90 border-t-2 border-t-amber-400 p-4 shadow-2xs hover:shadow-sm transition-all">
-          <div className="text-2xl font-bold text-amber-500 leading-none">2</div>
+          <div className="text-2xl font-bold text-amber-500 leading-none">{admissionCount}</div>
           <div className="text-xs font-bold text-slate-800 mt-1.5">Admission</div>
         </div>
 
         {/* Card 3: Training */}
         <div className="bg-white rounded-xl border border-slate-200/90 border-t-2 border-t-teal-400 p-4 shadow-2xs hover:shadow-sm transition-all">
-          <div className="text-2xl font-bold text-teal-500 leading-none">2</div>
+          <div className="text-2xl font-bold text-teal-500 leading-none">{trainingCount}</div>
           <div className="text-xs font-bold text-slate-800 mt-1.5">Training</div>
         </div>
 
         {/* Card 4: Cert / Prep */}
         <div className="bg-white rounded-xl border border-slate-200/90 border-t-2 border-t-purple-400 p-4 shadow-2xs hover:shadow-sm transition-all">
-          <div className="text-2xl font-bold text-purple-600 leading-none">1</div>
+          <div className="text-2xl font-bold text-purple-600 leading-none">{certPrepCount}</div>
           <div className="text-xs font-bold text-slate-800 mt-1.5">Cert / Prep</div>
         </div>
 
         {/* Card 5: Placement */}
         <div className="bg-white rounded-xl border border-slate-200/90 border-t-2 border-t-emerald-400 p-4 shadow-2xs hover:shadow-sm transition-all">
-          <div className="text-2xl font-bold text-emerald-600 leading-none">1</div>
+          <div className="text-2xl font-bold text-emerald-600 leading-none">{placementCount}</div>
           <div className="text-xs font-bold text-slate-800 mt-1.5">Placement</div>
         </div>
 
@@ -1588,40 +1851,48 @@ function ConnectivityBoard({ students }) {
           </p>
         </div>
 
-        <div className="space-y-4 pt-1">
-          {stuckStudents.map((stuck) => (
-            <div
-              key={stuck.id}
-              className="flex items-center justify-between gap-4 py-1"
-            >
-              <div className="flex items-start gap-3 min-w-0">
-                <span
-                  className={`w-2.5 h-2.5 rounded-full mt-1.5 flex-shrink-0 ${
-                    stuck.resolved ? 'bg-emerald-500' : 'bg-rose-500'
-                  }`}
-                />
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-bold text-sm text-slate-900">{stuck.name}</span>
-                    <span className="text-slate-400 font-mono text-xs">{stuck.code}</span>
-                  </div>
-                  <div className="text-xs font-mono text-slate-500 mt-0.5">
-                    Stuck at: {stuck.stuckAt} · owner: {stuck.owner} · {stuck.duration}
+        {stuckStudents.length === 0 ? (
+          <div className="py-6 px-4 text-center rounded-xl bg-slate-50 border border-slate-200/80">
+            <Check className="w-6 h-6 text-emerald-500 mx-auto mb-1.5" />
+            <h4 className="text-xs font-bold text-slate-800">No Blocked Students</h4>
+            <p className="text-[11px] text-slate-500 mt-0.5">All student workflows are moving smoothly across all departments.</p>
+          </div>
+        ) : (
+          <div className="space-y-4 pt-1">
+            {stuckStudents.map((stuck) => (
+              <div
+                key={stuck.id}
+                className="flex items-center justify-between gap-4 py-1"
+              >
+                <div className="flex items-start gap-3 min-w-0">
+                  <span
+                    className={`w-2.5 h-2.5 rounded-full mt-1.5 flex-shrink-0 ${
+                      stuck.resolved ? 'bg-emerald-500' : 'bg-rose-500'
+                    }`}
+                  />
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-bold text-sm text-slate-900">{stuck.name}</span>
+                      <span className="text-slate-400 font-mono text-xs">{stuck.code}</span>
+                    </div>
+                    <div className="text-xs font-mono text-slate-500 mt-0.5">
+                      Stuck at: {stuck.stuckAt} · owner: {stuck.owner} · {stuck.duration}
+                    </div>
                   </div>
                 </div>
-              </div>
 
-              <button
-                onClick={() => handleAdvanceStuck(stuck.id)}
-                disabled={stuck.resolved}
-                className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex-shrink-0 cursor-pointer shadow-2xs"
-              >
-                <span>Advance</span>
-                <span>→</span>
-              </button>
-            </div>
-          ))}
-        </div>
+                <button
+                  onClick={() => handleAdvanceStuck(stuck.id)}
+                  disabled={stuck.resolved}
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex-shrink-0 cursor-pointer shadow-2xs"
+                >
+                  <span>Advance</span>
+                  <span>→</span>
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Section 2: Student Journey Pipeline */}
@@ -1636,47 +1907,55 @@ function ConnectivityBoard({ students }) {
           </p>
         </div>
 
-        <div className="space-y-4 pt-1">
-          {pipelineStudents.map((pipe) => {
-            const pct = Math.round((pipe.currentStep / pipe.totalSteps) * 100);
-            return (
-              <div
-                key={pipe.id}
-                className="rounded-xl border border-slate-200/80 p-4 bg-white shadow-2xs space-y-3"
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <span className="font-bold text-sm text-slate-900">{pipe.name}</span>
-                    <span className="text-slate-400 font-mono text-xs">{pipe.code}</span>
+        {pipelineStudents.length === 0 ? (
+          <div className="py-6 px-4 text-center rounded-xl bg-slate-50 border border-slate-200/80">
+            <Check className="w-6 h-6 text-emerald-500 mx-auto mb-1.5" />
+            <h4 className="text-xs font-bold text-slate-800">Pipeline In Sync</h4>
+            <p className="text-[11px] text-slate-500 mt-0.5">No active student journey transitions pending action.</p>
+          </div>
+        ) : (
+          <div className="space-y-4 pt-1">
+            {pipelineStudents.map((pipe) => {
+              const pct = Math.round((pipe.currentStep / pipe.totalSteps) * 100);
+              return (
+                <div
+                  key={pipe.id}
+                  className="rounded-xl border border-slate-200/80 p-4 bg-white shadow-2xs space-y-3"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-sm text-slate-900">{pipe.name}</span>
+                      <span className="text-slate-400 font-mono text-xs">{pipe.code}</span>
+                    </div>
+                    <span className="bg-blue-50 text-blue-600 border border-blue-200/70 text-xs px-2.5 py-0.5 rounded font-medium">
+                      {pipe.status}
+                    </span>
                   </div>
-                  <span className="bg-blue-50 text-blue-600 border border-blue-200/70 text-xs px-2.5 py-0.5 rounded font-medium">
-                    {pipe.status}
-                  </span>
-                </div>
 
-                {/* Progress Track */}
-                <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-blue-600 rounded-full transition-all duration-500"
-                    style={{ width: `${pct}%` }}
-                  />
-                </div>
-
-                <div className="flex items-center justify-between gap-3 flex-wrap">
-                  <div className="text-xs font-mono text-slate-500">
-                    Step {pipe.currentStep}/{pipe.totalSteps} · {pipe.course} · {pipe.branch} · next: {pipe.nextDept}
+                  {/* Progress Track */}
+                  <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-blue-600 rounded-full transition-all duration-500"
+                      style={{ width: `${pct}%` }}
+                    />
                   </div>
-                  <button
-                    onClick={() => handleAdvancePipeline(pipe.id)}
-                    className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-all cursor-pointer shadow-2xs"
-                  >
-                    <span>Advance → {pipe.nextDept}</span>
-                  </button>
+
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <div className="text-xs font-mono text-slate-500">
+                      Step {pipe.currentStep}/{pipe.totalSteps} · {pipe.course} · {pipe.branch} · next: {pipe.nextDept}
+                    </div>
+                    <button
+                      onClick={() => handleAdvancePipeline(pipe.id)}
+                      className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-all cursor-pointer shadow-2xs"
+                    >
+                      <span>Advance → {pipe.nextDept}</span>
+                    </button>
+                  </div>
                 </div>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1684,95 +1963,93 @@ function ConnectivityBoard({ students }) {
 
 // ---- Operational Head — Command Desk (tabbed) ----
 
-const DEFAULT_OPERATIONAL_PRIORITIES = [
-  {
-    id: 'pq-1',
-    tag: 'CRITICAL',
-    tagType: 'critical',
-    title: 'Fee dispute — Lead L-TF-CBE-2026-0150',
-    dept: 'HR',
-    targetTab: 'escalations'
-  },
-  {
-    id: 'pq-2',
-    tag: 'CRITICAL',
-    tagType: 'critical',
-    title: 'Trainer issue — TF-CBG-CPC-OF-2603-0051',
-    dept: 'TR',
-    targetTab: 'escalations'
-  },
-  {
-    id: 'pq-3',
-    tag: 'APPROVAL',
-    tagType: 'approval',
-    title: 'Discount approval — Lead L-TF-CBE-2026-0188',
-    dept: 'HR',
-    targetTab: 'approvals'
-  },
-  {
-    id: 'pq-4',
-    tag: 'APPROVAL',
-    tagType: 'approval',
-    title: 'Placement readiness — TF-CBG-CPC-ON-2605-0001',
-    dept: 'TR',
-    targetTab: 'placement'
-  },
-  {
-    id: 'pq-5',
-    tag: 'APPROVAL',
-    tagType: 'approval',
-    title: 'Company mapping — Optum — 5 seats',
-    dept: 'CCCP',
-    targetTab: 'approvals'
-  },
-  {
-    id: 'pq-6',
-    tag: 'DELAY',
-    tagType: 'delay',
-    title: 'Review CPT Section assessments (Suresh B)',
-    dept: 'TR',
-    targetTab: 'training'
-  }
-];
-
-function OperationalView({ totals, departments, branches, regions, summary, currentUser, onSelectDept, onSelectRegion, onSelectBranch, onChanged }) {
+function OperationalView({ totals, departments, branches, regions, summary, currentUser, onSelectDept, onSelectRegion, onSelectBranch, onChanged, onSwitchDepartment }) {
   const accent = ACCENTS.operational;
   const [tab, setTab] = useState('command');
   const counts = useDeskCounts({});
   const [students, setStudents] = useState(null);
   const [demos, setDemos] = useState(null);
-  const [selectedQueueItem, setSelectedQueueItem] = useState('pq-2');
+  const [tasks, setTasks] = useState(null);
+  const [selectedQueueItem, setSelectedQueueItem] = useState(null);
 
   const loadData = useCallback(() => {
     getStudents().then((s) => setStudents(Array.isArray(s) ? s : [])).catch(() => setStudents([]));
     getDemos().then((d) => setDemos(Array.isArray(d) ? d : [])).catch(() => setDemos([]));
+    getTeamTasks().then((t) => setTasks(Array.isArray(t) ? t : [])).catch(() => setTasks([]));
   }, []);
 
   useEffect(() => {
     loadData();
     const unsub = onDataUpdate((entity) => {
-      if (!entity || entity === 'students' || entity === 'demos') {
+      if (!entity || entity === 'students' || entity === 'demos' || entity === 'tasks' || entity === 'approvals' || entity === 'escalations') {
         loadData();
       }
     });
     return () => unsub();
   }, [loadData]);
 
+  const openEscalationsCount = counts.openEscalations ?? summary.openEscalations ?? 0;
+  const pendingApprovalsCount = counts.pendingApprovals ?? summary.pendingApprovals ?? 0;
+  const delayedWorkCount = (tasks || []).filter((t) => t.status === 'delayed').length;
+  const handoverPendingCount = (students || []).filter((s) => s.handoverStatus === 'Pending Handover' || s.handoverStatus === 'Ready').length;
+  const placementPoolCount = (students || []).filter((s) => s.placementStatus === 'Ready' || s.isPlacementReady || s.syllabusCompleted).length;
   const atRiskCount = useMemo(
     () => (students || []).filter((s) => typeof s.attendancePct === 'number' && s.attendancePct < AT_RISK_THRESHOLD).length,
     [students]
   );
   const feeRiskCount = useMemo(() => (students || []).filter((s) => s.feeStatus && s.feeStatus !== 'Fully Paid').length, [students]);
 
-  const needsAttentionTotal = 65;
+  const needsAttentionTotal = openEscalationsCount + pendingApprovalsCount + delayedWorkCount + atRiskCount + handoverPendingCount;
   const badges = {
-    pendingApprovals: summary.pendingApprovals || 7,
-    openEscalations: summary.openEscalations || 5
+    pendingApprovals: pendingApprovalsCount,
+    openEscalations: openEscalationsCount
   };
+
+  const priorityQueue = useMemo(() => {
+    const list = [];
+    const openEsc = (counts.escalations || []).filter((e) => !['resolved', 'closed'].includes(e.status));
+    const pendingAppr = (counts.approvals || []).filter((a) => a.status === 'pending');
+    const pendingHo = (students || []).filter((s) => s.handoverStatus === 'Pending Handover');
+
+    openEsc.forEach((e) => {
+      list.push({
+        id: `esc-${e._id}`,
+        tag: e.priority === 'urgent' ? 'CRITICAL' : 'ESCALATION',
+        tagType: 'critical',
+        title: `${e.title}${e.branchName ? ` — ${e.branchName}` : ''}${e.studentId ? ` (${e.studentId})` : ''}`,
+        dept: e.departmentCode || 'LEAD',
+        targetTab: 'escalations'
+      });
+    });
+
+    pendingAppr.forEach((a) => {
+      list.push({
+        id: `appr-${a._id}`,
+        tag: 'APPROVAL',
+        tagType: 'approval',
+        title: `${a.title || a.description || 'Pending Approval'}${a.requestedBy ? ` — ${a.requestedBy}` : ''}`,
+        dept: a.departmentCode || 'HR',
+        targetTab: 'approvals'
+      });
+    });
+
+    pendingHo.forEach((s) => {
+      list.push({
+        id: `ho-${s._id || s.studentId}`,
+        tag: 'HANDOVER',
+        tagType: 'delay',
+        title: `Admission Handover Pending: ${s.name} (${s.studentId}) — ${s.course}`,
+        dept: 'TR',
+        targetTab: 'handover'
+      });
+    });
+
+    return list;
+  }, [counts.escalations, counts.approvals, students]);
 
   return (
     <div className="space-y-4">
-      {/* Header matching Operations Command Desk screenshot */}
+      {/* Header matching Operations Command Desk with live counts */}
       <div className="bg-white border border-slate-200/90 rounded-2xl p-5 px-6 flex items-center justify-between gap-4 shadow-2xs flex-wrap">
         <div className="flex items-center gap-4 min-w-0">
           <div className="w-12 h-12 rounded-xl bg-[#0f2c38] border border-teal-800/50 flex items-center justify-center flex-shrink-0 shadow-xs">
@@ -1801,7 +2078,7 @@ function OperationalView({ totals, departments, branches, regions, summary, curr
 
       {tab === 'command' && (
         <div className="space-y-4">
-          {/* 6 Metric KPI Cards */}
+          {/* 6 Metric KPI Cards — 100% Live DB values */}
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4">
             {/* Card 1: Open Escalations */}
             <div
@@ -1809,7 +2086,7 @@ function OperationalView({ totals, departments, branches, regions, summary, curr
               className="bg-white rounded-xl border border-slate-200/90 border-t-2 border-t-rose-500 p-4 shadow-2xs hover:shadow-sm cursor-pointer transition-all"
             >
               <div className="text-2xl font-black text-rose-500 leading-none">
-                {summary.openEscalations || 5}
+                {openEscalationsCount}
               </div>
               <div className="text-xs font-bold text-slate-900 mt-1.5">Open Escalations</div>
               <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">NEED ACTION</div>
@@ -1821,7 +2098,7 @@ function OperationalView({ totals, departments, branches, regions, summary, curr
               className="bg-white rounded-xl border border-slate-200/90 border-t-2 border-t-amber-400 p-4 shadow-2xs hover:shadow-sm cursor-pointer transition-all"
             >
               <div className="text-2xl font-black text-amber-500 leading-none">
-                {summary.pendingApprovals || 7}
+                {pendingApprovalsCount}
               </div>
               <div className="text-xs font-bold text-slate-900 mt-1.5">Pending Approvals</div>
               <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">OPERATIONAL REVIEW</div>
@@ -1832,7 +2109,9 @@ function OperationalView({ totals, departments, branches, regions, summary, curr
               onClick={() => setTab('departments')}
               className="bg-white rounded-xl border border-slate-200/90 border-t-2 border-t-rose-400 p-4 shadow-2xs hover:shadow-sm cursor-pointer transition-all"
             >
-              <div className="text-2xl font-black text-rose-500 leading-none">1</div>
+              <div className="text-2xl font-black text-rose-500 leading-none">
+                {delayedWorkCount}
+              </div>
               <div className="text-xs font-bold text-slate-900 mt-1.5">Delayed Work</div>
               <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">TASKS BEHIND</div>
             </div>
@@ -1843,7 +2122,7 @@ function OperationalView({ totals, departments, branches, regions, summary, curr
               className="bg-white rounded-xl border border-slate-200/90 border-t-2 border-t-emerald-400 p-4 shadow-2xs hover:shadow-sm cursor-pointer transition-all"
             >
               <div className="text-2xl font-black text-emerald-500 leading-none">
-                {atRiskCount || 0}
+                {atRiskCount}
               </div>
               <div className="text-xs font-bold text-slate-900 mt-1.5">Students Stuck</div>
               <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">DROPOUT RISK</div>
@@ -1854,7 +2133,9 @@ function OperationalView({ totals, departments, branches, regions, summary, curr
               onClick={() => setTab('handover')}
               className="bg-white rounded-xl border border-slate-200/90 border-t-2 border-t-blue-500 p-4 shadow-2xs hover:shadow-sm cursor-pointer transition-all"
             >
-              <div className="text-2xl font-black text-blue-500 leading-none">—</div>
+              <div className="text-2xl font-black text-blue-500 leading-none">
+                {handoverPendingCount}
+              </div>
               <div className="text-xs font-bold text-slate-900 mt-1.5">Handover Pending</div>
               <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">TO TRAINING</div>
             </div>
@@ -1864,64 +2145,74 @@ function OperationalView({ totals, departments, branches, regions, summary, curr
               onClick={() => setTab('placement')}
               className="bg-white rounded-xl border border-slate-200/90 border-t-2 border-t-emerald-400 p-4 shadow-2xs hover:shadow-sm cursor-pointer transition-all"
             >
-              <div className="text-2xl font-black text-emerald-500 leading-none">0</div>
+              <div className="text-2xl font-black text-emerald-500 leading-none">
+                {placementPoolCount}
+              </div>
               <div className="text-xs font-bold text-slate-900 mt-1.5">Placement Pool</div>
               <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">READY/QUEUED</div>
             </div>
           </div>
 
-          {/* Today's Operational Priority Queue */}
+          {/* Today's Operational Priority Queue — Live Data */}
           <div className="bg-white rounded-2xl border border-slate-200/90 p-5 sm:p-6 shadow-2xs space-y-4">
             <div>
               <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
                 <span>🔥</span> Today's Operational Priority Queue
               </h3>
               <p className="text-xs text-slate-400 font-normal mt-0.5">
-                Sorted by urgency · across all branches & departments
+                Sorted by urgency · Live across all branches & departments
               </p>
             </div>
 
-            <div className="space-y-2.5">
-              {DEFAULT_OPERATIONAL_PRIORITIES.map((item) => {
-                const isSelected = selectedQueueItem === item.id;
-                return (
-                  <div
-                    key={item.id}
-                    onClick={() => {
-                      setSelectedQueueItem(item.id);
-                      if (item.targetTab) setTab(item.targetTab);
-                    }}
-                    className={`flex items-center justify-between gap-3 px-4 py-3 rounded-xl border transition-all cursor-pointer ${
-                      isSelected
-                        ? 'border-2 border-teal-400 bg-teal-50/20 shadow-xs'
-                        : 'border-slate-200/90 bg-white hover:bg-slate-50/70 hover:border-slate-300'
-                    }`}
-                  >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <span
-                        className={`text-[10px] font-bold px-2 py-0.5 rounded tracking-wide uppercase flex-shrink-0 ${
-                          item.tagType === 'critical'
-                            ? 'bg-rose-100 text-rose-600 border border-rose-200/60'
-                            : item.tagType === 'approval'
-                            ? 'bg-amber-100 text-amber-700 border border-amber-200/60'
-                            : 'bg-rose-50 text-rose-500 border border-rose-200/50'
-                        }`}
-                      >
-                        {item.tag}
-                      </span>
-                      <span className="text-xs font-semibold text-slate-800 truncate">
-                        {item.title}
-                      </span>
-                    </div>
+            {priorityQueue.length === 0 ? (
+              <div className="py-8 px-4 text-center rounded-xl bg-slate-50 border border-slate-200/80">
+                <Check className="w-8 h-8 text-emerald-500 mx-auto mb-2" />
+                <h4 className="text-sm font-bold text-slate-800">Operational Queue Clear</h4>
+                <p className="text-xs text-slate-500 mt-0.5">No critical escalations or pending approvals currently waiting. All branch and department workflows are on track.</p>
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                {priorityQueue.map((item) => {
+                  const isSelected = selectedQueueItem === item.id;
+                  return (
+                    <div
+                      key={item.id}
+                      onClick={() => {
+                        setSelectedQueueItem(item.id);
+                        if (item.targetTab) setTab(item.targetTab);
+                      }}
+                      className={`flex items-center justify-between gap-3 px-4 py-3 rounded-xl border transition-all cursor-pointer ${
+                        isSelected
+                          ? 'border-2 border-teal-400 bg-teal-50/20 shadow-xs'
+                          : 'border-slate-200/90 bg-white hover:bg-slate-50/70 hover:border-slate-300'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <span
+                          className={`text-[10px] font-bold px-2 py-0.5 rounded tracking-wide uppercase flex-shrink-0 ${
+                            item.tagType === 'critical'
+                              ? 'bg-rose-100 text-rose-600 border border-rose-200/60'
+                              : item.tagType === 'approval'
+                              ? 'bg-amber-100 text-amber-700 border border-amber-200/60'
+                              : 'bg-rose-50 text-rose-500 border border-rose-200/50'
+                          }`}
+                        >
+                          {item.tag}
+                        </span>
+                        <span className="text-xs font-semibold text-slate-800 truncate">
+                          {item.title}
+                        </span>
+                      </div>
 
-                    <div className="flex items-center gap-1 text-xs font-semibold text-slate-400 flex-shrink-0 group-hover:text-slate-600">
-                      <span className={isSelected ? 'text-teal-600 font-bold' : ''}>{item.dept}</span>
-                      <ChevronRight className="w-3.5 h-3.5" />
+                      <div className="flex items-center gap-1 text-xs font-semibold text-slate-400 flex-shrink-0 group-hover:text-slate-600">
+                        <span className={isSelected ? 'text-teal-600 font-bold' : ''}>{item.dept}</span>
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1930,11 +2221,27 @@ function OperationalView({ totals, departments, branches, regions, summary, curr
 
       {tab === 'branches' && <BranchOpsGrid branches={branches} onSelect={onSelectBranch} />}
 
-      {tab === 'departments' && <DeptPicker departments={departments} loading={false} onSelect={onSelectDept} />}
+      {tab === 'departments' && (
+        <DepartmentCoordinationBoard
+          onSelectDept={onSelectDept}
+          onSwitchDepartment={onSwitchDepartment}
+          departments={departments}
+          approvals={counts.approvals || []}
+          escalations={counts.escalations || []}
+          students={students || []}
+          tasks={tasks || []}
+        />
+      )}
 
       {tab === 'students' && <StudentMovementSection students={students} />}
 
-      {tab === 'handover' && <HandoverSection students={students} />}
+      {tab === 'handover' && (
+        <HandoverSection
+          students={students}
+          escalations={counts.escalations || []}
+          onChanged={onChanged}
+        />
+      )}
 
       {tab === 'escalations' && <EscalationsDesk filter={{}} scopeLabel="Org-wide" accent={accent} onChanged={onChanged} />}
       {tab === 'approvals' && <ApprovalsDesk filter={{}} scopeLabel="Org-wide" accent={accent} onChanged={onChanged} />}
@@ -1995,7 +2302,7 @@ const DEPARTMENT_HEADS_DATA = [
   },
   {
     id: 'cccp',
-    title: 'Head of CCCP',
+    title: 'Head of CCCP / Placement',
     subtitle: 'College & Company · placement',
     icon: HeartHandshake,
     iconBg: '#059669',
@@ -2011,9 +2318,9 @@ const DEPARTMENT_HEADS_DATA = [
   },
   {
     id: 'student',
-    title: 'Head of Students',
+    title: 'Head of Student Support',
     subtitle: 'Student success · support',
-    icon: Crown,
+    icon: LifeBuoy,
     iconBg: '#DB2777',
     iconColor: 'text-pink-100'
   },
@@ -2549,7 +2856,7 @@ function HeadOfHrDashboard({ department, onBack, currentUser, onChanged, onSwitc
 
       {/* Tab 4: Escalations */}
       {tab === 'escalations' && (
-        <EscalationDeskBoard customScopeLabel="HR issues" onEscalationChange={onChanged} />
+        <EscalationDeskBoard filter={{ departmentCode: 'DEP-HR-001' }} customScopeLabel="HR issues" onEscalationChange={onChanged} />
       )}
 
       {/* Tab 5: Daily Tracker */}

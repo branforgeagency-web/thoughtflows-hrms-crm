@@ -331,8 +331,12 @@ export default function HrCallRecordingsTable({ currentUser }) {
                     <td className="py-3.5 px-4">
                       <div className="font-semibold text-slate-800">{rec.counselorName}</div>
                       <span className="text-[9.5px] text-slate-400 font-mono">
-                        {rec.source === 'exotel'
-                          ? '📞 Exotel Bridge'
+                        {rec.source === 'knowlarity'
+                          ? '📞 Knowlarity Bridge'
+                          : rec.source === 'edesy'
+                          ? '📞 Edesy Bridge'
+                          : rec.source === 'exotel'
+                          ? '📞 Exotel Bridge (legacy)'
                           : rec.source === 'phone_sync'
                             ? '📱 Phone Call (synced)'
                           : (rec.source === 'phone_upload' || rec.source === 'uploaded')

@@ -27,7 +27,9 @@ const hasOffer = (st) => (st?.interviews || []).some((i) =>
 export function stageChecks(st = {}) {
   const s1 = Boolean(st.studentId) && st.handoverStatus === 'Sent to Training';
   const attendanceOk = typeof st.attendancePct === 'number' && st.attendancePct >= ATTENDANCE_MIN;
-  const mockOk = (typeof st.mockScore === 'number' && st.mockScore >= MOCK_PASS) || st.trainerRecommendation === 'Ready';
+  const mockOk = (typeof st.mockScore === 'number' && st.mockScore >= MOCK_PASS) || 
+    st.trainerRecommendation === 'Ready' || 
+    st.jobReadyStatus === 'Job Ready';
   const s2 = attendanceOk && mockOk;
   const s3 = st.resumeStatus === 'Approved' && st.videoIntroStatus === 'Approved';
   return { 1: s1, 2: s2, 3: s3, attendanceOk, mockOk, hasInterview: (st.interviews || []).length > 0, hasOffer: hasOffer(st) };

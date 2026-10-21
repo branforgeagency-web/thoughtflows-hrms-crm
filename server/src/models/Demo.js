@@ -77,6 +77,14 @@ const demoSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  isSpecialty: {
+    type: Boolean,
+    default: false
+  },
+  courseType: {
+    type: String,
+    default: 'fresher' // 'fresher' | 'specialty'
+  },
   notificationSentTo: {
     type: String,
     default: ''
@@ -159,6 +167,15 @@ const demoSchema = new mongoose.Schema({
     default: ''
   },
   note: {
+    type: String,
+    default: ''
+  },
+  // Outside Fixed Timings — flagged for the respective Head to coordinate manually
+  outsideFixedTiming: {
+    type: Boolean,
+    default: false
+  },
+  customTimeRequested: {
     type: String,
     default: ''
   }

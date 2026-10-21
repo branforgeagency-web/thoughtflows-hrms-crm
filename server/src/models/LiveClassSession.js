@@ -20,9 +20,16 @@ const liveClassSessionSchema = new mongoose.Schema(
     isLive: { type: Boolean, default: false },
     startedAt: { type: Date, default: null },
     endedAt: { type: Date, default: null },
-    // Students who joined through the portal (first join time kept)
+    // Students who joined through the portal (first join time kept, duration in minutes)
     joins: {
-      type: [{ studentId: String, name: String, joinedAt: Date, lastJoinAt: Date, count: { type: Number, default: 1 } }],
+      type: [{
+        studentId: String,
+        name: String,
+        joinedAt: Date,
+        lastJoinAt: Date,
+        durationMinutes: { type: Number, default: 0 },
+        count: { type: Number, default: 1 }
+      }],
       default: []
     },
     // Notes the trainer adds during class — shown to the batch afterwards

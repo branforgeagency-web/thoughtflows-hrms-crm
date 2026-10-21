@@ -67,7 +67,8 @@ const PUBLIC_ROUTES = [
   ['POST', /^\/auth\/login$/],
   ['GET', /^\/auth\/departments$/],
   ['GET', /^\/departments$/],
-  ['POST', /^\/calls\/exotel\/webhook$/]
+  ['POST', /^\/calls\/knowlarity\/webhook$/],
+  ['GET', /^\/calls\/knowlarity\/webhook$/]
 ];
 
 // Staff routes limited to Admin / Leadership

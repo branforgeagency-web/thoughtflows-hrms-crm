@@ -82,6 +82,7 @@ const trainerSchema = new mongoose.Schema(
       lowercase: true
     },
     role: { type: String, default: '' },
+    responsibilities: { type: String, default: '' },
     // Recurring batch class link used in the Class Session Room
     classZoomLink: { type: String, default: '' },
     workingDays: { type: String, default: '' },

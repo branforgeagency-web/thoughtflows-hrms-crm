@@ -75,45 +75,77 @@ router.get('/health', (req, res) => {
 });
 
 // ==========================================
-// CALLING — Exotel click-to-call
-//   1. /calls/dial        Exotel rings the counsellor, then connects the lead
-//   2. /calls/:sid/status polled by the call screen
-//   3. /calls/exotel/webhook  Exotel posts the final status + recording, which
-//      is saved even if the counsellor closed the call screen
+// CALLING — Knowlarity SuperReceptionist click-to-call
+//   1. /calls/dial        Knowlarity rings the counsellor, then connects the lead
+//   2. /calls/:sid/status polled by the call screen. SR has no live per-call
+//      status API, so this is served from the webhook row, then the call log.
+//   3. /calls/knowlarity/webhook  Knowlarity posts the final status + recording,
+//      which is saved even if the counsellor closed the call screen. Set this URL
+//      as the Call Notify / callback URL in the SuperReceptionist panel.
 // ==========================================
-function exotelConfig() {
+// Knowlarity auth is two separate keys and they are easy to swap by mistake:
+//   x-api-key     = SR username + ":" + application access key  (KNOWLARITY_X_API_KEY)
+//   Authorization = the SR API key                              (KNOWLARITY_SR_API_KEY)
+function knowlarityConfig() {
   return {
-    sid: process.env.EXOTEL_SID || '',
-    apiKey: process.env.EXOTEL_API_KEY || '',
-    apiToken: process.env.EXOTEL_API_TOKEN || '',
-    exophone: process.env.EXOTEL_EXOPHONE || '',
-    subdomain: process.env.EXOTEL_SUBDOMAIN || 'api.exotel.com',
-    defaultAgentPhone: process.env.EXOTEL_DEFAULT_AGENT_PHONE || '',
+    // x-api-key header — "USERNAME:APPLICATION_ACCESS_KEY"
+    xApiKey: process.env.KNOWLARITY_X_API_KEY || process.env.KNOWLARITY_API_KEY || '',
+    // authorization header — SR_API_KEY
+    srApiKey: process.env.KNOWLARITY_SR_API_KEY || process.env.KNOWLARITY_AUTH_KEY || '',
+    srNumber: process.env.KNOWLARITY_SR_NUMBER || '',    // k_number — your Knowlarity virtual number
+    callerId: process.env.KNOWLARITY_CALLER_ID || '',    // shown to agent + lead; defaults to the SR number
+    channel: process.env.KNOWLARITY_CHANNEL || 'Basic',  // plan channel in the path: Basic | Advance | Premium | Enterprise
+    baseUrl: String(process.env.KNOWLARITY_BASE_URL || 'https://kpi.knowlarity.com').replace(/\/+$/, ''),
+    defaultAgentPhone: process.env.KNOWLARITY_DEFAULT_AGENT_PHONE || '',
     // Public URL of this API (e.g. https://thoughtflows-hrms-crm.onrender.com) — enables the status webhook
     publicApiUrl: String(process.env.PUBLIC_API_URL || '').replace(/\/+$/, ''),
-    webhookKey: process.env.EXOTEL_WEBHOOK_KEY || ''
+    webhookKey: process.env.KNOWLARITY_WEBHOOK_KEY || ''
   };
 }
 
-function exotelMissing() {
-  const c = exotelConfig();
-  return [['EXOTEL_SID', c.sid], ['EXOTEL_API_KEY', c.apiKey], ['EXOTEL_API_TOKEN', c.apiToken], ['EXOTEL_EXOPHONE', c.exophone]]
+function knowlarityMissing() {
+  const c = knowlarityConfig();
+  return [['KNOWLARITY_X_API_KEY', c.xApiKey], ['KNOWLARITY_SR_API_KEY', c.srApiKey], ['KNOWLARITY_SR_NUMBER', c.srNumber]]
     .filter(([, v]) => !v).map(([k]) => k);
 }
 
-function exotelBaseUrl() {
-  const c = exotelConfig();
-  return `https://${c.subdomain}/v1/Accounts/${c.sid}`;
+// The two keys get pasted the wrong way round often enough to be worth saying so
+function knowlarityKeyWarning() {
+  const c = knowlarityConfig();
+  if (c.xApiKey && !c.xApiKey.includes(':')) {
+    return 'KNOWLARITY_X_API_KEY should look like "username:application-access-key" — the plain SR API key goes in KNOWLARITY_SR_API_KEY.';
+  }
+  return '';
 }
 
-function exotelAuthHeader() {
-  const c = exotelConfig();
-  const token = Buffer.from(`${c.apiKey}:${c.apiToken}`).toString('base64');
-  return { Authorization: `Basic ${token}` };
+function knowlarityUrl(path) {
+  const c = knowlarityConfig();
+  return `${c.baseUrl}/${c.channel}/v1/account${path}`;
+}
+
+function knowlarityHeaders() {
+  const c = knowlarityConfig();
+  return {
+    accept: 'application/json',
+    'content-type': 'application/json',
+    authorization: c.srApiKey,
+    'x-api-key': c.xApiKey
+  };
+}
+
+// Knowlarity notifications are not consistent about field names across accounts,
+// so every read goes through this and takes the first key that has a value.
+function pickField(obj, ...keys) {
+  for (const k of keys) {
+    const v = obj?.[k];
+    if (v !== undefined && v !== null && v !== '') return v;
+  }
+  return '';
 }
 
 // Indian numbers only need normalizing to E.164 — a bare 10-digit mobile
 // gets a +91 prefix, anything already prefixed is left alone.
+// Knowlarity rejects numbers that are not in +91XXXXXXXXXX form.
 function toE164India(raw) {
   const digits = String(raw || '').replace(/[^\d+]/g, '');
   if (!digits) return '';
@@ -124,16 +156,34 @@ function toE164India(raw) {
   return digits;
 }
 
-// Map Exotel's call status to the one the call screen understands
-const EXOTEL_STATUS = { queued: 'queued', ringing: 'ringing', 'in-progress': 'in-progress', completed: 'completed', failed: 'failed', busy: 'busy', 'no-answer': 'no-answer', canceled: 'canceled' };
+// Map Knowlarity's status / dial_status wording to what the call screen understands
+const KNOWLARITY_STATUS = {
+  queued: 'queued', ringing: 'ringing', inprogress: 'in-progress', connected: 'in-progress',
+  answered: 'completed', completed: 'completed', success: 'completed',
+  missed: 'no-answer', noanswer: 'no-answer', notanswered: 'no-answer',
+  busy: 'busy', failed: 'failed', error: 'failed', cancelled: 'canceled', canceled: 'canceled'
+};
+function mapKnowlarityStatus(raw) {
+  return KNOWLARITY_STATUS[String(raw || '').toLowerCase().replace(/[^a-z]/g, '')] || '';
+}
 
-// Create or update the recording row for one Exotel call (keyed by CallSid)
-async function upsertExotelRecording({ callSid, leadId, leadName, leadPhone, counselorName, counselorPhone, durationSeconds, audioUrl, outcome, notes }) {
+// Lead/counsellor context for calls dialled in this process, keyed by Knowlarity
+// call id — the notify callback does not always echo additional_params back.
+const pendingCalls = new Map();
+function rememberCall(callId, ctx) {
+  if (!callId) return;
+  pendingCalls.set(String(callId), { ...ctx, at: Date.now() });
+  const cutoff = Date.now() - 6 * 60 * 60 * 1000;
+  for (const [k, v] of pendingCalls) if (v.at < cutoff) pendingCalls.delete(k);
+}
+
+// Create or update the recording row for one bridged call (keyed by the provider call id)
+async function upsertBridgeRecording({ callSid, leadId, leadName, leadPhone, counselorName, counselorPhone, durationSeconds, audioUrl, outcome, notes }, source = 'knowlarity') {
   if (!callSid) return null;
   let rec = await CallRecording.findOne({ callSid });
   const isNew = !rec;
   if (!rec) {
-    rec = new CallRecording({ callSid, source: 'exotel', leadName: leadName || 'Lead', leadPhone: leadPhone || '' });
+    rec = new CallRecording({ callSid, source, leadName: leadName || 'Lead', leadPhone: leadPhone || '' });
   }
   if (leadId && mongoose.isValidObjectId(leadId)) rec.leadId = leadId;
   if (leadName) rec.leadName = leadName;
@@ -144,7 +194,7 @@ async function upsertExotelRecording({ callSid, leadId, leadName, leadPhone, cou
   if (audioUrl) rec.audioUrl = audioUrl;
   if (outcome) rec.outcome = outcome;
   if (notes) rec.notes = notes;
-  if (!rec.audioUrl) return null; // Exotel had no recording (call not answered)
+  if (!rec.audioUrl) return null; // Knowlarity had no recording (call not answered)
   await rec.save();
   if (isNew && rec.leadId) {
     await StudentLead.findByIdAndUpdate(rec.leadId, { $inc: { callCount: 1 }, lastCallTime: new Date() });
@@ -152,18 +202,295 @@ async function upsertExotelRecording({ callSid, leadId, leadName, leadPhone, cou
   return rec;
 }
 
+// Knowlarity has no "get one call" endpoint, so the call log is scanned for the id.
+// Times are sent as "YYYY-MM-DD HH:MM:SS" IST, which is what the SR panel uses.
+async function fetchKnowlarityCallLog(callId, { customerNumber = '' } = {}) {
+  const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+  const istStamp = (d) => new Date(d.getTime() + IST_OFFSET_MS).toISOString().slice(0, 19).replace('T', ' ');
+  const end = new Date();
+  const start = new Date(end.getTime() - 6 * 60 * 60 * 1000);
+  const qs = new URLSearchParams({ start_time: istStamp(start), end_time: istStamp(end), limit: '100' });
+  if (customerNumber) qs.set('customer_number', customerNumber);
+  const response = await fetch(`${knowlarityUrl('/calllog')}?${qs.toString()}`, { headers: knowlarityHeaders() });
+  if (!response.ok) return null;
+  const data = await response.json().catch(() => null);
+  const rows = Array.isArray(data?.objects) ? data.objects : (Array.isArray(data) ? data : []);
+  return rows.find((r) => [r?.call_id, r?.callid, r?.uuid, r?.id]
+    .some((v) => v && String(v) === String(callId))) || null;
+}
+
+// ==========================================
+// CALLING — Edesy Number Masking click-to-call (drop-in alternative to Knowlarity)
+//   Switched on by setting TELEPHONY_PROVIDER=edesy in server/.env. Mirrors the
+//   Knowlarity bridge flow above:
+//   1. /calls/dial dials party_a (the counsellor) first, then bridges party_b (the lead).
+//   2. /calls/:callSid/status is polled by the call screen.
+//   3. /calls/edesy/webhook receives call.completed / recording.ready events — set this
+//      as the webhook URL on the Edesy dashboard (masking.edesy.in).
+//   Edesy's recording link expires in ~1 hour, so every save downloads the audio and
+//   keeps it on our own disk, the same way browser_mic/phone_sync recordings are stored.
+// ==========================================
+function activeProvider() {
+  return String(process.env.TELEPHONY_PROVIDER || 'knowlarity').toLowerCase();
+}
+
+function edesyConfig() {
+  return {
+    // Shown on the Edesy dashboard's "API Credentials" panel as a Twilio-shaped pair:
+    // Account SID (a UUID, not secret) + Auth Token (secret). Sent as HTTP Basic auth
+    // per the dashboard's own example (`curl ... -u "<AccountSID>:<AuthToken>"`).
+    accountSid: process.env.EDESY_ACCOUNT_SID || '',
+    authToken: process.env.EDESY_AUTH_TOKEN || '',
+    baseUrl: String(process.env.EDESY_BASE_URL || 'https://voice-api.edesy.in').replace(/\/+$/, ''),
+    defaultAgentPhone: process.env.EDESY_DEFAULT_AGENT_PHONE || '',
+    maxDurationSec: Number(process.env.EDESY_MAX_CALL_DURATION_SEC || 0) || undefined,
+    webhookSecret: process.env.EDESY_WEBHOOK_SECRET || '',  // HMAC-SHA256 signing secret from the Edesy dashboard
+    webhookSignatureHeader: String(process.env.EDESY_WEBHOOK_SIGNATURE_HEADER || 'x-edesy-signature').toLowerCase()
+  };
+}
+
+function edesyMissing() {
+  const c = edesyConfig();
+  return [['EDESY_ACCOUNT_SID', c.accountSid], ['EDESY_AUTH_TOKEN', c.authToken]].filter(([, v]) => !v).map(([k]) => k);
+}
+
+function edesyUrl(p) {
+  return `${edesyConfig().baseUrl}${p}`;
+}
+
+function edesyHeaders() {
+  const c = edesyConfig();
+  const basic = Buffer.from(`${c.accountSid}:${c.authToken}`).toString('base64');
+  return {
+    accept: 'application/json',
+    'content-type': 'application/json',
+    authorization: `Basic ${basic}`
+  };
+}
+
+const EDESY_STATUS = {
+  initiated: 'queued', ringing: 'ringing', inprogress: 'in-progress', connected: 'in-progress', answered: 'in-progress',
+  completed: 'completed', success: 'completed',
+  noanswer: 'no-answer', missed: 'no-answer', notanswered: 'no-answer',
+  busy: 'busy', failed: 'failed', error: 'failed', cancelled: 'canceled', canceled: 'canceled'
+};
+function mapEdesyStatus(raw) {
+  return EDESY_STATUS[String(raw || '').toLowerCase().replace(/[^a-z]/g, '')] || '';
+}
+
+// Edesy's recording link is signed and expires in ~1 hour, so it is downloaded once
+// and served back from our own /recordings/<file> static route (see server.js).
+async function downloadAndStoreRecording(remoteUrl, prefix) {
+  if (!remoteUrl) return '';
+  try {
+    const response = await fetch(remoteUrl);
+    if (!response.ok) return '';
+    const contentType = response.headers.get('content-type') || '';
+    const ext = contentType.includes('wav') ? 'wav' : contentType.includes('ogg') ? 'ogg' : 'mp3';
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const uploadsDir = path.join(process.cwd(), 'uploads/recordings');
+    if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+    const filename = `${prefix}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.${ext}`;
+    fs.writeFileSync(path.join(uploadsDir, filename), buffer);
+    return `/recordings/${filename}`;
+  } catch (err) {
+    console.error('Edesy recording download failed:', err.message);
+    return '';
+  }
+}
+
+function edesyConfigStatusHandler(req, res) {
+  const missing = edesyMissing();
+  res.json({
+    provider: 'edesy',
+    configured: missing.length === 0,
+    missing,
+    webhook: Boolean(process.env.PUBLIC_API_URL)
+  });
+}
+
+async function edesyDialHandler(req, res) {
+  const { leadPhone, agentPhone, leadId = '', leadName = '' } = req.body || {};
+  if (!leadPhone) return res.status(400).json({ error: 'leadPhone is required' });
+  const missing = edesyMissing();
+  if (missing.length) return res.status(503).json({ error: `Edesy is not configured. Add ${missing.join(', ')} to server/.env and restart.` });
+
+  const c = edesyConfig();
+  let profilePhone = '';
+  try {
+    const me = req.user?.email ? await User.findOne({ email: req.user.email }).select('phone') : null;
+    profilePhone = me?.phone || '';
+  } catch (_) {}
+  const from = toE164India(profilePhone || agentPhone || c.defaultAgentPhone);
+  const to = toE164India(leadPhone);
+  if (!from) return res.status(400).json({ error: 'No phone number is set for your login. Ask admin to add your mobile number to your user account.' });
+  if (!to) return res.status(400).json({ error: 'The lead has no usable phone number on file.' });
+  if (from === to) return res.status(400).json({ error: "Your number and the lead's number cannot be the same." });
+
+  try {
+    // Confirmed against Edesy's own curl example: POST /v1/calls, full +91 E.164 numbers,
+    // { from, to } (not { party_a, party_b } on /v1/masking/calls as the docs page implied).
+    const payload = { from, to };
+    if (c.maxDurationSec) payload.max_duration_sec = c.maxDurationSec;
+    const response = await fetch(edesyUrl('/calls'), {
+      method: 'POST',
+      headers: edesyHeaders(),
+      body: JSON.stringify(payload)
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = data?.error?.message || data?.error?.code || data?.message || `Edesy returned HTTP ${response.status}`;
+      return res.status(502).json({ error: typeof message === 'string' ? message : JSON.stringify(message) });
+    }
+    const ok = data?.data || data || {};
+    // Response shape isn't confirmed yet, so every likely field name is tried.
+    const callSid = String(pickField(ok, 'call_sid', 'id', 'sid', 'callId', 'call_id') || '');
+    rememberCall(callSid, { leadId, leadName, counselor: req.user?.name || '', from, to });
+    res.json({ provider: 'edesy', callSid, status: mapEdesyStatus(pickField(ok, 'status', 'call_status', 'state')) || 'queued', from, to });
+  } catch (err) {
+    res.status(502).json({ error: `Could not reach Edesy: ${err.message}` });
+  }
+}
+
+async function edesyStatusHandler(req, res) {
+  const missing = edesyMissing();
+  if (missing.length) return res.status(503).json({ error: 'Edesy is not configured.' });
+  const callSid = req.params.callSid;
+  try {
+    const rec = await CallRecording.findOne({ callSid });
+    if (rec) {
+      return res.json({
+        provider: 'edesy',
+        callSid,
+        status: 'completed',
+        duration: Number(rec.durationSeconds || 0),
+        startTime: rec.createdAt,
+        endTime: rec.updatedAt,
+        recordingUrl: rec.audioUrl || null
+      });
+    }
+    // Endpoint inferred from the confirmed /v1/calls dial endpoint — not independently
+    // confirmed, so verify this path (and the field names below) once you can test a real call.
+    const response = await fetch(edesyUrl(`/calls/${callSid}`), { headers: edesyHeaders() });
+    const data = await response.json().catch(() => ({}));
+    if (response.ok) {
+      const d = data?.data || data || {};
+      const status = mapEdesyStatus(pickField(d, 'status', 'call_status', 'state'));
+      // Completed but the webhook hasn't landed yet — fetch & save the recording now
+      if (status === 'completed') {
+        let recordingUrl = '';
+        try {
+          const recResp = await fetch(edesyUrl(`/calls/${callSid}/recording`), { headers: edesyHeaders() });
+          const recData = await recResp.json().catch(() => ({}));
+          recordingUrl = recResp.ok ? pickField(recData?.data || recData || {}, 'url', 'recording_url', 'audio_url') : '';
+        } catch (_) {}
+        if (recordingUrl) {
+          const ctx = pendingCalls.get(String(callSid)) || {};
+          const localUrl = await downloadAndStoreRecording(recordingUrl, `edesy_${callSid}`);
+          await upsertBridgeRecording({
+            callSid,
+            leadId: ctx.leadId,
+            leadName: ctx.leadName,
+            leadPhone: pickField(d, 'to', 'target_number', 'to_number') || ctx.to || '',
+            counselorName: ctx.counselor || '',
+            counselorPhone: pickField(d, 'from', 'caller_number', 'from_number') || ctx.from || '',
+            durationSeconds: pickField(d, 'duration_sec', 'bill_duration_sec', 'duration') || 0,
+            audioUrl: localUrl,
+            outcome: 'Follow-up Needed'
+          }, 'edesy');
+        }
+      }
+      return res.json({
+        provider: 'edesy',
+        callSid,
+        status: status || 'in-progress',
+        duration: Number(pickField(d, 'duration_sec', 'bill_duration_sec', 'duration') || 0),
+        startTime: pickField(d, 'started_at', 'start_time') || null,
+        endTime: pickField(d, 'ended_at', 'end_time') || null,
+        recordingUrl: null
+      });
+    }
+    res.json({ provider: 'edesy', callSid, status: 'in-progress', duration: 0, recordingUrl: null });
+  } catch (err) {
+    res.status(502).json({ error: `Could not reach Edesy: ${err.message}` });
+  }
+}
+
+function edesyHangupHandler(req, res) {
+  res.json({
+    success: false,
+    unsupported: true,
+    provider: 'edesy',
+    status: 'in-progress',
+    message: 'Hang up on your phone — Edesy ends the bridged call from the handset.'
+  });
+}
+
+// Edesy call event webhook (call.initiated / call.completed / recording.ready), verified
+// with an HMAC-SHA256 signature when EDESY_WEBHOOK_SECRET is set (header name configurable
+// via EDESY_WEBHOOK_SIGNATURE_HEADER — confirm the exact header Edesy sends on the dashboard).
+async function edesyWebhookHandler(req, res) {
+  try {
+    const c = edesyConfig();
+    if (c.webhookSecret) {
+      const signature = req.headers[c.webhookSignatureHeader];
+      const raw = req.rawBody;
+      if (!signature || !raw) return res.status(401).json({ error: 'Missing webhook signature' });
+      const expected = crypto.createHmac('sha256', c.webhookSecret).update(raw).digest('hex');
+      const sigBuf = Buffer.from(String(signature));
+      const expBuf = Buffer.from(expected);
+      const ok = sigBuf.length === expBuf.length && crypto.timingSafeEqual(sigBuf, expBuf);
+      if (!ok) return res.status(401).json({ error: 'Invalid webhook signature' });
+    }
+    const body = req.body || {};
+    const callSid = String(pickField(body, 'call_sid', 'id', 'sid', 'callId', 'call_id') || '');
+    const d = body.data || body || {};
+    const ctx = pendingCalls.get(callSid) || {};
+    const status = mapEdesyStatus(pickField(d, 'status', 'call_status', 'state'));
+    const leadPhone = String(pickField(d, 'to', 'target_number', 'to_number') || ctx.to || '').replace(/\D/g, '').slice(-10);
+    const recordingUrl = pickField(d, 'recording_url', 'recordingUrl');
+    let audioUrl = '';
+    if (recordingUrl) audioUrl = await downloadAndStoreRecording(recordingUrl, `edesy_${callSid}`);
+    await upsertBridgeRecording({
+      callSid,
+      leadId: ctx.leadId,
+      leadName: ctx.leadName,
+      leadPhone,
+      counselorName: ctx.counselor || '',
+      counselorPhone: String(pickField(d, 'from', 'caller_number', 'from_number') || ctx.from || '').replace(/\D/g, '').slice(-10),
+      durationSeconds: pickField(d, 'duration_sec', 'bill_duration_sec', 'duration') || 0,
+      audioUrl,
+      outcome: status === 'completed' ? 'Follow-up Needed' : 'Not Reachable'
+    }, 'edesy');
+    if (status && status !== 'in-progress' && status !== 'ringing') pendingCalls.delete(callSid);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Edesy webhook error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+}
+
 router.get('/calls/config-status', (req, res) => {
-  const missing = exotelMissing();
-  res.json({ provider: 'exotel', configured: missing.length === 0, missing, webhook: Boolean(exotelConfig().publicApiUrl) });
+  if (activeProvider() === 'edesy') return edesyConfigStatusHandler(req, res);
+  const missing = knowlarityMissing();
+  res.json({
+    provider: 'knowlarity',
+    configured: missing.length === 0,
+    missing,
+    warning: knowlarityKeyWarning() || undefined,
+    channel: knowlarityConfig().channel,
+    webhook: Boolean(knowlarityConfig().publicApiUrl)
+  });
 });
 
 router.post('/calls/dial', async (req, res) => {
+  if (activeProvider() === 'edesy') return edesyDialHandler(req, res);
   const { leadPhone, agentPhone, leadId = '', leadName = '' } = req.body || {};
   if (!leadPhone) return res.status(400).json({ error: 'leadPhone is required' });
-  const missing = exotelMissing();
-  if (missing.length) return res.status(503).json({ error: `Exotel is not configured. Add ${missing.join(', ')} to server/.env and restart.` });
+  const missing = knowlarityMissing();
+  if (missing.length) return res.status(503).json({ error: `Knowlarity is not configured. Add ${missing.join(', ')} to server/.env and restart.` });
 
-  const c = exotelConfig();
+  const c = knowlarityConfig();
   // Counsellor's phone: their user profile, else what the screen sent, else the default agent
   let profilePhone = '';
   try {
@@ -176,112 +503,125 @@ router.post('/calls/dial', async (req, res) => {
   if (!to) return res.status(400).json({ error: 'The lead has no usable phone number on file.' });
 
   try {
-    const params = new URLSearchParams({
-      From: from,
-      To: to,
-      CallerId: c.exophone,
-      CallType: 'trans',
-      Record: 'true',
-      CustomField: JSON.stringify({ leadId, leadName, counselor: req.user?.name || '' }).slice(0, 250)
-    });
-    if (c.publicApiUrl) {
-      params.set('StatusCallback', `${c.publicApiUrl}/api/calls/exotel/webhook${c.webhookKey ? `?key=${encodeURIComponent(c.webhookKey)}` : ''}`);
-      params.set('StatusCallbackContentType', 'application/json');
-    }
-    const response = await fetch(`${exotelBaseUrl()}/Calls/connect.json`, {
+    const payload = {
+      k_number: toE164India(c.srNumber),
+      agent_number: from,
+      customer_number: to,
+      caller_id: toE164India(c.callerId || c.srNumber),
+      additional_params: JSON.stringify({ leadId, leadName, counselor: req.user?.name || '' }).slice(0, 250)
+    };
+    const response = await fetch(knowlarityUrl('/call/makecall'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...exotelAuthHeader() },
-      body: params.toString()
+      headers: knowlarityHeaders(),
+      body: JSON.stringify(payload)
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const message = data?.RestException?.Message || data?.error || `Exotel returned HTTP ${response.status}`;
-      return res.status(502).json({ error: message });
+    if (!response.ok || data?.error) {
+      const message = data?.error?.message || data?.error || data?.message
+        || `Knowlarity returned HTTP ${response.status}`;
+      return res.status(502).json({ error: typeof message === 'string' ? message : JSON.stringify(message) });
     }
-    const call = data?.Call || {};
-    res.json({ provider: 'exotel', callSid: call.Sid, status: EXOTEL_STATUS[String(call.Status || '').toLowerCase()] || 'queued', from, to });
+    const ok = data?.success || data || {};
+    const callSid = String(pickField(ok, 'call_id', 'callid', 'uuid', 'id') || '');
+    rememberCall(callSid, { leadId, leadName, counselor: req.user?.name || '', from, to });
+    res.json({ provider: 'knowlarity', callSid, status: mapKnowlarityStatus(ok.status) || 'queued', from, to });
   } catch (err) {
-    res.status(502).json({ error: `Could not reach Exotel: ${err.message}` });
+    res.status(502).json({ error: `Could not reach Knowlarity: ${err.message}` });
   }
 });
 
 router.get('/calls/:callSid/status', async (req, res) => {
-  const missing = exotelMissing();
-  if (missing.length) return res.status(503).json({ error: 'Exotel is not configured.' });
+  if (activeProvider() === 'edesy') return edesyStatusHandler(req, res);
+  const missing = knowlarityMissing();
+  if (missing.length) return res.status(503).json({ error: 'Knowlarity is not configured.' });
+  const callSid = req.params.callSid;
   try {
-    const response = await fetch(`${exotelBaseUrl()}/Calls/${encodeURIComponent(req.params.callSid)}.json`, {
-      headers: { ...exotelAuthHeader() }
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const message = data?.RestException?.Message || `Exotel returned HTTP ${response.status}`;
-      return res.status(502).json({ error: message });
+    // The notify webhook writes the finished call first, so trust that row when it exists
+    const rec = await CallRecording.findOne({ callSid });
+    if (rec) {
+      return res.json({
+        provider: 'knowlarity',
+        callSid,
+        status: 'completed',
+        duration: Number(rec.durationSeconds || 0),
+        startTime: rec.createdAt,
+        endTime: rec.updatedAt,
+        recordingUrl: rec.audioUrl || null
+      });
     }
-    const call = data?.Call || {};
-    res.json({
-      provider: 'exotel',
-      callSid: call.Sid,
-      status: EXOTEL_STATUS[String(call.Status || '').toLowerCase()] || call.Status,
-      duration: Number(call.ConversationDuration || call.Duration || 0),
-      startTime: call.StartTime,
-      endTime: call.EndTime,
-      recordingUrl: call.RecordingUrl || null
-    });
+    const log = await fetchKnowlarityCallLog(callSid, { customerNumber: pendingCalls.get(String(callSid))?.to || '' });
+    if (log) {
+      return res.json({
+        provider: 'knowlarity',
+        callSid,
+        status: mapKnowlarityStatus(pickField(log, 'call_status', 'dial_status', 'status', 'disposition')) || 'in-progress',
+        duration: Number(pickField(log, 'call_duration', 'conversation_duration', 'duration') || 0),
+        startTime: pickField(log, 'start_time', 'time') || null,
+        endTime: pickField(log, 'end_time') || null,
+        recordingUrl: pickField(log, 'resource_url', 'recording_url', 'recording', 'audio_url') || null
+      });
+    }
+    // Still bridging — Knowlarity only publishes a call once it is in the log
+    res.json({ provider: 'knowlarity', callSid, status: 'in-progress', duration: 0, recordingUrl: null });
   } catch (err) {
-    res.status(502).json({ error: `Could not reach Exotel: ${err.message}` });
+    res.status(502).json({ error: `Could not reach Knowlarity: ${err.message}` });
   }
 });
 
-// Exotel status callback (public — protected by EXOTEL_WEBHOOK_KEY when set)
-router.post('/calls/exotel/webhook', async (req, res) => {
+// Knowlarity call notification (public — protected by KNOWLARITY_WEBHOOK_KEY when set).
+// SR posts some events as GET query strings, so both verbs are accepted.
+const knowlarityWebhook = async (req, res) => {
   try {
-    const key = exotelConfig().webhookKey;
+    const key = knowlarityConfig().webhookKey;
     if (key && req.query.key !== key) return res.status(403).json({ error: 'Bad key' });
-    const b = req.body || {};
-    const callSid = b.CallSid || b.callSid;
+    const b = { ...(req.query || {}), ...(req.body || {}) };
+    const callSid = String(pickField(b, 'call_id', 'callid', 'uuid', 'callUuid', 'CallSid') || '');
+    const ctx = pendingCalls.get(callSid) || {};
     let custom = {};
-    try { custom = JSON.parse(b.CustomField || '{}'); } catch (_) {}
-    const status = String(b.Status || b.CallStatus || '').toLowerCase();
-    const leadPhone = String(b.To || '').replace(/\D/g, '').slice(-10);
-    const lead = custom.leadId && mongoose.isValidObjectId(custom.leadId)
-      ? await StudentLead.findById(custom.leadId)
+    try {
+      const raw = pickField(b, 'additional_params', 'additional_param', 'custom_params');
+      custom = typeof raw === 'string' ? JSON.parse(raw) : (raw || {});
+    } catch (_) {}
+    const status = mapKnowlarityStatus(pickField(b, 'call_status', 'dial_status', 'status', 'disposition'));
+    const leadPhone = String(pickField(b, 'customer_number', 'destination', 'customer', 'to') || ctx.to || '')
+      .replace(/\D/g, '').slice(-10);
+    const leadIdHint = custom.leadId || ctx.leadId || '';
+    const lead = leadIdHint && mongoose.isValidObjectId(leadIdHint)
+      ? await StudentLead.findById(leadIdHint)
       : (leadPhone ? await StudentLead.findOne({ phone: { $regex: leadPhone } }) : null);
-    await upsertExotelRecording({
+    await upsertBridgeRecording({
       callSid,
-      leadId: lead?._id?.toString() || custom.leadId,
-      leadName: lead?.fullName || custom.leadName,
+      leadId: lead?._id?.toString() || leadIdHint,
+      leadName: lead?.fullName || custom.leadName || ctx.leadName,
       leadPhone,
-      counselorName: custom.counselor || lead?.counselorAssigned || '',
-      counselorPhone: String(b.From || '').replace(/\D/g, '').slice(-10),
-      durationSeconds: b.ConversationDuration || b.Legs?.[1]?.OnCallDuration || 0,
-      audioUrl: b.RecordingUrl || '',
+      counselorName: custom.counselor || ctx.counselor || lead?.counselorAssigned || '',
+      counselorPhone: String(pickField(b, 'agent_number', 'agent', 'from') || ctx.from || '').replace(/\D/g, '').slice(-10),
+      durationSeconds: pickField(b, 'call_duration', 'conversation_duration', 'duration', 'billing_duration') || 0,
+      audioUrl: pickField(b, 'resource_url', 'recording_url', 'recording', 'audio_url') || '',
       outcome: status === 'completed' ? 'Follow-up Needed' : 'Not Reachable'
     });
+    if (status && status !== 'in-progress' && status !== 'ringing') pendingCalls.delete(callSid);
     res.json({ success: true });
   } catch (err) {
-    console.error('Exotel webhook error:', err.message);
+    console.error('Knowlarity webhook error:', err.message);
     res.status(500).json({ error: err.message });
   }
-});
+};
+router.post('/calls/knowlarity/webhook', knowlarityWebhook);
+router.get('/calls/knowlarity/webhook', knowlarityWebhook);
+router.post('/calls/edesy/webhook', edesyWebhookHandler);
 
 router.post('/calls/:callSid/hangup', async (req, res) => {
-  const missing = exotelMissing();
-  if (missing.length) return res.status(503).json({ error: 'Exotel is not configured.' });
-  try {
-    const response = await fetch(`${exotelBaseUrl()}/Calls/${encodeURIComponent(req.params.callSid)}.json`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...exotelAuthHeader() },
-      body: new URLSearchParams({ Status: 'completed' }).toString()
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const message = data?.RestException?.Message || `Exotel returned HTTP ${response.status}`;
-      return res.status(502).json({ error: message });
-    }
-    res.json({ success: true, status: data?.Call?.Status || 'completed' });
-  } catch (err) {
-    res.status(502).json({ error: `Could not reach Exotel: ${err.message}` });
-  }
+  if (activeProvider() === 'edesy') return edesyHangupHandler(req, res);
+  // SuperReceptionist has no hangup API for a bridged call — the leg is ended on
+  // the handset. Answer 200 so the call screen can close cleanly and say why.
+  res.json({
+    success: false,
+    unsupported: true,
+    provider: 'knowlarity',
+    status: 'in-progress',
+    message: 'Hang up on your phone — Knowlarity ends the bridged call from the handset.'
+  });
 });
 
 router.get('/recordings', async (req, res) => {
@@ -362,9 +702,9 @@ router.post('/recordings', async (req, res) => {
       return res.status(400).json({ error: 'No audio data or audioUrl provided' });
     }
 
-    // Exotel calls: the status webhook may already have stored this call
+    // Bridged Knowlarity calls: the notify webhook may already have stored this call
     if (callSid && directAudioUrl && !audioBase64) {
-      const merged = await upsertExotelRecording({
+      const merged = await upsertBridgeRecording({
         callSid, leadId, leadName, leadPhone,
         counselorName: counselorName || req.user?.name || '',
         counselorPhone, durationSeconds, audioUrl, outcome, notes
@@ -383,7 +723,7 @@ router.post('/recordings', async (req, res) => {
       outcome: outcome || 'Follow-up Needed',
       notes: notes || '',
       audioUrl,
-      source: source || (directAudioUrl ? 'exotel' : 'browser_mic')
+      source: source || (directAudioUrl ? 'knowlarity' : 'browser_mic')
     });
 
     await recording.save();
@@ -888,11 +1228,29 @@ const OPEN_ESCALATION = { status: { $nin: ['resolved', 'closed'] } };
 
 router.get('/leadership/summary', async (req, res) => {
   try {
-    const [pendingApprovals, openEscalations] = await Promise.all([
+    const [
+      pendingApprovals,
+      openEscalations,
+      handoverPending,
+      placementPool,
+      studentsStuck,
+      delayedTasks
+    ] = await Promise.all([
       Approval.countDocuments({ status: 'pending' }),
-      Escalation.countDocuments(OPEN_ESCALATION)
+      Escalation.countDocuments(OPEN_ESCALATION),
+      Student.countDocuments({ handoverStatus: { $in: ['Pending Handover', 'Ready', 'Handed Over to Head of Trainer'] } }),
+      Student.countDocuments({ $or: [{ placementStatus: 'Ready' }, { isPlacementReady: true }, { syllabusCompleted: true }] }),
+      Student.countDocuments({ $or: [{ attendancePct: { $lt: 75, $ne: null } }, { handoverStatus: 'Pending Handover' }] }),
+      TeamTask.countDocuments({ status: 'delayed' })
     ]);
-    res.json({ pendingApprovals, openEscalations });
+    res.json({
+      pendingApprovals,
+      openEscalations,
+      handoverPending,
+      placementPool,
+      studentsStuck,
+      delayedTasks
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1009,21 +1367,64 @@ router.post('/leadership/escalations', async (req, res) => {
     if (!payload.departmentCode) {
       payload.departmentCode = (payload.category?.toLowerCase().includes('fee') || payload.type?.toLowerCase().includes('fee'))
         ? 'FIN'
-        : (payload.category?.toLowerCase().includes('class') || payload.type?.toLowerCase().includes('acad'))
+        : (payload.category?.toLowerCase().includes('class') || payload.type?.toLowerCase().includes('acad') || payload.category?.toLowerCase().includes('batch') || payload.type?.toLowerCase().includes('batch'))
         ? 'ACAD'
         : 'ADM';
     }
     if (!payload.raisedBy && req.user?.name) payload.raisedBy = req.user.name;
+
     // Student ticket → also routed to the student's HR counsellor
-    if (req.user?.department === 'student' && req.user.studentId) {
-      const st = await findStudentByAnyId(req.user.studentId);
-      payload.studentId = req.user.studentId;
+    let st = null;
+    const targetStudentId = req.user?.studentId || payload.studentId || (typeof payload.raisedBy === 'string' && payload.raisedBy.match(/\(([^)]+)\)/)?.[1]);
+    if (targetStudentId) {
+      st = await findStudentByAnyId(targetStudentId);
+      payload.studentId = st?.studentId || targetStudentId;
       if (st) {
-        payload.hrName = st.hrName || '';
+        payload.hrName = payload.hrName || st.hrName || '';
         payload.branchName = payload.branchName || st.location || '';
       }
     }
+
+    // One-time Batch Conversion Ticket enforcement
+    const isBatchConversion = /batch\s*conversion/i.test(payload.type || '') ||
+                              /batch\s*conversion/i.test(payload.category || '') ||
+                              /batch\s*conversion/i.test(payload.title || '');
+
+    if (isBatchConversion && (payload.studentId || st)) {
+      const sid = payload.studentId || st?.studentId;
+      if (st?.batchConversionTicketRaised) {
+        return res.status(400).json({
+          error: 'Batch conversion ticket can only be raised once. Repeat batch conversion ticket requests are not permitted.'
+        });
+      }
+      const existing = await Escalation.findOne({
+        $and: [
+          { $or: [{ studentId: sid }, { raisedBy: new RegExp(escapeRegex(sid), 'i') }] },
+          { $or: [{ type: /batch\s*conversion/i }, { category: /batch\s*conversion/i }, { title: /batch\s*conversion/i }] }
+        ]
+      });
+      if (existing) {
+        if (st && !st.batchConversionTicketRaised) {
+          st.batchConversionTicketRaised = true;
+          st.batchConversionTicketAt = existing.createdAt || new Date();
+          st.batchConversionTicketId = existing._id.toString();
+          await st.save().catch(() => {});
+        }
+        return res.status(400).json({
+          error: 'Batch conversion ticket can only be raised once. Repeat batch conversion ticket requests are not permitted.'
+        });
+      }
+    }
+
     const created = await Escalation.create(payload);
+
+    if (isBatchConversion && st) {
+      st.batchConversionTicketRaised = true;
+      st.batchConversionTicketAt = new Date();
+      st.batchConversionTicketId = created._id.toString();
+      await st.save().catch(() => {});
+    }
+
     if (created.studentId) {
       await pushNotification({
         audience: 'hr', recipientName: created.hrName || '', type: 'ticket',
@@ -2274,6 +2675,9 @@ router.put('/students/:id', async (req, res) => {
     // Handover to training happens only through POST /students/:id/handover,
     // and a checklist edit never pulls a handed-over student back
     if (['Sent to Training', 'Handed Over to Head of Trainer'].includes(payload.handoverStatus) || ['Sent to Training', 'Handed Over to Head of Trainer'].includes(existing.handoverStatus)) delete payload.handoverStatus;
+    // Trainer allocation is the exclusive authority of Head of Trainer via POST /students/:id/allocate-trainer
+    delete payload.trainerId;
+    delete payload.trainerName;
     // Placement pipeline: status / group always follow the stage (set by the model)
     delete payload.placementStatus;
     if (payload.statusGroup === 'placed') delete payload.statusGroup;
@@ -2772,14 +3176,33 @@ function trainerOnLeave(t, date) {
   return (t.leaves || []).some((l) => l.from && d >= l.from && d <= (l.to || l.from));
 }
 
+export function isSpecialtyCourse(course) {
+  if (!course) return false;
+  const c = String(course).toLowerCase();
+  if (c.includes('fresher') || c.includes('beginner') || c.includes('foundation')) {
+    return false;
+  }
+  const specialtyKeys = [
+    'surgery', 'cgsc', 'cpma', 'auditing', 'emergency', 'ed profee', 'ed facility',
+    'em ip', 'cedc', 'cemc', 'e/m', 'ed&e/m', 'cpc+ed', 'cpc+e/m', 'ip-drg', 'ipdrg',
+    'ip specialty', 'ccs', 'hcc', 'crc', 'risk adjustment', 'ivr', 'radiology',
+    'anesthesia', 'canpc', 'cobgc', 'cpcd', 'cardiology', 'orthopedic', 'pediatrics',
+    'specialty', 'exp in ipdrg'
+  ];
+  return specialtyKeys.some((k) => c.includes(k));
+}
+
 export const DEMO_GROUP_CAPACITY = 6; // Up to 6 demo students conducted together in one group session
 
-async function findEligibleTrainers({ language, location, preferredDate, timeSlot, excludeDemoId }) {
+async function findEligibleTrainers({ language, location, preferredDate, timeSlot, course, excludeDemoId }) {
   const langNorm = norm(language);
   const locNorm = norm(location);
+  const courseNorm = norm(course);
+  const specialty = isSpecialtyCourse(course);
 
   const roster = await Trainer.find({ active: { $ne: false } });
 
+  // 1. Language & Location matching
   const languageLocationMatched = roster.filter((t) => {
     const languageOk = !langNorm || (t.languages || []).some((l) => norm(l) === langNorm);
     const locationOk = !locNorm || norm(t.branchName) === locNorm;
@@ -2789,14 +3212,45 @@ async function findEligibleTrainers({ language, location, preferredDate, timeSlo
   if (languageLocationMatched.length === 0) {
     return {
       eligible: [],
-      reason: `No trainer found for language "${language}" at "${location}".`
+      reason: `No demo expert found for language "${language}" at "${location}".`
     };
   }
 
-  // Condition 3a: free by schedule — slot inside shift and not during one of their classes
+  // 2. Specialty vs Fresher pool filter
+  let pool = languageLocationMatched;
+  if (specialty) {
+    // For specialty course demos: require trainers who specialize in this course/subject
+    const specialtyTrainers = pool.filter((t) => {
+      const matchCourse = (t.courseKey && courseNorm.includes(norm(t.courseKey))) ||
+                          (t.expertCourse && (norm(t.expertCourse).includes(courseNorm) || courseNorm.includes(norm(t.expertCourse)))) ||
+                          (t.specialization && (norm(t.specialization).includes(courseNorm) || courseNorm.includes(norm(t.specialization)))) ||
+                          (t.skills || []).some((s) => norm(s.name).includes(courseNorm) || courseNorm.includes(norm(s.name)));
+      return matchCourse;
+    });
+
+    if (specialtyTrainers.length > 0) {
+      pool = specialtyTrainers;
+    } else {
+      return {
+        eligible: [],
+        reason: `No specialty demo expert found for "${course}" matching language "${language}" at "${location}".`
+      };
+    }
+  }
+
+  // 3. Available Timings:
+  // - Fresher demo experts should be available throughout the day.
+  // - Specialty course demos may be scheduled according to trainer availability.
   const slot = parseSlotToRange(timeSlot);
-  const freeBySchedule = languageLocationMatched.filter((t) => {
+  const freeBySchedule = pool.filter((t) => {
     if (trainerOnLeave(t, preferredDate)) return false; // on leave that day
+
+    // If it's a fresher course demo: fresher demo experts are available throughout the day
+    if (!specialty) {
+      return true;
+    }
+
+    // Specialty course demo: scheduled strictly according to trainer availability (shift & non-class slots)
     if (!slot) return true; // unparseable slot → can't judge, don't exclude
     const shiftStart = Number.isFinite(t.shiftStartMin) ? t.shiftStartMin : 0;
     const shiftEnd = Number.isFinite(t.shiftEndMin) ? t.shiftEndMin : 1440;
@@ -2804,6 +3258,7 @@ async function findEligibleTrainers({ language, location, preferredDate, timeSlo
       ? slot.startMin >= shiftStart && slot.endMin <= shiftEnd
       : slot.startMin >= shiftStart || slot.endMin <= shiftEnd; // overnight shift
     if (!inShift) return false;
+
     const inClass = (t.scheduledClasses || []).some((c) => {
       if (!classRunsOn(c.days, preferredDate)) return false; // class not held that weekday
       const r = Number.isFinite(c.startMin) && Number.isFinite(c.endMin)
@@ -2815,15 +3270,19 @@ async function findEligibleTrainers({ language, location, preferredDate, timeSlo
   });
 
   if (freeBySchedule.length === 0) {
+    if (specialty) {
+      return {
+        eligible: [],
+        reason: `Specialty demo expert for "${course}" at "${location}" is unavailable at ${timeSlot} on ${preferredDate} (trainer shift/class schedule). Please schedule according to trainer availability.`
+      };
+    }
     return {
       eligible: [],
-      reason: `Trainer(s) matching language "${language}" and location "${location}" are off-shift or in class at ${timeSlot}.`
+      reason: `Fresher demo expert(s) matching language "${language}" and location "${location}" are on leave on ${preferredDate}.`
     };
   }
 
-  // Condition 3b: free at the exact demo date + time.
-  // Group demo sessions support up to DEMO_GROUP_CAPACITY (6) candidates simultaneously.
-  // Exclude trainers who have already reached capacity for this overlapping slot.
+  // 4. Group session capacity check at the exact slot & date
   const busyQuery = {
     preferredDate,
     trainerId: { $in: freeBySchedule.map((t) => t.trainerId) },
@@ -2848,45 +3307,69 @@ async function findEligibleTrainers({ language, location, preferredDate, timeSlo
   if (eligible.length === 0) {
     return {
       eligible: [],
-      reason: `Trainer(s) matching language "${language}" and location "${location}" have reached maximum group capacity (${DEMO_GROUP_CAPACITY} students) at ${timeSlot} on ${preferredDate}.`
+      reason: `Demo expert(s) matching language "${language}" and location "${location}" have reached maximum group capacity (${DEMO_GROUP_CAPACITY} students) at ${timeSlot} on ${preferredDate}.`
     };
   }
 
   return { eligible, reason: '' };
 }
 
-// Head of Trainer list (Trainers with head/lead/chief roles + Department Head)
+// Head of Trainer list (Trainers with head/lead/chief roles + Branch Head of Trainers + Department Head)
 router.get('/trainer/heads', async (req, res) => {
   try {
-    const trainers = await Trainer.find().lean();
-    const depts = await Department.find({ $or: [{ code: 'ACAD' }, { dashboard: 'training' }] }).lean();
+    const [trainers, users, branches, depts] = await Promise.all([
+      Trainer.find({ active: { $ne: false } }).lean(),
+      User.find({ active: { $ne: false } }).lean(),
+      Branch.find({ status: { $ne: 'Inactive' } }).lean(),
+      Department.find({ $or: [{ code: 'ACAD' }, { dashboard: 'training' }] }).lean()
+    ]);
     const deptHeadName = depts.find((d) => d.head)?.head || 'Dr. Vikram C.';
 
-    // Trainers with Head/Chief/Lead in their role or courseKey ALL
-    const trainerHeads = trainers.filter(
-      (t) => t.active !== false && (/head|chief|lead|faculty lead/i.test(t.role || '') || t.courseKey === 'ALL')
-    );
-
     const heads = [];
-    trainerHeads.forEach((t) => {
-      heads.push({
-        id: t.trainerId,
-        name: t.trainerName,
-        role: t.role || 'Head of Trainer',
-        email: t.email || '',
-        branch: t.branchName || ''
-      });
+
+    // 1. Central Academic / Training Head (Dr. Vikram C. - All Branches)
+    heads.push({
+      id: 'HEAD_FACULTY_001',
+      name: deptHeadName,
+      role: 'Faculty Lead & Head of Training',
+      email: 'training@thoughtflows.in',
+      branch: 'All Branches'
     });
 
-    if (!heads.some((h) => h.name.toLowerCase() === deptHeadName.toLowerCase())) {
-      heads.unshift({
-        id: 'HEAD_FACULTY_001',
-        name: deptHeadName,
-        role: 'Faculty Lead & Head of Training',
-        email: 'training@thoughtflows.in',
-        branch: 'All Branches'
+    // 2. Identify designated Head of Trainer for every branch
+    const allKnownBranches = Array.from(new Set([
+      ...branches.map(b => b.name).filter(Boolean),
+      'Saravanampatti', 'Gandhipuram', 'Hopes', 'Ameerpet', 'Dilsukhnagar',
+      'Kochi', 'Salem', 'Tirupati', 'Trichy', 'Trivandrum', 'Vizag', 'Kollapur', 'Pune', 'Theni'
+    ]));
+
+    allKnownBranches.forEach(branch => {
+      // Look for a trainer in this branch with lead/head role
+      const leadTrainer = trainers.find(t => 
+        t.branchName && t.branchName.toLowerCase() === branch.toLowerCase() && 
+        /head|chief|lead|faculty/i.test(t.role || '')
+      );
+      // Look for any user in this branch with head of trainer or lead trainer role
+      const leadUser = users.find(u => 
+        u.branch && u.branch.toLowerCase() === branch.toLowerCase() && 
+        /head of trainer|training head|head of training|lead trainer|trainer/i.test(u.role || '')
+      );
+      // Look for any trainer assigned to this branch
+      const branchTrainer = trainers.find(t => t.branchName && t.branchName.toLowerCase() === branch.toLowerCase());
+
+      const chosenName = leadTrainer?.trainerName || leadUser?.name || branchTrainer?.trainerName || `${branch} Head of Trainer`;
+      const chosenId = leadTrainer?.trainerId || leadUser?._id?.toString() || branchTrainer?.trainerId || `HEAD_${branch.toUpperCase().replace(/\s+/g, '_')}`;
+      const chosenRole = leadTrainer?.role || leadUser?.role || `Head of Trainer (${branch})`;
+      const chosenEmail = leadTrainer?.email || leadUser?.email || `${branch.toLowerCase().replace(/\s+/g, '')}.training@thoughtflows.in`;
+
+      heads.push({
+        id: chosenId,
+        name: chosenName,
+        role: chosenRole && chosenRole.includes('Head') ? chosenRole : `Head of Trainer (${branch})`,
+        email: chosenEmail,
+        branch: branch
       });
-    }
+    });
 
     res.json(heads);
   } catch (err) {
@@ -2964,15 +3447,17 @@ router.delete('/trainer/settings/:id/leaves/:leaveId', async (req, res) => {
 });
 
 // Live preview for the booking form: which trainers would be notified for a
-// given language + location + date + time (and, optionally, course)?
+// given language + location + date + time + course?
 router.get('/demos/eligible-trainers', async (req, res) => {
   try {
     const { language, location, preferredDate, timeSlot, course } = req.query;
+    const isSpecialty = isSpecialtyCourse(course);
     const { eligible, reason } = await findEligibleTrainers({
       language,
       location,
       preferredDate: preferredDate || todayStr(),
-      timeSlot: timeSlot || ''
+      timeSlot: timeSlot || '',
+      course: course || ''
     });
     const courseNorm = norm(course);
     const ranked = courseNorm
@@ -2980,6 +3465,8 @@ router.get('/demos/eligible-trainers', async (req, res) => {
       : eligible;
     res.json({
       count: ranked.length,
+      isSpecialty,
+      courseType: isSpecialty ? 'specialty' : 'fresher',
       reason,
       trainers: ranked.map((t) => ({
         trainerId: t.trainerId,
@@ -2987,7 +3474,8 @@ router.get('/demos/eligible-trainers', async (req, res) => {
         specialization: t.specialization,
         courseKey: t.courseKey,
         branchName: t.branchName,
-        languages: t.languages
+        languages: t.languages,
+        experienceLevel: t.experienceLevel
       }))
     });
   } catch (err) {
@@ -3078,14 +3566,16 @@ router.post('/demos', async (req, res) => {
     const preferredDate = rawData.preferredDate || todayStr();
     const demoSlot = rawData.timeSlot || rawData.time || '10:00–11:30 AM';
 
-    // Demo Booking Notification Requirement: find every trainer who is
-    // simultaneously (1) fluent in the student's language, (2) at the
-    // student's location, and (3) free at this exact date + time.
+    // Demo Booking Notification Requirement: find demo experts based on
+    // language, location, and available timings (fresher demo experts available
+    // throughout the day, specialty course demos scheduled per trainer availability).
+    const isSpecialty = isSpecialtyCourse(course);
     const { eligible, reason: noEligibleTrainerReason } = await findEligibleTrainers({
       language,
       location,
       preferredDate,
-      timeSlot: demoSlot
+      timeSlot: demoSlot,
+      course
     });
 
     // Among the eligible pool, prefer a trainer whose subject matches the
@@ -3124,6 +3614,8 @@ router.post('/demos', async (req, res) => {
       trainerRole: primary?.specialization || '',
       expertCourse: primary?.expertCourse || '',
       isExpertMatched: Boolean(primary),
+      isSpecialty,
+      courseType: isSpecialty ? 'specialty' : 'fresher',
 
       // Strict Notification Decision Fields
       isExperienced: primary?.isExperienced ?? false,
@@ -3167,6 +3659,17 @@ router.post('/demos', async (req, res) => {
 
     const newDemo = new Demo(enrichedPayload);
     await newDemo.save();
+
+    // Demo Requests Outside Fixed Timings — no trainer is auto-notified here;
+    // the respective Head is flagged to coordinate and handle this manually.
+    if (newDemo.outsideFixedTiming) {
+      await pushNotification({
+        audience: 'hr', type: 'demo_outside_timing',
+        title: `⏰ Demo Outside Fixed Timings: ${newDemo.candidateName}`,
+        message: `${newDemo.candidateName} requested a demo at ${newDemo.customTimeRequested || newDemo.timeSlot} on ${newDemo.preferredDate} (${newDemo.branch || newDemo.location}, ${newDemo.language}). No trainer was auto-notified — the respective Head should coordinate and handle this request.`,
+        createdBy: newDemo.bookedBy || ''
+      });
+    }
 
     // Booking a demo moves the candidate's lead to "Demo Booked"
     try {
@@ -3969,12 +4472,14 @@ const isTrainerReq = (req) => req.user?.department === 'training';
 const myTrainerId = (req) => String(req.user?.trainerId || '');
 const trainerOwnsStudent = (req, st) => {
   if (!isTrainerReq(req)) return true;
+  if (/head of trainer|chief trainer|faculty lead|admin|leadership/i.test(req.user?.role || '')) return true;
   const me = myTrainerId(req);
   if (!st || !me) return false;
   return st.trainerId === me || (!st.trainerId && st.handoverStatus === 'Sent to Training');
 };
 const trainerOwnsRecord = (req, rec) => {
   if (!isTrainerReq(req)) return true;
+  if (/head of trainer|chief trainer|faculty lead|admin|leadership/i.test(req.user?.role || '')) return true;
   const me = myTrainerId(req);
   return Boolean(me && rec && rec.trainerId === me);
 };
@@ -4001,11 +4506,20 @@ async function notifyBatch(batch, payload) {
   return pushNotification({ audience: 'student', ...payload, recipientId: '', recipientName: '', batch: String(batch) });
 }
 
-// Readiness = average of test, mock and technical scores — only once all three
-// exist, so one early test can't make a student look placement-ready
+// Readiness = average of technical knowledge, assessments, communication, and interview preparation
 function computeReadiness(st) {
-  const parts = [st.mockScore, st.technicalScore, st.assessmentScore];
-  if (!parts.every((v) => typeof v === 'number')) return null;
+  const interview = typeof st.interviewPrepScore === 'number'
+    ? st.interviewPrepScore
+    : (typeof st.mockScore === 'number' ? st.mockScore : null);
+
+  const parts = [
+    st.technicalScore,
+    st.assessmentScore,
+    st.communicationScore,
+    interview
+  ].filter((v) => typeof v === 'number');
+
+  if (parts.length === 0) return null;
   return Math.round(parts.reduce((a, b) => a + b, 0) / parts.length);
 }
 
@@ -4321,10 +4835,15 @@ router.get('/trainer/attendance', async (req, res) => {
   }
 });
 
+// Batches are keyed by their exact name everywhere (materials, tests, live
+// classes, notifications), so "CPC · 7PM" and "cpc - 7 pm" must resolve to one.
+const batchMatchKey = (name = '') => String(name).toLowerCase().replace(/[^a-z0-9]/g, '');
+const tidyBatchName = (name = '') => String(name).replace(/\s+/g, ' ').trim();
+
 // POST Record Attendance — merges marks into that day's class record
 router.post('/trainer/attendance', async (req, res) => {
   try {
-    const { trainerId: bodyTrainerId = '', trainerName = '', batch, date, topic, records: rawRecords = {} } = req.body || {};
+    const { trainerId: bodyTrainerId = '', trainerName = '', batch, date, topic, records: rawRecords = {}, isOnline, sessionId } = req.body || {};
     if (!batch) return res.status(400).json({ error: 'batch is required' });
     const trainerId = isTrainerReq(req) ? myTrainerId(req) : bodyTrainerId;
     const records = {};
@@ -4335,6 +4854,39 @@ router.post('/trainer/attendance', async (req, res) => {
     }
     if (Object.keys(rawRecords || {}).length && !Object.keys(records).length) return res.status(403).json(NOT_YOUR_STUDENT);
     const day = date || todayStr();
+
+    // Check if there is an online session linked or conducted for this batch today
+    let liveSession = null;
+    if (sessionId && mongoose.isValidObjectId(sessionId)) {
+      liveSession = await LiveClassSession.findById(sessionId);
+    } else {
+      const dayStart = new Date(`${day}T00:00:00.000Z`);
+      const dayEnd = new Date(`${day}T23:59:59.999Z`);
+      liveSession = await LiveClassSession.findOne({
+        batch: tidyBatchName(batch),
+        startedAt: { $gte: dayStart, $lte: dayEnd }
+      }).sort({ startedAt: -1 });
+    }
+
+    // Online Attendance Rule: For online sessions, option to mark attendance as present
+    // should become available only after the student attends at least 1 hour and 45 minutes (105 min).
+    const isOnlineSession = Boolean(isOnline || liveSession);
+    for (const [k, v] of Object.entries(records)) {
+      if (v === 'Present') {
+        const student = await findStudentByAnyId(k);
+        const studentIsOnline = isOnlineSession || student?.mode === 'Online';
+        if (studentIsOnline && liveSession) {
+          const join = (liveSession.joins || []).find((j) => j.studentId === student?.studentId || j.name === student?.name);
+          const attendedMins = join?.durationMinutes ?? (join?.joinedAt ? Math.max(0, Math.round(((join.lastJoinAt || liveSession.endedAt || new Date()) - new Date(join.joinedAt)) / 60000)) : 0);
+          if (attendedMins < 105) {
+            return res.status(400).json({
+              error: `For online sessions, the option to mark attendance as Present is available only after attending at least 1 hour and 45 minutes (105 mins). ${student?.name || k} attended ${attendedMins} mins.`
+            });
+          }
+        }
+      }
+    }
+
     const set = { trainerName };
     if (topic) set.topic = topic;
     Object.entries(records).forEach(([k, v]) => { set[`records.${k}`] = v; });
@@ -4344,7 +4896,59 @@ router.post('/trainer/attendance', async (req, res) => {
       { new: true, upsert: true, setDefaultsOnInsert: true }
     );
     await recomputeAttendance(Object.keys(records));
-    res.json({ success: true, data: { ...doc.toObject(), records: Object.fromEntries(doc.records || []) } });
+
+    // Syllabus Tracker: Automatically mark and update syllabus tracker for the corresponding session
+    let updatedSyllabus = null;
+    if (topic && String(topic).trim()) {
+      const cleanTopic = String(topic).trim();
+      const bKey = batchMatchKey(batch);
+      let sylDoc = await BatchSyllabus.findOne({ batchKey: bKey });
+      if (!sylDoc) {
+        sylDoc = new BatchSyllabus({ batch, batchKey: bKey, course: '' });
+      }
+      const existingIndex = (sylDoc.modules || []).findIndex(
+        (m) => m.name.toLowerCase() === cleanTopic.toLowerCase() ||
+               cleanTopic.toLowerCase().includes(m.name.toLowerCase()) ||
+               m.name.toLowerCase().includes(cleanTopic.toLowerCase())
+      );
+      const by = trainerName || req.user?.name || 'Trainer';
+      if (existingIndex >= 0) {
+        sylDoc.modules[existingIndex].done = true;
+        sylDoc.modules[existingIndex].doneAt = new Date();
+        sylDoc.modules[existingIndex].doneBy = by;
+      } else {
+        sylDoc.modules.push({
+          name: cleanTopic.slice(0, 160),
+          done: true,
+          doneAt: new Date(),
+          doneBy: by
+        });
+      }
+      sylDoc.updatedBy = by;
+      if (trainerId) sylDoc.trainerId = trainerId;
+      if (trainerName) sylDoc.trainerName = trainerName;
+      await sylDoc.save();
+      updatedSyllabus = sylDoc;
+
+      // Update current syllabus module for all students in this batch
+      await Student.updateMany({ batchName: batch }, { $set: { syllabusModule: cleanTopic } });
+
+      // Notify the batch about the syllabus update
+      const doneCount = sylDoc.modules.filter((m) => m.done).length;
+      const pct = sylDoc.modules.length ? Math.round((doneCount / sylDoc.modules.length) * 100) : 0;
+      await notifyBatch(batch, {
+        type: 'module',
+        title: `Syllabus updated: ${cleanTopic}`.slice(0, 180),
+        message: `Session completed and tracked in syllabus tracker (${doneCount} of ${sylDoc.modules.length} modules covered, ${pct}%).`,
+        createdBy: by
+      }).catch(() => {});
+    }
+
+    res.json({
+      success: true,
+      data: { ...doc.toObject(), records: Object.fromEntries(doc.records || []) },
+      syllabus: updatedSyllabus
+    });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -4353,11 +4957,6 @@ router.post('/trainer/attendance', async (req, res) => {
 // ==========================================
 // HR → TRAINING HANDOVER  and  TRAINING → HR PROGRESS
 // ==========================================
-// Batches are keyed by their exact name everywhere (materials, tests, live
-// classes, notifications), so "CPC · 7PM" and "cpc - 7 pm" must resolve to one.
-const batchMatchKey = (name = '') => String(name).toLowerCase().replace(/[^a-z0-9]/g, '');
-const tidyBatchName = (name = '') => String(name).replace(/\s+/g, ' ').trim();
-
 async function canonicalBatchName(name, trainerId) {
   const clean = tidyBatchName(name);
   if (!clean) return '';
@@ -4403,22 +5002,24 @@ async function processHandoverToHead(req, res) {
     st.handoverStatus = 'Handed Over to Head of Trainer';
     st.headOfTrainer = assignedHead;
     st.headOfTrainerId = headOfTrainerId || st.headOfTrainerId || '';
+    if (req.body.branch) st.branch = req.body.branch;
     if (trainerNote) st.trainerNote = trainerNote;
     st.handedOverBy = handedOverBy || req.user?.name || 'HR';
     st.handedOverAt = new Date();
     if (st.checklist) st.checklist.trainerNote = Boolean(trainerNote) || st.checklist.trainerNote;
     await st.save();
 
+    const branchLabel = st.branch || req.body.branch || '';
     await pushNotification({
       audience: 'training', type: 'handover',
-      title: `New student handed over: ${st.name}`,
-      message: `${st.handedOverBy} handed over ${st.name} (${st.studentId}) · ${st.course} to Head of Trainer (${assignedHead}). Pending trainer & batch allocation.${trainerNote ? ` Note: ${trainerNote}` : ''}`,
+      title: `New student handed over: ${st.name}${branchLabel ? ` (${branchLabel})` : ''}`,
+      message: `${st.handedOverBy} handed over ${st.name} (${st.studentId}) · ${st.course} to Head of Trainer (${assignedHead})${branchLabel ? ` for ${branchLabel} branch` : ''}. Pending trainer & batch allocation.${trainerNote ? ` Note: ${trainerNote}` : ''}`,
       studentId: st.studentId, createdBy: st.handedOverBy
     });
 
     await notifyStudent(st.studentId, {
       type: 'handover', title: 'Handover complete · Training Department',
-      message: `Your admission profile has been verified by HR and handed over to Head of Trainer (${assignedHead}). Your trainer and batch will be allocated shortly.`,
+      message: `Your admission profile has been verified by HR and handed over to Head of Trainer (${assignedHead})${branchLabel ? ` at ${branchLabel} branch` : ''}. Your trainer and batch will be allocated shortly.`,
       createdBy: st.handedOverBy
     });
 
@@ -4430,76 +5031,81 @@ async function processHandoverToHead(req, res) {
 
 router.post('/students/:id/handover-to-head', processHandoverToHead);
 
+// All student handovers route strictly to the Head of Trainer.
+// The Head of Trainer alone assigns students to trainers and batches.
 router.post('/students/:id/handover', async (req, res) => {
-  const { trainerId } = req.body || {};
-  // If no trainerId is provided or handoverToHead is set, execute handover to Head of Trainer
-  if (!trainerId || req.body?.handoverToHead) {
-    return processHandoverToHead(req, res);
-  }
-
-  // Legacy direct handover fallback
-  try {
-    const { batchName = '', trainerNote = '', handedOverBy = '' } = req.body || {};
-    const trainer = await Trainer.findOne({ trainerId });
-    if (!trainer) return res.status(404).json({ error: 'Trainer not found in the roster' });
-    const st = await findStudentByAnyId(req.params.id);
-    if (!st) return res.status(404).json({ error: 'Student not found' });
-    if (!ownsStudent(req, st)) return res.status(403).json(NOT_YOURS);
-
-    if (st.handoverStatus !== 'Sent to Training' && st.handoverStatus !== 'Handed Over to Head of Trainer') {
-      const cl = { ...(st.checklist?.toObject?.() || st.checklist || {}) };
-      if (trainerNote) cl.trainerNote = true;
-      const missing = Object.entries(cl).filter(([, v]) => v !== true).map(([k]) => k);
-      if (missing.length) return res.status(400).json({ error: `Complete the handover checklist first — missing: ${missing.join(', ')}` });
-    }
-
-    const previousBatch = st.handedOverAt ? studentBatchOf(st) : '';
-    st.trainerId = trainer.trainerId;
-    st.trainerName = trainer.trainerName;
-    st.batchName = await canonicalBatchName(batchName || st.batchName || `${st.course}${st.batchTiming ? ` · ${st.batchTiming}` : ''}`, trainer.trainerId);
-    st.trainerNote = trainerNote;
-    st.handoverStatus = 'Sent to Training';
-    st.handedOverBy = handedOverBy;
-    st.handedOverAt = new Date();
-    if (st.checklist) st.checklist.trainerNote = Boolean(trainerNote) || st.checklist.trainerNote;
-    await st.save();
-
-    await Promise.all([
-      StudentSubmission.updateMany(
-        { studentId: st.studentId, $or: [{ trainerId: '' }, { trainerId: { $exists: false } }] },
-        { $set: { trainerId: trainer.trainerId, trainerName: trainer.trainerName } }
-      ).catch(() => {}),
-      TrainerDoubt.updateMany(
-        { studentId: st.studentId, $or: [{ trainerId: '' }, { trainerId: { $exists: false } }] },
-        { $set: { trainerId: trainer.trainerId, trainerName: trainer.trainerName } }
-      ).catch(() => {}),
-      StudentRequest.updateMany(
-        { studentId: st.studentId, $or: [{ trainerId: '' }, { trainerId: { $exists: false } }] },
-        { $set: { trainerId: trainer.trainerId, trainerName: trainer.trainerName } }
-      ).catch(() => {})
-    ]);
-
-    await pushNotification({
-      audience: 'trainer', recipientId: trainer.trainerId, recipientName: trainer.trainerName, type: 'handover',
-      title: `New student allocated: ${st.name}`,
-      message: `${handedOverBy || 'HR'} handed over ${st.name} (${st.studentId}) · ${st.course} · batch ${st.batchName}.${previousBatch && previousBatch !== st.batchName ? ` Moved from "${previousBatch}" — re-assign any materials they still need.` : ''}${trainerNote ? ` Note: ${trainerNote}` : ''}`,
-      studentId: st.studentId, createdBy: handedOverBy
-    });
-    await notifyStudent(st.studentId, {
-      type: 'handover', title: `Your trainer is ${trainer.trainerName}`,
-      message: `You've been allocated to ${trainer.trainerName} · batch ${st.batchName}. Your classes, materials and tests will appear here.`,
-      createdBy: handedOverBy
-    });
-    res.json(st);
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
+  return processHandoverToHead(req, res);
 });
+
+// Helper: Only Head of Trainer, Academic Director, Chief Faculty, Admin, or Leadership can assign/reassign students
+export const isHeadOfTrainerUser = async (req) => {
+  const u = req.user;
+  if (!u) return false;
+  // Admin & Leadership always have full authority
+  if (['admin', 'leadership'].includes(u.department) || ['Admin', 'Super Admin'].includes(u.role)) {
+    return true;
+  }
+  const role = String(u.role || '').toLowerCase();
+  const dept = String(u.department || '').toLowerCase();
+  if (
+    role.includes('head of trainer') ||
+    role.includes('head of training') ||
+    role.includes('training head') ||
+    role.includes('faculty lead') ||
+    role.includes('chief trainer') ||
+    role.includes('chief faculty') ||
+    role.includes('academic director') ||
+    role.includes('lead trainer') ||
+    role.includes('trainer lead') ||
+    role.includes('trainer') ||
+    dept.includes('training') ||
+    dept.includes('faculty')
+  ) {
+    return true;
+  }
+  // Check designated Academic / Training Department Head (e.g. Dr. Vikram C.)
+  try {
+    const acadDept = await Department.findOne({ $or: [{ code: 'ACAD' }, { dashboard: 'training' }] }).lean();
+    if (acadDept?.head && (acadDept.head.toLowerCase() === String(u.name || '').toLowerCase() || acadDept.head.toLowerCase().includes(String(u.name || '').toLowerCase()))) {
+      return true;
+    }
+  } catch (_) {}
+
+  // Check if user has Trainer record in DB
+  if (u.trainerId || u.email) {
+    try {
+      const tr = await Trainer.findOne({ $or: [{ trainerId: u.trainerId || '' }, { email: u.email || '' }] }).lean();
+      if (tr && tr.active !== false) {
+        return true;
+      }
+    } catch (_) {}
+  }
+
+  return false;
+};
 
 // Head of Trainer assigns students to respective trainers & batches
 router.post('/students/:id/allocate-trainer', async (req, res) => {
   try {
-    const { trainerId, batchName = '', trainerNote = '', allocatedBy = '' } = req.body || {};
+    const authorized = await isHeadOfTrainerUser(req);
+    if (!authorized) {
+      return res.status(403).json({
+        error: 'Access denied: Only the Head of Trainer has the authority to assign or reassign students to trainers and batches.'
+      });
+    }
+
+    const {
+      trainerId,
+      batchName = '',
+      trainerNote = '',
+      allocatedBy = '',
+      isAnatomyToCoding = false,
+      batchTiming = '',
+      targetTiming = '',
+      syllabusModule = '',
+      resolveTicket = false
+    } = req.body || {};
+
     if (!trainerId) return res.status(400).json({ error: 'Select a trainer to allocate the student to' });
     const trainer = await Trainer.findOne({ trainerId });
     if (!trainer) return res.status(404).json({ error: 'Trainer not found in the roster' });
@@ -4508,16 +5114,94 @@ router.post('/students/:id/allocate-trainer', async (req, res) => {
 
     const previousBatch = st.allocatedTrainerAt || st.handedOverAt ? studentBatchOf(st) : '';
     const previousTrainer = st.trainerName;
+    const previousTrainerId = st.trainerId;
+
+    // Detect if this is an Anatomy to Medical Coding transition:
+    const isAnatomySource = /anatomy/i.test(previousBatch || '') || /anatomy/i.test(st.course || '') || /anatomy/i.test(previousTrainer || '') || st.syllabusModule === 'Module 2' || st.anatomyCompleted;
+    const isCodingTarget = /coding|cpc|amct|cic|coc|ccs|cpt|icd/i.test(batchName || '') || /coding|cpc|amct|cic|coc|ccs/i.test(trainer.courseKey || trainer.specialization || '');
+    const isAnatomyConversion = Boolean(isAnatomyToCoding || (isAnatomySource && isCodingTarget && !/anatomy alone/i.test(batchName)));
+
     st.trainerId = trainer.trainerId;
     st.trainerName = trainer.trainerName;
     st.batchName = await canonicalBatchName(batchName || st.batchName || `${st.course}${st.batchTiming ? ` · ${st.batchTiming}` : ''}`, trainer.trainerId);
+
+    // Schedule continuity — keep or update training schedule
+    const effectiveTiming = batchTiming || targetTiming || st.batchTiming || '';
+    if (effectiveTiming) st.batchTiming = effectiveTiming;
+
     if (trainerNote) st.trainerNote = trainerNote;
     st.handoverStatus = 'Sent to Training';
     st.allocatedByHead = allocatedBy || req.user?.name || 'Head of Trainer';
     st.allocatedByHeadAt = new Date();
     st.allocatedTrainerAt = new Date();
     if (!st.handedOverAt) st.handedOverAt = new Date();
+
+    // ── ANATOMY TO CODING SYLLABUS & SCHEDULE PRESERVATION ──
+    if (isAnatomyConversion) {
+      st.anatomyCompleted = true;
+      st.anatomyCompletedAt = st.anatomyCompletedAt || new Date();
+      st.anatomyCompletedBy = st.allocatedByHead;
+      st.codingBatchEnrolledAt = new Date();
+
+      // Ensure Anatomy modules (Modules 1 and 2) are preserved as completed
+      const anatMods = [
+        'Module 1 — Foundations & Medical Terminology',
+        'Module 2 — Anatomy, Physiology & Body Systems'
+      ];
+      const existingCompleted = Array.isArray(st.completedModules) ? st.completedModules : [];
+      st.completedModules = [...new Set([...existingCompleted, ...anatMods])];
+
+      // Advance active syllabus module into Medical Coding (default: Module 3 - Core Coding Guidelines)
+      st.syllabusModule = syllabusModule || (['Module 1', 'Module 2', ''].includes(st.syllabusModule) ? 'Module 3' : st.syllabusModule);
+
+      // Append structured audit log in remedial actions
+      st.remedialActions = st.remedialActions || [];
+      st.remedialActions.push({
+        action: 'Anatomy to Medical Coding Batch Conversion',
+        note: `Transitioned from Anatomy (${previousBatch || previousTrainer || 'Anatomy Foundation'}) to Medical Coding (${st.batchName} · Trainer: ${trainer.trainerName}). Schedule: ${st.batchTiming || 'Standard'}. Anatomy Modules 1 & 2 completed, active syllabus set to ${st.syllabusModule}.`,
+        by: st.allocatedByHead,
+        at: new Date()
+      });
+    } else if (syllabusModule) {
+      st.syllabusModule = syllabusModule;
+    }
+
+    // ── RECORD BATCH TRANSITION HISTORY ──
+    st.batchHistory = st.batchHistory || [];
+    st.batchHistory.push({
+      fromBatch: previousBatch,
+      toBatch: st.batchName,
+      fromTrainerId: previousTrainerId || '',
+      fromTrainerName: previousTrainer || '',
+      toTrainerId: trainer.trainerId,
+      toTrainerName: trainer.trainerName,
+      transitionType: isAnatomyConversion ? 'anatomy_to_coding' : (previousBatch ? 'batch_transfer' : 'initial_allocation'),
+      transitionedAt: new Date(),
+      transitionedBy: st.allocatedByHead,
+      preservedSyllabusModule: st.syllabusModule,
+      timing: st.batchTiming || '',
+      notes: trainerNote || (isAnatomyConversion ? 'Anatomy completed; transitioned to Medical Coding batch.' : '')
+    });
+
     await st.save();
+
+    // ── AUTO-RESOLVE OPEN BATCH CONVERSION TICKETS IF PRESENT ──
+    if (isAnatomyConversion || resolveTicket) {
+      const openBatchTicket = await Escalation.findOne({
+        $and: [
+          { $or: [{ studentId: st.studentId }, { raisedBy: new RegExp(escapeRegex(st.studentId), 'i') }] },
+          { $or: [{ type: /batch\s*conversion/i }, { category: /batch\s*conversion/i }, { title: /batch\s*conversion/i }] },
+          { status: { $in: ['open', 'in-progress'] } }
+        ]
+      });
+      if (openBatchTicket) {
+        openBatchTicket.status = 'resolved';
+        openBatchTicket.resolvedAt = new Date();
+        openBatchTicket.response = `Batch conversion completed by Head of Trainer: transitioned to ${trainer.trainerName} · batch "${st.batchName}" (${st.batchTiming || 'Scheduled'}). Anatomy progress preserved, active module set to ${st.syllabusModule}.`;
+        openBatchTicket.respondedBy = st.allocatedByHead;
+        await openBatchTicket.save().catch(() => {});
+      }
+    }
 
     // Re-link any existing doubts, submissions or requests that had no trainer assigned or mismatched
     await Promise.all([
@@ -4538,15 +5222,20 @@ router.post('/students/:id/allocate-trainer', async (req, res) => {
     // Notify assigned trainer
     await pushNotification({
       audience: 'trainer', recipientId: trainer.trainerId, recipientName: trainer.trainerName, type: 'handover',
-      title: `New student allocated: ${st.name}`,
-      message: `${st.allocatedByHead} (Head of Trainer) allocated ${st.name} (${st.studentId}) · ${st.course} to your batch "${st.batchName}".${previousTrainer && previousTrainer !== trainer.trainerName ? ` Transferred from ${previousTrainer}.` : ''}${st.trainerNote ? ` Note: ${st.trainerNote}` : ''}`,
+      title: isAnatomyConversion ? `Student Transitioned: ${st.name} (Anatomy → Coding)` : `New student allocated: ${st.name}`,
+      message: isAnatomyConversion
+        ? `${st.allocatedByHead} (Head of Trainer) transitioned ${st.name} (${st.studentId}) from Anatomy into your Coding batch "${st.batchName}" (${st.batchTiming || 'Scheduled'}). Anatomy modules verified and complete; ready for ${st.syllabusModule}.${st.trainerNote ? ` Note: ${st.trainerNote}` : ''}`
+        : `${st.allocatedByHead} (Head of Trainer) allocated ${st.name} (${st.studentId}) · ${st.course} to your batch "${st.batchName}".${previousTrainer && previousTrainer !== trainer.trainerName ? ` Transferred from ${previousTrainer}.` : ''}${st.trainerNote ? ` Note: ${st.trainerNote}` : ''}`,
       studentId: st.studentId, createdBy: st.allocatedByHead
     });
 
     // Notify student
     await notifyStudent(st.studentId, {
-      type: 'handover', title: `Your trainer is ${trainer.trainerName}`,
-      message: `You've been allocated to trainer ${trainer.trainerName} · batch ${st.batchName}. Your classes, materials and tests will appear here.`,
+      type: 'handover',
+      title: isAnatomyConversion ? 'Batch Transition: Welcome to Medical Coding! 🎯' : `Your trainer is ${trainer.trainerName}`,
+      message: isAnatomyConversion
+        ? `You've successfully transitioned to Medical Coding with trainer ${trainer.trainerName} · batch "${st.batchName}" (${st.batchTiming || 'Scheduled'}). Your Anatomy progress is preserved and your active module is ${st.syllabusModule}.`
+        : `You've been allocated to trainer ${trainer.trainerName} · batch ${st.batchName}. Your classes, materials and tests will appear here.`,
       createdBy: st.allocatedByHead
     });
 
@@ -4554,8 +5243,8 @@ router.post('/students/:id/allocate-trainer', async (req, res) => {
     if (st.hrName) {
       await pushNotification({
         audience: 'hr', recipientName: st.hrName, type: 'handover',
-        title: `Trainer allocated: ${st.name}`,
-        message: `${st.allocatedByHead} (Head of Trainer) allocated ${st.name} (${st.studentId}) to trainer ${trainer.trainerName} · batch ${st.batchName}.`,
+        title: isAnatomyConversion ? `Batch Converted: ${st.name} (Anatomy → Coding)` : `Trainer allocated: ${st.name}`,
+        message: `${st.allocatedByHead} (Head of Trainer) transitioned ${st.name} (${st.studentId}) to trainer ${trainer.trainerName} · batch ${st.batchName}${st.batchTiming ? ` (${st.batchTiming})` : ''}.${isAnatomyConversion ? ' Anatomy progress preserved.' : ''}`,
         studentId: st.studentId, createdBy: st.allocatedByHead
       }).catch(() => {});
     }
@@ -4599,37 +5288,338 @@ router.put('/students/:id/syllabus-complete', async (req, res) => {
   }
 });
 
-router.put('/students/:id/recommendation', async (req, res) => {
+// Trainer Approval for Course Completion Certificate & Exam Approval
+// Respective trainer must verify syllabus completion, assessments, and overall readiness before approval
+router.put('/students/:id/trainer-approval', async (req, res) => {
   try {
-    const { status, trainerName = '', mockScore, technicalScore } = req.body || {};
-    if (!['Ready', 'Needs Revision', 'Not Ready'].includes(status)) return res.status(400).json({ error: 'Invalid recommendation' });
     const st = await findStudentByAnyId(req.params.id);
     if (!st) return res.status(404).json({ error: 'Student not found' });
     if (!trainerOwnsStudent(req, st)) return res.status(403).json(NOT_YOUR_STUDENT);
-    if (mockScore !== undefined && mockScore !== '') st.mockScore = Number(mockScore);
-    if (technicalScore !== undefined && technicalScore !== '') st.technicalScore = Number(technicalScore);
-    st.readinessScore = computeReadiness(st);
-    st.trainerRecommendation = status;
-    st.trainerRecommendationAt = new Date();
-    if (status === 'Ready') st.placementStatus = 'Referred to CCCP';
-    await st.save();
-    await pushNotification({
-      audience: 'hr', recipientName: st.hrName || '', type: 'recommendation',
-      title: `Trainer recommendation: ${st.name} → ${status}`,
-      message: `${trainerName || st.trainerName || 'Trainer'} set ${st.name} as "${status}"${typeof st.readinessScore === 'number' ? ` · readiness ${st.readinessScore}%` : ''}.`,
-      studentId: st.studentId, createdBy: trainerName
+
+    const {
+      approveCourseCompletion = false,
+      approveExam = false,
+      trainerNotes = '',
+      trainerName = '',
+      decision = 'Approved', // 'Approved' | 'Declined'
+      verifySyllabus = true,
+      verifyAssessments = true,
+      verifyReadiness = true,
+      verifySeminar = true
+    } = req.body || {};
+
+    const effectiveTrainer = trainerName || st.trainerName || req.user?.name || 'Respective Trainer';
+    const now = new Date();
+
+    // Check syllabus modules for this batch
+    const batchKey = batchMatchKey(studentBatchOf(st));
+    const syllabusDoc = batchKey ? await BatchSyllabus.findOne({ batchKey }) : null;
+    const modules = syllabusDoc?.modules || [];
+    const doneModulesCount = modules.filter(m => m.done).length;
+
+    // Check assessment records
+    const tests = await TrainerAssessment.find({
+      $or: [...(st.batchName ? [{ batch: st.batchName }] : []), { [`scores.${studentKeyOf(st)}`]: { $exists: true } }]
     });
-    if (status === 'Ready') {
+    let testAvg = null;
+    let passedCount = 0;
+    if (tests.length > 0) {
+      const scores = tests.map(t => {
+        const s = plainMap(t.scores);
+        const myScore = typeof s[studentKeyOf(st)] === 'number' ? s[studentKeyOf(st)] : null;
+        if (myScore !== null && t.totalMarks > 0) {
+          const pct = Math.round((myScore / t.totalMarks) * 100);
+          if (myScore >= (t.passMark || 0)) passedCount++;
+          return pct;
+        }
+        return null;
+      }).filter(x => x !== null);
+      if (scores.length > 0) {
+        testAvg = Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
+      }
+    }
+    if (testAvg === null && typeof st.assessmentScore === 'number') {
+      testAvg = st.assessmentScore;
+    }
+
+    // Record verification snapshot
+    st.trainerApprovalVerification = {
+      syllabusVerified: Boolean(verifySyllabus),
+      syllabusCompleted: Boolean(st.syllabusCompleted || verifySyllabus),
+      modulesCompletedCount: doneModulesCount || (st.syllabusCompleted ? modules.length : 0),
+      assessmentsVerified: Boolean(verifyAssessments),
+      assessmentAverage: testAvg,
+      assessmentsClearedCount: passedCount,
+      readinessVerified: Boolean(verifyReadiness),
+      readinessScore: st.readinessScore,
+      attendancePct: st.attendancePct,
+      jobReadyStatus: st.jobReadyStatus || st.trainerRecommendation || '',
+      seminarVerified: Boolean(verifySeminar),
+      verifiedAt: now,
+      verifiedBy: effectiveTrainer
+    };
+
+    if (decision === 'Approved') {
+      // If syllabus was verified as complete by the trainer, sync syllabusCompleted
+      if (verifySyllabus && !st.syllabusCompleted) {
+        st.syllabusCompleted = true;
+        st.syllabusCompletedAt = now;
+        st.placementStatus = 'Referred to CCCP';
+      }
+
+      // Mandatory Student Seminar — every student must deliver one before completion
+      if (verifySeminar && !st.seminarCompleted) {
+        st.seminarCompleted = true;
+        st.seminarCompletedAt = now;
+        st.seminarEvaluatedBy = effectiveTrainer;
+        st.seminarFeedback = trainerNotes || st.seminarFeedback;
+      }
+
+      if (approveCourseCompletion) {
+        st.courseCompletionApproved = true;
+        st.courseCompletionApprovedAt = now;
+        st.courseCompletionApprovedBy = effectiveTrainer;
+        st.courseCompletionTrainerNotes = trainerNotes;
+        st.courseCompletionStatus = 'Approved';
+      }
+
+      if (approveExam) {
+        st.examApprovedByTrainer = true;
+        st.examApprovedAt = now;
+        st.examApprovedBy = effectiveTrainer;
+        st.examTrainerNotes = trainerNotes;
+        st.examApprovalStatus = 'Approved';
+      }
+
+      await st.save();
+
+      const approvedItems = [
+        approveCourseCompletion ? 'Course Completion Certificate' : '',
+        approveExam ? 'Exam Eligibility & Slot' : ''
+      ].filter(Boolean).join(' and ') || 'Academic Milestones';
+
       await pushNotification({
-        audience: 'cccp', type: 'recommendation',
-        title: `Placement-ready: ${st.name}`,
-        message: `${trainerName || st.trainerName || 'Trainer'} recommended ${st.name} (${st.studentId}) as Ready${typeof st.readinessScore === 'number' ? ` · readiness ${st.readinessScore}%` : ''}.`,
-        studentId: st.studentId, createdBy: trainerName
+        audience: 'hr', recipientName: st.hrName || '', type: 'trainer_approval',
+        title: `Trainer Approval Granted: ${st.name}`,
+        message: `${effectiveTrainer} verified syllabus, assessments & readiness and approved ${approvedItems} for ${st.name} (${st.studentId}).${trainerNotes ? ` Note: ${trainerNotes}` : ''}`,
+        studentId: st.studentId, createdBy: effectiveTrainer
+      });
+
+      if (approveExam) {
+        await pushNotification({
+          audience: 'cccp', type: 'exam',
+          title: `Exam Approved by Trainer: ${st.name}`,
+          message: `${effectiveTrainer} approved ${st.name} (${st.studentId}) for AAPC exam. Ready for exam scheduling.`,
+          studentId: st.studentId, createdBy: effectiveTrainer
+        });
+      }
+
+      await notifyStudent(st.studentId, {
+        type: 'trainer_approval',
+        title: `Trainer Approval Granted! 🎓`,
+        message: `Your trainer ${effectiveTrainer} has approved your ${approvedItems} after verifying your syllabus, assessment scores, and readiness.`,
+        link: 'certification'
+      });
+
+    } else {
+      if (approveCourseCompletion) {
+        st.courseCompletionApproved = false;
+        st.courseCompletionStatus = 'Declined';
+        st.courseCompletionTrainerNotes = trainerNotes;
+      }
+      if (approveExam) {
+        st.examApprovedByTrainer = false;
+        st.examApprovalStatus = 'Declined';
+        st.examTrainerNotes = trainerNotes;
+      }
+      await st.save();
+
+      await notifyStudent(st.studentId, {
+        type: 'trainer_approval',
+        title: `Trainer Review Feedback 📋`,
+        message: `Your trainer noted improvements needed before course completion/exam approval: ${trainerNotes || 'Please consult your trainer.'}`,
+        link: 'certification'
       });
     }
+
     res.json(st);
   } catch (e) {
     res.status(400).json({ error: e.message });
+  }
+});
+
+const handleStudentReadinessUpdate = async (req, res) => {
+  try {
+    const {
+      status,
+      jobReadyStatus,
+      trainerName = '',
+      mockScore,
+      interviewPrepScore,
+      technicalScore,
+      communicationScore,
+      assessmentScore,
+      feedback = '',
+      notes = ''
+    } = req.body || {};
+
+    const rawStatus = jobReadyStatus || status;
+    const allowed = ['Ready', 'Job Ready', 'Needs Revision', 'Not Ready', 'In Progress'];
+    if (rawStatus && !allowed.includes(rawStatus)) {
+      return res.status(400).json({ error: 'Invalid recommendation or job-ready status' });
+    }
+
+    const st = await findStudentByAnyId(req.params.id);
+    if (!st) return res.status(404).json({ error: 'Student not found' });
+    if (!trainerOwnsStudent(req, st)) return res.status(403).json(NOT_YOUR_STUDENT);
+
+    // 1. Technical Knowledge
+    if (technicalScore !== undefined && technicalScore !== null && technicalScore !== '') {
+      st.technicalScore = Math.max(0, Math.min(100, Number(technicalScore)));
+    }
+    // 2. Assessments
+    if (assessmentScore !== undefined && assessmentScore !== null && assessmentScore !== '') {
+      st.assessmentScore = Math.max(0, Math.min(100, Number(assessmentScore)));
+    }
+    // 3. Communication
+    if (communicationScore !== undefined && communicationScore !== null && communicationScore !== '') {
+      st.communicationScore = Math.max(0, Math.min(100, Number(communicationScore)));
+    }
+    // 4. Interview Preparation (kept in sync with mockScore)
+    const interviewVal = interviewPrepScore !== undefined && interviewPrepScore !== null && interviewPrepScore !== ''
+      ? interviewPrepScore
+      : (mockScore !== undefined && mockScore !== null && mockScore !== '' ? mockScore : undefined);
+
+    if (interviewVal !== undefined) {
+      const numInterview = Math.max(0, Math.min(100, Number(interviewVal)));
+      st.interviewPrepScore = numInterview;
+      st.mockScore = numInterview;
+    }
+
+    if (feedback || notes) {
+      st.readinessFeedback = String(feedback || notes || '').trim();
+    }
+
+    // Determine Job-Ready status
+    const isReady = rawStatus === 'Ready' || rawStatus === 'Job Ready';
+    const isNeedsRevision = rawStatus === 'Needs Revision' || rawStatus === 'In Progress';
+    const isNotReady = rawStatus === 'Not Ready';
+
+    if (rawStatus) {
+      if (isReady) {
+        st.jobReadyStatus = 'Job Ready';
+        st.trainerRecommendation = 'Ready';
+        st.placementStatus = 'Referred to CCCP';
+      } else if (isNeedsRevision) {
+        st.jobReadyStatus = 'Needs Revision';
+        st.trainerRecommendation = 'Needs Revision';
+      } else if (isNotReady) {
+        st.jobReadyStatus = 'Not Ready';
+        st.trainerRecommendation = 'Not Ready';
+      }
+    }
+
+    st.readinessScore = computeReadiness(st);
+    st.trainerRecommendationAt = new Date();
+    st.readinessEvaluatedBy = trainerName || req.user?.name || st.trainerName || 'Trainer';
+    st.readinessEvaluatedAt = new Date();
+
+    await st.save();
+
+    const displayStatus = st.jobReadyStatus || st.trainerRecommendation || 'Updated';
+    await pushNotification({
+      audience: 'hr', recipientName: st.hrName || '', type: 'recommendation',
+      title: `Trainer job-ready evaluation: ${st.name} → ${displayStatus}`,
+      message: `${trainerName || st.trainerName || 'Trainer'} updated ${st.name}'s readiness as "${displayStatus}"${typeof st.readinessScore === 'number' ? ` · score ${st.readinessScore}%` : ''}.`,
+      studentId: st.studentId, createdBy: trainerName
+    });
+
+    if (isReady) {
+      await pushNotification({
+        audience: 'cccp', type: 'recommendation',
+        title: `Placement Job-Ready: ${st.name}`,
+        message: `${trainerName || st.trainerName || 'Trainer'} marked ${st.name} (${st.studentId}) as Job Ready${typeof st.readinessScore === 'number' ? ` · readiness ${st.readinessScore}%` : ''}.`,
+        studentId: st.studentId, createdBy: trainerName
+      });
+    }
+
+    res.json(st);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+};
+
+router.put('/students/:id/recommendation', handleStudentReadinessUpdate);
+router.put('/students/:id/readiness', handleStudentReadinessUpdate);
+
+// Update weekly star rating (trainers / academic heads)
+router.put('/students/:id/weekly-rating', async (req, res) => {
+  try {
+    const st = await findStudentByAnyId(req.params.id);
+    if (!st) return res.status(404).json({ error: 'Student not found' });
+    const { attendanceScore, assessmentScore, syllabusScore, participationScore, feedback = '', evaluatedBy = '' } = req.body || {};
+
+    const att = Math.max(1, Math.min(5, Number(attendanceScore ?? st.weeklyRating?.attendanceScore ?? 4)));
+    const ass = Math.max(1, Math.min(5, Number(assessmentScore ?? st.weeklyRating?.assessmentScore ?? 4)));
+    const syl = Math.max(1, Math.min(5, Number(syllabusScore ?? st.weeklyRating?.syllabusScore ?? 4)));
+    const part = Math.max(1, Math.min(5, Number(participationScore ?? st.weeklyRating?.participationScore ?? 4)));
+    const overall = Number(((att + ass + syl + part) / 4).toFixed(1));
+
+    let tier = 'On-Track Learner';
+    if (overall >= 4.5) tier = 'Outstanding Star';
+    else if (overall >= 3.8) tier = 'High Performer';
+    else if (overall >= 3.0) tier = 'On-Track Learner';
+    else if (overall >= 2.0) tier = 'Needs Focus';
+    else tier = 'Action Required';
+
+    const now = new Date();
+    const history = Array.isArray(st.weeklyRating?.history) ? [...st.weeklyRating.history] : [];
+    if (st.weeklyRating?.weekLabel && st.weeklyRating?.stars) {
+      history.unshift({
+        weekLabel: st.weeklyRating.weekLabel,
+        weekNumber: st.weeklyRating.weekNumber,
+        year: st.weeklyRating.year,
+        stars: st.weeklyRating.stars,
+        tier: st.weeklyRating.tier,
+        attendanceScore: st.weeklyRating.attendanceScore,
+        assessmentScore: st.weeklyRating.assessmentScore,
+        syllabusScore: st.weeklyRating.syllabusScore,
+        participationScore: st.weeklyRating.participationScore,
+        feedback: st.weeklyRating.feedback,
+        evaluatedAt: st.weeklyRating.evaluatedAt || new Date(),
+        evaluatedBy: st.weeklyRating.evaluatedBy || evaluatedBy || 'Trainer'
+      });
+    }
+
+    st.weeklyRating = {
+      stars: overall,
+      tier,
+      weekLabel: st.weeklyRating?.weekLabel || `Week (Manual Update)`,
+      weekNumber: st.weeklyRating?.weekNumber || 0,
+      year: st.weeklyRating?.year || now.getFullYear(),
+      attendanceScore: att,
+      assessmentScore: ass,
+      syllabusScore: syl,
+      participationScore: part,
+      feedback: String(feedback).trim() || st.weeklyRating?.feedback || '',
+      evaluatedAt: now,
+      evaluatedBy: evaluatedBy || 'Lead Trainer',
+      history: history.slice(0, 12)
+    };
+    await st.save();
+
+    await pushNotification({
+      audience: 'student',
+      studentId: st.studentId,
+      type: 'rating',
+      title: `Weekly Star Rating Updated: ${overall}★ (${tier})`,
+      message: `Your trainer updated your weekly performance evaluation across Attendance, Assessment, Syllabus, and Participation.`,
+      link: 'dashboard'
+    }).catch(() => {});
+
+    res.json(st.weeklyRating);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -6112,6 +7102,182 @@ async function creditReferralReward(lead) {
   }
 }
 
+// ---- Compute Weekly Star Rating for a student based on 4 pillars ----
+// Attendance (25%), Assessment Performance (25%), Syllabus Progress (25%), Participation (25%)
+export function computeStudentWeeklyRating(st, { attendance = [], assessments = [], syllabus = null, doubts = [], submissions = [], recentClasses = [] } = {}) {
+  const now = new Date();
+  const d = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const weekNumber = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+  const year = d.getUTCFullYear();
+
+  // Week start (Monday) and end (Sunday)
+  const monday = new Date(now);
+  monday.setDate(now.getDate() - ((now.getDay() + 6) % 7));
+  monday.setHours(0, 0, 0, 0);
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+  sunday.setHours(23, 59, 59, 999);
+
+  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const weekLabel = `Week ${weekNumber} (${monday.getDate()} ${monthNames[monday.getMonth()]} - ${sunday.getDate()} ${monthNames[sunday.getMonth()]})`;
+
+  // 1. ATTENDANCE PILLAR (0 - 5.0 stars)
+  const mondayStr = monday.toISOString().split('T')[0];
+  const sundayStr = sunday.toISOString().split('T')[0];
+  const weeklyAttendance = attendance.filter((a) => {
+    const dStr = a.date ? String(a.date).slice(0, 10) : '';
+    return dStr >= mondayStr && dStr <= sundayStr;
+  });
+
+  let attScore = 4.0;
+  let attDetail = '';
+  if (weeklyAttendance.length > 0) {
+    const attendedCount = weeklyAttendance.filter((a) => a.status === 'Present' || a.status === 'Late').length;
+    const rate = Math.round((attendedCount / weeklyAttendance.length) * 100);
+    if (rate >= 95) attScore = 5.0;
+    else if (rate >= 85) attScore = 4.5;
+    else if (rate >= 75) attScore = 4.0;
+    else if (rate >= 60) attScore = 3.0;
+    else if (rate >= 40) attScore = 2.0;
+    else attScore = 1.0;
+    attDetail = `${rate}% attendance (${attendedCount}/${weeklyAttendance.length} classes this week)`;
+  } else if (typeof st.attendancePct === 'number' && st.attendancePct > 0) {
+    const rate = st.attendancePct;
+    if (rate >= 90) attScore = 5.0;
+    else if (rate >= 80) attScore = 4.5;
+    else if (rate >= 75) attScore = 4.0;
+    else if (rate >= 60) attScore = 3.0;
+    else attScore = 2.0;
+    attDetail = `${rate}% cumulative attendance rate (target: 75%+)`;
+  } else {
+    attScore = 4.0;
+    attDetail = 'Regular attendance schedule on track';
+  }
+
+  // 2. ASSESSMENT PERFORMANCE PILLAR (0 - 5.0 stars)
+  const scoredTests = assessments.filter((t) => typeof t.pct === 'number');
+  let assScore = 4.0;
+  let assDetail = '';
+  if (scoredTests.length > 0) {
+    const avg = Math.round(scoredTests.reduce((acc, t) => acc + t.pct, 0) / scoredTests.length);
+    if (avg >= 90) assScore = 5.0;
+    else if (avg >= 80) assScore = 4.5;
+    else if (avg >= 70) assScore = 3.8;
+    else if (avg >= 55) assScore = 3.0;
+    else if (avg >= 40) assScore = 2.0;
+    else assScore = 1.5;
+    assDetail = `${avg}% average across ${scoredTests.length} tests/evaluations`;
+  } else if (typeof st.assessmentScore === 'number' && st.assessmentScore > 0) {
+    const avg = st.assessmentScore;
+    if (avg >= 90) assScore = 5.0;
+    else if (avg >= 80) assScore = 4.5;
+    else if (avg >= 70) assScore = 3.8;
+    else if (avg >= 55) assScore = 3.0;
+    else assScore = 2.0;
+    assDetail = `${avg}% trainer evaluation baseline`;
+  } else {
+    assScore = 3.8;
+    assDetail = 'Initial assessment module in progress';
+  }
+
+  // 3. SYLLABUS PROGRESS PILLAR (0 - 5.0 stars)
+  const modules = syllabus?.modules || [];
+  const doneModules = modules.filter((m) => m.done).length;
+  const sylPct = modules.length > 0 ? Math.round((doneModules / modules.length) * 100) : (st.syllabusCompleted ? 100 : 50);
+  let sylScore = 4.0;
+  let sylDetail = '';
+  if (st.syllabusCompleted || (modules.length > 0 && doneModules === modules.length)) {
+    sylScore = 5.0;
+    sylDetail = '100% syllabus cleared · Placement ready';
+  } else if (sylPct >= 80) {
+    sylScore = 4.8;
+    sylDetail = `${doneModules}/${modules.length} modules completed (${sylPct}% syllabus progress)`;
+  } else if (sylPct >= 60) {
+    sylScore = 4.2;
+    sylDetail = `${doneModules}/${modules.length} modules completed (${sylPct}% syllabus progress)`;
+  } else if (sylPct >= 40) {
+    sylScore = 3.6;
+    sylDetail = `${doneModules}/${modules.length} modules completed (${sylPct}% syllabus progress)`;
+  } else if (sylPct >= 20) {
+    sylScore = 3.2;
+    sylDetail = `${doneModules}/${modules.length} modules completed (${sylPct}% syllabus progress)`;
+  } else {
+    sylScore = 3.0;
+    sylDetail = `Module 1 foundation pacing active (${st.syllabusModule || 'Core Foundations'})`;
+  }
+
+  // 4. PARTICIPATION PILLAR (0 - 5.0 stars)
+  const doubtCount = doubts.length;
+  const subCount = submissions.length;
+  const recentClassParticipation = recentClasses.length;
+  let partScore = 3.5;
+  let partDetail = '';
+
+  const activityPoints = (doubtCount * 1.5) + (subCount * 2.5) + (recentClassParticipation * 1.0);
+  if (activityPoints >= 10 || (doubtCount >= 2 && subCount >= 2)) {
+    partScore = 5.0;
+    partDetail = `High engagement: ${doubtCount} doubts asked, ${subCount} submissions uploaded`;
+  } else if (activityPoints >= 6 || doubtCount >= 1 || subCount >= 1) {
+    partScore = 4.4;
+    partDetail = `Active learner: ${doubtCount} doubts resolved, ${subCount} submissions uploaded`;
+  } else if (activityPoints >= 3) {
+    partScore = 3.8;
+    partDetail = 'Consistent live class and discussion participation';
+  } else {
+    partScore = 3.2;
+    partDetail = 'Regular listener · Submit assignments and ask doubts to raise rating';
+  }
+
+  // OVERALL STAR RATING (Average of 4 pillars, rounded to 1 decimal place)
+  const overall = Number(((attScore + assScore + sylScore + partScore) / 4).toFixed(1));
+  const roundedStars = Math.round(overall);
+
+  let tier = 'On-Track Learner';
+  if (overall >= 4.5) tier = 'Outstanding Star';
+  else if (overall >= 3.8) tier = 'High Performer';
+  else if (overall >= 3.0) tier = 'On-Track Learner';
+  else if (overall >= 2.0) tier = 'Needs Focus';
+  else tier = 'Action Required';
+
+  // Actionable tip based on the weakest pillar
+  let feedback = '';
+  const minScore = Math.min(attScore, assScore, sylScore, partScore);
+  if (minScore === attScore && attScore < 4.5) {
+    feedback = 'Boost your attendance this week to ensure you comfortably maintain the academy 75%+ eligibility threshold.';
+  } else if (minScore === assScore && assScore < 4.5) {
+    feedback = 'Review recent assessment topics and attempt online practice tests to raise your assessment average.';
+  } else if (minScore === partScore && partScore < 4.5) {
+    feedback = 'Increase your participation rating by submitting assignments on time and asking questions in doubt clearance.';
+  } else if (minScore === sylScore && sylScore < 4.5) {
+    feedback = 'Stay closely aligned with daily batch syllabus topics to speed up your module clearance pace.';
+  } else {
+    feedback = 'Exceptional all-round performance this week across attendance, tests, syllabus pacing, and active participation!';
+  }
+
+  return {
+    stars: overall,
+    roundedStars,
+    tier,
+    weekLabel,
+    weekNumber,
+    year,
+    attendanceScore: attScore,
+    attendanceDetail: attDetail,
+    assessmentScore: assScore,
+    assessmentDetail: assDetail,
+    syllabusScore: sylScore,
+    syllabusDetail: sylDetail,
+    participationScore: partScore,
+    participationDetail: partDetail,
+    feedback,
+    evaluatedAt: now,
+    evaluatedBy: 'Automated Weekly Audit'
+  };
+}
+
 // ---- Full portal payload for one student ----
 router.get('/student-portal/me', async (req, res) => {
   try {
@@ -6143,6 +7309,18 @@ router.get('/student-portal/me', async (req, res) => {
       Escalation.find({ $or: [{ studentId: st.studentId }, { raisedBy: new RegExp(escapeRegex(st.studentId)) }] }).sort({ createdAt: -1 }).limit(20),
       CorporatePartner.find({ hiring: /hiring/i }).select('name city type activeVacancies').limit(8)
     ]);
+
+    // Auto-sync batchConversionTicketRaised flag if student previously raised one
+    if (!st.batchConversionTicketRaised) {
+      const foundBatchTicket = tickets.find((t) => /batch\s*conversion/i.test(t?.type || '') || /batch\s*conversion/i.test(t?.category || '') || /batch\s*conversion/i.test(t?.title || ''));
+      const foundBatchReq = requests.find((r) => r?.type === 'batch_conversion' || /batch\s*conversion/i.test(r?.subject || ''));
+      if (foundBatchTicket || foundBatchReq) {
+        st.batchConversionTicketRaised = true;
+        st.batchConversionTicketAt = (foundBatchTicket || foundBatchReq).createdAt || new Date();
+        st.batchConversionTicketId = (foundBatchTicket?._id || foundBatchReq?._id)?.toString() || '';
+        await st.save().catch(() => {});
+      }
+    }
 
     // Prefer the allocated trainer's live session, else any live one for the batch
     const live = liveSessions.find((s) => s.trainerId === st.trainerId && isSessionLive(s)) || liveSessions.find(isSessionLive) || null;
@@ -6255,6 +7433,62 @@ router.get('/student-portal/me', async (req, res) => {
       notes: (sess.notes || []).map((n) => ({ text: n.text, at: n.at }))
     }));
 
+    // Compute and sync weekly star rating based on attendance, assessment performance, syllabus progress, and participation
+    const computedWeeklyRating = computeStudentWeeklyRating(st, {
+      attendance,
+      assessments: tests,
+      syllabus,
+      doubts,
+      submissions,
+      recentClasses
+    });
+
+    let weeklyRating = computedWeeklyRating;
+    try {
+      const currentLabel = st.weeklyRating?.weekLabel;
+      if (!st.weeklyRating || !st.weeklyRating.stars || currentLabel !== computedWeeklyRating.weekLabel) {
+        const history = Array.isArray(st.weeklyRating?.history) ? [...st.weeklyRating.history] : [];
+        if (currentLabel && currentLabel !== computedWeeklyRating.weekLabel && st.weeklyRating?.stars) {
+          history.unshift({
+            weekLabel: st.weeklyRating.weekLabel,
+            weekNumber: st.weeklyRating.weekNumber,
+            year: st.weeklyRating.year,
+            stars: st.weeklyRating.stars,
+            tier: st.weeklyRating.tier,
+            attendanceScore: st.weeklyRating.attendanceScore,
+            assessmentScore: st.weeklyRating.assessmentScore,
+            syllabusScore: st.weeklyRating.syllabusScore,
+            participationScore: st.weeklyRating.participationScore,
+            feedback: st.weeklyRating.feedback,
+            evaluatedAt: st.weeklyRating.evaluatedAt || new Date(),
+            evaluatedBy: st.weeklyRating.evaluatedBy || 'Automated Weekly Audit'
+          });
+        }
+        st.weeklyRating = {
+          stars: computedWeeklyRating.stars,
+          tier: computedWeeklyRating.tier,
+          weekLabel: computedWeeklyRating.weekLabel,
+          weekNumber: computedWeeklyRating.weekNumber,
+          year: computedWeeklyRating.year,
+          attendanceScore: computedWeeklyRating.attendanceScore,
+          assessmentScore: computedWeeklyRating.assessmentScore,
+          syllabusScore: computedWeeklyRating.syllabusScore,
+          participationScore: computedWeeklyRating.participationScore,
+          feedback: computedWeeklyRating.feedback,
+          evaluatedAt: computedWeeklyRating.evaluatedAt,
+          evaluatedBy: computedWeeklyRating.evaluatedBy,
+          history: history.slice(0, 12)
+        };
+        await st.save().catch(() => {});
+      }
+      weeklyRating = {
+        ...computedWeeklyRating,
+        history: st.weeklyRating?.history || []
+      };
+    } catch (syncErr) {
+      console.warn('weeklyRating sync warning:', syncErr.message);
+    }
+
     res.json({
       student: st,
       batch,
@@ -6276,7 +7510,8 @@ router.get('/student-portal/me', async (req, res) => {
       trainerFeedback,
       syllabus,
       announcements: announcements.map((a) => ({ id: a._id.toString(), title: a.title, message: a.message, trainerName: a.trainerName, createdAt: a.createdAt })),
-      recordings
+      recordings,
+      weeklyRating
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -6626,6 +7861,96 @@ router.post('/student-portal/:id/requests', async (req, res) => {
         return res.status(400).json({ error: held ? `Only ${available} points available — ${held} are in a pending redemption` : 'Not enough reward points to redeem' });
       }
     }
+    if (type === 'batch_conversion' || /batch\s*conversion/i.test(type) || /batch\s*conversion/i.test(subject)) {
+      if (st.batchConversionTicketRaised) {
+        return res.status(400).json({ error: 'Batch conversion ticket can only be raised once. Repeat batch conversion ticket requests are not permitted.' });
+      }
+      const existingReq = await StudentRequest.findOne({
+        studentId: st.studentId,
+        $or: [{ type: 'batch_conversion' }, { subject: /batch\s*conversion/i }]
+      });
+      const existingEsc = await Escalation.findOne({
+        $and: [
+          { $or: [{ studentId: st.studentId }, { raisedBy: new RegExp(escapeRegex(st.studentId), 'i') }] },
+          { $or: [{ type: /batch\s*conversion/i }, { category: /batch\s*conversion/i }, { title: /batch\s*conversion/i }] }
+        ]
+      });
+      if (existingReq || existingEsc) {
+        st.batchConversionTicketRaised = true;
+        st.batchConversionTicketAt = (existingReq || existingEsc).createdAt || new Date();
+        st.batchConversionTicketId = (existingReq?._id || existingEsc?._id)?.toString() || '';
+        await st.save().catch(() => {});
+        return res.status(400).json({ error: 'Batch conversion ticket can only be raised once. Repeat batch conversion ticket requests are not permitted.' });
+      }
+      st.batchConversionTicketRaised = true;
+      st.batchConversionTicketAt = new Date();
+      await st.save().catch(() => {});
+    }
+
+    if (type === 'break_request') {
+      const reasonCategory = String(details?.reasonCategory || subject || '').trim();
+      const explanation = String(message || details?.explanation || '').trim();
+      const startDate = String(details?.startDate || preferredDate || '').trim();
+      const endDate = String(details?.endDate || details?.returnDate || '').trim();
+      const documentData = details?.documentData || details?.data || '';
+      const documentName = details?.documentName || details?.fileName || '';
+
+      if (!reasonCategory) {
+        return res.status(400).json({ error: 'A valid reason category is required for a break request (e.g. Medical, Exams, Emergency, Relocation).' });
+      }
+      if (!explanation || explanation.length < 5) {
+        return res.status(400).json({ error: 'Please provide a valid, detailed explanation for your planned break.' });
+      }
+      if (!startDate || !endDate) {
+        return res.status(400).json({ error: 'Both break start date and return date are required.' });
+      }
+      if (!documentData && !documentName) {
+        return res.status(400).json({ error: 'Supporting documentation is mandatory for break requests (e.g., medical certificate, exam schedule, employer letter).' });
+      }
+
+      // Track pending prior approval on student record
+      st.breakStatus = 'pending_approval';
+      st.breakStartDate = startDate;
+      st.breakEndDate = endDate;
+      st.breakReason = reasonCategory;
+      await st.save().catch(() => {});
+    }
+
+    if (type === 'exam_booking') {
+      if (!st.examApprovedByTrainer) {
+        return res.status(400).json({
+          error: 'AAPC / Certification Exam booking requires prior approval from your respective trainer. Your trainer must verify syllabus completion, assessment performance, and overall readiness before an exam slot request can be submitted.'
+        });
+      }
+    }
+
+    let mockAttemptNumber = 1;
+    if (type === 'mock_interview') {
+      const existingMocks = await StudentRequest.find({
+        studentId: st.studentId,
+        type: 'mock_interview',
+        status: { $in: ['Open', 'Scheduled', 'Resolved'] }
+      }).sort({ createdAt: 1 });
+
+      if (existingMocks.length >= 2) {
+        return res.status(400).json({
+          error: 'Maximum mock interview allowance reached. Students receive up to two mock interview attempts to assess and improve interview readiness.'
+        });
+      }
+
+      const activeMock = existingMocks.find(m => ['Open', 'Scheduled'].includes(m.status));
+      if (activeMock) {
+        return res.status(400).json({
+          error: 'You already have an active mock interview request. Please complete your current attempt before scheduling your next attempt.'
+        });
+      }
+
+      mockAttemptNumber = existingMocks.length + 1; // Attempt 1 (initial assessment) or Attempt 2 (readiness improvement)
+      st.mockInterviewAttemptsCount = Math.max(st.mockInterviewAttemptsCount || 0, mockAttemptNumber);
+      st.mockInterview = `Attempt ${mockAttemptNumber} Requested`;
+      await st.save().catch(() => {});
+    }
+
     const doc = await StudentRequest.create({
       studentId: st.studentId,
       studentName: st.name,
@@ -6633,21 +7958,47 @@ router.post('/student-portal/:id/requests', async (req, res) => {
       batch: studentBatchOf(st),
       type,
       audience,
-      trainerId: audience === 'trainer' ? st.trainerId : '',
-      trainerName: audience === 'trainer' ? st.trainerName : '',
+      attemptNumber: type === 'mock_interview' ? mockAttemptNumber : 1,
+      trainerId: audience === 'trainer' ? st.trainerId : (st.trainerId || ''),
+      trainerName: audience === 'trainer' ? st.trainerName : (st.trainerName || ''),
       hrName: st.hrName || '',
-      subject,
+      subject: type === 'break_request'
+        ? `Break Request: ${details?.reasonCategory || subject || 'Official Break'}`
+        : type === 'mock_interview'
+        ? `Mock Interview — Attempt ${mockAttemptNumber} of 2 (${mockAttemptNumber === 1 ? 'Initial Assessment' : 'Readiness Improvement'})`
+        : subject,
       message,
       preferredDate,
-      details
+      startDate: details?.startDate || preferredDate || '',
+      endDate: details?.endDate || details?.returnDate || '',
+      reasonCategory: details?.reasonCategory || subject || '',
+      documentName: details?.documentName || details?.fileName || '',
+      documentMimeType: details?.documentMimeType || details?.mimeType || '',
+      documentData: details?.documentData || details?.data || '',
+      details: {
+        ...details,
+        ...(type === 'mock_interview' ? {
+          attemptNumber: mockAttemptNumber,
+          isImprovementAttempt: mockAttemptNumber === 2,
+          priorScore: mockAttemptNumber === 2 ? st.mockScore : null
+        } : {})
+      }
     });
+
+    if (doc.documentName) {
+      doc.documentUrl = `/api/student-portal/requests/${doc._id}/document`;
+      await doc.save();
+    }
+
     await pushNotification({
       audience,
       recipientId: audience === 'trainer' ? st.trainerId : '',
       recipientName: audience === 'trainer' ? st.trainerName : (st.hrName || ''),
       type: `request_${type}`,
-      title: `${st.name}: ${subject || type.replace(/_/g, ' ')}`,
-      message: [message, preferredDate ? `Preferred: ${preferredDate}` : ''].filter(Boolean).join(' · '),
+      title: type === 'break_request' ? `Student Break Request: ${st.name}` : `${st.name}: ${subject || type.replace(/_/g, ' ')}`,
+      message: type === 'break_request'
+        ? `Break planned: ${details?.startDate || preferredDate} to ${details?.endDate || details?.returnDate} (${details?.reasonCategory || subject}). Prior approval required.`
+        : [message, preferredDate ? `Preferred: ${preferredDate}` : ''].filter(Boolean).join(' · '),
       studentId: st.studentId, createdBy: st.name
     });
     if (type === 'exam_booking') {
@@ -6675,7 +8026,38 @@ router.get('/student-portal/requests', async (req, res) => {
       const studentIds = (await Student.find({ trainerId }).select('studentId')).map((s) => s.studentId).filter(Boolean);
       query.$or = [{ trainerId }, { studentId: { $in: studentIds } }];
     }
-    res.json(await StudentRequest.find(query).sort({ createdAt: -1 }).limit(300));
+    const docs = await StudentRequest.find(query).sort({ createdAt: -1 }).limit(300);
+    res.json(docs.map((d) => {
+      const obj = d.toObject();
+      obj.hasDocument = Boolean(d.documentName);
+      if (d.documentName) {
+        obj.documentUrl = `/api/student-portal/requests/${d._id}/document`;
+      }
+      return obj;
+    }));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Download / stream supporting document for a student request
+router.get('/student-portal/requests/:id/document', async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+    const doc = await StudentRequest.findById(req.params.id).select('+documentData');
+    if (!doc) return res.status(404).json({ error: 'Request not found' });
+    if (!doc.documentData) return res.status(404).json({ error: 'No supporting document attached' });
+
+    const raw = String(doc.documentData);
+    const base64 = raw.includes(',') ? raw.split(',')[1] : raw;
+    const buf = Buffer.from(base64, 'base64');
+    const mime = doc.documentMimeType || 'application/octet-stream';
+    const filename = doc.documentName || `supporting-document-${doc.studentId}.pdf`;
+
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(filename)}"`);
+    res.setHeader('Content-Length', buf.length);
+    res.send(buf);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -6693,7 +8075,7 @@ router.put('/student-portal/requests/:id', async (req, res) => {
     const doc = await StudentRequest.findById(req.params.id);
     if (!doc) return res.status(404).json({ error: 'Request not found' });
     if (isTrainerReq(req)) {
-      if (doc.audience !== 'trainer') return res.status(403).json({ error: 'Fee, reward-point and profile requests are handled by HR.' });
+      if (doc.audience !== 'trainer') return res.status(403).json({ error: 'Fee, reward-point, break and profile requests are handled by HR.' });
       const ok = (doc.trainerId && doc.trainerId === myTrainerId(req)) || trainerOwnsStudent(req, await findStudentByAnyId(doc.studentId));
       if (!ok) return res.status(403).json(NOT_YOUR_STUDENT);
     }
@@ -6716,19 +8098,67 @@ router.put('/student-portal/requests/:id', async (req, res) => {
     await doc.save();
     const st = await findStudentByAnyId(doc.studentId);
     if (st) {
-      // Mock interview done → reflect on the student record HR & CCCP read
+      // Mock interview done → reflect on the student record HR & CCCP read with Two Attempts tracking
       if (doc.type === 'mock_interview') {
-        st.mockInterview = status === 'Resolved' ? 'Completed' : status === 'Scheduled' ? 'Scheduled' : st.mockInterview;
-        if (mockScore !== undefined && mockScore !== '' && mockScore !== null) {
-          st.mockScore = Number(mockScore);
+        const attemptNum = doc.attemptNumber || doc.details?.attemptNumber || 1;
+        if (status === 'Scheduled') {
+          st.mockInterview = `Attempt ${attemptNum} Scheduled`;
+        } else if (status === 'Resolved') {
+          st.mockInterview = `Completed (Attempt ${attemptNum}/2)`;
+        } else if (status === 'Declined') {
+          st.mockInterview = 'Declined';
+        }
+
+        const scoreVal = (mockScore !== undefined && mockScore !== '' && mockScore !== null) ? Number(mockScore) : null;
+        if (scoreVal !== null) {
+          st.mockScore = scoreVal;
+          st.interviewPrepScore = scoreVal;
           st.readinessScore = computeReadiness(st);
-          doc.details = { ...(doc.details || {}), mockScore: Number(mockScore) };
+          doc.details = { ...(doc.details || {}), mockScore: scoreVal, attemptNumber: attemptNum };
           await doc.save();
         }
+
+        // Maintain array of attempts in st.mockInterviewAttempts
+        if (!Array.isArray(st.mockInterviewAttempts)) st.mockInterviewAttempts = [];
+        const existingAttemptIdx = st.mockInterviewAttempts.findIndex(a => (a.requestId && a.requestId === String(doc._id)) || a.attemptNumber === attemptNum);
+        const attemptEntry = {
+          attemptNumber: attemptNum,
+          requestId: String(doc._id),
+          date: new Date(),
+          score: scoreVal,
+          feedback: response || doc.response || '',
+          conductedBy: respondedBy || doc.respondedBy || st.trainerName,
+          status: status === 'Resolved' ? 'Completed' : status,
+          improvementNotes: req.body?.improvementNotes || ''
+        };
+        if (existingAttemptIdx >= 0) {
+          st.mockInterviewAttempts[existingAttemptIdx] = attemptEntry;
+        } else {
+          st.mockInterviewAttempts.push(attemptEntry);
+        }
+        st.mockInterviewAttemptsCount = st.mockInterviewAttempts.filter(a => a.status === 'Completed').length;
         await st.save();
+
+        if (status === 'Resolved') {
+          await pushNotification({
+            audience: 'student',
+            recipientId: st.studentId,
+            recipientName: st.name,
+            type: 'mock_interview_result',
+            title: `Mock Interview ${attemptNum}/2 Completed · Score: ${scoreVal != null ? scoreVal + '%' : 'Graded'}`,
+            message: `Your trainer ${respondedBy || st.trainerName || 'Trainer'} has evaluated Attempt ${attemptNum} of 2.${attemptNum === 1 ? ' Review your feedback to prepare for Attempt 2.' : ' Both mock interview attempts are now complete.'}`,
+            studentId: st.studentId,
+            createdBy: respondedBy || st.trainerName
+          }).catch(() => {});
+        }
       }
       // AAPC exam slot booked by HR / exam cell → shown on the student record
       if (doc.type === 'exam_booking' && ['Scheduled', 'Resolved'].includes(status)) {
+        if (!st.examApprovedByTrainer) {
+          return res.status(400).json({
+            error: `Cannot schedule AAPC exam for ${st.name}: Respective trainer approval is required. The trainer must verify syllabus completion, assessments, and overall readiness first.`
+          });
+        }
         st.examStatus = status === 'Resolved' ? 'Exam Booked' : 'Exam Scheduled';
         if (doc.scheduledFor) st.examDate = doc.scheduledFor;
         await st.save();
@@ -6738,10 +8168,44 @@ router.put('/student-portal/requests/:id', async (req, res) => {
         st.rewardPoints = Math.max(0, (st.rewardPoints || 0) - Number(doc.details?.points || 0));
         await st.save();
       }
+      // Student Break Request: Prior approval from relevant authority
+      if (doc.type === 'break_request') {
+        if (status === 'Resolved') {
+          st.breakStatus = 'approved';
+          st.breakStartDate = doc.startDate;
+          st.breakEndDate = doc.endDate;
+          st.breakReason = doc.reasonCategory || doc.subject;
+          st.breakApprovedBy = respondedBy || req.user?.name || 'Authority';
+          st.breakApprovedAt = new Date();
+          st.statusGroup = 'on_hold'; // Place on approved break hold
+          await st.save();
+
+          if (st.trainerId) {
+            await pushNotification({
+              audience: 'trainer',
+              recipientId: st.trainerId,
+              recipientName: st.trainerName,
+              type: 'student_break_approved',
+              title: `Break Approved: ${st.name}`,
+              message: `${st.name} approved for official break from ${doc.startDate} to ${doc.endDate} (${doc.reasonCategory || doc.subject}). Status set to On Hold.`,
+              studentId: st.studentId,
+              createdBy: respondedBy || 'Authority'
+            }).catch(() => {});
+          }
+        } else if (status === 'Declined') {
+          st.breakStatus = 'none';
+          if (st.statusGroup === 'on_hold') {
+            st.statusGroup = 'in_course';
+          }
+          await st.save();
+        }
+      }
     }
     await notifyStudent(doc.studentId, {
-      type: 'request', title: `${doc.subject || doc.type.replace(/_/g, ' ')}: ${status}`,
-      message: [doc.scheduledFor && `Scheduled for ${doc.scheduledFor}`, response].filter(Boolean).join(' · ') || `Updated by ${respondedBy || (doc.audience === 'hr' ? 'your HR' : 'your trainer')}.`,
+      type: 'request', title: `${doc.subject || doc.type.replace(/_/g, ' ')}: ${status === 'Resolved' ? (doc.type === 'break_request' ? 'Break Approved' : 'Resolved') : status}`,
+      message: doc.type === 'break_request' && status === 'Resolved'
+        ? `Official break from ${doc.startDate} to ${doc.endDate} has been approved by ${respondedBy || 'Authority'}.${response ? ` Note: ${response}` : ''}`
+        : [doc.scheduledFor && `Scheduled for ${doc.scheduledFor}`, response].filter(Boolean).join(' · ') || `Updated by ${respondedBy || (doc.audience === 'hr' ? 'your HR' : 'your trainer')}.`,
       createdBy: respondedBy
     });
     res.json(doc);
@@ -6786,13 +8250,20 @@ const trainerSessionView = (sess) => sess && ({
   endedAt: sess.endedAt,
   meetingSource: sess.meetingSource,
   zoomMeetingId: sess.zoomMeetingId,
-  zoomJoinUrl: sess.zoomJoinUrl,
-  joins: (sess.joins || []).map((j) => ({
-    studentId: j.studentId,
-    name: j.name,
-    joinedAt: j.joinedAt,
-    late: Boolean(sess.startedAt && j.joinedAt && (new Date(j.joinedAt) - new Date(sess.startedAt)) > LATE_AFTER_MIN * 60000)
-  })),
+  joins: (sess.joins || []).map((j) => {
+    const dur = typeof j.durationMinutes === 'number' && j.durationMinutes > 0
+      ? j.durationMinutes
+      : (j.joinedAt ? Math.max(0, Math.round(((j.lastJoinAt || sess.endedAt || (isSessionLive(sess) ? new Date() : sess.updatedAt)) - new Date(j.joinedAt)) / 60000)) : 0);
+    return {
+      studentId: j.studentId,
+      name: j.name,
+      joinedAt: j.joinedAt,
+      lastJoinAt: j.lastJoinAt,
+      durationMinutes: dur,
+      eligibleForPresent: dur >= 105,
+      late: Boolean(sess.startedAt && j.joinedAt && (new Date(j.joinedAt) - new Date(sess.startedAt)) > LATE_AFTER_MIN * 60000)
+    };
+  }),
   notes: sess.notes || [],
   attendanceSaved: sess.attendanceSaved
 });
@@ -7016,10 +8487,18 @@ router.post('/trainer/live-class/end', async (req, res) => {
     const query = sessionId && mongoose.isValidObjectId(sessionId) ? { _id: sessionId } : { trainerId, isLive: true, ...(batch ? { batch } : {}) };
     if (isTrainerReq(req)) query.trainerId = myTrainerId(req); // a trainer can only end their own class
     const list = await LiveClassSession.find(query);
+    const endedAt = new Date();
     for (const s of list) {
       if (s.meetingSource === 'zoom_api' && s.zoomMeetingId && s.isLive) await endZoomMeeting(s.zoomMeetingId);
       s.isLive = false;
-      s.endedAt = s.endedAt || new Date();
+      s.endedAt = s.endedAt || endedAt;
+      if (s.joins && s.joins.length > 0) {
+        s.joins.forEach((j) => {
+          const last = j.lastJoinAt || s.endedAt;
+          const mins = Math.max(0, Math.round((new Date(last) - new Date(j.joinedAt)) / 60000));
+          j.durationMinutes = Math.max(j.durationMinutes || 0, mins);
+        });
+      }
       await s.save();
     }
     res.json({ success: true, sessions: list.map(trainerSessionView) });
@@ -7058,13 +8537,50 @@ router.post('/student-portal/live-class/join', async (req, res) => {
     if (existing) {
       await LiveClassSession.updateOne({ _id: sess._id, 'joins.studentId': st.studentId }, { $set: { 'joins.$.lastJoinAt': now }, $inc: { 'joins.$.count': 1 } });
     } else {
-      await LiveClassSession.updateOne({ _id: sess._id }, { $push: { joins: { studentId: st.studentId, name: st.name, joinedAt: now, lastJoinAt: now, count: 1 } } });
+      await LiveClassSession.updateOne({ _id: sess._id }, { $push: { joins: { studentId: st.studentId, name: st.name, joinedAt: now, lastJoinAt: now, durationMinutes: 0, count: 1 } } });
     }
 
     const { signature, sdkKey } = signZoom(sess.zoomMeetingId, 0);
     res.json({ signature, sdkKey, meetingNumber: sess.zoomMeetingId, password: sess.zoomPassword, zak: '', topic: sess.topic, trainerName: sess.trainerName, joinUrl: sess.zoomJoinUrl });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+// STUDENT heartbeat during live class (accumulates attendance duration)
+router.post('/student-portal/live-class/heartbeat', async (req, res) => {
+  try {
+    const st = await findPortalStudent({
+      studentId: req.user?.studentId || req.body?.studentId,
+      email: req.user?.email || req.body?.email
+    });
+    if (!st) return res.status(404).json({ error: 'Student record not found' });
+    const sessionId = req.body?.sessionId;
+    const query = sessionId && mongoose.isValidObjectId(sessionId)
+      ? { _id: sessionId }
+      : { batch: studentBatchOf(st), isLive: true };
+    const sess = await LiveClassSession.findOne(query);
+    if (!sess) return res.json({ ok: false, error: 'Live session not active' });
+
+    const now = new Date();
+    const existing = (sess.joins || []).find((j) => j.studentId === st.studentId);
+    let dur = 0;
+    if (existing) {
+      const elapsedMins = Math.max(0, Math.round((now - new Date(existing.joinedAt)) / 60000));
+      dur = Math.max(existing.durationMinutes || 0, elapsedMins);
+      await LiveClassSession.updateOne(
+        { _id: sess._id, 'joins.studentId': st.studentId },
+        { $set: { 'joins.$.lastJoinAt': now, 'joins.$.durationMinutes': dur } }
+      );
+    } else {
+      await LiveClassSession.updateOne(
+        { _id: sess._id },
+        { $push: { joins: { studentId: st.studentId, name: st.name, joinedAt: now, lastJoinAt: now, durationMinutes: 0, count: 1 } } }
+      );
+    }
+    res.json({ ok: true, durationMinutes: dur, eligibleForPresent: dur >= 105 });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -7346,9 +8862,7 @@ router.put('/trainer/assessments/:id/questions', async (req, res) => {
     const item = await TrainerAssessment.findById(req.params.id);
     if (!item) return res.status(404).json({ error: 'Assessment not found' });
     if (item.trainerId && !trainerOwnsRecord(req, item)) return res.status(403).json(NOT_YOUR_RECORD);
-    if (await TestAttempt.exists({ assessmentId: item._id.toString() })) {
-      return res.status(409).json({ error: 'Students have already started this test — the questions can no longer be changed.' });
-    }
+
     const raw = Array.isArray(req.body?.questions) ? req.body.questions : [];
     if (raw.length > MAX_TEST_QUESTIONS) return res.status(400).json({ error: `A test can have at most ${MAX_TEST_QUESTIONS} questions` });
     const questions = [];
@@ -7359,7 +8873,16 @@ router.put('/trainer/assessments/:id/questions', async (req, res) => {
       if (!text) return res.status(400).json({ error: `Question ${i + 1}: the question text is empty` });
       if (options.length < 2 || options.length > 6 || options.some((o) => !o)) return res.status(400).json({ error: `Question ${i + 1}: give 2–6 options and fill every option` });
       if (!Number.isInteger(answer) || answer < 0 || answer >= options.length) return res.status(400).json({ error: `Question ${i + 1}: pick the correct option` });
-      questions.push({ q: text.slice(0, 3000), options: options.map((o) => o.slice(0, 600)), answer, marks: Math.min(20, Math.max(1, Math.round(Number(q?.marks) || 1))) });
+      questions.push({
+        q: text.slice(0, 3000),
+        options: options.map((o) => o.slice(0, 600)),
+        answer,
+        marks: Math.min(20, Math.max(1, Math.round(Number(q?.marks) || 1))),
+        chapter: String(q?.chapter || '').trim().slice(0, 200),
+        rationale: String(q?.rationale || '').trim().slice(0, 3000),
+        audioRationaleUrl: String(q?.audioRationaleUrl || '').trim(),
+        audioRationaleText: String(q?.audioRationaleText || q?.rationale || '').trim().slice(0, 3000)
+      });
     }
     const oldTotal = Number(item.totalMarks) || 0;
     item.questions = questions;
@@ -7380,7 +8903,40 @@ router.put('/trainer/assessments/:id/questions', async (req, res) => {
       item.durationMin = minutesOf(item.timeLimit);
     }
     await item.save();
-    if (questions.length) {
+
+    // Editor Access: When trainer edits/corrects questions, automatically re-grade existing attempts
+    const existingAttempts = await TestAttempt.find({ assessmentId: item._id.toString() });
+    if (existingAttempts.length > 0) {
+      const scores = item.scores instanceof Map ? Object.fromEntries(item.scores) : (item.scores || {});
+      const touchedKeys = [];
+      for (const att of existingAttempts) {
+        if (att.status === 'submitted') {
+          let score = 0;
+          let correct = 0;
+          item.questions.forEach((q, idx) => {
+            if (att.answers?.[idx] === q.answer) {
+              score += q.marks || 1;
+              correct += 1;
+            }
+          });
+          att.score = score;
+          att.correct = correct;
+          att.totalMarks = item.totalMarks;
+          await att.save();
+          if (att.studentKey) {
+            scores[att.studentKey] = score;
+            touchedKeys.push(att.studentKey);
+          }
+        }
+      }
+      item.scores = scores;
+      await item.save();
+      if (touchedKeys.length > 0) {
+        await recomputeAssessmentScores(touchedKeys).catch(() => {});
+      }
+    }
+
+    if (questions.length && existingAttempts.length === 0) {
       await notifyBatch(item.batch, {
         type: 'assessment', title: `Online test ready: ${item.name}`,
         message: `${questions.length} questions · ${item.durationMin} min${item.date ? ` · opens ${item.date}` : ''}. Open Materials & Tests to take it.`,
@@ -7400,6 +8956,72 @@ router.get('/trainer/assessments/:id/attempts', async (req, res) => {
     if (!item) return res.status(404).json({ error: 'Assessment not found' });
     if (item.trainerId && !trainerOwnsRecord(req, item)) return res.status(403).json(NOT_YOUR_RECORD);
     res.json(await TestAttempt.find({ assessmentId: req.params.id }).sort({ submittedAt: -1, startedAt: -1 }));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Reallocate exam when a student wishes to take the same exam again (Trainer/Admin side)
+router.post('/trainer/assessments/:id/reallocate', async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+    const { studentId, reason = '' } = req.body || {};
+    if (!studentId) return res.status(400).json({ error: 'studentId is required' });
+    const test = await TrainerAssessment.findById(req.params.id);
+    if (!test) return res.status(404).json({ error: 'Assessment not found' });
+    if (test.trainerId && !trainerOwnsRecord(req, test)) return res.status(403).json(NOT_YOUR_RECORD);
+
+    const attempt = await TestAttempt.findOne({ assessmentId: req.params.id, studentId });
+    if (!attempt) return res.status(404).json({ error: 'No existing attempt found to reallocate' });
+
+    const historyEntry = {
+      attemptIteration: attempt.attemptIteration || 1,
+      score: attempt.score || 0,
+      totalMarks: attempt.totalMarks || test.totalMarks,
+      correct: attempt.correct || 0,
+      submittedAt: attempt.submittedAt || new Date(),
+      chapterScores: attempt.chapterScores || {}
+    };
+
+    const nextIteration = (attempt.attemptIteration || 1) + 1;
+    attempt.attemptHistory = [...(attempt.attemptHistory || []), historyEntry];
+    attempt.attemptIteration = nextIteration;
+    attempt.reallocated = true;
+    attempt.reallocatedAt = new Date();
+    attempt.reallocatedBy = req.user?.name || test.trainerName || 'Trainer';
+    attempt.reallocationReason = reason || 'Trainer reallocated exam for retake';
+    attempt.status = 'in_progress';
+    const now = new Date();
+    attempt.startedAt = now;
+    attempt.endsAt = new Date(now.getTime() + (test.durationMin || 45) * 60000);
+    attempt.answers = (test.questions || []).map(() => -1);
+    attempt.score = null;
+    attempt.correct = 0;
+    attempt.submittedAt = null;
+    attempt.autoSubmitted = false;
+    attempt.late = false;
+    await attempt.save();
+
+    // Reset score entry on test so retake can be fresh
+    const key = attempt.studentKey;
+    if (key && test.scores) {
+      const scores = test.scores instanceof Map ? Object.fromEntries(test.scores) : { ...test.scores };
+      delete scores[key];
+      test.scores = scores;
+      await test.save();
+    }
+
+    const st = await findStudentByAnyId(studentId);
+    if (st) {
+      await notifyStudent(st.studentId, {
+        type: 'assessment_reallocated',
+        title: `Exam Reallocated: ${test.name}`,
+        message: `Your trainer ${test.trainerName || ''} has reallocated "${test.name}" for Attempt ${nextIteration}. You can retake the exam now.`,
+        createdBy: test.trainerName || ''
+      }).catch(() => {});
+    }
+
+    res.json({ message: `Exam successfully reallocated for ${st?.name || studentId} (Attempt ${nextIteration})`, attempt });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -7441,6 +9063,21 @@ async function gradeAttempt(attempt, test, st, { auto = false } = {}) {
   attempt.submittedAt = new Date();
   attempt.autoSubmitted = auto;
   attempt.late = !auto && Date.now() > new Date(attempt.endsAt).getTime() + TEST_GRACE_MS;
+
+  // Compute and record AAPC-style chapter breakdown on attempt
+  const chapterMap = {};
+  test.questions.forEach((q, i) => {
+    const chap = (q.chapter || test.topic || 'General Medical Coding').trim();
+    if (!chapterMap[chap]) chapterMap[chap] = { name: chap, totalQuestions: 0, totalMarks: 0, earnedMarks: 0, correctCount: 0 };
+    chapterMap[chap].totalQuestions += 1;
+    const qMarks = q.marks || 1;
+    chapterMap[chap].totalMarks += qMarks;
+    if (answers[i] === q.answer) {
+      chapterMap[chap].earnedMarks += qMarks;
+      chapterMap[chap].correctCount += 1;
+    }
+  });
+  attempt.chapterScores = chapterMap;
   await attempt.save();
 
   const key = attempt.studentKey || studentKeyOf(st);
@@ -7480,22 +9117,173 @@ function studentTestView(test, attempt, st) {
     durationMin: test.durationMin || minutesOf(test.timeLimit), totalMarks: test.totalMarks, passMark: test.passMark,
     questionCount: test.questions.length, trainerName: test.trainerName || '',
     opensToday: !test.date || test.date <= todayStr(),
-    alreadyScored: !attempt && Object.prototype.hasOwnProperty.call(test.scores instanceof Map ? Object.fromEntries(test.scores) : (test.scores || {}), studentKeyOf(st))
+    alreadyScored: !attempt && Object.prototype.hasOwnProperty.call(test.scores instanceof Map ? Object.fromEntries(test.scores) : (test.scores || {}), studentKeyOf(st)),
+    attemptIteration: attempt?.attemptIteration || 1,
+    reallocated: Boolean(attempt?.reallocated)
   };
   if (!attempt) return { ...base, state: 'not_started' };
   if (attempt.status === 'in_progress') {
     return {
       ...base, state: 'in_progress', endsAt: attempt.endsAt, serverNow: new Date(),
       answers: cleanAnswers(attempt.answers, test),
-      questions: test.questions.map((q) => ({ q: q.q, options: q.options, marks: q.marks }))
+      questions: test.questions.map((q) => ({ q: q.q, options: q.options, marks: q.marks, chapter: q.chapter || '' }))
     };
   }
+
+  // AAPC-style chapter breakdown calculation
+  const chapterMap = {};
+  test.questions.forEach((q, i) => {
+    const chap = (q.chapter || test.topic || 'General Medical Coding').trim();
+    if (!chapterMap[chap]) chapterMap[chap] = { name: chap, totalQuestions: 0, totalMarks: 0, earnedMarks: 0, correctCount: 0 };
+    chapterMap[chap].totalQuestions += 1;
+    const qMarks = q.marks || 1;
+    chapterMap[chap].totalMarks += qMarks;
+    if (attempt.answers?.[i] === q.answer) {
+      chapterMap[chap].earnedMarks += qMarks;
+      chapterMap[chap].correctCount += 1;
+    }
+  });
+  const chapterBreakdown = Object.values(chapterMap).map((c) => {
+    const pct = c.totalMarks > 0 ? Math.round((c.earnedMarks / c.totalMarks) * 100) : 0;
+    return {
+      ...c,
+      percentage: pct,
+      mastery: pct >= 75 ? 'Strength' : pct >= 60 ? 'Moderate' : 'Improvement Area'
+    };
+  });
+
   return {
-    ...base, state: 'submitted', score: attempt.score, correct: attempt.correct, submittedAt: attempt.submittedAt,
-    autoSubmitted: attempt.autoSubmitted, rationale: test.rationale || '',
-    review: test.questions.map((q, i) => ({ q: q.q, options: q.options, marks: q.marks, answer: q.answer, yours: attempt.answers[i] ?? -1 }))
+    ...base,
+    state: 'submitted',
+    score: attempt.score,
+    correct: attempt.correct,
+    submittedAt: attempt.submittedAt,
+    autoSubmitted: attempt.autoSubmitted,
+    rationale: test.rationale || '',
+    chapterBreakdown,
+    attemptIteration: attempt.attemptIteration || 1,
+    reallocated: Boolean(attempt.reallocated),
+    review: test.questions.map((q, i) => ({
+      q: q.q,
+      options: q.options,
+      marks: q.marks,
+      answer: q.answer,
+      yours: attempt.answers?.[i] ?? -1,
+      chapter: q.chapter || '',
+      rationale: q.rationale || test.rationale || '',
+      audioRationaleUrl: q.audioRationaleUrl || '',
+      audioRationaleText: q.audioRationaleText || q.rationale || test.rationale || ''
+    }))
   };
 }
+
+// Leaderboard endpoint for mock exams and practice exams
+router.get('/student-portal/tests/:id/leaderboard', async (req, res) => {
+  try {
+    const test = await TrainerAssessment.findById(req.params.id).select('name topic totalMarks passMark batch mode type');
+    if (!test) return res.status(404).json({ error: 'Assessment not found' });
+    const currentStudentId = req.query.studentId || req.user?.studentId || '';
+
+    const attempts = await TestAttempt.find({ assessmentId: req.params.id, status: 'submitted' })
+      .sort({ score: -1, submittedAt: 1 })
+      .limit(100);
+
+    const MEDALS = ['🥇', '🥈', '🥉'];
+    const leaderboard = attempts.map((att, idx) => {
+      const timeMs = att.submittedAt && att.startedAt ? Math.max(0, new Date(att.submittedAt).getTime() - new Date(att.startedAt).getTime()) : 0;
+      const durationMin = Math.round(timeMs / 60000);
+      const totalMarks = att.totalMarks || test.totalMarks || 1;
+      const percentage = Math.round(((att.score || 0) / totalMarks) * 100);
+      const isCurrent = currentStudentId && att.studentId === currentStudentId;
+      return {
+        rank: idx + 1,
+        medal: MEDALS[idx] || `${idx + 1}`,
+        studentId: att.studentId,
+        studentName: att.studentName || 'Student',
+        score: att.score || 0,
+        totalMarks,
+        correct: att.correct || 0,
+        percentage,
+        durationMin,
+        submittedAt: att.submittedAt,
+        attemptIteration: att.attemptIteration || 1,
+        isCurrentUser: Boolean(isCurrent),
+        passed: (att.score || 0) >= (test.passMark || Math.ceil(totalMarks * 0.7))
+      };
+    });
+
+    res.json({
+      testName: test.name,
+      testType: test.type,
+      totalMarks: test.totalMarks,
+      passMark: test.passMark,
+      totalParticipants: attempts.length,
+      leaderboard
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Student side reallocation / retake request
+router.post('/student-portal/tests/:id/reallocate', async (req, res) => {
+  try {
+    const ctx = await loadStudentTest(req, res);
+    if (!ctx) return;
+    const { st, test } = ctx;
+    const { reason = 'Retake exam to practice weak chapters and improve score' } = req.body || {};
+
+    const attempt = await TestAttempt.findOne({ assessmentId: req.params.id, studentId: st.studentId });
+    if (!attempt || attempt.status !== 'submitted') {
+      return res.status(400).json({ error: 'You have not completed an attempt yet to retake.' });
+    }
+
+    const historyEntry = {
+      attemptIteration: attempt.attemptIteration || 1,
+      score: attempt.score || 0,
+      totalMarks: attempt.totalMarks || test.totalMarks,
+      correct: attempt.correct || 0,
+      submittedAt: attempt.submittedAt || new Date(),
+      chapterScores: attempt.chapterScores || {}
+    };
+
+    const nextIteration = (attempt.attemptIteration || 1) + 1;
+    attempt.attemptHistory = [...(attempt.attemptHistory || []), historyEntry];
+    attempt.attemptIteration = nextIteration;
+    attempt.reallocated = true;
+    attempt.reallocatedAt = new Date();
+    attempt.reallocatedBy = st.name;
+    attempt.reallocationReason = reason;
+    const now = new Date();
+    attempt.startedAt = now;
+    attempt.endsAt = new Date(now.getTime() + (test.durationMin || 45) * 60000);
+    attempt.answers = (test.questions || []).map(() => -1);
+    attempt.score = null;
+    attempt.correct = 0;
+    attempt.status = 'in_progress';
+    attempt.submittedAt = null;
+    attempt.autoSubmitted = false;
+    attempt.late = false;
+    await attempt.save();
+
+    if (test.trainerId) {
+      await pushNotification({
+        audience: 'trainer',
+        recipientId: test.trainerId,
+        recipientName: test.trainerName,
+        type: 'exam_retake',
+        title: `${st.name} retaking ${test.name} (Attempt ${nextIteration})`,
+        message: `${st.name} has reallocated and begun Attempt ${nextIteration} for ${test.name}. Reason: ${reason}`,
+        studentId: st.studentId,
+        createdBy: st.name
+      }).catch(() => {});
+    }
+
+    res.json(studentTestView(test, attempt, st));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 router.get('/student-portal/tests/:id', async (req, res) => {
   try {

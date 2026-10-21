@@ -32,3 +32,10 @@ logs/
 *.sln
 *.sw?
 _to_delete/
+
+
+# amplify
+node_modules
+.amplify
+amplify_outputs*
+amplifyconfiguration*

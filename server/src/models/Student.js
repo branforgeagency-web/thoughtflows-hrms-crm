@@ -167,6 +167,17 @@ const studentSchema = new mongoose.Schema({
     enum: ['all', 'in_course', 'placed', 'on_hold'],
     default: 'in_course'
   },
+  // Student break tracking (break request and approval)
+  breakStatus: {
+    type: String,
+    enum: ['none', 'pending_approval', 'approved', 'completed'],
+    default: 'none'
+  },
+  breakStartDate: { type: String, default: '' },
+  breakEndDate: { type: String, default: '' },
+  breakReason: { type: String, default: '' },
+  breakApprovedBy: { type: String, default: '' },
+  breakApprovedAt: { type: Date, default: null },
   handoverStatus: {
     type: String,
     default: 'Pending Handover'
@@ -201,11 +212,131 @@ const studentSchema = new mongoose.Schema({
   // ---- Trainer → HR / CCCP progress ----
   assessmentScore: { type: Number, default: null },
   mockScore: { type: Number, default: null },
+  // ---- Mock Interview Two-Attempt Allowance & Progress Tracking ----
+  mockInterviewAttemptsCount: { type: Number, default: 0 },
+  mockInterviewAttempts: [
+    {
+      attemptNumber: { type: Number, required: true }, // 1 or 2
+      requestId: { type: String, default: '' },
+      date: { type: Date, default: Date.now },
+      score: { type: Number, default: null },
+      feedback: { type: String, default: '' },
+      conductedBy: { type: String, default: '' },
+      status: { type: String, default: 'Completed' },
+      improvementNotes: { type: String, default: '' }
+    }
+  ],
   technicalScore: { type: Number, default: null },
+  communicationScore: { type: Number, default: null },
+  interviewPrepScore: { type: Number, default: null },
+  jobReadyStatus: { type: String, default: '' },
+  readinessFeedback: { type: String, default: '' },
+  readinessEvaluatedBy: { type: String, default: '' },
+  readinessEvaluatedAt: { type: Date, default: null },
   syllabusCompleted: { type: Boolean, default: false },
   syllabusCompletedAt: { type: Date, default: null },
   trainerRecommendation: { type: String, default: '' },
   trainerRecommendationAt: { type: Date, default: null },
+  // ---- Weekly Star Rating (Attendance, Assessment, Syllabus, Participation) ----
+  weeklyRating: {
+    stars: { type: Number, default: 0 },
+    tier: { type: String, default: '' },
+    weekLabel: { type: String, default: '' },
+    weekNumber: { type: Number, default: 0 },
+    year: { type: Number, default: 0 },
+    attendanceScore: { type: Number, default: 0 },
+    assessmentScore: { type: Number, default: 0 },
+    syllabusScore: { type: Number, default: 0 },
+    participationScore: { type: Number, default: 0 },
+    feedback: { type: String, default: '' },
+    evaluatedAt: { type: Date, default: null },
+    evaluatedBy: { type: String, default: '' },
+    history: {
+      type: [{
+        weekLabel: String,
+        weekNumber: Number,
+        year: Number,
+        stars: Number,
+        tier: String,
+        attendanceScore: Number,
+        assessmentScore: Number,
+        syllabusScore: Number,
+        participationScore: Number,
+        feedback: String,
+        evaluatedAt: { type: Date, default: Date.now },
+        evaluatedBy: String
+      }],
+      default: []
+    }
+  },
+  // ---- Trainer Approval for Course Completion Certificate & Exam Approval ----
+  // Policy: The respective trainer must approve course completion certificate and exam approval,
+  // verifying syllabus completion, assessments, and overall readiness.
+  courseCompletionApproved: { type: Boolean, default: false },
+  courseCompletionApprovedAt: { type: Date, default: null },
+  courseCompletionApprovedBy: { type: String, default: '' },
+  courseCompletionTrainerNotes: { type: String, default: '' },
+  courseCompletionStatus: { type: String, enum: ['Pending Approval', 'Approved', 'Declined'], default: 'Pending Approval' },
+
+  // ---- Mandatory Student Seminar (every student presents before course completion) ----
+  seminarCompleted: { type: Boolean, default: false },
+  seminarCompletedAt: { type: Date, default: null },
+  seminarEvaluatedBy: { type: String, default: '' },
+  seminarFeedback: { type: String, default: '' },
+
+  examApprovedByTrainer: { type: Boolean, default: false },
+  examApprovedAt: { type: Date, default: null },
+  examApprovedBy: { type: String, default: '' },
+  examTrainerNotes: { type: String, default: '' },
+  examApprovalStatus: { type: String, enum: ['Pending Approval', 'Approved', 'Declined'], default: 'Pending Approval' },
+
+  trainerApprovalVerification: {
+    syllabusVerified: { type: Boolean, default: false },
+    syllabusCompleted: { type: Boolean, default: false },
+    modulesCompletedCount: { type: Number, default: 0 },
+    assessmentsVerified: { type: Boolean, default: false },
+    assessmentAverage: { type: Number, default: null },
+    assessmentsClearedCount: { type: Number, default: 0 },
+    readinessVerified: { type: Boolean, default: false },
+    readinessScore: { type: Number, default: null },
+    attendancePct: { type: Number, default: null },
+    jobReadyStatus: { type: String, default: '' },
+    seminarVerified: { type: Boolean, default: false },
+    verifiedAt: { type: Date, default: null },
+    verifiedBy: { type: String, default: '' }
+  },
+  // Batch conversion ticket - student is permitted to raise this ticket only once
+  batchConversionTicketRaised: { type: Boolean, default: false },
+  batchConversionTicketAt: { type: Date, default: null },
+  batchConversionTicketId: { type: String, default: '' },
+  // Batch transition & history (e.g. Anatomy to Medical Coding conversion)
+  batchHistory: {
+    type: [{
+      fromBatch: String,
+      toBatch: String,
+      fromTrainerId: String,
+      fromTrainerName: String,
+      toTrainerId: String,
+      toTrainerName: String,
+      transitionType: { type: String, default: 'conversion' }, // 'anatomy_to_coding' | 'regular_reassign' | 'timing_change' | 'conversion'
+      transitionedAt: { type: Date, default: Date.now },
+      transitionedBy: String,
+      preservedSyllabusModule: String,
+      notes: String,
+      timing: String
+    }],
+    default: []
+  },
+  // Preserved completed modules across batch transitions
+  completedModules: {
+    type: [String],
+    default: []
+  },
+  // Anatomy foundation completion tracking
+  anatomyCompleted: { type: Boolean, default: false },
+  anatomyCompletedAt: { type: Date, default: null },
+  anatomyCompletedBy: { type: String, default: '' },
+  codingBatchEnrolledAt: { type: Date, default: null },
   // Latest trainer review of the student's resume / video intro (Student Portal
   // submissions) — CCCP uses these for the "Talentera Synced" stage
   resumeStatus: { type: String, default: '' },          // '' | 'Submitted' | 'Approved' | 'Needs Revision'

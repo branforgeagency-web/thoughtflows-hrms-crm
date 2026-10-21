@@ -1,0 +1,33 @@
+{
+  "name": "thoughtflows-hrms-crm",
+  "version": "1.0.0",
+  "description": "A full-stack **MERN** (MongoDB, Express, React + Vite, Node.js) internal management portal with **Tailwind CSS**, designed for **Thoughtflows Medical Coding Academy** (\"Eight teams across twelve branches, working as one system — guiding students from first call to first paycheck\").",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/branforgeagency-web/thoughtflows-hrms-crm.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/branforgeagency-web/thoughtflows-hrms-crm/issues"
+  },
+  "homepage": "https://github.com/branforgeagency-web/thoughtflows-hrms-crm#readme",
+  "devDependencies": {
+    "@aws-amplify/backend": "^1.25.1",
+    "@aws-amplify/backend-cli": "^1.10.0",
+    "aws-cdk-lib": "^2.268.0",
+    "constructs": "^10.8.1",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "aws-amplify": "^6.22.2"
+  }
+}

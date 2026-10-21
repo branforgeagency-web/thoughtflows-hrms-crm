@@ -45,7 +45,9 @@ import {
   LogOut,
   ListChecks,
   Menu,
-  UserPlus
+  UserPlus,
+  Check,
+  Building2
 } from 'lucide-react';
 import TrainerBatchDesk from './TrainerBatchDesk';
 import OnlineTestBuilder from './OnlineTestBuilder';
@@ -88,7 +90,11 @@ import {
   onDataUpdate,
   notifyDataUpdate,
   allocateTrainerToStudent,
-  getBatches
+  getBatches,
+  updateStudentReadiness,
+  updateTrainerApproval,
+  getLiveClassHistory,
+  getBatchSyllabus
 } from '../services/api';
 import { TRAINER_COURSES } from '../constants/courses';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
@@ -111,8 +117,22 @@ export default function TrainingDepartmentDashboard({
   const trainerId = trainerProfile?.trainerId || currentUser?.trainerId || currentUser?.id || '';
   const trainerShift = trainerProfile?.shift || currentUser?.shift || '';
   const trainerCourseKey = String(trainerProfile?.courseKey || currentUser?.courseKey || '').toUpperCase();
-  const trainerEmail = trainerProfile?.email || currentUser?.email || '';
-  const isChiefFaculty = trainerCourseKey === 'ALL' || /chief|training head|head of training|head of trainer|faculty lead|lead trainer/i.test(trainerRole || '') || currentUser?.department === 'training' || currentUser?.role === 'Faculty Lead & Chief Trainer' || currentUser?.role === 'Head of Trainer';
+  // Head of Trainer (or Academic Leadership, Admin, or Branch Trainer/Faculty) has the authority to allocate/reassign students to trainers
+  const isHeadOfTrainer = Boolean(
+    currentUser?.role === 'Head of Trainer' ||
+    currentUser?.role === 'Faculty Lead & Chief Trainer' ||
+    currentUser?.role === 'Admin' ||
+    currentUser?.role === 'Super Admin' ||
+    currentUser?.department === 'leadership' ||
+    currentUser?.role === 'Branch Head' ||
+    currentUser?.role === 'Centre Manager' ||
+    /head of trainer|training head|head of training|chief trainer|chief faculty|faculty lead|branch head/i.test(trainerRole || '') ||
+    /head of trainer|training head|head of training|chief trainer|chief faculty|faculty lead|branch head/i.test(currentUser?.role || '') ||
+    /dr\.?\s*vikram/i.test(trainerName || currentUser?.name || currentUser?.userName || '') ||
+    (trainerCourseKey === 'ALL' && /head|chief|lead/i.test(trainerRole || currentUser?.role || '')) ||
+    /trainer|faculty/i.test(currentUser?.role || trainerRole || '')
+  );
+  const isChiefFaculty = isHeadOfTrainer;
 
   const courseMatches = React.useCallback((text) => {
     if (!trainerCourseKey || trainerCourseKey === 'ALL') return false;
@@ -170,6 +190,8 @@ export default function TrainingDepartmentDashboard({
   const [attendanceBatchId, setAttendanceBatchId] = useState('');
   const [attendanceSavedToast, setAttendanceSavedToast] = useState(null);
   const [attendanceTopic, setAttendanceTopic] = useState('');
+  const [batchSyllabusDoc, setBatchSyllabusDoc] = useState(null);
+  const [todayLiveJoins, setTodayLiveJoins] = useState({});
   const [showDemoBucket, setShowDemoBucket] = useState(true);
   const [showConversionModal, setShowConversionModal] = useState(false);
   const [selectedBatchDrilldown, setSelectedBatchDrilldown] = useState(null);
@@ -204,9 +226,16 @@ export default function TrainingDepartmentDashboard({
   const [allocationStudent, setAllocationStudent] = useState(null);
   const [allocationForm, setAllocationForm] = useState({ trainerId: '', batchName: '', trainerNote: '' });
   const [allocationTabFilter, setAllocationTabFilter] = useState('pending'); // 'pending', 'all', 'allocated'
+  const [allocationBranchFilter, setAllocationBranchFilter] = useState(() => trainerBranch || 'ALL');
   const [allocationSearch, setAllocationSearch] = useState('');
   const [allocationBatches, setAllocationBatches] = useState([]);
   const [allocationToast, setAllocationToast] = useState(null);
+
+  useEffect(() => {
+    if (trainerBranch && (!allocationBranchFilter || allocationBranchFilter === 'ALL')) {
+      setAllocationBranchFilter(trainerBranch);
+    }
+  }, [trainerBranch]);
 
   // Resolve the trainer's roster record once per login
   useEffect(() => {
@@ -309,21 +338,72 @@ export default function TrainingDepartmentDashboard({
     });
   }, [students, trainerId, isChiefFaculty, courseMatches]);
 
-  // Head of Trainer allocation datasets
+  // Match student against branch filter
+  const studentMatchesBranch = React.useCallback((st, filter) => {
+    if (!filter || filter === 'ALL') return true;
+    const stBranch = (st.branch || st.location || st.leadBranch || '').toLowerCase();
+    const filt = filter.toLowerCase();
+    return stBranch === filt || stBranch.includes(filt) || filt.includes(stBranch);
+  }, []);
+
+  // Compute unique branches from students, roster, and logged in trainer
+  const branchList = React.useMemo(() => {
+    const set = new Set();
+    (students || []).forEach(st => {
+      const b = st.branch || st.location || st.leadBranch;
+      if (b && typeof b === 'string' && b.trim()) set.add(b.trim());
+    });
+    (trainerRoster || []).forEach(tr => {
+      const b = tr.branchName || tr.branch;
+      if (b && typeof b === 'string' && b.trim()) set.add(b.trim());
+    });
+    if (trainerBranch) set.add(trainerBranch);
+    return Array.from(set).sort();
+  }, [students, trainerRoster, trainerBranch]);
+
+  // Count pending allocations per branch for the switcher badge
+  const branchPendingCounts = React.useMemo(() => {
+    const counts = { ALL: 0 };
+    (students || []).forEach(st => {
+      const isHandedOver = st.handoverStatus === 'Handed Over to Head of Trainer' || (st.handoverStatus === 'Sent to Training' && !st.trainerId);
+      if (isHandedOver && !st.trainerId) {
+        counts.ALL = (counts.ALL || 0) + 1;
+        const b = (st.branch || st.location || st.leadBranch || '').trim();
+        if (b) {
+          counts[b] = (counts[b] || 0) + 1;
+        }
+      }
+    });
+    return counts;
+  }, [students]);
+
+  // Head of Trainer allocation datasets (filtered by selected branch)
   const pendingAllocationStudents = React.useMemo(() => {
     return (students || []).filter(st => {
       const isHandedOver = st.handoverStatus === 'Handed Over to Head of Trainer' || (st.handoverStatus === 'Sent to Training' && !st.trainerId);
-      return isHandedOver && !st.trainerId;
+      return isHandedOver && !st.trainerId && studentMatchesBranch(st, allocationBranchFilter);
     });
-  }, [students]);
+  }, [students, allocationBranchFilter, studentMatchesBranch]);
 
   const allocatedStudents = React.useMemo(() => {
-    return (students || []).filter(st => Boolean(st.trainerId));
-  }, [students]);
+    return (students || []).filter(st => Boolean(st.trainerId) && studentMatchesBranch(st, allocationBranchFilter));
+  }, [students, allocationBranchFilter, studentMatchesBranch]);
 
   const allHandedOverStudents = React.useMemo(() => {
-    return (students || []).filter(st => st.handoverStatus === 'Handed Over to Head of Trainer' || st.handoverStatus === 'Sent to Training');
-  }, [students]);
+    return (students || []).filter(st => 
+      (st.handoverStatus === 'Handed Over to Head of Trainer' || st.handoverStatus === 'Sent to Training') &&
+      studentMatchesBranch(st, allocationBranchFilter)
+    );
+  }, [students, allocationBranchFilter, studentMatchesBranch]);
+
+  // Students eligible / ready for Anatomy to Medical Coding batch conversion
+  const anatomyReadyStudents = React.useMemo(() => {
+    return (students || []).filter(st => {
+      const isAnatomy = /anatomy/i.test(st.batchName || '') || /anatomy/i.test(st.course || '') || /anatomy/i.test(st.trainerName || '');
+      const isProgressionEligible = st.syllabusModule === 'Module 2' || st.syllabusModule === 'Module 3' || st.anatomyCompleted || st.batchConversionTicketRaised;
+      return (isAnatomy || (st.anatomyCompleted && !st.codingBatchEnrolledAt)) && studentMatchesBranch(st, allocationBranchFilter);
+    });
+  }, [students, allocationBranchFilter, studentMatchesBranch]);
 
   const trainerStudentCounts = React.useMemo(() => {
     const map = {};
@@ -339,6 +419,7 @@ export default function TrainingDepartmentDashboard({
     let list = [];
     if (allocationTabFilter === 'pending') list = pendingAllocationStudents;
     else if (allocationTabFilter === 'allocated') list = allocatedStudents;
+    else if (allocationTabFilter === 'anatomy') list = anatomyReadyStudents;
     else list = allHandedOverStudents;
 
     if (!allocationSearch.trim()) return list;
@@ -349,9 +430,10 @@ export default function TrainingDepartmentDashboard({
       (st.course || '').toLowerCase().includes(q) ||
       (st.branch || '').toLowerCase().includes(q) ||
       (st.hrName || '').toLowerCase().includes(q) ||
-      (st.trainerName || '').toLowerCase().includes(q)
+      (st.trainerName || '').toLowerCase().includes(q) ||
+      (st.batchName || '').toLowerCase().includes(q)
     );
-  }, [allocationTabFilter, pendingAllocationStudents, allocatedStudents, allHandedOverStudents, allocationSearch]);
+  }, [allocationTabFilter, pendingAllocationStudents, allocatedStudents, anatomyReadyStudents, allHandedOverStudents, allocationSearch]);
 
   // Load existing batches for chosen trainer in allocation modal
   useEffect(() => {
@@ -363,22 +445,172 @@ export default function TrainingDepartmentDashboard({
     return () => { alive = false; };
   }, [allocationStudent, allocationForm.trainerId]);
 
-  const openAllocationModal = (stu) => {
+  // ---- Job-Ready Status Modal State ----
+  const [readinessModalStudent, setReadinessModalStudent] = useState(null);
+  const [readinessForm, setReadinessForm] = useState({
+    technicalScore: '',
+    assessmentScore: '',
+    communicationScore: '',
+    interviewPrepScore: '',
+    status: 'Job Ready',
+    feedback: ''
+  });
+  const [savingReadiness, setSavingReadiness] = useState(false);
+  const [readinessToast, setReadinessToast] = useState(null);
+
+  const openReadinessModal = (student) => {
+    const rawStatus = student.jobReadyStatus || (student.trainerRecommendation === 'Ready' ? 'Job Ready' : student.trainerRecommendation) || 'Job Ready';
+    setReadinessForm({
+      technicalScore: student.technicalScore != null ? String(student.technicalScore) : '',
+      assessmentScore: student.assessmentScore != null ? String(student.assessmentScore) : '',
+      communicationScore: student.communicationScore != null ? String(student.communicationScore) : '',
+      interviewPrepScore: (student.interviewPrepScore != null ? student.interviewPrepScore : student.mockScore) != null
+        ? String(student.interviewPrepScore != null ? student.interviewPrepScore : student.mockScore)
+        : '',
+      status: rawStatus,
+      feedback: student.readinessFeedback || ''
+    });
+    setReadinessModalStudent(student);
+  };
+
+  const handleSaveReadinessModal = async () => {
+    if (!readinessModalStudent) return;
+    const sId = readinessModalStudent._id || readinessModalStudent.studentId;
+    setSavingReadiness(true);
+    try {
+      const payload = {
+        status: readinessForm.status,
+        jobReadyStatus: readinessForm.status,
+        trainerName,
+        technicalScore: readinessForm.technicalScore !== '' ? Number(readinessForm.technicalScore) : null,
+        assessmentScore: readinessForm.assessmentScore !== '' ? Number(readinessForm.assessmentScore) : null,
+        communicationScore: readinessForm.communicationScore !== '' ? Number(readinessForm.communicationScore) : null,
+        interviewPrepScore: readinessForm.interviewPrepScore !== '' ? Number(readinessForm.interviewPrepScore) : null,
+        feedback: readinessForm.feedback
+      };
+      const updated = await updateStudentReadiness(sId, payload);
+      setStudents(prev => prev.map(x => (x._id === updated._id || x.studentId === updated.studentId) ? { ...x, ...updated } : x));
+      setReadinessToast(`${readinessModalStudent.name} readiness saved as "${readinessForm.status}"${readinessForm.status === 'Job Ready' ? ' · Referred to CCCP' : ''}`);
+      setTimeout(() => setReadinessToast(null), 4000);
+      setReadinessModalStudent(null);
+    } catch (e) {
+      setReadinessToast(`Could not update readiness: ${e?.response?.data?.error || e.message}`);
+      setTimeout(() => setReadinessToast(null), 4000);
+    }
+    setSavingReadiness(false);
+  };
+
+  // Trainer Course Completion & Exam Approval workflow state
+  const [trainerApprovalStudent, setTrainerApprovalStudent] = useState(null);
+  const [trainerApprovalForm, setTrainerApprovalForm] = useState({
+    approveCourseCompletion: true,
+    approveExam: true,
+    syllabusVerified: true,
+    assessmentsVerified: true,
+    readinessVerified: true,
+    seminarVerified: true,
+    notes: ''
+  });
+  const [savingTrainerApproval, setSavingTrainerApproval] = useState(false);
+  const [trainerApprovalToast, setTrainerApprovalToast] = useState(null);
+
+  const openTrainerApprovalModal = (student) => {
+    const isSyllabusDone = student.syllabusStatus === 'Completed' || (student.modulesCompleted && student.modulesCompleted.length > 0);
+    const assessScore = student.assessmentScore != null ? Number(student.assessmentScore) : (student.technicalScore != null ? Number(student.technicalScore) : 0);
+    const isAssessDone = assessScore >= 70;
+    const isReady = (student.jobReadyStatus === 'Job Ready' || student.trainerRecommendation === 'Ready') && (student.attendancePct ?? student.attendance ?? 80) >= 75;
+
+    setTrainerApprovalForm({
+      approveCourseCompletion: student.courseCompletionApproved !== true,
+      approveExam: student.examApprovedByTrainer !== true,
+      syllabusVerified: Boolean(isSyllabusDone || student.trainerApprovalVerification?.syllabusVerified),
+      assessmentsVerified: Boolean(isAssessDone || student.trainerApprovalVerification?.assessmentsVerified),
+      readinessVerified: Boolean(isReady || student.trainerApprovalVerification?.readinessVerified),
+      seminarVerified: Boolean(student.seminarCompleted || student.trainerApprovalVerification?.seminarVerified),
+      notes: student.courseCompletionTrainerNotes || student.examTrainerNotes || ''
+    });
+    setTrainerApprovalStudent(student);
+  };
+
+  const handleSaveTrainerApproval = async (decision = 'Approved') => {
+    if (!trainerApprovalStudent) return;
+    const sId = trainerApprovalStudent._id || trainerApprovalStudent.studentId;
+    setSavingTrainerApproval(true);
+    try {
+      const payload = {
+        decision,
+        approveCourseCompletion: trainerApprovalForm.approveCourseCompletion,
+        approveExam: trainerApprovalForm.approveExam,
+        trainerNotes: trainerApprovalForm.notes,
+        // Flattened to match what the server route reads (verifySyllabus/verifyAssessments/
+        // verifyReadiness/verifySeminar at the top level — a nested `verification` object
+        // was silently ignored server-side, so none of these checkboxes previously took effect).
+        verifySyllabus: trainerApprovalForm.syllabusVerified,
+        verifyAssessments: trainerApprovalForm.assessmentsVerified,
+        verifyReadiness: trainerApprovalForm.readinessVerified,
+        verifySeminar: trainerApprovalForm.seminarVerified
+      };
+      const updated = await updateTrainerApproval(sId, payload);
+      setStudents(prev => prev.map(x => (x._id === updated._id || x.studentId === updated.studentId) ? { ...x, ...updated } : x));
+      setTrainerApprovalToast(
+        decision === 'Approved'
+          ? `✓ Trainer approval saved for ${trainerApprovalStudent.name} (${[
+              trainerApprovalForm.approveCourseCompletion ? 'Course Certificate' : null,
+              trainerApprovalForm.approveExam ? 'Exam Slot' : null
+            ].filter(Boolean).join(' & ')}).`
+          : `Trainer declined approval for ${trainerApprovalStudent.name}. Returned for further training.`
+      );
+      setTimeout(() => setTrainerApprovalToast(null), 4500);
+      setTrainerApprovalStudent(null);
+    } catch (e) {
+      setTrainerApprovalToast(`Approval update failed: ${e?.response?.data?.error || e.message}`);
+      setTimeout(() => setTrainerApprovalToast(null), 4500);
+    }
+    setSavingTrainerApproval(false);
+  };
+
+  const openAllocationModal = (stu, options = {}) => {
+    if (!isHeadOfTrainer) {
+      setAllocationToast('Access denied: Only the Head of Trainer can assign students to trainers.');
+      setTimeout(() => setAllocationToast(null), 4000);
+      return;
+    }
+    const isAnatomy = Boolean(
+      options.isAnatomyToCoding ||
+      /anatomy/i.test(stu.batchName || '') ||
+      /anatomy/i.test(stu.course || '') ||
+      /anatomy/i.test(stu.trainerName || '')
+    );
     const code = String(stu.course || '').toUpperCase();
-    const match = trainerRoster.find(t => t.active !== false && t.courseKey && code.includes(t.courseKey.toUpperCase()) && (!stu.branch || !t.branchName || t.branchName === stu.branch))
-      || trainerRoster.find(t => t.active !== false && t.courseKey && code.includes(t.courseKey.toUpperCase()))
-      || trainerRoster.find(t => t.active !== false);
+
+    // For Anatomy to Coding transition, prefer coding trainers rather than anatomy faculty
+    const match = isAnatomy
+      ? (trainerRoster.find(t => t.active !== false && !/anatomy/i.test(t.trainerName || '') && !/anatomy/i.test(t.role || '') && (!stu.branch || !t.branchName || t.branchName === stu.branch))
+         || trainerRoster.find(t => t.active !== false && !/anatomy/i.test(t.trainerName || '')))
+      : (trainerRoster.find(t => t.active !== false && t.courseKey && code.includes(t.courseKey.toUpperCase()) && (!stu.branch || !t.branchName || t.branchName === stu.branch))
+         || trainerRoster.find(t => t.active !== false && t.courseKey && code.includes(t.courseKey.toUpperCase()))
+         || trainerRoster.find(t => t.active !== false));
 
     setAllocationForm({
-      trainerId: stu.trainerId || match?.trainerId || '',
-      batchName: stu.batchName || [stu.course, stu.batchTiming].filter(Boolean).join(' · '),
-      trainerNote: stu.trainerNote || ''
+      trainerId: (isAnatomy && /anatomy/i.test(stu.trainerName || '')) ? (match?.trainerId || '') : (stu.trainerId || match?.trainerId || ''),
+      batchName: isAnatomy && /anatomy/i.test(stu.batchName || '')
+        ? `Medical Coding - ${stu.batchTiming || 'Regular Batch'}`
+        : (stu.batchName || [stu.course, stu.batchTiming].filter(Boolean).join(' · ')),
+      batchTiming: stu.batchTiming || '',
+      trainerNote: stu.trainerNote || (isAnatomy ? 'Anatomy completed with verified score. Transitioned to Medical Coding batch.' : ''),
+      isAnatomyToCoding: isAnatomy,
+      syllabusModule: isAnatomy ? 'Module 3' : (stu.syllabusModule || 'Module 1')
     });
     setAllocationStudent(stu);
   };
 
   const handleConfirmAllocation = async () => {
     if (!allocationStudent) return;
+    if (!isHeadOfTrainer) {
+      setAllocationToast('Access denied: Only the Head of Trainer can assign students to trainers.');
+      setTimeout(() => setAllocationToast(null), 4000);
+      return;
+    }
     if (!allocationForm.trainerId) {
       setAllocationToast('Please select a trainer to allocate');
       setTimeout(() => setAllocationToast(null), 3000);
@@ -391,8 +623,13 @@ export default function TrainingDepartmentDashboard({
       });
       setStudents(prev => prev.map(s => (studentKeyOf(s) === studentKeyOf(allocationStudent) ? { ...s, ...updated } : s)));
       const targetTrainer = trainerRoster.find(t => t.trainerId === allocationForm.trainerId);
-      setAllocationToast(`✓ ${allocationStudent.name} allocated to ${targetTrainer?.trainerName || updated.trainerName} · batch ${updated.batchName}`);
-      setTimeout(() => setAllocationToast(null), 4000);
+      const isConv = allocationForm.isAnatomyToCoding;
+      setAllocationToast(
+        isConv
+          ? `✓ ${allocationStudent.name} successfully transitioned from Anatomy to Medical Coding (${targetTrainer?.trainerName || updated.trainerName} · ${updated.batchName}). Syllabus preserved at Module 3.`
+          : `✓ ${allocationStudent.name} allocated to ${targetTrainer?.trainerName || updated.trainerName} · batch ${updated.batchName}`
+      );
+      setTimeout(() => setAllocationToast(null), 5000);
       setAllocationStudent(null);
     } catch (err) {
       setAllocationToast(`Error: ${err?.response?.data?.error || err.message}`);
@@ -431,24 +668,67 @@ export default function TrainingDepartmentDashboard({
   }, [batches, attendanceBatchId]);
   const attendanceBatch = batches.find(b => b.id === attendanceBatchId) || batches[0] || null;
 
+  // Fetch syllabus and today's live session joins for the selected batch
+  useEffect(() => {
+    if (!attendanceBatch?.name) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const [syl, hist] = await Promise.all([
+          getBatchSyllabus(attendanceBatch.name).catch(() => null),
+          getLiveClassHistory({ batch: attendanceBatch.name }).catch(() => [])
+        ]);
+        if (cancelled) return;
+        setBatchSyllabusDoc(syl);
+        const todayHist = (Array.isArray(hist) ? hist : []).find((h) => {
+          const d = h.startedAt ? new Date(h.startedAt).toISOString().slice(0, 10) : '';
+          return d === todayKey;
+        });
+        if (todayHist?.joins) {
+          const map = {};
+          todayHist.joins.forEach((j) => {
+            if (j.studentId) map[j.studentId] = j;
+            if (j.name) map[j.name] = j;
+          });
+          setTodayLiveJoins(map);
+        } else {
+          setTodayLiveJoins({});
+        }
+      } catch (_) {}
+    })();
+    return () => { cancelled = true; };
+  }, [attendanceBatch?.name, todayKey]);
+
   // Today's saved marks for the selected batch (from the server)
   const todaysSession = React.useMemo(() => (
     attendanceBatch ? attendanceSessions.find(a => a.batch === attendanceBatch.name && a.date === todayKey) : null
   ), [attendanceSessions, attendanceBatch, todayKey]);
 
+  const isOnlineBatch = attendanceBatch?.mode === 'Online';
   const attendanceList = React.useMemo(() => (
     (attendanceBatch?.students || []).map(s => {
       const roll = studentKeyOf(s);
+      const isOnline = isOnlineBatch || s.mode === 'Online';
+      const j = todayLiveJoins[roll] || todayLiveJoins[s.name];
+      const attendedMins = typeof j?.durationMinutes === 'number' && j.durationMinutes > 0
+        ? j.durationMinutes
+        : (j?.joinedAt ? Math.max(0, Math.round(((j.lastJoinAt ? new Date(j.lastJoinAt) : new Date()) - new Date(j.joinedAt)) / 60000)) : 0);
+      const canMarkPresent = !isOnline || attendedMins >= 105;
       return {
         id: s._id || roll,
         roll,
         name: s.name,
         course: s.course,
+        mode: s.mode || (isOnlineBatch ? 'Online' : 'Classroom'),
+        isOnline,
+        attendedMins,
+        canMarkPresent,
+        joinedOnline: Boolean(j),
         status: todaysSession?.records?.[roll] || 'Unmarked',
         attendancePct: typeof s.attendancePct === 'number' ? s.attendancePct : null
       };
     })
-  ), [attendanceBatch, todaysSession]);
+  ), [attendanceBatch, todaysSession, isOnlineBatch, todayLiveJoins]);
 
   const myStudentKeys = React.useMemo(() => new Set(myStudents.map(studentKeyOf)), [myStudents]);
 
@@ -870,9 +1150,23 @@ export default function TrainingDepartmentDashboard({
   };
 
   // Save attendance marks to the server — updates each student's attendance %,
+  // Save attendance marks to the server — updates each student's attendance %,
   // their own dashboard, the Leadership risk view and alerts HR below 75%
   const saveAttendanceMarks = async (records) => {
     if (!attendanceBatch) return;
+
+    // Online Attendance Rule: For online sessions, student must attend >= 105 mins to be marked Present
+    for (const [roll, mark] of Object.entries(records || {})) {
+      if (mark === 'Present') {
+        const studentItem = attendanceList.find(s => s.roll === roll);
+        if (studentItem?.isOnline && !studentItem.canMarkPresent) {
+          setAttendanceSavedToast(`⚠ Present is locked for ${studentItem.name}: Online sessions require at least 1 hr 45 min attendance (Attended: ${studentItem.attendedMins}m / 105m).`);
+          setTimeout(() => setAttendanceSavedToast(null), 4000);
+          return;
+        }
+      }
+    }
+
     const optimistic = { ...(todaysSession?.records || {}), ...records };
     setAttendanceSessions(prev => {
       const others = prev.filter(a => !(a.batch === attendanceBatch.name && a.date === todayKey));
@@ -885,16 +1179,21 @@ export default function TrainingDepartmentDashboard({
         batch: attendanceBatch.name,
         date: todayKey,
         topic: attendanceTopic.trim() || undefined,
-        records
+        records,
+        isOnline: isOnlineBatch
       });
       if (res?.data) {
         setAttendanceSessions(prev => [res.data, ...prev.filter(a => !(a.batch === res.data.batch && a.date === res.data.date))]);
       }
-      setAttendanceSavedToast('✓ Attendance saved to the student record · attendance % updated for student, HR & Leadership');
+      if (res?.syllabus) {
+        setBatchSyllabusDoc(res.syllabus);
+      }
+      const sylNotice = attendanceTopic.trim() ? ` · Syllabus tracker marked & updated for "${attendanceTopic.trim()}"` : '';
+      setAttendanceSavedToast(`✓ Attendance saved${sylNotice} · student, HR & Leadership dashboards updated`);
     } catch (e) {
       setAttendanceSavedToast(`⚠ Could not save attendance: ${e?.response?.data?.error || e.message}`);
     }
-    setTimeout(() => setAttendanceSavedToast(null), 3000);
+    setTimeout(() => setAttendanceSavedToast(null), 3500);
   };
 
   const handleResolveDoubt = async () => {
@@ -1183,8 +1482,8 @@ export default function TrainingDepartmentDashboard({
                       : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
                   }`}
                 >
-                  <Send className="w-4 h-4 shrink-0" />
-                  <span>Placement Prep</span>
+                  <Target className="w-4 h-4 shrink-0" />
+                  <span>Job-Ready Status</span>
                 </button>
               </div>
             </div>
@@ -1272,7 +1571,7 @@ export default function TrainingDepartmentDashboard({
               {activeNav === 'assessments' && 'Assessment Desk'}
               {activeNav === 'library' && 'Library & Materials'}
               {activeNav === 'student_desk' && 'Student Submissions & Requests'}
-              {activeNav === 'placement' && 'Placement & Certification Recommendation'}
+              {activeNav === 'placement' && 'Student Job-Ready Status & Placement Desk'}
               {activeNav === 'profile' && 'My Profile'}
               {activeNav === 'skills' && 'Skill & Course Mapping'}
               {activeNav === 'shift' && "Today's Load & Shift Availability"}
@@ -1292,7 +1591,7 @@ export default function TrainingDepartmentDashboard({
               {activeNav === 'assessments' && 'Weekly tests · mock exams · rationale'}
               {activeNav === 'library' && 'Coding books · PPTs · LMS'}
               {activeNav === 'student_desk' && 'Assignments, resumes, video intros · mock interview & 1-on-1 requests'}
-              {activeNav === 'placement' && "Mark each student's readiness · CCCP Certification Cell sync"}
+              {activeNav === 'placement' && "Evaluate 4-pillar readiness: Technical, Assessments, Communication, and Interview Prep · CCCP sync"}
               {activeNav === 'profile' && `${trainerName} · ${trainerId} · ${trainerRole} · ${trainerBranch}`}
               {activeNav === 'skills' && 'L1 Assistant · L2 Regular · L3 Senior · L4 Lead. You can be allocated to a subject only at L2 or above.'}
               {activeNav === 'shift' && `${trainerShift} · Max load protection`}
@@ -1634,8 +1933,8 @@ export default function TrainingDepartmentDashboard({
                   </div>
                 )}
 
-                {/* 4. Quick 4-Metric Tiles */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {/* 4. Quick Metric Tiles */}
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                   
                   {/* Metric 1 */}
                   <div 
@@ -1664,10 +1963,22 @@ export default function TrainingDepartmentDashboard({
                     <div className="text-xs text-slate-600 font-medium mt-1">Weak students</div>
                   </div>
 
-                  {/* Metric 4 */}
+                  {/* Metric 4: Job Ready Students */}
+                  <div 
+                    onClick={() => setActiveNav('placement')}
+                    className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-sm cursor-pointer hover:border-teal-400 transition-all"
+                  >
+                    <div className="text-2xl font-black text-emerald-600">
+                      {myStudents.filter(s => s.jobReadyStatus === 'Job Ready' || s.trainerRecommendation === 'Ready').length}
+                      <span className="text-xs font-bold text-slate-400 ml-1">/ {myStudents.length}</span>
+                    </div>
+                    <div className="text-xs text-slate-600 font-medium mt-1">Job ready</div>
+                  </div>
+
+                  {/* Metric 5 */}
                   <div 
                     onClick={() => setActiveNav('demos')}
-                    className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-sm cursor-pointer hover:border-teal-400 transition-all"
+                    className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-sm cursor-pointer hover:border-teal-400 transition-all col-span-2 sm:col-span-1"
                   >
                     <div className="text-2xl font-black text-slate-800">{myExpertDemos.filter(isAttended).length}</div>
                     <div className="text-xs text-slate-600 font-medium mt-1">Demos done</div>
@@ -1819,6 +2130,23 @@ export default function TrainingDepartmentDashboard({
 
           {/* ================= TAB: STUDENT ALLOCATION (HEAD OF TRAINER) ================= */}
           {activeNav === 'allocation' && (
+            !isChiefFaculty ? (
+              <div className="bg-white rounded-3xl border border-slate-200/90 p-10 text-center max-w-lg mx-auto shadow-sm my-12 animate-fadeIn">
+                <div className="w-14 h-14 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center text-2xl mx-auto mb-4 border border-amber-200/60 shadow-sm">
+                  🔒
+                </div>
+                <h3 className="text-base font-extrabold text-slate-900 mb-1.5">Restricted to Head of Trainer</h3>
+                <p className="text-xs text-slate-500 leading-relaxed mb-6">
+                  Student-to-trainer allocation is the exclusive authority of the <strong>Head of Trainer</strong>. Admitted students will appear in your <em>My Students</em> and <em>Batches</em> sections once allocated to you.
+                </p>
+                <button
+                  onClick={() => setActiveNav('home')}
+                  className="px-5 py-2.5 rounded-xl bg-[#00897b] hover:bg-[#00897b]/90 text-white text-xs font-bold shadow-md transition-all inline-flex items-center gap-2"
+                >
+                  Return to My Dashboard
+                </button>
+              </div>
+            ) : (
             <div className="space-y-5 max-w-[1280px] animate-fadeIn">
               {/* Toast notification */}
               {allocationToast && (
@@ -1851,13 +2179,13 @@ export default function TrainingDepartmentDashboard({
                   <div className="text-xs text-slate-500 font-medium mt-1">Active in trainer batches</div>
                 </div>
 
-                <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-sm">
+                <div className="bg-white rounded-2xl border border-indigo-200 p-5 shadow-sm bg-gradient-to-br from-white to-indigo-50/30">
                   <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-bold uppercase tracking-wider text-teal-700">Total Handed Over</span>
-                    <span className="w-8 h-8 rounded-xl bg-teal-50 text-teal-600 flex items-center justify-center font-bold text-sm">🎓</span>
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-indigo-700">Anatomy → Coding Ready</span>
+                    <span className="w-8 h-8 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold text-sm">🔄</span>
                   </div>
-                  <div className="text-3xl font-black text-slate-900 mt-2">{allHandedOverStudents.length}</div>
-                  <div className="text-xs text-slate-500 font-medium mt-1">From HR Counselling Desk</div>
+                  <div className="text-3xl font-black text-indigo-950 mt-2">{anatomyReadyStudents.length}</div>
+                  <div className="text-xs text-indigo-700 font-medium mt-1">Ready for Medical Coding transition</div>
                 </div>
 
                 <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-sm">
@@ -1885,10 +2213,10 @@ export default function TrainingDepartmentDashboard({
                   </div>
 
                   {/* Filter Tabs */}
-                  <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl">
+                  <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl flex-wrap">
                     <button
                       onClick={() => setAllocationTabFilter('pending')}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                         allocationTabFilter === 'pending'
                           ? 'bg-white text-slate-900 shadow-sm'
                           : 'text-slate-600 hover:text-slate-900'
@@ -1898,7 +2226,7 @@ export default function TrainingDepartmentDashboard({
                     </button>
                     <button
                       onClick={() => setAllocationTabFilter('allocated')}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                         allocationTabFilter === 'allocated'
                           ? 'bg-white text-slate-900 shadow-sm'
                           : 'text-slate-600 hover:text-slate-900'
@@ -1907,8 +2235,21 @@ export default function TrainingDepartmentDashboard({
                       Allocated ({allocatedStudents.length})
                     </button>
                     <button
+                      onClick={() => setAllocationTabFilter('anatomy')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                        allocationTabFilter === 'anatomy'
+                          ? 'bg-white text-indigo-950 shadow-sm'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      <span>🔄 Anatomy → Coding</span>
+                      <span className="px-1.5 py-0.2 rounded-full text-[10px] font-extrabold bg-indigo-100 text-indigo-700">
+                        {anatomyReadyStudents.length}
+                      </span>
+                    </button>
+                    <button
                       onClick={() => setAllocationTabFilter('all')}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                         allocationTabFilter === 'all'
                           ? 'bg-white text-slate-900 shadow-sm'
                           : 'text-slate-600 hover:text-slate-900'
@@ -1917,6 +2258,58 @@ export default function TrainingDepartmentDashboard({
                       All Handed Over ({allHandedOverStudents.length})
                     </button>
                   </div>
+                </div>
+
+                {/* Branch Switcher Pill Bar */}
+                <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs">
+                  <div className="flex items-center gap-1.5 text-slate-500 font-bold shrink-0">
+                    <Building2 className="w-3.5 h-3.5 text-teal-600" />
+                    <span>Branch:</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setAllocationBranchFilter('ALL')}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer ${
+                      allocationBranchFilter === 'ALL'
+                        ? 'bg-[#00897b] text-white shadow-xs'
+                        : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                    }`}
+                  >
+                    All Branches ({branchPendingCounts.ALL || 0})
+                  </button>
+                  {branchList.map(b => {
+                    const count = branchPendingCounts[b] || 0;
+                    const isMyBranch = trainerBranch && b.toLowerCase() === trainerBranch.toLowerCase();
+                    const isActive = allocationBranchFilter.toLowerCase() === b.toLowerCase();
+                    return (
+                      <button
+                        type="button"
+                        key={b}
+                        onClick={() => setAllocationBranchFilter(b)}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-1.5 cursor-pointer ${
+                          isActive
+                            ? 'bg-[#00897b] text-white shadow-xs'
+                            : isMyBranch
+                            ? 'bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200'
+                            : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                        }`}
+                      >
+                        <span>{b}</span>
+                        {isMyBranch && (
+                          <span className="text-[10px] text-teal-700 bg-white/90 px-1 py-0.2 rounded font-semibold">
+                            My Branch
+                          </span>
+                        )}
+                        {count > 0 && (
+                          <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-extrabold ${
+                            isActive ? 'bg-white text-teal-800' : 'bg-amber-100 text-amber-800'
+                          }`}>
+                            {count}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
 
                 {/* Search Input */}
@@ -1955,6 +2348,12 @@ export default function TrainingDepartmentDashboard({
                     {filteredAllocationList.map((st) => {
                       const sKey = studentKeyOf(st);
                       const isAllocated = Boolean(st.trainerId);
+                      const isAnatomyStudent = Boolean(
+                        /anatomy/i.test(st.batchName || '') ||
+                        /anatomy/i.test(st.course || '') ||
+                        /anatomy/i.test(st.trainerName || '') ||
+                        st.anatomyCompleted
+                      );
                       return (
                         <div
                           key={st._id || sKey}
@@ -1963,9 +2362,13 @@ export default function TrainingDepartmentDashboard({
                           {/* Student Info */}
                           <div className="flex items-start sm:items-center gap-3.5 min-w-0">
                             <div className={`w-11 h-11 rounded-xl flex items-center justify-center text-base shrink-0 ${
-                              isAllocated ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : 'bg-amber-50 text-amber-700 border border-amber-200'
+                              isAnatomyStudent
+                                ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
+                                : isAllocated
+                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-100'
+                                : 'bg-amber-50 text-amber-700 border border-amber-200'
                             }`}>
-                              {isAllocated ? '🎓' : '⏳'}
+                              {isAnatomyStudent ? '🔄' : isAllocated ? '🎓' : '⏳'}
                             </div>
 
                             <div className="min-w-0 space-y-1">
@@ -1976,6 +2379,11 @@ export default function TrainingDepartmentDashboard({
                                 <span className="text-xs font-mono text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">
                                   {st.studentId || 'ID Pending'}
                                 </span>
+                                {isAnatomyStudent && (
+                                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200 flex items-center gap-1">
+                                    <span>🔄</span> Anatomy Batch {st.anatomyCompleted ? '· Foundation Verified' : `· ${st.syllabusModule || 'Module 2'}`}
+                                  </span>
+                                )}
                                 {isAllocated ? (
                                   <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
                                     ✓ Allocated to {st.trainerName}
@@ -1987,14 +2395,24 @@ export default function TrainingDepartmentDashboard({
                                 )}
                               </div>
 
-                              <div className="text-xs text-slate-600 font-medium flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                              <div className="text-xs text-slate-600 font-medium flex flex-wrap items-center gap-x-2 gap-y-1">
                                 <span className="font-semibold text-slate-800">{st.course}</span>
-                                {st.branch && <span>· Branch: {st.branch}</span>}
+                                {(st.branch || st.location || st.leadBranch) && (
+                                  <span className="inline-flex items-center gap-1 font-semibold text-teal-800 bg-teal-50 px-2 py-0.5 rounded border border-teal-200">
+                                    <Building2 className="w-3 h-3 text-teal-600" />
+                                    {st.branch || st.location || st.leadBranch}
+                                  </span>
+                                )}
                                 {st.mode && <span>· {st.mode}</span>}
                                 {st.batchTiming && <span>· Timing: {st.batchTiming}</span>}
                               </div>
 
                               <div className="text-[11px] text-slate-500 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                                {st.headOfTrainer && (
+                                  <span className="text-[10px] text-teal-900 bg-teal-50/70 px-2 py-0.5 rounded border border-teal-100">
+                                    Head of Trainer: <strong className="text-teal-800">{st.headOfTrainer}</strong>
+                                  </span>
+                                )}
                                 {st.hrName && <span>HR: <strong className="text-slate-700">{st.hrName}</strong></span>}
                                 {st.handedOverAt && (
                                   <span>· Handed over: {new Date(st.handedOverAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
@@ -2019,17 +2437,26 @@ export default function TrainingDepartmentDashboard({
 
                           {/* Action Button */}
                           <div className="shrink-0 flex items-center gap-2 self-end md:self-center">
-                            <button
-                              onClick={() => openAllocationModal(st)}
-                              className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm active:scale-[0.98] ${
-                                isAllocated
-                                  ? 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200'
-                                  : 'bg-[#009688] hover:bg-[#00897b] text-white'
-                              }`}
-                            >
-                              <UserPlus className="w-3.5 h-3.5" />
-                              <span>{isAllocated ? 'Reassign Trainer & Batch' : 'Assign Trainer & Batch →'}</span>
-                            </button>
+                            {isAnatomyStudent ? (
+                              <button
+                                onClick={() => openAllocationModal(st, { isAnatomyToCoding: true })}
+                                className="px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm active:scale-[0.98] bg-[#483ec7] hover:bg-[#3b32a3] text-white cursor-pointer"
+                              >
+                                <span>🔄 Convert to Coding Batch →</span>
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => openAllocationModal(st)}
+                                className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm active:scale-[0.98] cursor-pointer ${
+                                  isAllocated
+                                    ? 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200'
+                                    : 'bg-[#009688] hover:bg-[#00897b] text-white'
+                                }`}
+                              >
+                                <UserPlus className="w-3.5 h-3.5" />
+                                <span>{isAllocated ? 'Reassign Trainer & Batch' : 'Assign Trainer & Batch →'}</span>
+                              </button>
+                            )}
                           </div>
                         </div>
                       );
@@ -2045,6 +2472,7 @@ export default function TrainingDepartmentDashboard({
                 </div>
               </div>
             </div>
+            )
           )}
 
           {/* ================= TAB 2: CLASS SESSION ROOM ================= */}
@@ -2085,25 +2513,71 @@ export default function TrainingDepartmentDashboard({
                     )}
                     {attendanceList.length > 0 && (
                       <button
-                        onClick={() => saveAttendanceMarks(Object.fromEntries(attendanceList.map(s => [s.roll, 'Present'])))}
+                        onClick={() => {
+                          const marks = {};
+                          let blockedCount = 0;
+                          attendanceList.forEach(s => {
+                            if (s.canMarkPresent) {
+                              marks[s.roll] = 'Present';
+                            } else {
+                              blockedCount++;
+                              marks[s.roll] = s.joinedOnline ? 'Late' : 'Absent';
+                            }
+                          });
+                          if (blockedCount > 0) {
+                            setAttendanceSavedToast(`ℹ ${blockedCount} student(s) attended < 1h 45m online and were marked Late/Absent.`);
+                          }
+                          saveAttendanceMarks(marks);
+                        }}
                         className="px-3.5 py-1.5 rounded-xl bg-[#009688] hover:bg-[#00897b] text-white text-xs font-bold shadow-sm transition-all active:scale-[0.98]"
                       >
-                        Mark All Present
+                        Mark Eligible Present
                       </button>
                     )}
                   </div>
                 </div>
 
+                {/* Online Attendance & Syllabus Policy Banner */}
+                <div className="bg-teal-50/80 border border-teal-200 rounded-2xl p-4 text-xs text-teal-950 space-y-1.5">
+                  <div className="font-bold flex items-center gap-1.5 text-teal-900">
+                    <span>🛡</span> Online Attendance & Syllabus Policy
+                  </div>
+                  <div className="text-[11px] text-teal-800 space-y-1">
+                    <div>• <strong>Online Attendance Rule:</strong> For online sessions, the option to mark attendance as Present becomes available <strong>only after the student attends at least 1 hour and 45 minutes</strong> (105 mins).</div>
+                    <div>• <strong>Syllabus Tracker:</strong> Saving attendance with a session topic automatically marks and updates that module in the batch syllabus tracker.</div>
+                  </div>
+                </div>
+
                 <label className="block">
-                  <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Today's topic</span>
+                  <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Today's session topic / module</span>
                   <input
+                    list="syllabus-modules-list"
                     value={attendanceTopic}
                     onChange={(e) => setAttendanceTopic(e.target.value)}
-                    placeholder={todaysSession?.topic ? `Saved: ${todaysSession.topic}` : 'e.g. CPT Surgery — Integumentary system'}
+                    placeholder={todaysSession?.topic ? `Saved: ${todaysSession.topic}` : 'Select from syllabus or type e.g. CPT Surgery — Integumentary system'}
                     className="mt-1 w-full px-3 py-2 rounded-xl border border-slate-200 text-xs focus:outline-none focus:border-teal-500"
                   />
-                  <span className="text-[10px] text-slate-400">Saved with the marks and shown to students under "Modules covered". Leave empty to keep the saved topic.</span>
+                  <datalist id="syllabus-modules-list">
+                    {(batchSyllabusDoc?.modules || []).map((m) => (
+                      <option key={m.name} value={m.name}>{m.done ? '(Done) ' : ''}{m.name}</option>
+                    ))}
+                  </datalist>
+                  <span className="text-[10px] text-slate-400">Saving attendance will automatically tick this module in the batch syllabus tracker for this corresponding session.</span>
                 </label>
+
+                {batchSyllabusDoc && (batchSyllabusDoc.modules || []).length > 0 && (
+                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-slate-700">📖 Batch Syllabus Tracker:</span>
+                      <span className="text-slate-600 font-semibold">
+                        {(batchSyllabusDoc.modules || []).filter(m => m.done).length} of {(batchSyllabusDoc.modules || []).length} modules covered ({Math.round(((batchSyllabusDoc.modules || []).filter(m => m.done).length / (batchSyllabusDoc.modules || []).length) * 100)}%)
+                      </span>
+                    </div>
+                    <span className="text-[11px] text-teal-700 font-semibold">
+                      ✓ Synchronized with Student Portal & Trainer Batch Desk
+                    </span>
+                  </div>
+                )}
 
                 <p className="text-xs text-slate-600 font-medium leading-relaxed">
                   Mark today's class. Each mark is saved to the student record and recalculates attendance % on the student's dashboard, the HR's student CRM and the Leadership dropout-risk view. HR is alerted automatically when a student drops below 75%.
@@ -2117,7 +2591,7 @@ export default function TrainingDepartmentDashboard({
                   <div className="pt-2 space-y-4 animate-fadeIn">
                     <div className="flex items-center justify-between text-xs text-slate-500 pb-1 border-b border-slate-100">
                       <span className="font-bold text-slate-800">{attendanceBatch?.name} · {attendanceList.length} Students</span>
-                      <span>{[attendanceBatch?.module, attendanceBatch?.timing].filter(Boolean).join(' · ')}</span>
+                      <span>{[attendanceBatch?.module, attendanceBatch?.timing, attendanceBatch?.mode].filter(Boolean).join(' · ')}</span>
                     </div>
 
                     <div className="overflow-x-auto rounded-xl border border-slate-100">
@@ -2135,7 +2609,12 @@ export default function TrainingDepartmentDashboard({
                           {attendanceList.map(s => (
                             <tr key={s.id} className="hover:bg-slate-50/70 transition-all">
                               <td className="py-3 px-4 font-mono font-bold text-slate-900">{s.roll}</td>
-                              <td className="py-3 px-4 font-bold text-slate-900">{s.name}</td>
+                              <td className="py-3 px-4 font-bold text-slate-900">
+                                {s.name}
+                                {s.isOnline && (
+                                  <span className="ml-2 text-[10px] font-semibold text-teal-700 bg-teal-50 px-1.5 py-0.5 rounded border border-teal-200">Online</span>
+                                )}
+                              </td>
                               <td className="py-3 px-4">
                                 {s.attendancePct === null ? (
                                   <span className="text-slate-400">—</span>
@@ -2152,17 +2631,46 @@ export default function TrainingDepartmentDashboard({
                                 }`}>
                                   {s.status}
                                 </span>
+                                {s.isOnline && (
+                                  <div className="mt-1">
+                                    {s.attendedMins >= 105 ? (
+                                      <span className="text-[10px] text-emerald-700 font-bold bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded inline-block">
+                                        ✓ {Math.floor(s.attendedMins / 60)}h {s.attendedMins % 60}m (Eligible)
+                                      </span>
+                                    ) : s.joinedOnline ? (
+                                      <span className="text-[10px] text-amber-700 font-medium bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded inline-block">
+                                        ⏱ {s.attendedMins}m / 105m (Under 1h 45m)
+                                      </span>
+                                    ) : (
+                                      <span className="text-[10px] text-slate-400 block">No online join</span>
+                                    )}
+                                  </div>
+                                )}
                               </td>
                               <td className="py-3 px-4 text-right space-x-1.5">
-                                {[['Present', 'P', 'hover:bg-emerald-100 hover:text-emerald-800'], ['Late', 'L', 'hover:bg-amber-100 hover:text-amber-800'], ['Absent', 'A', 'hover:bg-rose-100 hover:text-rose-800']].map(([status, label, cls]) => (
-                                  <button
-                                    key={status}
-                                    onClick={() => saveAttendanceMarks({ [s.roll]: status })}
-                                    className={`px-2.5 py-1 rounded-md text-[10px] font-bold transition-all ${s.status === status ? 'bg-slate-800 text-white' : `bg-slate-100 ${cls}`}`}
-                                  >
-                                    {label}
-                                  </button>
-                                ))}
+                                {[['Present', 'P', 'hover:bg-emerald-100 hover:text-emerald-800'], ['Late', 'L', 'hover:bg-amber-100 hover:text-amber-800'], ['Absent', 'A', 'hover:bg-rose-100 hover:text-rose-800']].map(([status, label, cls]) => {
+                                  const isPresentDisabled = status === 'Present' && s.isOnline && !s.canMarkPresent;
+                                  return (
+                                    <button
+                                      key={status}
+                                      disabled={isPresentDisabled}
+                                      title={isPresentDisabled ? `Present locked: attended ${s.attendedMins}m online (requires at least 1 hr 45 min)` : `Mark ${status}`}
+                                      onClick={() => {
+                                        if (isPresentDisabled) return;
+                                        saveAttendanceMarks({ [s.roll]: status });
+                                      }}
+                                      className={`px-2.5 py-1 rounded-md text-[10px] font-bold transition-all ${
+                                        isPresentDisabled
+                                          ? 'opacity-40 cursor-not-allowed bg-slate-100 text-slate-400 border border-slate-200'
+                                          : s.status === status
+                                            ? 'bg-slate-800 text-white'
+                                            : `bg-slate-100 ${cls}`
+                                      }`}
+                                    >
+                                      {isPresentDisabled ? '🔒 ' : ''}{label}
+                                    </button>
+                                  );
+                                })}
                               </td>
                             </tr>
                           ))}
@@ -3143,6 +3651,28 @@ export default function TrainingDepartmentDashboard({
                 </div>
               )}
 
+              {/* Toast Notification for Readiness Marking */}
+              {readinessToast && (
+                <div className="p-3.5 rounded-2xl bg-teal-900 text-white text-xs font-semibold flex items-center justify-between shadow-lg animate-fadeIn border border-teal-700">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-teal-300" />
+                    <span>{readinessToast}</span>
+                  </div>
+                  <button onClick={() => setReadinessToast(null)} className="text-teal-300 hover:text-white">✕</button>
+                </div>
+              )}
+
+              {/* Toast Notification for Trainer Course Completion & Exam Approval */}
+              {trainerApprovalToast && (
+                <div className="p-3.5 rounded-2xl bg-indigo-950 text-white text-xs font-semibold flex items-center justify-between shadow-lg animate-fadeIn border border-indigo-700">
+                  <div className="flex items-center gap-2">
+                    <Award className="w-4 h-4 text-indigo-300" />
+                    <span>{trainerApprovalToast}</span>
+                  </div>
+                  <button onClick={() => setTrainerApprovalToast(null)} className="text-indigo-300 hover:text-white">✕</button>
+                </div>
+              )}
+
               {/* Main White Card: My Students */}
               <div className="bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-7 shadow-sm space-y-3.5">
                 <div className="flex items-center justify-between pb-1">
@@ -3178,25 +3708,114 @@ export default function TrainingDepartmentDashboard({
                             {isWeak ? <span className="text-sm font-bold text-slate-500">⚠</span> : <span className="text-base">🎓</span>}
                           </div>
                           <div className="min-w-0">
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 flex-wrap">
                               <span className="text-sm font-bold text-slate-900 group-hover:text-teal-700 transition-colors truncate">{student.name}</span>
                               {isWeak && <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#fee2e2] text-[#dc2626]">weak</span>}
+                              {(() => {
+                                const rawSt = student.jobReadyStatus || (student.trainerRecommendation === 'Ready' ? 'Job Ready' : student.trainerRecommendation);
+                                if (rawSt === 'Job Ready' || rawSt === 'Ready') {
+                                  return (
+                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1 shadow-2xs">
+                                      <Check className="w-2.5 h-2.5 stroke-[3]" />
+                                      Job Ready
+                                    </span>
+                                  );
+                                }
+                                if (rawSt === 'Needs Revision') {
+                                  return (
+                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300 flex items-center gap-1 shadow-2xs">
+                                      <AlertTriangle className="w-2.5 h-2.5" />
+                                      Needs Revision
+                                    </span>
+                                  );
+                                }
+                                if (rawSt === 'Not Ready') {
+                                  return (
+                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-300 flex items-center gap-1 shadow-2xs">
+                                      <X className="w-2.5 h-2.5 stroke-[2.5]" />
+                                      Not Ready
+                                    </span>
+                                  );
+                                }
+                                return (
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-500 border border-slate-200">
+                                    Readiness Pending
+                                  </span>
+                                );
+                              })()}
+
+                              {/* Trainer Approvals Badges */}
+                              {student.courseCompletionApproved && (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200 flex items-center gap-1 shadow-2xs">
+                                  <Award className="w-2.5 h-2.5" />
+                                  Cert Approved
+                                </span>
+                              )}
+                              {student.examApprovedByTrainer && (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200 flex items-center gap-1 shadow-2xs">
+                                  <FileCheck className="w-2.5 h-2.5" />
+                                  Exam Approved
+                                </span>
+                              )}
+                              {(student.courseCompletionStatus === 'Declined' || student.examApprovalStatus === 'Declined') && !student.courseCompletionApproved && !student.examApprovedByTrainer && (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200 flex items-center gap-1 shadow-2xs">
+                                  <X className="w-2.5 h-2.5 stroke-[2.5]" />
+                                  Approval Declined
+                                </span>
+                              )}
                             </div>
                             <div className="text-xs text-slate-400 font-mono mt-0.5 truncate">{rollText}</div>
-                            <div className="text-[11px] text-slate-500 mt-0.5 truncate">
+                            <div className="text-[11px] text-slate-500 mt-0.5 truncate flex items-center gap-1.5 flex-wrap">
                               {[
                                 typeof student.attendancePct === 'number' ? `Attendance ${student.attendancePct}%` : null,
                                 typeof student.assessmentScore === 'number' ? `Tests ${student.assessmentScore}%` : null,
+                                typeof student.readinessScore === 'number' ? `Readiness: ${student.readinessScore}%` : null,
                                 student.hrName ? `HR: ${student.hrName}` : null
                               ].filter(Boolean).join(' · ')}
                             </div>
+                            {(student.technicalScore != null || student.communicationScore != null || student.interviewPrepScore != null || student.mockScore != null) && (
+                              <div className="flex items-center gap-1.5 mt-1 text-[10px] text-slate-500 font-mono flex-wrap">
+                                {student.technicalScore != null && <span className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-700">Tech: {student.technicalScore}%</span>}
+                                {student.assessmentScore != null && <span className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-700">Assess: {student.assessmentScore}%</span>}
+                                {student.communicationScore != null && <span className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-700">Comm: {student.communicationScore}%</span>}
+                                {(student.interviewPrepScore != null || student.mockScore != null) && <span className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-700">Interview: {student.interviewPrepScore ?? student.mockScore}%</span>}
+                              </div>
+                            )}
                             {student.trainerNote && (
                               <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1 mt-1.5">HR note: {student.trainerNote}</div>
                             )}
                           </div>
                         </div>
 
-                        <div className="shrink-0 ml-3 flex items-center gap-2">
+                        <div className="shrink-0 ml-3 flex items-center gap-2 flex-wrap justify-end">
+                          <button
+                            onClick={() => openTrainerApprovalModal(student)}
+                            className={`px-3.5 py-2 rounded-full text-xs font-bold border transition-all flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95 ${
+                              student.courseCompletionApproved && student.examApprovedByTrainer
+                                ? 'bg-purple-50 hover:bg-purple-100 text-purple-700 border-purple-200'
+                                : student.courseCompletionStatus === 'Declined' || student.examApprovalStatus === 'Declined'
+                                ? 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-200'
+                                : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border-indigo-200'
+                            }`}
+                            title="Verify syllabus completion, assessments, and overall readiness before approving course completion certificate and exam booking"
+                          >
+                            <Award className="w-3.5 h-3.5" />
+                            <span>
+                              {student.courseCompletionApproved && student.examApprovedByTrainer
+                                ? 'Cert & Exam Approved'
+                                : (student.courseCompletionApproved || student.examApprovedByTrainer)
+                                ? 'Review Approvals'
+                                : 'Approve Cert & Exam'}
+                            </span>
+                          </button>
+                          <button
+                            onClick={() => openReadinessModal(student)}
+                            className="px-3.5 py-2 rounded-full text-xs font-bold bg-teal-50 hover:bg-teal-100 text-[#00897b] border border-teal-200 transition-all flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95"
+                            title="Evaluate job readiness across Technical Knowledge, Assessments, Communication, and Interview Prep"
+                          >
+                            <Target className="w-3.5 h-3.5" />
+                            <span>Update Readiness</span>
+                          </button>
                           {isChiefFaculty && (
                             <button
                               onClick={() => openAllocationModal(student)}
@@ -3981,7 +4600,7 @@ export default function TrainingDepartmentDashboard({
       )}
 
       {/* ================= MODAL: ALLOCATE TRAINER & BATCH (HEAD OF TRAINER) ================= */}
-      {allocationStudent && (
+      {allocationStudent && isHeadOfTrainer && (
         <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
           <div className="bg-white rounded-3xl max-w-xl w-full p-6 sm:p-7 shadow-2xl space-y-4 border border-slate-100 max-h-[90vh] overflow-y-auto">
             {/* Header */}
@@ -4031,6 +4650,62 @@ export default function TrainingDepartmentDashboard({
 
             {/* Form Fields */}
             <div className="space-y-4">
+              {/* Anatomy to Medical Coding Transition Control */}
+              <div className={`p-4 rounded-2xl border transition-all ${
+                allocationForm.isAnatomyToCoding
+                  ? 'bg-gradient-to-br from-indigo-50/80 to-purple-50/40 border-indigo-200 text-indigo-950 shadow-2xs'
+                  : 'bg-slate-50 border-slate-200 text-slate-700'
+              }`}>
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(allocationForm.isAnatomyToCoding)}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setAllocationForm(prev => ({
+                        ...prev,
+                        isAnatomyToCoding: checked,
+                        syllabusModule: checked ? 'Module 3' : (allocationStudent.syllabusModule || 'Module 1'),
+                        batchName: checked && (!prev.batchName || /anatomy/i.test(prev.batchName))
+                          ? `Medical Coding - ${prev.batchTiming || allocationStudent.batchTiming || 'Regular'}`
+                          : prev.batchName
+                      }));
+                    }}
+                    className="mt-0.5 w-4 h-4 rounded text-[#483ec7] focus:ring-indigo-500 cursor-pointer"
+                  />
+                  <div className="space-y-1">
+                    <div className="font-extrabold text-xs flex items-center gap-2">
+                      <span>🔄 Anatomy to Medical Coding Batch Transition</span>
+                      {allocationForm.isAnatomyToCoding && (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-indigo-200 text-indigo-900 border border-indigo-300">
+                          Active Conversion
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-slate-600 leading-relaxed">
+                      Preserves completed Anatomy modules (Modules 1 &amp; 2) and advances student to Module 3 (Core Coding Guidelines: ICD-10-CM / CPT). Preserves schedule timing to avoid training disruptions.
+                    </p>
+                  </div>
+                </label>
+
+                {allocationForm.isAnatomyToCoding && (
+                  <div className="mt-3 pt-3 border-t border-indigo-200/70 grid grid-cols-2 gap-2.5 text-xs">
+                    <div className="p-2.5 bg-white/90 rounded-xl border border-indigo-100">
+                      <div className="text-[10px] font-bold uppercase text-indigo-700">Syllabus Progress</div>
+                      <div className="font-extrabold text-slate-900 mt-0.5 text-[11px]">✓ Modules 1 &amp; 2 Preserved</div>
+                      <div className="text-[10px] text-emerald-700 font-semibold">Active: Module 3 (Core Coding)</div>
+                    </div>
+                    <div className="p-2.5 bg-white/90 rounded-xl border border-indigo-100">
+                      <div className="text-[10px] font-bold uppercase text-indigo-700">Schedule Continuity</div>
+                      <div className="font-extrabold text-slate-900 mt-0.5 text-[11px] truncate">
+                        {allocationForm.batchTiming || allocationStudent.batchTiming || 'Timing Preserved'}
+                      </div>
+                      <div className="text-[10px] text-slate-500">Zero interruption to slot</div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               {/* Select Trainer */}
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
@@ -4044,12 +4719,24 @@ export default function TrainingDepartmentDashboard({
                   <option value="">-- Choose Trainer from Roster --</option>
                   {trainerRoster
                     .filter(t => t.active !== false)
+                    .slice()
+                    .sort((a, b) => {
+                      const stuBranch = (allocationStudent.branch || allocationStudent.location || allocationStudent.leadBranch || '').toLowerCase();
+                      const aBranch = (a.branchName || a.branch || '').toLowerCase();
+                      const bBranch = (b.branchName || b.branch || '').toLowerCase();
+                      const aMatch = stuBranch && (aBranch === stuBranch || aBranch.includes(stuBranch) || stuBranch.includes(aBranch)) ? 1 : 0;
+                      const bMatch = stuBranch && (bBranch === stuBranch || bBranch.includes(stuBranch) || stuBranch.includes(bBranch)) ? 1 : 0;
+                      return bMatch - aMatch;
+                    })
                     .map(t => {
                       const count = trainerStudentCounts[t.trainerId] || 0;
                       const matchCourse = allocationStudent.course && t.courseKey && String(allocationStudent.course).toUpperCase().includes(t.courseKey.toUpperCase());
+                      const stuBranch = (allocationStudent.branch || allocationStudent.location || allocationStudent.leadBranch || '').toLowerCase();
+                      const tBranch = (t.branchName || t.branch || '').toLowerCase();
+                      const isBranchMatch = stuBranch && tBranch && (tBranch === stuBranch || tBranch.includes(stuBranch) || stuBranch.includes(tBranch));
                       return (
                         <option key={t.trainerId} value={t.trainerId}>
-                          {t.trainerName} ({t.role || t.courseKey || 'Trainer'}) · {count} student(s) · {t.branchName || 'All branches'}{matchCourse ? ' ★ Recommended' : ''}
+                          {isBranchMatch ? '📍 [Branch Match] ' : ''}{t.trainerName} ({t.role || t.courseKey || 'Trainer'}) · {count} student(s) · {t.branchName || 'All branches'}{matchCourse ? ' ★ Recommended' : ''}
                         </option>
                       );
                     })}
@@ -4089,6 +4776,23 @@ export default function TrainingDepartmentDashboard({
                 </p>
               </div>
 
+              {/* Batch Timing / Schedule Continuity */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                  Training Schedule / Batch Timing *
+                </label>
+                <input
+                  type="text"
+                  value={allocationForm.batchTiming || ''}
+                  onChange={(e) => setAllocationForm(prev => ({ ...prev, batchTiming: e.target.value }))}
+                  placeholder="e.g. 9:00 AM – 11:00 AM"
+                  className="w-full p-3 text-xs rounded-xl border border-slate-200 focus:outline-none focus:border-teal-500 bg-white"
+                />
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Ensures student's daily class timing is maintained without schedule conflicts.
+                </p>
+              </div>
+
               {/* Note / Instructions for the Trainer */}
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
@@ -4121,6 +4825,488 @@ export default function TrainingDepartmentDashboard({
                 <CheckCircle2 className="w-4 h-4" />
                 <span>Confirm Trainer Allocation</span>
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================= MODAL: JOB-READY EVALUATION MODAL ================= */}
+      {readinessModalStudent && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 animate-fadeIn">
+          <div className="bg-white rounded-3xl max-w-xl w-full p-6 sm:p-7 shadow-2xl border border-slate-200 space-y-5 animate-in zoom-in-95 text-left max-h-[90vh] overflow-y-auto">
+            {/* Header */}
+            <div className="flex items-start justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-teal-50 text-[#00897b] border border-teal-200 flex items-center justify-center text-lg font-bold">
+                  🎯
+                </div>
+                <div>
+                  <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
+                    <span>Evaluate Job-Ready Status</span>
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium mt-0.5">
+                    {readinessModalStudent.name} <span className="font-mono text-slate-400">({readinessModalStudent.studentId})</span> · {[readinessModalStudent.course, readinessModalStudent.batchName].filter(Boolean).join(' · ')}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setReadinessModalStudent(null)}
+                className="w-8 h-8 rounded-full bg-slate-100 text-slate-400 hover:text-slate-700 hover:bg-slate-200 flex items-center justify-center text-xs font-bold cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Live Readiness Computed Gauge */}
+            {(() => {
+              const tech = readinessForm.technicalScore !== '' ? Number(readinessForm.technicalScore) : null;
+              const assess = readinessForm.assessmentScore !== '' ? Number(readinessForm.assessmentScore) : null;
+              const comm = readinessForm.communicationScore !== '' ? Number(readinessForm.communicationScore) : null;
+              const interview = readinessForm.interviewPrepScore !== '' ? Number(readinessForm.interviewPrepScore) : null;
+              const parts = [tech, assess, comm, interview].filter(v => v !== null && !isNaN(v));
+              const liveScore = parts.length > 0 ? Math.round(parts.reduce((a, b) => a + b, 0) / parts.length) : null;
+
+              return (
+                <div className="bg-gradient-to-r from-teal-50 to-emerald-50 border border-teal-200/80 rounded-2xl p-4 flex items-center justify-between gap-4">
+                  <div>
+                    <div className="text-[10.5px] font-bold text-teal-800 uppercase tracking-wider">
+                      Overall Calculated Readiness
+                    </div>
+                    <div className="text-xs text-teal-700 mt-0.5">
+                      Average of scored evaluation pillars ({parts.length}/4 entered)
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <div className={`text-3xl font-black ${liveScore === null ? 'text-slate-400' : liveScore >= 80 ? 'text-emerald-700' : liveScore >= 65 ? 'text-amber-600' : 'text-rose-600'}`}>
+                      {liveScore === null ? '—' : `${liveScore}%`}
+                    </div>
+                    <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                      Target 80%+
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* 4 Readiness Pillars Inputs */}
+            <div className="space-y-3">
+              <label className="block text-xs font-bold text-slate-800 uppercase tracking-wider">
+                4-Pillar Evaluation Scores (0 – 100)
+              </label>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* 1. Technical Knowledge */}
+                <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-3.5 space-y-1">
+                  <div className="flex items-center justify-between text-xs font-bold text-slate-800">
+                    <span className="flex items-center gap-1.5">
+                      <span>💻</span> Technical Knowledge
+                    </span>
+                    <span className="text-[11px] font-mono text-teal-700">%</span>
+                  </div>
+                  <p className="text-[10.5px] text-slate-500">Medical coding rules, ICD-10, CPT, guidelines</p>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    value={readinessForm.technicalScore}
+                    onChange={(e) => setReadinessForm(prev => ({ ...prev, technicalScore: e.target.value }))}
+                    placeholder="Enter score 0–100..."
+                    className="w-full mt-1 px-3 py-2 text-xs font-black rounded-xl bg-white border border-slate-200 focus:outline-none focus:border-teal-500"
+                  />
+                </div>
+
+                {/* 2. Assessments */}
+                <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-3.5 space-y-1">
+                  <div className="flex items-center justify-between text-xs font-bold text-slate-800">
+                    <span className="flex items-center gap-1.5">
+                      <span>📝</span> Assessments & Tests
+                    </span>
+                    <span className="text-[11px] font-mono text-teal-700">%</span>
+                  </div>
+                  <p className="text-[10.5px] text-slate-500">Weekly tests average & mock exams</p>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    value={readinessForm.assessmentScore}
+                    onChange={(e) => setReadinessForm(prev => ({ ...prev, assessmentScore: e.target.value }))}
+                    placeholder="Enter score 0–100..."
+                    className="w-full mt-1 px-3 py-2 text-xs font-black rounded-xl bg-white border border-slate-200 focus:outline-none focus:border-teal-500"
+                  />
+                </div>
+
+                {/* 3. Communication */}
+                <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-3.5 space-y-1">
+                  <div className="flex items-center justify-between text-xs font-bold text-slate-800">
+                    <span className="flex items-center gap-1.5">
+                      <span>🗣️</span> Communication Skills
+                    </span>
+                    <span className="text-[11px] font-mono text-teal-700">%</span>
+                  </div>
+                  <p className="text-[10.5px] text-slate-500">English fluency, verbal clarity & confidence</p>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    value={readinessForm.communicationScore}
+                    onChange={(e) => setReadinessForm(prev => ({ ...prev, communicationScore: e.target.value }))}
+                    placeholder="Enter score 0–100..."
+                    className="w-full mt-1 px-3 py-2 text-xs font-black rounded-xl bg-white border border-slate-200 focus:outline-none focus:border-teal-500"
+                  />
+                </div>
+
+                {/* 4. Interview Preparation */}
+                <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-3.5 space-y-1">
+                  <div className="flex items-center justify-between text-xs font-bold text-slate-800">
+                    <span className="flex items-center gap-1.5">
+                      <span>🎯</span> Interview Preparation
+                    </span>
+                    <span className="text-[11px] font-mono text-teal-700">%</span>
+                  </div>
+                  <p className="text-[10.5px] text-slate-500">Mock interview performance & HR readiness</p>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    value={readinessForm.interviewPrepScore}
+                    onChange={(e) => setReadinessForm(prev => ({ ...prev, interviewPrepScore: e.target.value }))}
+                    placeholder="Enter score 0–100..."
+                    className="w-full mt-1 px-3 py-2 text-xs font-black rounded-xl bg-white border border-slate-200 focus:outline-none focus:border-teal-500"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Job-Ready Status Choice */}
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-slate-800 uppercase tracking-wider">
+                Select Job-Ready Status *
+              </label>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { value: 'Job Ready', label: '✓ Job Ready', desc: 'Syncs to CCCP placement', activeClass: 'bg-[#00897b] text-white border-[#00897b]' },
+                  { value: 'Needs Revision', label: '⚡ Needs Revision', desc: 'Needs additional practice', activeClass: 'bg-[#f59e0b] text-white border-[#f59e0b]' },
+                  { value: 'Not Ready', label: '✕ Not Ready', desc: 'Significant gaps', activeClass: 'bg-[#ef4444] text-white border-[#ef4444]' }
+                ].map((s) => (
+                  <button
+                    key={s.value}
+                    type="button"
+                    onClick={() => setReadinessForm(prev => ({ ...prev, status: s.value }))}
+                    className={`p-3 rounded-2xl border text-left transition-all cursor-pointer ${
+                      readinessForm.status === s.value
+                        ? `${s.activeClass} shadow-md`
+                        : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    <div className="text-xs font-bold">{s.label}</div>
+                    <div className={`text-[10px] mt-0.5 ${readinessForm.status === s.value ? 'text-white/80' : 'text-slate-400'}`}>
+                      {s.desc}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Remarks / Notes */}
+            <div>
+              <label className="block text-xs font-bold text-slate-800 uppercase tracking-wider mb-1.5">
+                Trainer Remarks & Coaching Feedback
+              </label>
+              <textarea
+                rows={2}
+                value={readinessForm.feedback}
+                onChange={(e) => setReadinessForm(prev => ({ ...prev, feedback: e.target.value }))}
+                placeholder="e.g. Good command of Anatomy & CPT codes, advised to improve communication in mock rounds..."
+                className="w-full p-3 text-xs rounded-xl border border-slate-200 focus:outline-none focus:border-teal-500 bg-white"
+              />
+            </div>
+
+            {/* Modal Actions */}
+            <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setReadinessModalStudent(null)}
+                className="px-4 py-2.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-600 text-xs font-bold transition-all cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={savingReadiness}
+                onClick={handleSaveReadinessModal}
+                className="px-5 py-2.5 rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white text-xs font-bold shadow-md shadow-teal-700/20 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>{savingReadiness ? 'Saving...' : 'Save Job-Ready Evaluation'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================= MODAL: TRAINER COURSE COMPLETION & EXAM APPROVAL ================= */}
+      {trainerApprovalStudent && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 animate-fadeIn">
+          <div className="bg-white rounded-3xl max-w-xl w-full p-6 sm:p-7 shadow-2xl border border-slate-200 space-y-5 animate-in zoom-in-95 text-left max-h-[92vh] overflow-y-auto">
+            {/* Header */}
+            <div className="flex items-start justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-indigo-50 text-indigo-700 border border-indigo-200 flex items-center justify-center text-lg font-bold">
+                  <Award className="w-5 h-5 text-indigo-600" />
+                </div>
+                <div>
+                  <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
+                    <span>Course Completion & Exam Approval</span>
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium mt-0.5">
+                    {trainerApprovalStudent.name} <span className="font-mono text-slate-400">({trainerApprovalStudent.studentId})</span> · {[trainerApprovalStudent.course, trainerApprovalStudent.batchName].filter(Boolean).join(' · ')}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setTrainerApprovalStudent(null)}
+                className="w-8 h-8 rounded-full bg-slate-100 text-slate-400 hover:text-slate-700 hover:bg-slate-200 flex items-center justify-center text-xs font-bold cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Verification Instructions Callout */}
+            <div className="bg-indigo-50/70 border border-indigo-100 rounded-2xl p-3.5 text-xs text-indigo-900 flex items-start gap-2.5">
+              <span className="text-base leading-none">🛡️</span>
+              <div className="leading-relaxed">
+                <strong className="font-bold">Trainer Gatekeeper Mandate:</strong> The respective trainer must verify syllabus completion, assessment benchmark, and overall readiness before releasing the course completion certificate or AAPC exam slot booking.
+              </div>
+            </div>
+
+            {/* 3 Pillars Verification Section */}
+            <div className="space-y-3">
+              <div className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center justify-between">
+                <span>4-Pillar Verification Checklist</span>
+                <span className="text-[10.5px] font-normal text-slate-500">All 4 pillars required for full endorsement</span>
+              </div>
+
+              {/* Pillar 1: Syllabus Completion */}
+              {(() => {
+                const isSyllabusDone = trainerApprovalStudent.syllabusStatus === 'Completed' || (trainerApprovalStudent.modulesCompleted && trainerApprovalStudent.modulesCompleted.length > 0);
+                return (
+                  <label className={`p-3.5 rounded-2xl border transition-all flex items-start gap-3 cursor-pointer ${
+                    trainerApprovalForm.syllabusVerified ? 'bg-emerald-50/60 border-emerald-300' : 'bg-slate-50 border-slate-200'
+                  }`}>
+                    <input
+                      type="checkbox"
+                      checked={trainerApprovalForm.syllabusVerified}
+                      onChange={(e) => setTrainerApprovalForm(prev => ({ ...prev, syllabusVerified: e.target.checked }))}
+                      className="mt-0.5 w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 accent-emerald-600 cursor-pointer"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                          <span>📚</span> Pillar 1: Syllabus Completion
+                        </span>
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                          isSyllabusDone ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                        }`}>
+                          {isSyllabusDone ? 'Completed' : 'In Progress'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-600 mt-1">
+                        All course syllabus modules (Medical Terminology, Anatomy, ICD-10-CM, CPT-4, HCPCS) fully taught and cleared.
+                      </p>
+                    </div>
+                  </label>
+                );
+              })()}
+
+              {/* Pillar 2: Assessment Threshold */}
+              {(() => {
+                const assessScore = trainerApprovalStudent.assessmentScore != null ? Number(trainerApprovalStudent.assessmentScore) : (trainerApprovalStudent.technicalScore != null ? Number(trainerApprovalStudent.technicalScore) : null);
+                const passed = assessScore != null && assessScore >= 70;
+                return (
+                  <label className={`p-3.5 rounded-2xl border transition-all flex items-start gap-3 cursor-pointer ${
+                    trainerApprovalForm.assessmentsVerified ? 'bg-emerald-50/60 border-emerald-300' : 'bg-slate-50 border-slate-200'
+                  }`}>
+                    <input
+                      type="checkbox"
+                      checked={trainerApprovalForm.assessmentsVerified}
+                      onChange={(e) => setTrainerApprovalForm(prev => ({ ...prev, assessmentsVerified: e.target.checked }))}
+                      className="mt-0.5 w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 accent-emerald-600 cursor-pointer"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                          <span>📝</span> Pillar 2: Assessments & Mock Performance
+                        </span>
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                          passed ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                        }`}>
+                          {assessScore != null ? `${assessScore}% Average` : 'Score Pending'} (Min 70%)
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-600 mt-1">
+                        Weekly chapter tests and comprehensive mock tests cleared with passing grade threshold (70%+).
+                      </p>
+                    </div>
+                  </label>
+                );
+              })()}
+
+              {/* Pillar 3: Overall Readiness & Attendance */}
+              {(() => {
+                const att = trainerApprovalStudent.attendancePct ?? trainerApprovalStudent.attendance;
+                const attPassed = att == null || att >= 75;
+                const readyStatus = trainerApprovalStudent.jobReadyStatus || trainerApprovalStudent.trainerRecommendation || 'Pending';
+                return (
+                  <label className={`p-3.5 rounded-2xl border transition-all flex items-start gap-3 cursor-pointer ${
+                    trainerApprovalForm.readinessVerified ? 'bg-emerald-50/60 border-emerald-300' : 'bg-slate-50 border-slate-200'
+                  }`}>
+                    <input
+                      type="checkbox"
+                      checked={trainerApprovalForm.readinessVerified}
+                      onChange={(e) => setTrainerApprovalForm(prev => ({ ...prev, readinessVerified: e.target.checked }))}
+                      className="mt-0.5 w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 accent-emerald-600 cursor-pointer"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                          <span>🎯</span> Pillar 3: Overall Readiness & Attendance
+                        </span>
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                          attPassed ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
+                        }`}>
+                          {att != null ? `${att}% Attendance` : '80% Attendance'} · {readyStatus}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-600 mt-1">
+                        Minimum 75% class attendance maintained; student exhibits practical speed and coding accuracy.
+                      </p>
+                    </div>
+                  </label>
+                );
+              })()}
+
+              {/* Pillar 4: Mandatory Student Seminar */}
+              {(() => {
+                const seminarDone = Boolean(trainerApprovalStudent.seminarCompleted || trainerApprovalStudent.trainerApprovalVerification?.seminarVerified);
+                return (
+                  <label className={`p-3.5 rounded-2xl border transition-all flex items-start gap-3 cursor-pointer ${
+                    trainerApprovalForm.seminarVerified ? 'bg-emerald-50/60 border-emerald-300' : 'bg-slate-50 border-slate-200'
+                  }`}>
+                    <input
+                      type="checkbox"
+                      checked={trainerApprovalForm.seminarVerified}
+                      onChange={(e) => setTrainerApprovalForm(prev => ({ ...prev, seminarVerified: e.target.checked }))}
+                      className="mt-0.5 w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 accent-emerald-600 cursor-pointer"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                          <span>🎙️</span> Pillar 4: Mandatory Student Seminar
+                        </span>
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                          seminarDone ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                        }`}>
+                          {seminarDone ? 'Delivered' : 'Not Yet Delivered'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-600 mt-1">
+                        Student has delivered their mandatory seminar, evaluated on subject knowledge, communication, presentation and confidence.
+                      </p>
+                    </div>
+                  </label>
+                );
+              })()}
+            </div>
+
+            {/* Scope of Approval */}
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-slate-800 uppercase tracking-wider">
+                Select Approvals To Grant
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <label className={`p-3.5 rounded-2xl border transition-all flex items-start gap-2.5 cursor-pointer ${
+                  trainerApprovalForm.approveCourseCompletion ? 'bg-indigo-50/70 border-indigo-300 text-indigo-950' : 'bg-slate-50 border-slate-200 text-slate-600'
+                }`}>
+                  <input
+                    type="checkbox"
+                    checked={trainerApprovalForm.approveCourseCompletion}
+                    onChange={(e) => setTrainerApprovalForm(prev => ({ ...prev, approveCourseCompletion: e.target.checked }))}
+                    className="mt-0.5 w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 accent-indigo-600 cursor-pointer"
+                  />
+                  <div>
+                    <div className="text-xs font-bold flex items-center gap-1.5">
+                      <span>🎓</span> Course Completion Certificate
+                    </div>
+                    <div className="text-[10.5px] text-slate-500 mt-0.5">
+                      Unlocks downloadable course certificate on Student Portal.
+                    </div>
+                  </div>
+                </label>
+
+                <label className={`p-3.5 rounded-2xl border transition-all flex items-start gap-2.5 cursor-pointer ${
+                  trainerApprovalForm.approveExam ? 'bg-purple-50/70 border-purple-300 text-purple-950' : 'bg-slate-50 border-slate-200 text-slate-600'
+                }`}>
+                  <input
+                    type="checkbox"
+                    checked={trainerApprovalForm.approveExam}
+                    onChange={(e) => setTrainerApprovalForm(prev => ({ ...prev, approveExam: e.target.checked }))}
+                    className="mt-0.5 w-4 h-4 rounded text-purple-600 focus:ring-purple-500 accent-purple-600 cursor-pointer"
+                  />
+                  <div>
+                    <div className="text-xs font-bold flex items-center gap-1.5">
+                      <span>📝</span> AAPC / Certification Exam Slot
+                    </div>
+                    <div className="text-[10.5px] text-slate-500 mt-0.5">
+                      Permits student to request and book certification exam slot.
+                    </div>
+                  </div>
+                </label>
+              </div>
+            </div>
+
+            {/* Trainer Endorsement Notes */}
+            <div>
+              <label className="block text-xs font-bold text-slate-800 uppercase tracking-wider mb-1.5">
+                Trainer Endorsement / Feedback Notes
+              </label>
+              <textarea
+                rows={2}
+                value={trainerApprovalForm.notes}
+                onChange={(e) => setTrainerApprovalForm(prev => ({ ...prev, notes: e.target.value }))}
+                placeholder="e.g. Student has demonstrated excellent accuracy across ICD/CPT codes, passed all mock exams, and is fully ready for the AAPC CPC certification exam."
+                className="w-full p-3 text-xs rounded-xl border border-slate-200 focus:outline-none focus:border-indigo-500 bg-white"
+              />
+            </div>
+
+            {/* Modal Actions */}
+            <div className="flex items-center justify-between pt-3 border-t border-slate-100 flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={savingTrainerApproval}
+                onClick={() => handleSaveTrainerApproval('Declined')}
+                className="px-4 py-2 rounded-xl border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold transition-all cursor-pointer disabled:opacity-50"
+              >
+                ✕ Decline / Return for Revision
+              </button>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setTrainerApprovalStudent(null)}
+                  className="px-4 py-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-600 text-xs font-bold transition-all cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={savingTrainerApproval || (!trainerApprovalForm.approveCourseCompletion && !trainerApprovalForm.approveExam)}
+                  onClick={() => handleSaveTrainerApproval('Approved')}
+                  className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-md shadow-indigo-600/20 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>{savingTrainerApproval ? 'Saving...' : 'Grant Trainer Approval'}</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>

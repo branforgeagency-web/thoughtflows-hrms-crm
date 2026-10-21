@@ -1,11 +1,18 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Inbox, Ticket, X, RefreshCw } from 'lucide-react';
-import { getStudentRequests, respondStudentRequest, getStudentTickets, respondStudentTicket, onDataUpdate } from '../services/api';
+import { getStudentRequests, respondStudentRequest, getStudentTickets, respondStudentTicket, onDataUpdate, studentRequestDocumentUrl } from '../services/api';
 import StudentTimeline from './StudentTimeline';
 
 // HR side of the Student Portal: admin requests (fee query, payment link,
-// profile edit, points redemption) and branch support tickets.
-const REQ_LABEL = { fee_query: 'Fee query', payment_link: 'Payment link', profile_edit: 'Profile edit', redeem_points: 'Redeem points', exam_booking: 'AAPC exam slot' };
+// profile edit, points redemption, student break requests) and branch support tickets.
+const REQ_LABEL = {
+  fee_query: 'Fee query',
+  payment_link: 'Payment link',
+  profile_edit: 'Profile edit',
+  redeem_points: 'Redeem points',
+  exam_booking: 'AAPC exam slot',
+  break_request: 'Student Break Request'
+};
 const REQ_TONE = { Open: 'bg-amber-100 text-amber-700', Scheduled: 'bg-sky-100 text-sky-700', Resolved: 'bg-emerald-100 text-emerald-700', Declined: 'bg-slate-200 text-slate-600' };
 const TICKET_TONE = { open: 'bg-amber-100 text-amber-700', 'in-progress': 'bg-sky-100 text-sky-700', resolved: 'bg-emerald-100 text-emerald-700', closed: 'bg-slate-200 text-slate-600' };
 const ago = (d) => {
@@ -120,13 +127,38 @@ export default function HrStudentRequestsDesk({ currentUser, onCountChange }) {
                   <span className={`text-[10px] h-fit font-bold px-2 py-0.5 rounded-full ${REQ_TONE[r.status] || ''}`}>{r.status}</span>
                 </div>
                 {r.message && <p className="text-xs text-slate-700 mt-2 whitespace-pre-line">{r.message}</p>}
+                {r.type === 'break_request' && (
+                  <div className="mt-2.5 p-3 rounded-xl bg-amber-50/90 border border-amber-200 text-xs text-amber-950 space-y-1.5">
+                    <div className="flex items-center justify-between font-bold text-amber-900">
+                      <span>🏖 Planned Break: {r.startDate || 'Start'} → {r.endDate || 'Return'}</span>
+                      {r.details?.durationDays && <span className="text-[10px] bg-amber-200/80 text-amber-900 px-1.5 py-0.5 rounded font-mono">{r.details.durationDays} days</span>}
+                    </div>
+                    <div><strong>Reason:</strong> {r.reasonCategory || r.subject}</div>
+                    {r.details?.explanation && <div><strong>Explanation:</strong> {r.details.explanation}</div>}
+                    <div className="pt-2 border-t border-amber-200 flex flex-wrap items-center justify-between gap-2 mt-1">
+                      <span className="text-[10px] text-amber-800 font-semibold">Prior approval required before student leave</span>
+                      {(r.hasDocument || r.documentName || r.documentUrl) && (
+                        <a
+                          href={studentRequestDocumentUrl(r._id)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-[11px] font-bold text-teal-800 hover:text-teal-950 bg-white px-2.5 py-1 rounded-lg border border-teal-300 flex items-center gap-1 shadow-2xs"
+                        >
+                          📎 View Supporting Document ({r.documentName || 'Proof.pdf'})
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                )}
                 {r.type === 'redeem_points' && r.details?.points ? <p className="text-xs text-amber-700 mt-1 font-semibold">{r.details.points} points · resolving deducts them from the student's balance</p> : null}
                 {r.response && <p className="text-xs text-slate-600 mt-2 bg-slate-50 rounded-lg px-2 py-1.5">↩ {r.response}{r.respondedBy ? ` — ${r.respondedBy}` : ''}</p>}
                 <div className="flex items-center justify-between mt-3">
                   <span className="text-[11px] text-slate-400">{ago(r.createdAt)}{scope === 'all' && r.hrName ? ` · HR: ${r.hrName}` : ''}</span>
                   <div className="flex gap-2">
                     <button type="button" onClick={() => setTimelineFor({ id: r.studentId, name: r.studentName })} className="text-xs font-semibold text-slate-600 px-2.5 py-1.5 rounded-lg hover:bg-slate-100">Timeline</button>
-                    <button type="button" onClick={() => openRespond('request', r)} className="text-xs font-semibold text-white bg-[#0e6977] px-3 py-1.5 rounded-lg hover:opacity-90">Respond</button>
+                    <button type="button" onClick={() => openRespond('request', r)} className="text-xs font-semibold text-white bg-[#0e6977] px-3 py-1.5 rounded-lg hover:opacity-90">
+                      {r.type === 'break_request' ? (r.status === 'Open' ? 'Review & Approve' : 'Update') : 'Respond'}
+                    </button>
                   </div>
                 </div>
               </div>
@@ -166,15 +198,50 @@ export default function HrStudentRequestsDesk({ currentUser, onCountChange }) {
           <div className="bg-white rounded-2xl w-full max-w-md p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex justify-between items-start mb-3">
               <div>
-                <div className="font-bold text-slate-800">{active.kind === 'request' ? 'Respond to request' : 'Update ticket'}</div>
+                <div className="font-bold text-slate-800">
+                  {active.kind === 'request'
+                    ? (active.item.type === 'break_request' ? 'Review & Approve Student Break' : 'Respond to request')
+                    : 'Update ticket'}
+                </div>
                 <div className="text-xs text-slate-500">{active.item.subject || active.item.title} · {active.item.studentName || active.item.raisedBy}</div>
               </div>
               <button type="button" onClick={() => setActive(null)} className="p-1 rounded-lg hover:bg-slate-100" aria-label="Close"><X className="w-4 h-4" /></button>
             </div>
-            <label className="block text-xs font-semibold text-slate-600 mb-1">Status</label>
+
+            {active.kind === 'request' && active.item.type === 'break_request' && (
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl mb-3 text-xs space-y-1">
+                <div className="font-bold text-slate-800">Break Period: {active.item.startDate} → {active.item.endDate}</div>
+                <div><strong>Reason:</strong> {active.item.reasonCategory || active.item.subject}</div>
+                {(active.item.hasDocument || active.item.documentName || active.item.documentUrl) && (
+                  <div className="pt-1">
+                    <a
+                      href={studentRequestDocumentUrl(active.item._id)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-teal-700 font-bold underline hover:text-teal-900 flex items-center gap-1"
+                    >
+                      📎 View Supporting Document ({active.item.documentName || 'Proof.pdf'})
+                    </a>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <label className="block text-xs font-semibold text-slate-600 mb-1">
+              {active.item?.type === 'break_request' ? 'Authority Decision' : 'Status'}
+            </label>
             {active.kind === 'request' ? (
               <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mb-3">
-                {['Open', 'Scheduled', 'Resolved', 'Declined'].map((s) => <option key={s}>{s}</option>)}
+                {active.item?.type === 'break_request' ? (
+                  <>
+                    <option value="Resolved">Approve Break (Prior Approval Granted — Student On Hold)</option>
+                    <option value="Declined">Decline Break Request</option>
+                    <option value="Scheduled">Under Review / Pending Meeting</option>
+                    <option value="Open">Open (Pending Approval)</option>
+                  </>
+                ) : (
+                  ['Open', 'Scheduled', 'Resolved', 'Declined'].map((s) => <option key={s}>{s}</option>)
+                )}
               </select>
             ) : (
               <select value={form.action} onChange={(e) => setForm({ ...form, action: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mb-3">
@@ -187,8 +254,20 @@ export default function HrStudentRequestsDesk({ currentUser, onCountChange }) {
                 <input type="datetime-local" value={form.scheduledFor} onChange={(e) => setForm({ ...form, scheduledFor: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mb-3" />
               </>
             )}
-            <label className="block text-xs font-semibold text-slate-600 mb-1">{active.item.type === 'payment_link' ? 'Reply (paste the payment link here)' : 'Reply to student'}</label>
-            <textarea rows={4} value={form.response} onChange={(e) => setForm({ ...form, response: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" placeholder="The student sees this in their portal and gets a notification." />
+            <label className="block text-xs font-semibold text-slate-600 mb-1">
+              {active.item.type === 'payment_link'
+                ? 'Reply (paste the payment link here)'
+                : active.item.type === 'break_request'
+                  ? 'Authority Approval Comments / Instructions to Student'
+                  : 'Reply to student'}
+            </label>
+            <textarea
+              rows={4}
+              value={form.response}
+              onChange={(e) => setForm({ ...form, response: e.target.value })}
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+              placeholder={active.item?.type === 'break_request' ? 'e.g. Break approved from 10 Nov to 24 Nov. Please contact your trainer to resume batch upon return.' : 'The student sees this in their portal and gets a notification.'}
+            />
             {error && <div className="text-xs text-rose-600 mt-2">{error}</div>}
             <div className="flex justify-end gap-2 mt-4">
               <button type="button" onClick={() => setActive(null)} className="text-sm px-4 py-2 rounded-lg text-slate-600 hover:bg-slate-100">Cancel</button>

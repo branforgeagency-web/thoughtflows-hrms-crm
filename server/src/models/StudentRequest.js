@@ -4,7 +4,7 @@ import mongoose from 'mongoose';
 // trainer consultation) go to the allocated trainer; admin ones (fee query,
 // payment link, profile edit, points redemption) go to the student's HR.
 export const TRAINER_REQUEST_TYPES = ['mock_interview', 'consultation'];
-export const HR_REQUEST_TYPES = ['fee_query', 'payment_link', 'profile_edit', 'redeem_points', 'exam_booking'];
+export const HR_REQUEST_TYPES = ['fee_query', 'payment_link', 'profile_edit', 'redeem_points', 'exam_booking', 'break_request'];
 
 const studentRequestSchema = new mongoose.Schema(
   {
@@ -20,6 +20,15 @@ const studentRequestSchema = new mongoose.Schema(
     subject: { type: String, default: '' },
     message: { type: String, default: '' },
     preferredDate: { type: String, default: '' },
+    // Break request fields
+    startDate: { type: String, default: '' },
+    endDate: { type: String, default: '' },
+    reasonCategory: { type: String, default: '' },
+    documentName: { type: String, default: '' },
+    documentMimeType: { type: String, default: '' },
+    documentData: { type: String, default: '', select: false },
+    documentUrl: { type: String, default: '' },
+    attemptNumber: { type: Number, default: 1 }, // For mock_interview: Attempt 1 (assessment) or Attempt 2 (improvement)
     details: { type: Object, default: {} },
     status: { type: String, enum: ['Open', 'Scheduled', 'Resolved', 'Declined'], default: 'Open' },
     scheduledFor: { type: String, default: '' },

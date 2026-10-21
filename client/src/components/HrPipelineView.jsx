@@ -17,12 +17,32 @@ import {
   LayoutList,
   Edit2,
   ArrowRight,
-  Trash2
+  Trash2,
+  Loader2
 } from 'lucide-react';
 
-import { getLeads, updateLead, deleteLead } from '../services/api';
+import { getLeads, updateLead, deleteLead, createEscalation } from '../services/api';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 import EditLeadModal from './EditLeadModal';
+
+const STAGE_ORDER = ['new', 'contacted', 'demo_booked', 'demo_attended', 'fee_followup', 'admitted'];
+
+const STAGE_LABELS = {
+  new: 'New Lead',
+  contacted: 'Contacted',
+  demo_booked: 'Demo Booked',
+  demo_attended: 'Demo Attended',
+  fee_followup: 'Fee Follow-up',
+  admitted: 'Admitted & Enrolled'
+};
+
+const NEXT_STAGE_LABELS = {
+  new: 'Contacted',
+  contacted: 'Demo Booked',
+  demo_booked: 'Demo Attended',
+  demo_attended: 'Fee Follow-up',
+  fee_followup: 'Admit Student'
+};
 
 // Classifies a lead's follow-up against real dates instead of guessing.
 function classifyFollowUp(lead) {
@@ -67,8 +87,9 @@ export default function HrPipelineView({
   const [viewMode, setViewMode] = useState(initialViewMode); // 'kanban' | 'followup' | 'table'
   const [activeFilter, setActiveFilter] = useState('all'); // all, overdue, today, tomorrow, this_week, demo, fee, admitted
   const [searchQuery, setSearchQuery] = useState('');
-  const [completedIds, setCompletedIds] = useState(new Set());
   const [actionNotice, setActionNotice] = useState(null);
+  const [actionLoading, setActionLoading] = useState({});
+  const [escalatedIds, setEscalatedIds] = useState(new Set());
   const [leads, setLeads] = useState(propLeads || []);
   const [editingLead, setEditingLead] = useState(null);
   const [deletingLead, setDeletingLead] = useState(null);
@@ -107,35 +128,12 @@ export default function HrPipelineView({
 
   const triggerAction = (msg) => {
     setActionNotice(msg);
-    setTimeout(() => setActionNotice(null), 3000);
-  };
-
-  const toggleDone = async (id, name) => {
-    const isCurrentlyDone = completedIds.has(id);
-    setCompletedIds(prev => {
-      const next = new Set(prev);
-      if (isCurrentlyDone) {
-        next.delete(id);
-        triggerAction(`Reopened follow-up for ${name}`);
-      } else {
-        next.add(id);
-        triggerAction(`✓ Marked follow-up for ${name} as Completed`);
-      }
-      return next;
-    });
-
-    try {
-      await updateLead(id, { status: isCurrentlyDone ? 'pending' : 'completed' });
-      if (onRefreshLeads) onRefreshLeads();
-    } catch (e) {
-      console.warn('Backend update notice:', e);
-    }
+    setTimeout(() => setActionNotice(null), 3500);
   };
 
   const handleAdvanceStage = async (leadId, currentStage) => {
-    const stageSeq = ['new', 'contacted', 'demo_booked', 'demo_attended', 'fee_followup', 'admitted'];
-    const currentIdx = stageSeq.indexOf(currentStage);
-    const nextStage = currentIdx >= 0 && currentIdx < stageSeq.length - 1 ? stageSeq[currentIdx + 1] : 'admitted';
+    const currentIdx = STAGE_ORDER.indexOf(currentStage || 'new');
+    const nextStage = currentIdx >= 0 && currentIdx < STAGE_ORDER.length - 1 ? STAGE_ORDER[currentIdx + 1] : 'admitted';
 
     const targetLead = leads.find(l => (l._id || l.id) === leadId);
     // Admission needs the fee & payment details, so it goes through the
@@ -145,14 +143,98 @@ export default function HrPipelineView({
       return;
     }
 
+    setActionLoading(prev => ({ ...prev, [leadId]: 'advance' }));
     try {
-      await updateLead(leadId, { stage: nextStage });
-      setLeads(prev => prev.map(l => (l._id === leadId || l.id === leadId) ? { ...l, stage: nextStage } : l));
+      await updateLead(leadId, {
+        stage: nextStage,
+        status: 'in_progress',
+        lastCallTime: new Date()
+      });
+      setLeads(prev => prev.map(l => ((l._id || l.id) === leadId) ? { ...l, stage: nextStage, status: 'in_progress' } : l));
       if (onRefreshLeads) onRefreshLeads();
-      triggerAction(`✓ Advanced lead to ${nextStage.replace('_', ' ').toUpperCase()}`);
+      const nextStageName = NEXT_STAGE_LABELS[currentStage] || STAGE_LABELS[nextStage] || nextStage;
+      triggerAction(`✓ Advanced lead to ${nextStageName.toUpperCase()}`);
     } catch (err) {
       console.error('Failed to advance lead stage:', err);
       triggerAction('Error updating lead stage');
+    } finally {
+      setActionLoading(prev => ({ ...prev, [leadId]: false }));
+    }
+  };
+
+  const handleDoneFollowUp = async (card) => {
+    const leadId = card.id;
+    const currentStage = card.stage || 'new';
+    const currentIdx = STAGE_ORDER.indexOf(currentStage);
+    const nextStage = currentIdx >= 0 && currentIdx < STAGE_ORDER.length - 1 ? STAGE_ORDER[currentIdx + 1] : 'admitted';
+
+    const targetLead = leads.find(l => (l._id || l.id) === leadId) || card.rawLead;
+
+    if (nextStage === 'admitted') {
+      if (targetLead && onAdmitLead) {
+        onAdmitLead(targetLead);
+        triggerAction(`✓ Opening Admission & Enrollment form for ${card.name}...`);
+      } else {
+        triggerAction(`Ready for Admission: ${card.name}`);
+      }
+      return;
+    }
+
+    const nextStageName = NEXT_STAGE_LABELS[currentStage] || STAGE_LABELS[nextStage] || nextStage;
+
+    setActionLoading(prev => ({ ...prev, [leadId]: 'done' }));
+    try {
+      await updateLead(leadId, {
+        stage: nextStage,
+        status: 'in_progress',
+        lastCallTime: new Date()
+      });
+
+      setLeads(prev => prev.map(l => ((l._id || l.id) === leadId) ? { ...l, stage: nextStage, status: 'in_progress' } : l));
+      triggerAction(`✓ Follow-up Done! Moved ${card.name} → ${nextStageName}`);
+      if (onRefreshLeads) onRefreshLeads();
+    } catch (err) {
+      console.error('Failed to move lead to next process:', err);
+      triggerAction('Error moving lead to next process');
+    } finally {
+      setActionLoading(prev => ({ ...prev, [leadId]: false }));
+    }
+  };
+
+  const handleEscalate = async (card) => {
+    const leadId = card.id;
+    setActionLoading(prev => ({ ...prev, [leadId]: 'escalate' }));
+    try {
+      await createEscalation({
+        title: `Follow-up Escalation: ${card.name} (${card.phone || 'No phone'})`,
+        description: `Urgent follow-up escalation for candidate ${card.name}. Course: ${card.course || '—'}. Current stage: ${(STAGE_LABELS[card.stage] || card.stage || 'new')}. Assigned counsellor: ${card.assigned || currentUser?.name || 'HR Team'}.`,
+        departmentCode: 'DEP-HR-001',
+        branchName: card.rawLead?.branch || currentUser?.branch || '',
+        studentId: '',
+        raisedBy: currentUser?.name || card.assigned || 'HR Counsellor',
+        priority: 'urgent',
+        type: 'Operational Issue',
+        status: 'open'
+      });
+
+      const updatedNote = card.rawLead?.followUpNote 
+        ? `[ESCALATED to Supervisor on ${new Date().toLocaleDateString()}]: ${card.rawLead.followUpNote}`
+        : `[ESCALATED to Supervisor on ${new Date().toLocaleDateString()}]`;
+
+      await updateLead(leadId, {
+        decisionStatus: 'escalated',
+        followUpNote: updatedNote
+      });
+
+      setEscalatedIds(prev => new Set(prev).add(leadId));
+      setLeads(prev => prev.map(l => ((l._id || l.id) === leadId) ? { ...l, decisionStatus: 'escalated', followUpNote: updatedNote } : l));
+      triggerAction(`🚨 Follow-up escalated for ${card.name} to Supervisor & Leadership Hub`);
+      if (onRefreshLeads) onRefreshLeads();
+    } catch (err) {
+      console.error('Failed to escalate follow-up:', err);
+      triggerAction('Could not escalate follow-up');
+    } finally {
+      setActionLoading(prev => ({ ...prev, [leadId]: false }));
     }
   };
 
@@ -217,9 +299,14 @@ export default function HrPipelineView({
     return searchFilteredLeads.map((lead) => {
       const { timeframe, hasDate, isOverdue } = classifyFollowUp(lead);
 
+      const isEscalated = lead.decisionStatus === 'escalated' || 
+        escalatedIds.has(lead._id || lead.id) || 
+        Boolean(lead.notes && lead.notes.includes('[ESCALATED]')) || 
+        Boolean(lead.followUpNote && lead.followUpNote.includes('[ESCALATED]'));
+
       let badge;
       let badgeClass = isOverdue ? 'bg-rose-100 text-rose-700 font-bold' : 'bg-slate-100 text-slate-700 font-semibold';
-      let borderColor = isOverdue ? 'border-l-rose-500' : timeframe === 'today' ? 'border-l-amber-500' : 'border-l-slate-300';
+      let borderColor = isEscalated ? 'border-l-rose-600' : isOverdue ? 'border-l-rose-500' : timeframe === 'today' ? 'border-l-amber-500' : 'border-l-slate-300';
 
       if (lead.stage === 'admitted') {
         badge = 'Admitted & Enrolled';
@@ -229,10 +316,12 @@ export default function HrPipelineView({
         badge = lead.followUpTime ? `${lead.followUpDate} · ${lead.followUpTime}` : lead.followUpDate;
       } else if (lead.stage === 'new') {
         badge = 'First call needed';
-        borderColor = 'border-l-teal-500';
+        borderColor = isEscalated ? 'border-l-rose-600' : 'border-l-teal-500';
       } else {
         badge = 'No follow-up scheduled';
       }
+
+      const currentStageLabel = STAGE_LABELS[lead.stage] || (lead.stage || 'NEW').replace('_', ' ');
 
       return {
         id: lead._id || lead.id,
@@ -244,16 +333,21 @@ export default function HrPipelineView({
         borderColor,
         timeframe,
         stage: lead.stage || 'new',
+        isEscalated,
         type: lead.stage === 'fee_followup' ? 'fee' : (lead.stage && lead.stage.includes('demo')) ? 'demo' : 'general',
         tags: [
           lead.stage === 'admitted'
             ? { label: 'ENROLLED', class: 'bg-emerald-50 text-emerald-700 border-emerald-300 font-bold' }
+            : { label: currentStageLabel.toUpperCase(), class: 'bg-teal-50 text-teal-800 border-teal-200 font-bold' },
+          isEscalated
+            ? { label: 'ESCALATED', class: 'bg-rose-100 text-rose-700 border-rose-300 font-bold' }
             : null,
           { label: lead.course || 'CPC', class: 'bg-cyan-50 text-cyan-700 border-cyan-200' },
           { label: (lead.sourceName || lead.source || 'LEAD').toUpperCase(), class: 'bg-indigo-50 text-indigo-700 border-indigo-200' }
         ].filter(Boolean),
-        note: lead.followUpNote || lead.notes || `${lead.education || 'Graduate'} · Stage: ${(lead.stage || 'new').replace('_', ' ').toUpperCase()}`,
+        note: lead.followUpNote || lead.notes || `${lead.education || 'Graduate'} · Stage: ${currentStageLabel.toUpperCase()}`,
         assigned: lead.counselorAssigned || '',
+        course: lead.course || 'CPC',
         rawLead: lead
       };
     });
@@ -622,12 +716,22 @@ export default function HrPipelineView({
 
                               <button
                                 type="button"
+                                disabled={Boolean(actionLoading[card.id])}
                                 onClick={() => handleAdvanceStage(card.id, card.currentStage)}
-                                className="w-full py-1 px-2 rounded-lg bg-slate-50 hover:bg-slate-100 text-slate-700 hover:text-slate-900 border border-slate-200 text-[10.5px] font-bold flex items-center justify-center gap-1 transition-all cursor-pointer"
+                                className="w-full py-1 px-2 rounded-lg bg-slate-50 hover:bg-slate-100 text-slate-700 hover:text-slate-900 border border-slate-200 text-[10.5px] font-bold flex items-center justify-center gap-1 transition-all cursor-pointer disabled:opacity-50"
                                 title="Advance to Next Stage"
                               >
-                                <span>Advance Stage</span>
-                                <ArrowRight className="w-3 h-3 text-[#00897b]" />
+                                {actionLoading[card.id] ? (
+                                  <>
+                                    <Loader2 className="w-3 h-3 animate-spin text-[#00897b]" />
+                                    <span>Moving...</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <span>Advance Stage</span>
+                                    <ArrowRight className="w-3 h-3 text-[#00897b]" />
+                                  </>
+                                )}
                               </button>
                             </div>
                           )}
@@ -655,12 +759,11 @@ export default function HrPipelineView({
             </div>
           ) : (
             filteredFollowUps.map((card) => {
-              const isDone = completedIds.has(card.id);
               return (
                 <div
                   key={card.id}
                   className={`bg-white border rounded-2xl p-4 shadow-xs transition-all hover:shadow-md hover:border-slate-300 flex flex-col justify-between border-l-4 ${card.borderColor} ${
-                    isDone ? 'opacity-65 bg-slate-50/70' : ''
+                    card.stage === 'admitted' ? 'opacity-75 bg-slate-50/70' : ''
                   }`}
                 >
                   <div>
@@ -668,7 +771,7 @@ export default function HrPipelineView({
                     <div className="flex items-start justify-between gap-1.5">
                       <div className="font-extrabold text-slate-900 text-sm leading-snug flex items-center gap-1">
                         <span>{card.name}</span>
-                        {isDone && <Check className="w-3.5 h-3.5 text-emerald-600" />}
+                        {card.stage === 'admitted' && <Check className="w-3.5 h-3.5 text-emerald-600" />}
                       </div>
                       <div className="flex items-center gap-1.5 shrink-0">
                         <span className={`text-[10px] px-2 py-0.5 rounded-md whitespace-nowrap font-medium ${card.badgeClass}`}>
@@ -780,27 +883,54 @@ export default function HrPipelineView({
                         <div className="grid grid-cols-2 gap-1.5">
                           <button
                             type="button"
-                            onClick={() => toggleDone(card.id, card.name)}
-                            className={`font-bold text-[10.5px] py-1 px-2 rounded-lg flex items-center justify-center gap-1 transition-all active:scale-95 cursor-pointer border ${
-                              isDone
-                                ? 'bg-emerald-600 text-white border-emerald-700 shadow-2xs'
-                                : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
-                            }`}
-                            title="Mark Done"
+                            disabled={Boolean(actionLoading[card.id])}
+                            onClick={() => handleDoneFollowUp(card)}
+                            className="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-300 font-bold text-[10.5px] py-1 px-2 rounded-lg flex items-center justify-center gap-1 transition-all active:scale-95 cursor-pointer disabled:opacity-50"
+                            title={`Mark Done & Move to Next Process (${NEXT_STAGE_LABELS[card.stage] || 'Next Stage'})`}
                           >
-                            <Check className="w-3 h-3" />
-                            <span>Done</span>
+                            {actionLoading[card.id] === 'done' ? (
+                              <>
+                                <Loader2 className="w-3 h-3 animate-spin text-emerald-600" />
+                                <span>Moving...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Check className="w-3 h-3 text-emerald-600" />
+                                <span>Done</span>
+                                <ArrowRight className="w-2.5 h-2.5 text-emerald-600" />
+                              </>
+                            )}
                           </button>
 
-                          <button
-                            type="button"
-                            onClick={() => triggerAction(`Escalated follow-up for ${card.name} to Team Lead`)}
-                            className="bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-bold text-[10.5px] py-1 px-2 rounded-lg flex items-center justify-center gap-1 transition-all active:scale-95 cursor-pointer"
-                            title="Escalate to Supervisor"
-                          >
-                            <AlertTriangle className="w-3 h-3" />
-                            <span>Escalate</span>
-                          </button>
+                          {card.isEscalated ? (
+                            <div
+                              className="bg-rose-50 text-rose-700 border border-rose-200 font-bold text-[10.5px] py-1 px-2 rounded-lg flex items-center justify-center gap-1 cursor-default shadow-2xs"
+                              title="Follow-up escalated to Supervisor / Team Lead"
+                            >
+                              <AlertTriangle className="w-3 h-3 text-rose-600 shrink-0" />
+                              <span className="truncate">Escalated 🚨</span>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              disabled={Boolean(actionLoading[card.id])}
+                              onClick={() => handleEscalate(card)}
+                              className="bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-bold text-[10.5px] py-1 px-2 rounded-lg flex items-center justify-center gap-1 transition-all active:scale-95 cursor-pointer disabled:opacity-50"
+                              title="Escalate to Supervisor / Team Lead"
+                            >
+                              {actionLoading[card.id] === 'escalate' ? (
+                                <>
+                                  <Loader2 className="w-3 h-3 animate-spin text-rose-600" />
+                                  <span>Saving...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <AlertTriangle className="w-3 h-3" />
+                                  <span>Escalate</span>
+                                </>
+                              )}
+                            </button>
+                          )}
                         </div>
                       )}
                     </div>
@@ -956,12 +1086,22 @@ export default function HrPipelineView({
                             {lead.stage !== 'admitted' && (
                               <button
                                 type="button"
+                                disabled={Boolean(actionLoading[leadId])}
                                 onClick={() => handleAdvanceStage(leadId, lead.stage || 'new')}
-                                className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 transition-all cursor-pointer"
+                                className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 transition-all cursor-pointer disabled:opacity-50"
                                 title="Advance Stage"
                               >
-                                <span>Advance</span>
-                                <ArrowRight className="w-2.5 h-2.5 text-[#00897b]" />
+                                {actionLoading[leadId] ? (
+                                  <>
+                                    <Loader2 className="w-2.5 h-2.5 animate-spin text-[#00897b]" />
+                                    <span>Moving...</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <span>Advance</span>
+                                    <ArrowRight className="w-2.5 h-2.5 text-[#00897b]" />
+                                  </>
+                                )}
                               </button>
                             )}
 

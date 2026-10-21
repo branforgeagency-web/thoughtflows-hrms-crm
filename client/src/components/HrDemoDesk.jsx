@@ -19,6 +19,7 @@ import {
 import BookNewDemoModal from './BookNewDemoModal';
 
 import { getDemos, createDemo, updateDemo } from '../services/api';
+import { isSpecialtyCourse } from '../constants/courses';
 
 export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDemoClick, currentUser }) {
   const [activeFilter, setActiveFilter] = useState('all'); // all, booked, confirmed, attended, missed, fee
@@ -153,7 +154,7 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
           Demo Desk
         </h1>
         <p className="text-xs sm:text-[13px] text-slate-500 font-medium mt-1 font-mono">
-          Track every demo from booked → confirmed → attended → moved to fee discussion. Confirm today's demos so they show up.
+          Finalize demo experts based on language, location, and available timings. Fresher demo experts available throughout the day; specialty demos scheduled per trainer availability.
         </p>
       </div>
 
@@ -330,8 +331,19 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
                     </span>
                   </div>
 
-                  <div className="text-xs text-slate-700 font-medium">
-                    {demo.course}
+                  <div className="flex items-center justify-between gap-1">
+                    <div className="text-xs text-slate-700 font-medium truncate">
+                      {demo.course}
+                    </div>
+                    {isSpecialtyCourse(demo.course) ? (
+                      <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded-md bg-blue-50 text-blue-700 border border-blue-200 shrink-0">
+                        🎯 Specialty Demo
+                      </span>
+                    ) : (
+                      <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200 shrink-0">
+                        ⚡ Fresher Demo
+                      </span>
+                    )}
                   </div>
 
                   <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-500 pt-1">
@@ -348,8 +360,13 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
                   <div className="text-[11px] text-slate-700 bg-emerald-50/60 p-2.5 rounded-xl border border-emerald-100 flex items-start gap-1.5">
                     <span className="text-xs">🎯</span>
                     <div className="leading-tight">
-                      <div>Trainer: <strong className="text-slate-900 font-bold">{demo.trainer || 'Unassigned'}</strong> {demo.trainerId && <span className="text-[10px] font-mono text-slate-500">({demo.trainerId})</span>}</div>
-                      <div className="text-[10px] text-emerald-700 font-semibold mt-0.5">{demo.language || ''}{demo.language && demo.location ? ' · ' : ''}{demo.location || ''}</div>
+                      <div>Demo Expert: <strong className="text-slate-900 font-bold">{demo.trainer || 'Unassigned'}</strong> {demo.trainerId && <span className="text-[10px] font-mono text-slate-500">({demo.trainerId})</span>}</div>
+                      <div className="text-[10px] text-emerald-700 font-semibold mt-0.5">
+                        {demo.language || ''}{demo.language && demo.location ? ' · ' : ''}{demo.location || ''}
+                        <span className="ml-1 opacity-80">
+                          ({isSpecialtyCourse(demo.course) ? 'Scheduled per trainer availability' : 'All-day available'})
+                        </span>
+                      </div>
                       <div className="text-[10px] font-semibold mt-0.5">
                         {demo.notificationRead
                           ? <span className="text-emerald-700">✓ Trainer accepted the slot</span>

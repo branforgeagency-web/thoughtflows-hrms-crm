@@ -527,11 +527,28 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
 
               {/* Mock Interview */}
               <div className="border border-slate-200/90 rounded-2xl p-5 bg-white shadow-xs space-y-2">
-                <div className="font-bold text-slate-900 text-xs sm:text-sm flex items-center gap-2 border-b border-slate-100 pb-2">
-                  <span>🎤</span><span>Mock Interview</span>
+                <div className="font-bold text-slate-900 text-xs sm:text-sm flex items-center justify-between border-b border-slate-100 pb-2">
+                  <div className="flex items-center gap-2">
+                    <span>🎤</span><span>Mock Interview (2 Attempts Plan)</span>
+                  </div>
+                  <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-full">
+                    {student.mockInterviewAttempts?.filter(a => a.status === 'Completed').length || 0}/2 Attempts
+                  </span>
                 </div>
+                {(() => {
+                  const completedCount = student.mockInterviewAttempts?.filter(a => a.status === 'Completed').length || 0;
+                  const start = student.batchDate ? new Date(student.batchDate) : null;
+                  if (completedCount > 0 || !start || Number.isNaN(start.getTime())) return null;
+                  const dueBy = new Date(start.getTime() + 7 * 24 * 60 * 60 * 1000);
+                  if (new Date() <= dueBy) return null;
+                  return (
+                    <div className="text-[10px] font-bold text-rose-700 bg-rose-50 border border-rose-200 px-2.5 py-1 rounded-lg">
+                      ⚠ Overdue — Policy: first mock interview attempt due within one week of batch start ({dueBy.toLocaleDateString()})
+                    </div>
+                  );
+                })()}
                 <div className="flex items-center justify-between py-1">
-                  <span className="text-[10px] font-mono font-bold uppercase text-slate-400">Status</span>
+                  <span className="text-[10px] font-mono font-bold uppercase text-slate-400">Current Status</span>
                   <StatusBadge
                     text={student.mockInterview || 'Pending'}
                     color={
@@ -544,9 +561,46 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
                     }
                   />
                 </div>
-                {!student.mockInterview || student.mockInterview === 'Pending' ? (
-                  <p className="text-[11px] text-slate-400 italic pt-1">No mock interview scheduled yet.</p>
+                {student.mockInterviewAttempts && student.mockInterviewAttempts.length > 0 ? (
+                  <div className="space-y-1.5 mt-2 pt-2 border-t border-slate-100">
+                    {student.mockInterviewAttempts.map((att, idx) => (
+                      <div key={idx} className="bg-slate-50 border border-slate-200/80 rounded-xl p-2 text-xs">
+                        <div className="flex items-center justify-between font-bold">
+                          <span className="text-slate-800">Attempt {att.attemptNumber || idx + 1}: {att.attemptNumber === 1 ? 'Initial Assessment' : 'Readiness Improvement'}</span>
+                          <span className="text-emerald-700 font-mono font-black">{att.score != null ? `${att.score}%` : '—'}</span>
+                        </div>
+                        {att.feedback && <div className="text-[11px] text-slate-600 mt-1">💬 {att.feedback}</div>}
+                        {att.improvementNotes && <div className="text-[10.5px] text-teal-800 font-medium mt-0.5">✨ {att.improvementNotes}</div>}
+                      </div>
+                    ))}
+                  </div>
+                ) : !student.mockInterview || student.mockInterview === 'Pending' ? (
+                  <p className="text-[11px] text-slate-400 italic pt-1">No mock interview scheduled yet (2 attempts available).</p>
                 ) : null}
+              </div>
+
+              {/* Mandatory Student Seminar */}
+              <div className="border border-slate-200/90 rounded-2xl p-5 bg-white shadow-xs space-y-2">
+                <div className="font-bold text-slate-900 text-xs sm:text-sm flex items-center justify-between border-b border-slate-100 pb-2">
+                  <div className="flex items-center gap-2">
+                    <span>🎙️</span><span>Mandatory Seminar</span>
+                  </div>
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                    student.seminarCompleted
+                      ? 'text-emerald-700 bg-emerald-50 border-emerald-100'
+                      : 'text-amber-700 bg-amber-50 border-amber-100'
+                  }`}>
+                    {student.seminarCompleted ? 'Delivered' : 'Not Yet Delivered'}
+                  </span>
+                </div>
+                {student.seminarCompleted ? (
+                  <div className="text-[11px] text-slate-600 space-y-1 pt-1">
+                    <div>Evaluated by <strong>{student.seminarEvaluatedBy || 'Trainer'}</strong>{student.seminarCompletedAt ? ` on ${new Date(student.seminarCompletedAt).toLocaleDateString()}` : ''}</div>
+                    {student.seminarFeedback && <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-2">💬 {student.seminarFeedback}</div>}
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-slate-400 italic pt-1">Every student must deliver a seminar — evaluated on subject knowledge, communication, presentation and confidence — before course completion.</p>
+                )}
               </div>
 
               {/* Certificates */}
@@ -1023,11 +1077,95 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
                   </div>
                 </div>
 
+                {/* 4-Pillar Breakdown */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                  <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200/80 text-center">
+                    <div className="text-[10px] text-slate-500 font-bold uppercase">Technical</div>
+                    <div className="text-sm font-black text-slate-900 mt-0.5">{student.technicalScore != null ? `${student.technicalScore}%` : '—'}</div>
+                  </div>
+                  <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200/80 text-center">
+                    <div className="text-[10px] text-slate-500 font-bold uppercase">Assessments</div>
+                    <div className="text-sm font-black text-slate-900 mt-0.5">{student.assessmentScore != null ? `${student.assessmentScore}%` : '—'}</div>
+                  </div>
+                  <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200/80 text-center">
+                    <div className="text-[10px] text-slate-500 font-bold uppercase">Communication</div>
+                    <div className="text-sm font-black text-slate-900 mt-0.5">{student.communicationScore != null ? `${student.communicationScore}%` : '—'}</div>
+                  </div>
+                  <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200/80 text-center">
+                    <div className="text-[10px] text-slate-500 font-bold uppercase">Interview Prep</div>
+                    <div className="text-sm font-black text-slate-900 mt-0.5">{(student.interviewPrepScore ?? student.mockScore) != null ? `${student.interviewPrepScore ?? student.mockScore}%` : '—'}</div>
+                  </div>
+                </div>
+
                 <div className="p-3 bg-teal-50/70 border border-teal-200 rounded-xl text-xs text-teal-950 flex items-start gap-2.5">
                   <UserCheck className="w-4 h-4 text-teal-700 shrink-0 mt-0.5" />
                   <div>
-                    <strong className="font-bold text-teal-900">Lead Trainer Endorsement:</strong> {student.trainerRecommendation ? `Recommendation: ${student.trainerRecommendation}` : ''}{student.trainerNotes ? ` · Note: ${student.trainerNotes}` : (!student.trainerRecommendation ? 'No specific endorsement notes entered by the trainer yet.' : '')}
+                    <strong className="font-bold text-teal-900">Lead Trainer Job-Ready Evaluation:</strong> {student.jobReadyStatus || student.trainerRecommendation ? `Status: ${student.jobReadyStatus || student.trainerRecommendation}` : ''}{student.readinessFeedback || student.trainerNotes ? ` · Note: ${student.readinessFeedback || student.trainerNotes}` : (!student.jobReadyStatus && !student.trainerRecommendation ? 'No specific endorsement notes entered by the trainer yet.' : '')}
                   </div>
+                </div>
+
+                {/* Student Weekly Star Rating */}
+                <div className="p-4 bg-gradient-to-br from-indigo-950 via-slate-900 to-indigo-900 rounded-2xl text-white space-y-3 shadow-md border border-indigo-500/20">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xl">⭐</span>
+                      <div>
+                        <div className="text-xs font-bold text-white flex items-center gap-2">
+                          <span>Weekly Star Rating</span>
+                          {student.weeklyRating?.stars ? (
+                            <span className="text-amber-400 font-black">{Number(student.weeklyRating.stars).toFixed(1)} / 5.0 ★</span>
+                          ) : (
+                            <span className="text-amber-400 font-black">4.0 / 5.0 ★</span>
+                          )}
+                          <span className="px-2 py-0.5 rounded-full text-[9px] font-black uppercase bg-amber-400/20 text-amber-300 border border-amber-400/30">
+                            {student.weeklyRating?.tier || 'On-Track Learner'}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-indigo-200 mt-0.5">
+                          {student.weeklyRating?.weekLabel || 'Current Academic Week'} · Evaluated across 4 core pillars
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-0.5 text-amber-400 text-sm">
+                      {[1, 2, 3, 4, 5].map((s) => (
+                        <span key={s}>{((student.weeklyRating?.stars || 4) >= s) ? '★' : '☆'}</span>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-[10px]">
+                    <div className="bg-white/10 p-2 rounded-xl border border-white/10">
+                      <div className="text-indigo-200 font-medium">1. Attendance</div>
+                      <div className="text-xs font-bold text-amber-300 mt-0.5">
+                        {student.weeklyRating?.attendanceScore ? `${Number(student.weeklyRating.attendanceScore).toFixed(1)}★` : `${student.attendancePct != null ? (student.attendancePct / 20).toFixed(1) : '4.0'}★`}
+                      </div>
+                    </div>
+                    <div className="bg-white/10 p-2 rounded-xl border border-white/10">
+                      <div className="text-indigo-200 font-medium">2. Assessments</div>
+                      <div className="text-xs font-bold text-amber-300 mt-0.5">
+                        {student.weeklyRating?.assessmentScore ? `${Number(student.weeklyRating.assessmentScore).toFixed(1)}★` : `${student.assessmentScore != null ? (student.assessmentScore / 20).toFixed(1) : '4.0'}★`}
+                      </div>
+                    </div>
+                    <div className="bg-white/10 p-2 rounded-xl border border-white/10">
+                      <div className="text-indigo-200 font-medium">3. Syllabus</div>
+                      <div className="text-xs font-bold text-amber-300 mt-0.5">
+                        {student.weeklyRating?.syllabusScore ? `${Number(student.weeklyRating.syllabusScore).toFixed(1)}★` : `${student.syllabusCompleted ? '5.0' : '4.0'}★`}
+                      </div>
+                    </div>
+                    <div className="bg-white/10 p-2 rounded-xl border border-white/10">
+                      <div className="text-indigo-200 font-medium">4. Participation</div>
+                      <div className="text-xs font-bold text-amber-300 mt-0.5">
+                        {student.weeklyRating?.participationScore ? `${Number(student.weeklyRating.participationScore).toFixed(1)}★` : '4.2★'}
+                      </div>
+                    </div>
+                  </div>
+
+                  {student.weeklyRating?.feedback && (
+                    <div className="text-[10.5px] text-indigo-200 bg-white/5 p-2 rounded-xl border border-white/10 flex items-start gap-1.5">
+                      <span>💡</span>
+                      <span>{student.weeklyRating.feedback}</span>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

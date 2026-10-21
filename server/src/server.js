@@ -51,7 +51,7 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin']
 }));
 app.options('*', cors());
-app.use(express.json({ limit: '75mb' }));
+app.use(express.json({ limit: '75mb', verify: (req, _res, buf) => { req.rawBody = buf; } }));
 app.use(express.urlencoded({ limit: '75mb', extended: true }));
 app.use(morgan('dev'));
 
@@ -84,8 +84,11 @@ app.use((err, req, res, next) => {
 const startServer = (port) => {
   const server = app.listen(port, () => {
     console.log(`🚀 [Thoughtflows Server] running at http://localhost:${port}`);
-    const exotelReady = !!(process.env.EXOTEL_SID && process.env.EXOTEL_API_KEY && process.env.EXOTEL_API_TOKEN && process.env.EXOTEL_EXOPHONE);
-    console.log(`📞 Telephony: EXOTEL (${exotelReady ? 'configured ✓' : 'NOT configured'}${process.env.PUBLIC_API_URL ? ' · status webhook on' : ''})`);
+    const activeTelephonyProvider = String(process.env.TELEPHONY_PROVIDER || 'knowlarity').toLowerCase();
+    const knowlarityReady = !!((process.env.KNOWLARITY_X_API_KEY || process.env.KNOWLARITY_API_KEY) && (process.env.KNOWLARITY_SR_API_KEY || process.env.KNOWLARITY_AUTH_KEY) && process.env.KNOWLARITY_SR_NUMBER);
+    const edesyReady = !!process.env.EDESY_API_KEY;
+    const providerReady = activeTelephonyProvider === 'edesy' ? edesyReady : knowlarityReady;
+    console.log(`📞 Telephony: ${activeTelephonyProvider.toUpperCase()} (${providerReady ? 'configured ✓' : 'NOT configured'}${process.env.PUBLIC_API_URL ? ' · webhook on' : ''})`);
   });
 
   server.on('error', (err) => {

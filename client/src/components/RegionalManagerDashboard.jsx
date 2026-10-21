@@ -1,194 +1,290 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { ChevronLeft, Info, Building2, MapPin, Users, GraduationCap, CheckCircle2 } from 'lucide-react';
-import { getLeads, getStudents, getBranches } from '../services/api';
+import { ChevronLeft, MapPin, Users, Building2, Search, CheckCircle2, UserCheck, ShieldAlert, ArrowRight } from 'lucide-react';
+import { getBranches, getAdminUsers } from '../services/api';
 
-const REGIONAL_ZONES_CONFIG = [
+// Distinctive color themes dynamically assigned across regions
+const REGION_THEMES = [
   {
-    id: 'gayathri',
-    name: 'Gayathri',
-    initial: 'G',
-    role: 'Regional Manager',
-    regionName: 'Coimbatore Zone-1',
-    code: 'REG-CBE-Z1',
-    subBranchesText: 'Saravanampatti, Gandhipuram, Salem',
-    branchMatcher: (name = '', city = '') => /saravanampatti|gandhipuram|salem/i.test(`${name} ${city}`),
-    theme: {
-      accentColor: '#2563EB',
-      topBorder: 'bg-blue-600',
-      badgeBg: 'bg-blue-600',
-      bgLight: 'bg-blue-50/70',
-      borderLight: 'border-blue-100',
-      textAccent: 'text-blue-600',
-      glowBg: 'from-blue-400/20 to-transparent',
-      avatarBg: 'bg-blue-600',
-      iconBoxBg: 'bg-blue-600'
-    },
-    noticeText: "Live regional overview for Coimbatore Zone-1 — branch staff, leads, and student enrolments pulled in real-time from MongoDB."
+    accentColor: '#2563EB',
+    topBorder: 'bg-blue-600',
+    badgeBg: 'bg-blue-600',
+    bgLight: 'bg-blue-50/70',
+    borderLight: 'border-blue-100',
+    textAccent: 'text-blue-600',
+    glowBg: 'from-blue-400/20 to-transparent',
+    avatarBg: 'bg-blue-600',
+    iconBoxBg: 'bg-blue-600'
   },
   {
-    id: 'sruthi',
-    name: 'Sruthi',
-    initial: 'S',
-    role: 'Regional Manager',
-    regionName: 'Coimbatore Zone-2',
-    code: 'REG-CBE-Z2',
-    subBranchesText: 'Tiruppur, Erode, Karur',
-    branchMatcher: (name = '', city = '') => /tiruppur|erode|karur/i.test(`${name} ${city}`),
-    theme: {
-      accentColor: '#9333EA',
-      topBorder: 'bg-purple-600',
-      badgeBg: 'bg-purple-600',
-      bgLight: 'bg-purple-50/70',
-      borderLight: 'border-purple-100',
-      textAccent: 'text-purple-600',
-      glowBg: 'from-purple-400/20 to-transparent',
-      avatarBg: 'bg-purple-600',
-      iconBoxBg: 'bg-purple-600'
-    },
-    noticeText: "Live regional overview for Coimbatore Zone-2 — branch staff, leads, and student enrolments pulled in real-time from MongoDB."
+    accentColor: '#9333EA',
+    topBorder: 'bg-purple-600',
+    badgeBg: 'bg-purple-600',
+    bgLight: 'bg-purple-50/70',
+    borderLight: 'border-purple-100',
+    textAccent: 'text-purple-600',
+    glowBg: 'from-purple-400/20 to-transparent',
+    avatarBg: 'bg-purple-600',
+    iconBoxBg: 'bg-purple-600'
   },
   {
-    id: 'aswanth',
-    name: 'Aswanth',
-    initial: 'A',
-    role: 'Regional Manager',
-    regionName: 'Kerala',
-    code: 'REG-KL-001',
-    subBranchesText: 'Kochi, Trivandrum, Calicut',
-    branchMatcher: (name = '', city = '') => /kerala|kochi|trivandrum|calicut/i.test(`${name} ${city}`),
-    theme: {
-      accentColor: '#16A34A',
-      topBorder: 'bg-emerald-600',
-      badgeBg: 'bg-emerald-600',
-      bgLight: 'bg-emerald-50/70',
-      borderLight: 'border-emerald-100',
-      textAccent: 'text-emerald-600',
-      glowBg: 'from-emerald-400/20 to-transparent',
-      avatarBg: 'bg-emerald-600',
-      iconBoxBg: 'bg-emerald-600'
-    },
-    noticeText: "Live regional overview for Kerala — branch staff, leads, and student enrolments pulled in real-time from MongoDB."
+    accentColor: '#16A34A',
+    topBorder: 'bg-emerald-600',
+    badgeBg: 'bg-emerald-600',
+    bgLight: 'bg-emerald-50/70',
+    borderLight: 'border-emerald-100',
+    textAccent: 'text-emerald-600',
+    glowBg: 'from-emerald-400/20 to-transparent',
+    avatarBg: 'bg-emerald-600',
+    iconBoxBg: 'bg-emerald-600'
   },
   {
-    id: 'lokesh',
-    name: 'Lokesh',
-    initial: 'L',
-    role: 'Regional Manager',
-    regionName: 'AP / Telangana',
-    code: 'REG-AP-TG',
-    subBranchesText: 'Ameerpet, Dilsukhnagar, Vijayawada, Vizag',
-    branchMatcher: (name = '', city = '') => /telangana|andhra|hyderabad|ameerpet|dilsukhnagar|vijayawada|vizag/i.test(`${name} ${city}`),
-    theme: {
-      accentColor: '#EA580C',
-      topBorder: 'bg-orange-600',
-      badgeBg: 'bg-orange-600',
-      bgLight: 'bg-orange-50/70',
-      borderLight: 'border-orange-100',
-      textAccent: 'text-orange-600',
-      glowBg: 'from-orange-400/20 to-transparent',
-      avatarBg: 'bg-orange-600',
-      iconBoxBg: 'bg-orange-600'
-    },
-    noticeText: "Live regional overview for AP & Telangana — branch staff, leads, and student enrolments pulled in real-time from MongoDB."
+    accentColor: '#EA580C',
+    topBorder: 'bg-orange-600',
+    badgeBg: 'bg-orange-600',
+    bgLight: 'bg-orange-50/70',
+    borderLight: 'border-orange-100',
+    textAccent: 'text-orange-600',
+    glowBg: 'from-orange-400/20 to-transparent',
+    avatarBg: 'bg-orange-600',
+    iconBoxBg: 'bg-orange-600'
+  },
+  {
+    accentColor: '#0D9488',
+    topBorder: 'bg-teal-600',
+    badgeBg: 'bg-teal-600',
+    bgLight: 'bg-teal-50/70',
+    borderLight: 'border-teal-100',
+    textAccent: 'text-teal-600',
+    glowBg: 'from-teal-400/20 to-transparent',
+    avatarBg: 'bg-teal-600',
+    iconBoxBg: 'bg-teal-600'
+  },
+  {
+    accentColor: '#E11D48',
+    topBorder: 'bg-rose-600',
+    badgeBg: 'bg-rose-600',
+    bgLight: 'bg-rose-50/70',
+    borderLight: 'border-rose-100',
+    textAccent: 'text-rose-600',
+    glowBg: 'from-rose-400/20 to-transparent',
+    avatarBg: 'bg-rose-600',
+    iconBoxBg: 'bg-rose-600'
   }
 ];
+
+// Helper to generate a clean region code dynamically from region name
+const getRegionCode = (regionName = '') => {
+  const clean = regionName.trim();
+  const words = clean.split(/[\s-]+/).filter(Boolean);
+  if (words.length >= 2) {
+    const letters = words.map(w => w[0].toUpperCase()).join('');
+    return `REG-${letters}`;
+  }
+  const firstLetters = clean.slice(0, 3).toUpperCase();
+  return `REG-${firstLetters}`;
+};
+
+// Check if any registered user has been designated as Regional Manager for this region
+const findRegionalManagerForRegion = (regionName, regionBranches, users = []) => {
+  if (!users?.length) return null;
+  const regLower = regionName.toLowerCase();
+  const branchNamesLower = regionBranches.map(b => (b.name || '').toLowerCase());
+
+  return users.find(u => {
+    const role = (u.role || '').toLowerCase();
+    const isRegionalRole = role.includes('regional manager') || role.includes('regional head') || role.includes('regional lead');
+    if (!isRegionalRole) return false;
+
+    const userBranch = (u.branch || '').toLowerCase();
+    if (userBranch.includes(regLower) || regLower.includes(userBranch)) return true;
+    if (branchNamesLower.some(bn => userBranch.includes(bn) || bn.includes(userBranch))) return true;
+    return false;
+  }) || null;
+};
 
 export default function RegionalManagerDashboard({
   onBack,
   initialManagerId = null,
   liveBranches = [],
-  onSelectBranch
+  onSelectBranch,
+  currentUser = null
 }) {
-  const [selectedManagerId, setSelectedManagerId] = useState(initialManagerId);
-  const [branches, setBranches] = useState(liveBranches || []);
-  const [leads, setLeads] = useState([]);
-  const [students, setStudents] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [selectedRegionId, setSelectedRegionId] = useState(initialManagerId);
+  const [branches, setBranches] = useState(Array.isArray(liveBranches) ? liveBranches : []);
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(!liveBranches || liveBranches.length === 0);
+  const [searchQuery, setSearchQuery] = useState('');
 
+  // Keep selected region in sync if parent changes initialManagerId
+  useEffect(() => {
+    if (initialManagerId) {
+      setSelectedRegionId(initialManagerId);
+    }
+  }, [initialManagerId]);
+
+  // Fetch real branches and registered users directly from MongoDB
   useEffect(() => {
     let isMounted = true;
     const fetchLiveData = async () => {
       try {
-        const [bRes, lRes, sRes] = await Promise.all([
-          liveBranches?.length ? Promise.resolve(liveBranches) : getBranches().catch(() => []),
-          getLeads().catch(() => ({ leads: [] })),
-          getStudents().catch(() => [])
+        const [branchesData, usersData] = await Promise.all([
+          getBranches().catch(() => []),
+          getAdminUsers().catch(() => [])
         ]);
         if (!isMounted) return;
-        setBranches(Array.isArray(bRes) ? bRes : []);
-        setLeads(Array.isArray(lRes?.leads) ? lRes.leads : Array.isArray(lRes) ? lRes : []);
-        setStudents(Array.isArray(sRes) ? sRes : []);
+        if (Array.isArray(branchesData) && branchesData.length > 0) {
+          setBranches(branchesData);
+        }
+        if (Array.isArray(usersData)) {
+          setUsers(usersData);
+        }
       } catch (err) {
         console.warn('Regional live data error', err);
       } finally {
         if (isMounted) setLoading(false);
       }
     };
+
     fetchLiveData();
     return () => { isMounted = false; };
-  }, [liveBranches]);
+  }, []);
 
-  // Compute live regional managers data from actual MongoDB records
-  const managersData = useMemo(() => {
-    return REGIONAL_ZONES_CONFIG.map((cfg) => {
-      const matchedBranches = branches.filter((b) => cfg.branchMatcher(b.name, b.city || b.state));
-      
-      const computedBranches = matchedBranches.map((b) => {
-        const branchLeads = leads.filter((l) => (l.branch || '').toLowerCase().includes((b.name || '').toLowerCase()));
-        const branchStudents = students.filter((s) => (s.location || s.branch || '').toLowerCase().includes((b.name || '').toLowerCase()));
-        const totalAdmissions = branchStudents.length > 0 ? branchStudents.length : (b.activeStudents || 0);
-        const convRate = branchLeads.length > 0
-          ? `${Math.round((totalAdmissions / branchLeads.length) * 100)}%`
-          : (totalAdmissions > 0 ? '100%' : '—');
+  // Compute live regional zones dynamically from genuine MongoDB branch records
+  const regionsData = useMemo(() => {
+    if (!branches?.length) return [];
+
+    // Group branches dynamically by state or city
+    const regionMap = new Map();
+
+    branches.forEach((branch) => {
+      const stateName = (branch.state || branch.city || 'Unassigned Region').trim();
+      if (!regionMap.has(stateName)) {
+        regionMap.set(stateName, []);
+      }
+      regionMap.get(stateName).push(branch);
+    });
+
+    const entries = Array.from(regionMap.entries())
+      .sort((a, b) => b[1].length - a[1].length); // Sort by branch count descending
+
+    return entries.map(([regionName, branchList], index) => {
+      const id = regionName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      const code = getRegionCode(regionName);
+      const theme = REGION_THEMES[index % REGION_THEMES.length];
+
+      // Match regional manager from DB users
+      const assignedManager = findRegionalManagerForRegion(regionName, branchList, users);
+
+      // Sub-branches text from real branch records
+      const subBranchesText = branchList.map(b => b.name).filter(Boolean).join(', ');
+
+      // Live metrics calculated strictly from actual branch records
+      const branchesCount = branchList.length;
+      const totalStaff = branchList.reduce((sum, b) => sum + (Number(b.staffCount) || 0), 0);
+      const totalLeads = branchList.reduce((sum, b) => sum + (Number(b.leadCount) || 0), 0);
+      const openLeads = branchList.reduce((sum, b) => sum + (Number(b.openLeads) || 0), 0);
+      const admittedLeads = branchList.reduce((sum, b) => sum + (Number(b.admittedLeads) || 0), 0);
+      const totalStudents = branchList.reduce((sum, b) => sum + (Number(b.activeStudents) || 0), 0);
+      const admissionsThisMonth = branchList.reduce((sum, b) => sum + (Number(b.admissionsThisMonth) || 0), 0);
+      const totalCapacity = branchList.reduce((sum, b) => sum + (Number(b.capacity) || 0), 0);
+
+      const computedBranches = branchList.map((b) => {
+        const staff = Number(b.staffCount) || 0;
+        const leads = Number(b.leadCount) || 0;
+        const admits = Number(b.activeStudents) || 0;
+        const convRate = b.conversionPct !== null && b.conversionPct !== undefined
+          ? `${b.conversionPct}%`
+          : (leads > 0 && b.admittedLeads !== undefined
+              ? `${Math.round((b.admittedLeads / leads) * 100)}%`
+              : '—');
 
         return {
           id: b._id || b.id || b.name,
           name: b.name,
-          city: b.city || b.state || 'India',
-          hrs: b.staffCount || 0,
-          leads: branchLeads.length,
-          admissions: totalAdmissions,
+          code: b.code || '—',
+          city: b.city || '—',
+          state: b.state || regionName,
+          manager: b.manager || b.managers?.[0] || 'Unassigned',
+          hrs: staff,
+          leads: leads,
+          admissions: admits,
           conversion: convRate,
-          badge: b.name.includes('Gandhipuram') ? '50–50 SHARED' : null,
+          status: b.status || 'Operational',
+          capacity: b.capacity || 0,
           rawBranch: b
         };
       });
 
-      const totalHrs = computedBranches.reduce((sum, b) => sum + (b.hrs || 0), 0);
-      const totalLeads = computedBranches.reduce((sum, b) => sum + (b.leads || 0), 0);
-      const totalAdmits = computedBranches.reduce((sum, b) => sum + (b.admissions || 0), 0);
-
       return {
-        ...cfg,
-        branchesCount: computedBranches.length,
-        hrsCount: totalHrs,
-        activeLeadsCount: totalLeads,
-        admitsCount: totalAdmits,
-        branches: computedBranches
+        id,
+        regionName,
+        code,
+        theme,
+        managerName: assignedManager ? assignedManager.name : null,
+        managerEmail: assignedManager?.email || null,
+        managerPhone: assignedManager?.phone || null,
+        initial: assignedManager ? assignedManager.name.charAt(0).toUpperCase() : regionName.charAt(0).toUpperCase(),
+        isAssigned: Boolean(assignedManager),
+        subBranchesText: subBranchesText || 'No branches mapped',
+        branchesCount,
+        totalStaff,
+        totalLeads,
+        openLeads,
+        admittedLeads,
+        totalStudents,
+        admissionsThisMonth,
+        totalCapacity,
+        branches: computedBranches,
+        noticeText: `Live regional overview for ${regionName} — ${branchesCount} ${branchesCount === 1 ? 'branch' : 'branches'} with real-time staff, leads, and student enrolments synced directly from MongoDB.`
       };
     });
-  }, [branches, leads, students]);
+  }, [branches, users]);
 
-  // Selected manager object
-  const selectedManager = useMemo(() => {
-    if (!selectedManagerId) return null;
-    return managersData.find(m => m.id === selectedManagerId) || managersData[0];
-  }, [selectedManagerId, managersData]);
+  // Selected manager/region object
+  const selectedRegion = useMemo(() => {
+    if (!selectedRegionId) return null;
+    const target = String(selectedRegionId).toLowerCase();
+    return (
+      regionsData.find(
+        (r) =>
+          r.id === target ||
+          r.regionName.toLowerCase() === target ||
+          r.code.toLowerCase() === target ||
+          target.includes(r.id) ||
+          r.id.includes(target)
+      ) || null
+    );
+  }, [selectedRegionId, regionsData]);
 
-  // Handle opening branch detail if passed
+  // Handle opening branch detail in Branch Manager Desk
   const handleBranchClick = (branchItem) => {
     if (onSelectBranch) {
       onSelectBranch(branchItem.rawBranch || branchItem);
     }
   };
 
-  // If no manager is selected, render Regional Managers Grid View
-  if (!selectedManager) {
+  // Filtered regions based on search query
+  const filteredRegions = useMemo(() => {
+    if (!searchQuery.trim()) return regionsData;
+    const q = searchQuery.toLowerCase();
+    return regionsData.filter(
+      r =>
+        r.regionName.toLowerCase().includes(q) ||
+        r.code.toLowerCase().includes(q) ||
+        r.subBranchesText.toLowerCase().includes(q) ||
+        (r.managerName && r.managerName.toLowerCase().includes(q))
+    );
+  }, [regionsData, searchQuery]);
+
+  // --------------------------------------------------------------------------
+  // GRID VIEW: All Regional Zones
+  // --------------------------------------------------------------------------
+  if (!selectedRegion) {
     return (
       <div className="w-full min-h-screen bg-[#f8fafc] p-4 sm:p-6 lg:p-8 font-sans text-slate-800 animate-fadeIn">
         <div className="max-w-7xl mx-auto space-y-6">
-          {/* Back Button */}
-          <div>
+          {/* Top Bar: Back Button & Live Tag */}
+          <div className="flex flex-wrap items-center justify-between gap-4">
             <button
               onClick={() => onBack && onBack()}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 bg-white border border-slate-200/90 shadow-2xs hover:bg-slate-50 hover:text-slate-900 transition-all cursor-pointer"
@@ -196,100 +292,166 @@ export default function RegionalManagerDashboard({
               <ChevronLeft className="w-3.5 h-3.5 text-slate-500" />
               Back to roles
             </button>
+
+            {/* Quick search input */}
+            <div className="relative w-full sm:w-64">
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                placeholder="Search region or branch..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full pl-8 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+              />
+            </div>
           </div>
 
           {/* Heading */}
           <div>
             <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">Regional Managers</h1>
             <p className="font-mono text-xs text-slate-500 tracking-wider mt-1 flex items-center gap-2">
-              <span>{managersData.length} regional zones</span>
+              <span>{regionsData.length} regional zones</span>
               <span className="text-slate-300">·</span>
-              <span>live stats connected to MongoDB</span>
+              <span>{branches.length} branches</span>
+              <span className="text-slate-300">·</span>
+              <span className="inline-flex items-center gap-1 text-emerald-600 font-semibold">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                Live MongoDB connection
+              </span>
             </p>
           </div>
 
-          {/* Grid of Manager Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 pt-2">
-            {managersData.map((manager) => (
-              <div
-                key={manager.id}
-                onClick={() => setSelectedManagerId(manager.id)}
-                className="group relative bg-white rounded-2xl border border-slate-200/90 shadow-2xs hover:shadow-lg hover:-translate-y-0.5 transition-all duration-200 overflow-hidden cursor-pointer flex flex-col justify-between"
-              >
-                {/* Top Colored Border Bar */}
-                <div className={`h-1.5 w-full ${manager.theme.topBorder}`} />
+          {/* Loading State */}
+          {loading && (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 pt-2">
+              {[1, 2, 3].map((n) => (
+                <div key={n} className="bg-white rounded-2xl border border-slate-200/90 p-6 animate-pulse space-y-4">
+                  <div className="h-4 bg-slate-200 rounded w-1/3" />
+                  <div className="h-6 bg-slate-200 rounded w-2/3" />
+                  <div className="h-4 bg-slate-100 rounded w-full" />
+                  <div className="h-10 bg-slate-100 rounded" />
+                </div>
+              ))}
+            </div>
+          )}
 
-                {/* Top-Right Soft Glow Accent */}
-                <div className={`absolute top-0 right-0 w-32 h-32 bg-radial ${manager.theme.glowBg} rounded-full blur-xl pointer-events-none opacity-70 group-hover:opacity-100 transition-opacity`} />
+          {/* Empty State */}
+          {!loading && filteredRegions.length === 0 && (
+            <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center">
+              <Building2 className="w-10 h-10 text-slate-300 mx-auto mb-3" />
+              <p className="text-sm font-bold text-slate-700">No regional zones found</p>
+              <p className="text-xs text-slate-400 mt-1">
+                {searchQuery ? `No regions matching "${searchQuery}"` : 'Configure branches with valid states in Admin Branch Setup.'}
+              </p>
+            </div>
+          )}
 
-                <div className="p-6">
-                  {/* Top Left Icon Square */}
-                  <div className="flex items-center justify-between mb-4">
-                    <div className={`w-11 h-11 rounded-2xl ${manager.theme.iconBoxBg} flex items-center justify-center text-white shadow-xs`}>
-                      <MapPin className="w-5 h-5 text-white" />
+          {/* Grid of Dynamic Region Cards */}
+          {!loading && filteredRegions.length > 0 && (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 pt-2">
+              {filteredRegions.map((region) => (
+                <div
+                  key={region.id}
+                  onClick={() => setSelectedRegionId(region.id)}
+                  className="group relative bg-white rounded-2xl border border-slate-200/90 shadow-2xs hover:shadow-lg hover:-translate-y-0.5 transition-all duration-200 overflow-hidden cursor-pointer flex flex-col justify-between"
+                >
+                  {/* Top Colored Border Bar */}
+                  <div className={`h-1.5 w-full ${region.theme.topBorder}`} />
+
+                  {/* Top-Right Soft Glow Accent */}
+                  <div className={`absolute top-0 right-0 w-32 h-32 bg-radial ${region.theme.glowBg} rounded-full blur-xl pointer-events-none opacity-70 group-hover:opacity-100 transition-opacity`} />
+
+                  <div className="p-6">
+                    {/* Top Row: Icon & Code */}
+                    <div className="flex items-center justify-between mb-4">
+                      <div className={`w-11 h-11 rounded-2xl ${region.theme.iconBoxBg} flex items-center justify-center text-white shadow-xs`}>
+                        <MapPin className="w-5 h-5 text-white" />
+                      </div>
+                      <span className="text-[10px] font-bold font-mono text-slate-400 bg-slate-100 px-2.5 py-1 rounded-md">
+                        {region.code}
+                      </span>
                     </div>
-                    <span className="text-[10px] font-bold font-mono text-slate-400 bg-slate-100 px-2.5 py-1 rounded-md">
-                      {manager.code}
-                    </span>
+
+                    {/* Region Name & Assigned Manager */}
+                    <div>
+                      <h3 className="text-xl font-extrabold text-slate-900 tracking-tight group-hover:text-blue-600 transition-colors">
+                        {region.regionName}
+                      </h3>
+
+                      <div className="mt-1 flex items-center gap-2">
+                        {region.isAssigned ? (
+                          <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-100">
+                            <UserCheck className="w-3 h-3 text-emerald-600" />
+                            {region.managerName}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-slate-400 font-mono">
+                            Regional Lead · Unassigned
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Sub-branches text */}
+                      <p className="text-xs text-slate-500 mt-2 line-clamp-2 leading-relaxed">
+                        <span className="font-semibold text-slate-600">Branches:</span> {region.subBranchesText}
+                      </p>
+                    </div>
                   </div>
 
-                  {/* Manager Name & Region */}
-                  <div>
-                    <h3 className="text-xl font-extrabold text-slate-900 tracking-tight group-hover:text-blue-600 transition-colors">
-                      {manager.name}
-                    </h3>
-                    <p className="font-mono text-xs text-slate-400 mt-0.5 tracking-wide">
-                      {manager.regionName}
-                    </p>
-                    <p className="text-xs text-slate-500 mt-1 line-clamp-1">
-                      {manager.subBranchesText}
-                    </p>
+                  {/* Bottom Metrics Bar */}
+                  <div className="border-t border-slate-100/80 px-6 py-3.5 bg-slate-50/40 grid grid-cols-4 text-center">
+                    <div>
+                      <div className={`text-base font-extrabold ${region.theme.textAccent} leading-none`}>
+                        {region.branchesCount}
+                      </div>
+                      <div className="text-[8px] sm:text-[9px] font-bold text-slate-400 font-mono uppercase tracking-wider mt-1">
+                        BRANCHES
+                      </div>
+                    </div>
+                    <div>
+                      <div className={`text-base font-extrabold ${region.theme.textAccent} leading-none`}>
+                        {region.totalStaff}
+                      </div>
+                      <div className="text-[8px] sm:text-[9px] font-bold text-slate-400 font-mono uppercase tracking-wider mt-1">
+                        STAFF
+                      </div>
+                    </div>
+                    <div>
+                      <div className={`text-base font-extrabold ${region.theme.textAccent} leading-none`}>
+                        {region.totalStudents}
+                      </div>
+                      <div className="text-[8px] sm:text-[9px] font-bold text-slate-400 font-mono uppercase tracking-wider mt-1">
+                        STUDENTS
+                      </div>
+                    </div>
+                    <div>
+                      <div className={`text-base font-extrabold ${region.theme.textAccent} leading-none`}>
+                        {region.totalLeads}
+                      </div>
+                      <div className="text-[8px] sm:text-[9px] font-bold text-slate-400 font-mono uppercase tracking-wider mt-1">
+                        LEADS
+                      </div>
+                    </div>
                   </div>
                 </div>
-
-                {/* Bottom Metrics Bar */}
-                <div className="border-t border-slate-100/80 px-6 py-3.5 bg-slate-50/40 grid grid-cols-3 text-center">
-                  <div>
-                    <div className={`text-lg font-extrabold ${manager.theme.textAccent} leading-none`}>
-                      {loading ? '…' : manager.branchesCount}
-                    </div>
-                    <div className="text-[9px] font-bold text-slate-400 font-mono uppercase tracking-wider mt-1">
-                      BRANCHES
-                    </div>
-                  </div>
-                  <div>
-                    <div className={`text-lg font-extrabold ${manager.theme.textAccent} leading-none`}>
-                      {loading ? '…' : manager.hrsCount}
-                    </div>
-                    <div className="text-[9px] font-bold text-slate-400 font-mono uppercase tracking-wider mt-1">
-                      STAFF
-                    </div>
-                  </div>
-                  <div>
-                    <div className={`text-lg font-extrabold ${manager.theme.textAccent} leading-none`}>
-                      {loading ? '…' : manager.admitsCount}
-                    </div>
-                    <div className="text-[9px] font-bold text-slate-400 font-mono uppercase tracking-wider mt-1">
-                      ADMITS
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     );
   }
 
-  // Render Regional Manager Detail View
+  // --------------------------------------------------------------------------
+  // DETAIL VIEW: Single Regional Zone
+  // --------------------------------------------------------------------------
   return (
     <div className="w-full min-h-screen bg-[#f8fafc] p-4 sm:p-6 lg:p-8 font-sans text-slate-800 animate-fadeIn">
       <div className="max-w-7xl mx-auto space-y-6">
         {/* Top Back Button */}
         <div>
           <button
-            onClick={() => setSelectedManagerId(null)}
+            onClick={() => setSelectedRegionId(null)}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 bg-white border border-slate-200/90 shadow-2xs hover:bg-slate-50 hover:text-slate-900 transition-all cursor-pointer"
           >
             <ChevronLeft className="w-3.5 h-3.5 text-slate-500" />
@@ -297,83 +459,114 @@ export default function RegionalManagerDashboard({
           </button>
         </div>
 
-        {/* Manager Banner Header Card */}
-        <div className="bg-white border border-slate-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs flex items-center justify-between relative overflow-hidden">
+        {/* Region Banner Header Card */}
+        <div className="bg-white border border-slate-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs flex flex-wrap items-center justify-between gap-4 relative overflow-hidden">
           <div className="flex items-center gap-4">
             {/* Avatar Circle with Initial */}
-            <div className={`w-12 h-12 rounded-full ${selectedManager.theme.avatarBg} text-white font-extrabold text-lg flex items-center justify-center flex-shrink-0 shadow-xs`}>
-              {selectedManager.initial}
+            <div className={`w-12 h-12 rounded-full ${selectedRegion.theme.avatarBg} text-white font-extrabold text-lg flex items-center justify-center flex-shrink-0 shadow-xs`}>
+              {selectedRegion.initial}
             </div>
 
             <div>
-              <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight">
-                {selectedManager.name}
-              </h2>
-              <p className="font-mono text-xs text-slate-500 tracking-wide mt-0.5">
-                Regional Manager · {selectedManager.regionName} · {selectedManager.code}
-              </p>
-              <p className="text-xs text-slate-400 mt-0.5">
-                {selectedManager.subBranchesText}
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight">
+                  {selectedRegion.regionName} Region
+                </h2>
+                <span className="text-[10px] font-bold font-mono text-slate-500 bg-slate-100 px-2 py-0.5 rounded">
+                  {selectedRegion.code}
+                </span>
+              </div>
+
+              <div className="font-mono text-xs text-slate-500 tracking-wide mt-1 flex items-center gap-2 flex-wrap">
+                {selectedRegion.isAssigned ? (
+                  <span className="text-emerald-700 font-semibold flex items-center gap-1">
+                    <UserCheck className="w-3.5 h-3.5 text-emerald-600" />
+                    Manager: {selectedRegion.managerName} {selectedRegion.managerEmail ? `(${selectedRegion.managerEmail})` : ''}
+                  </span>
+                ) : (
+                  <span className="text-slate-400">
+                    Regional Manager: Unassigned (Configured via Admin Staff Accounts)
+                  </span>
+                )}
+              </div>
+
+              <p className="text-xs text-slate-500 mt-1 line-clamp-1">
+                <span className="font-semibold text-slate-600">Covering:</span> {selectedRegion.subBranchesText}
               </p>
             </div>
           </div>
 
           {/* Right Icon Box */}
-          <div className={`w-10 h-10 rounded-xl ${selectedManager.theme.iconBoxBg} flex items-center justify-center text-white shadow-xs flex-shrink-0`}>
+          <div className={`w-10 h-10 rounded-xl ${selectedRegion.theme.iconBoxBg} flex items-center justify-center text-white shadow-xs flex-shrink-0`}>
             <MapPin className="w-5 h-5 text-white" />
           </div>
         </div>
 
-        {/* 4 KPI Cards Row */}
+        {/* 4 Live KPI Cards Row */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="bg-white border border-slate-200/90 rounded-xl p-4 sm:p-5 shadow-2xs text-center">
             <div className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
-              {loading ? '…' : selectedManager.branchesCount}
+              {loading ? '…' : selectedRegion.branchesCount}
             </div>
             <div className="text-[10px] sm:text-[11px] font-bold text-slate-400 font-mono tracking-wider uppercase mt-1">
               BRANCHES
             </div>
+            <div className="text-[10px] text-slate-400 mt-1 font-mono">
+              {selectedRegion.totalCapacity ? `${selectedRegion.totalCapacity} total seats` : 'Active operations'}
+            </div>
           </div>
 
           <div className="bg-white border border-slate-200/90 rounded-xl p-4 sm:p-5 shadow-2xs text-center">
             <div className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
-              {loading ? '…' : selectedManager.hrsCount}
+              {loading ? '…' : selectedRegion.totalStaff}
             </div>
             <div className="text-[10px] sm:text-[11px] font-bold text-slate-400 font-mono tracking-wider uppercase mt-1">
               TOTAL STAFF
             </div>
-          </div>
-
-          <div className="bg-white border border-slate-200/90 rounded-xl p-4 sm:p-5 shadow-2xs text-center">
-            <div className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
-              {loading ? '…' : selectedManager.activeLeadsCount}
-            </div>
-            <div className="text-[10px] sm:text-[11px] font-bold text-slate-400 font-mono tracking-wider uppercase mt-1">
-              ACTIVE LEADS
+            <div className="text-[10px] text-slate-400 mt-1 font-mono">
+              Across all regional branches
             </div>
           </div>
 
           <div className="bg-white border border-slate-200/90 rounded-xl p-4 sm:p-5 shadow-2xs text-center">
             <div className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
-              {loading ? '…' : selectedManager.admitsCount}
+              {loading ? '…' : selectedRegion.totalLeads}
             </div>
             <div className="text-[10px] sm:text-[11px] font-bold text-slate-400 font-mono tracking-wider uppercase mt-1">
-              ADMISSIONS
+              TOTAL LEADS
+            </div>
+            <div className="text-[10px] text-slate-400 mt-1 font-mono">
+              {selectedRegion.openLeads} active pipeline
+            </div>
+          </div>
+
+          <div className="bg-white border border-slate-200/90 rounded-xl p-4 sm:p-5 shadow-2xs text-center">
+            <div className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
+              {loading ? '…' : selectedRegion.totalStudents}
+            </div>
+            <div className="text-[10px] sm:text-[11px] font-bold text-slate-400 font-mono tracking-wider uppercase mt-1">
+              STUDENTS ENROLLED
+            </div>
+            <div className="text-[10px] text-slate-400 mt-1 font-mono">
+              {selectedRegion.admissionsThisMonth} new this month
             </div>
           </div>
         </div>
 
         {/* Branches Table Card */}
         <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-2xs">
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
             <div className="flex items-center gap-2">
               <span className="text-base">🏢</span>
               <h3 className="text-sm sm:text-base font-extrabold text-slate-900 tracking-tight">
-                Branches in {selectedManager.regionName}
+                Branches in {selectedRegion.regionName}
               </h3>
+              <span className="text-xs text-slate-400 font-mono">
+                ({selectedRegion.branches.length})
+              </span>
             </div>
-            <span className="text-[10px] text-slate-400 font-mono">
-              Click any branch to view details
+            <span className="text-[11px] text-blue-600 font-medium">
+              Click any branch row to open Branch Manager Desk →
             </span>
           </div>
 
@@ -381,45 +574,66 @@ export default function RegionalManagerDashboard({
             <table className="w-full text-left text-xs border-collapse">
               <thead>
                 <tr className="border-b border-slate-200/80 text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider">
-                  <th className="py-2.5 px-2">BRANCH</th>
-                  <th className="py-2.5 px-2">LOCATION</th>
-                  <th className="py-2.5 px-2">STAFF</th>
-                  <th className="py-2.5 px-2">LEADS</th>
-                  <th className="py-2.5 px-2">ADMISSIONS</th>
-                  <th className="py-2.5 px-2">CONVERSION</th>
+                  <th className="py-2.5 px-3">BRANCH</th>
+                  <th className="py-2.5 px-3">BRANCH MANAGER</th>
+                  <th className="py-2.5 px-3">LOCATION</th>
+                  <th className="py-2.5 px-3 text-center">STAFF</th>
+                  <th className="py-2.5 px-3 text-center">LEADS</th>
+                  <th className="py-2.5 px-3 text-center">STUDENTS</th>
+                  <th className="py-2.5 px-3 text-center">CONVERSION</th>
+                  <th className="py-2.5 px-3 text-right">STATUS</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {selectedManager.branches.map((branch) => (
+                {selectedRegion.branches.map((branch) => (
                   <tr
                     key={branch.id}
                     onClick={() => handleBranchClick(branch)}
                     className="hover:bg-slate-50/80 transition-colors cursor-pointer group"
                   >
-                    <td className="py-3 px-2 font-extrabold text-slate-900 group-hover:text-blue-600 transition-colors">
-                      <div className="inline-flex items-center gap-2 flex-wrap">
+                    <td className="py-3 px-3 font-extrabold text-slate-900 group-hover:text-blue-600 transition-colors">
+                      <div className="flex items-center gap-2">
                         <span>{branch.name}</span>
-                        {branch.badge && (
-                          <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[9px] font-bold font-mono uppercase tracking-wide">
-                            {branch.badge}
+                        {branch.code && branch.code !== '—' && (
+                          <span className="text-[9px] font-mono text-slate-400 font-normal">
+                            ({branch.code})
                           </span>
                         )}
                       </div>
                     </td>
-                    <td className="py-3 px-2 text-slate-600 font-medium">
-                      {branch.city}
+                    <td className="py-3 px-3 text-slate-700 font-medium">
+                      {branch.manager !== 'Unassigned' ? (
+                        <span className="inline-flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
+                          {branch.manager}
+                        </span>
+                      ) : (
+                        <span className="text-slate-400 font-mono text-[11px]">Unassigned</span>
+                      )}
                     </td>
-                    <td className="py-3 px-2 font-semibold text-slate-700">
+                    <td className="py-3 px-3 text-slate-600 font-medium">
+                      {branch.city}, {branch.state}
+                    </td>
+                    <td className="py-3 px-3 font-semibold text-slate-700 text-center">
                       {branch.hrs}
                     </td>
-                    <td className="py-3 px-2 font-semibold text-slate-700">
+                    <td className="py-3 px-3 font-semibold text-slate-700 text-center">
                       {branch.leads}
                     </td>
-                    <td className="py-3 px-2 font-semibold text-slate-700">
+                    <td className="py-3 px-3 font-semibold text-slate-700 text-center">
                       {branch.admissions}
                     </td>
-                    <td className="py-3 px-2 font-semibold text-slate-900">
+                    <td className="py-3 px-3 font-semibold text-slate-900 text-center">
                       {branch.conversion}
+                    </td>
+                    <td className="py-3 px-3 text-right">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold font-mono ${
+                        branch.status === 'Operational'
+                          ? 'bg-emerald-50 text-emerald-700 border border-emerald-100'
+                          : 'bg-amber-50 text-amber-700 border border-amber-100'
+                      }`}>
+                        {branch.status}
+                      </span>
                     </td>
                   </tr>
                 ))}
@@ -434,7 +648,7 @@ export default function RegionalManagerDashboard({
             ℹ
           </div>
           <p className="leading-relaxed">
-            {selectedManager.noticeText}
+            {selectedRegion.noticeText}
           </p>
         </div>
       </div>

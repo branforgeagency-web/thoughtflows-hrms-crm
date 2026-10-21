@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 
 import { getEligibleTrainers } from '../services/api';
-import { COURSE_CATEGORIES, TRAINER_COURSES } from '../constants/courses';
+import { COURSE_CATEGORIES, TRAINER_COURSES, isSpecialtyCourse } from '../constants/courses';
 
 const COURSES = TRAINER_COURSES;
 
@@ -73,6 +73,8 @@ export default function BookNewDemoModal({ isOpen, onClose, initialData, onConfi
   const [language, setLanguage] = useState(initialData?.language || 'Tamil');
   const [location, setLocation] = useState(initialLoc);
   const [toastMsg, setToastMsg] = useState(null);
+  const [outsideFixedTiming, setOutsideFixedTiming] = useState(false);
+  const [customTimeRequested, setCustomTimeRequested] = useState('');
 
   // ------------------------------------------------------------------
   // Demo Booking Notification Requirement — live preview
@@ -131,7 +133,13 @@ export default function BookNewDemoModal({ isOpen, onClose, initialData, onConfi
       return;
     }
 
+    if (outsideFixedTiming && !customTimeRequested.trim()) {
+      showToast('Please enter the requested time for this outside-fixed-timing demo');
+      return;
+    }
+
     const courseLabel = COURSES.find((c) => c.key === course)?.label || course;
+    const effectiveTimeSlot = outsideFixedTiming ? customTimeRequested.trim() : timeSlot;
 
     const demoPayload = {
       email: email.trim().toLowerCase(),
@@ -142,13 +150,15 @@ export default function BookNewDemoModal({ isOpen, onClose, initialData, onConfi
       course: courseLabel,
       mode,
       preferredDate,
-      time: `${preferredDate} ${timeSlot}`,
-      timeSlot,
+      time: `${preferredDate} ${effectiveTimeSlot}`,
+      timeSlot: effectiveTimeSlot,
       language,
       location,
       branch: location,
       counselor: currentUser?.name || '',
       bookedBy: currentUser?.name || '',
+      outsideFixedTiming,
+      customTimeRequested: outsideFixedTiming ? customTimeRequested.trim() : '',
       status: 'booked'
     };
 
@@ -156,7 +166,9 @@ export default function BookNewDemoModal({ isOpen, onClose, initialData, onConfi
       onConfirm(demoPayload);
     }
 
-    if (eligible) {
+    if (outsideFixedTiming) {
+      showToast(`✓ Demo booked for ${studentName} at ${effectiveTimeSlot} (outside fixed timings). Flagged for the respective Head to coordinate.`);
+    } else if (eligible) {
       showToast(`✓ Demo booked for ${studentName}! Notification sent to ${preview.count} matching trainer${preview.count > 1 ? 's' : ''}.`);
     } else {
       showToast(`✓ Demo booked for ${studentName}. No trainer matched ${language} · ${location} · ${timeSlot} — notification suppressed.`);
@@ -188,7 +200,7 @@ export default function BookNewDemoModal({ isOpen, onClose, initialData, onConfi
                 Book New Demo
               </h3>
               <p className="text-[10px] text-slate-500 font-medium">
-                Notifies only trainers matching language, location, free time slot, demo-experience & active status
+                Finalizes demo experts by language, location &amp; available timings (Fresher: all-day · Specialty: per trainer availability)
               </p>
             </div>
           </div>
@@ -269,6 +281,15 @@ export default function BookNewDemoModal({ isOpen, onClose, initialData, onConfi
                   </optgroup>
                 ))}
               </select>
+              {isSpecialtyCourse(course) ? (
+                <div className="mt-1 text-[10px] font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-md border border-blue-200 inline-block">
+                  🎯 Specialty Course · Scheduled per trainer availability
+                </div>
+              ) : (
+                <div className="mt-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200 inline-block">
+                  ⚡ Fresher Track · Demo experts available throughout the day
+                </div>
+              )}
             </div>
 
             <div>
@@ -335,12 +356,12 @@ export default function BookNewDemoModal({ isOpen, onClose, initialData, onConfi
             </label>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               {TIME_SLOTS.map((slot) => {
-                const isSelected = timeSlot === slot;
+                const isSelected = !outsideFixedTiming && timeSlot === slot;
                 return (
                   <button
                     key={slot}
                     type="button"
-                    onClick={() => setTimeSlot(slot)}
+                    onClick={() => { setOutsideFixedTiming(false); setTimeSlot(slot); }}
                     className={`py-2 px-2 rounded-xl text-[10.5px] font-bold transition-all text-center border cursor-pointer ${
                       isSelected
                         ? 'bg-[#0e6977] border-[#0e6977] text-white shadow-xs scale-[1.02]'
@@ -351,7 +372,36 @@ export default function BookNewDemoModal({ isOpen, onClose, initialData, onConfi
                   </button>
                 );
               })}
+              <button
+                type="button"
+                onClick={() => setOutsideFixedTiming((v) => !v)}
+                className={`py-2 px-2 rounded-xl text-[10.5px] font-bold transition-all text-center border cursor-pointer col-span-2 sm:col-span-4 ${
+                  outsideFixedTiming
+                    ? 'bg-amber-500 border-amber-500 text-white shadow-xs'
+                    : 'bg-white border-amber-300/80 text-amber-700 hover:border-amber-500'
+                }`}
+              >
+                ⏰ Outside Fixed Timings — notify the respective Head to coordinate
+              </button>
             </div>
+            {outsideFixedTiming && (
+              <div className="mt-2 p-3 rounded-xl border border-amber-300 bg-amber-50">
+                <label className="block text-[10.5px] font-bold text-amber-800 font-mono mb-1">
+                  Requested time (outside fixed slots)
+                </label>
+                <input
+                  type="text"
+                  value={customTimeRequested}
+                  onChange={(e) => setCustomTimeRequested(e.target.value)}
+                  placeholder="e.g. 9:00 PM"
+                  className="w-full bg-white border border-amber-300 rounded-xl px-3.5 py-2 text-xs text-slate-900 outline-none focus:border-amber-500 transition-all"
+                />
+                <p className="text-[10px] text-amber-700 mt-1.5">
+                  No trainer is auto-notified for a time outside the fixed slots. This booking is flagged for the
+                  respective Head to coordinate and handle manually.
+                </p>
+              </div>
+            )}
           </div>
 
           {/* Preferred language */}
@@ -427,28 +477,28 @@ export default function BookNewDemoModal({ isOpen, onClose, initialData, onConfi
               </span>
             </div>
 
-            {/* The 5 hard conditions, for transparency */}
+            {/* Demo Experts Flow Conditions */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10.5px]">
               <div className="p-2 rounded-xl border bg-white/80 border-black/5">
-                <div className="font-bold">1. Same Language</div>
-                <div className="mt-0.5 opacity-80 text-[10px]">Trainer must teach in {language}</div>
+                <div className="font-bold flex items-center gap-1"><span>🗣️</span> 1. Language &amp; Location</div>
+                <div className="mt-0.5 opacity-80 text-[10px]">Teaches in {language} &amp; stationed at {location}</div>
               </div>
               <div className="p-2 rounded-xl border bg-white/80 border-black/5">
-                <div className="font-bold">2. Same Location</div>
-                <div className="mt-0.5 opacity-80 text-[10px]">Trainer must be based at {location}</div>
+                <div className="font-bold flex items-center gap-1"><span>⚡</span> 2. Fresher Demo Experts</div>
+                <div className="mt-0.5 opacity-80 text-[10px]">Available throughout the day across all demo slots</div>
               </div>
               <div className="p-2 rounded-xl border bg-white/80 border-black/5">
-                <div className="font-bold">3. Free at Selected Time</div>
-                <div className="mt-0.5 opacity-80 text-[10px]">No other demo booked/confirmed at {timeSlot}</div>
+                <div className="font-bold flex items-center gap-1"><span>🎯</span> 3. Specialty Course Demos</div>
+                <div className="mt-0.5 opacity-80 text-[10px]">Scheduled according to trainer availability ({timeSlot})</div>
               </div>
               <div className="p-2 rounded-xl border bg-white/80 border-black/5">
-                <div className="font-bold">4 &amp; 5. Demo-Experienced &amp; Active</div>
-                <div className="mt-0.5 opacity-80 text-[10px]">Marked "Experienced in Demo" and active in admin settings</div>
+                <div className="font-bold flex items-center gap-1"><span>👥</span> 4. Group Capacity &amp; Active Roster</div>
+                <div className="mt-0.5 opacity-80 text-[10px]">Up to 6 students per group session · active roster status</div>
               </div>
             </div>
 
             <div className="text-[10.5px] leading-relaxed pt-0.5">
-              <strong>Rule Enforcement:</strong> the demo notification is sent <em>only</em> to trainers who satisfy all 5 conditions above — checked live against the trainer roster, not simulated on this form.
+              <strong>Demo Experts Flow:</strong> Demo experts are finalized based on language, location, and available timings. Fresher demo experts are available throughout the day, while specialty course demos are scheduled strictly according to trainer availability.
             </div>
           </div>
 
