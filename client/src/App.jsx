@@ -78,13 +78,21 @@ export default function App() {
     }
   });
 
+  const isHeadOfTrainerUser = (u) => {
+    if (!u) return false;
+    const name = String(u.name || u.userName || '').toLowerCase();
+    const role = String(u.role || '').toLowerCase();
+    return /head of trainer/i.test(role) || /manoj|keerthika|vaishna|pavithra/i.test(name);
+  };
+
   const [selectedDashboard, setSelectedDashboard] = useState(() => {
     try {
       const userSaved = sessionStorage.getItem('thoughtflows_user');
       if (userSaved) {
         const u = JSON.parse(userSaved);
         let dept = u.department;
-        if (!dept || dept === 'Medical Coding Faculty') dept = 'training';
+        if (isHeadOfTrainerUser(u)) dept = 'leadership';
+        else if (!dept || dept === 'Medical Coding Faculty') dept = 'training';
         const matched = DEPT_CARDS.find(c => c.id === dept);
         if (matched) return matched;
       }
@@ -148,7 +156,8 @@ export default function App() {
 
     // Open dashboard corresponding to the authenticated department
     let targetDept = user.department;
-    if (!targetDept || targetDept === 'Medical Coding Faculty') targetDept = 'training';
+    if (isHeadOfTrainerUser(user)) targetDept = 'leadership';
+    else if (!targetDept || targetDept === 'Medical Coding Faculty') targetDept = 'training';
     const matchedCard = DEPT_CARDS.find(c => c.id === targetDept) || DEPT_CARDS[0];
     setSelectedDashboard(matchedCard);
     sessionStorage.setItem('thoughtflows_dashboard', JSON.stringify(matchedCard));

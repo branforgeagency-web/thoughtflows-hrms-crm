@@ -46,7 +46,9 @@ import {
   Lock,
   Shuffle,
   LifeBuoy,
-  Bell
+  Bell,
+  Search,
+  X
 } from 'lucide-react';
 import TeamPerformanceBoard from './TeamPerformanceBoard';
 import TrainerQualityBoard from './TrainerQualityBoard';
@@ -82,6 +84,7 @@ import {
   getLeads,
   getDemos,
   getStudents,
+  allocateTrainerToStudent,
   getDailyClosures,
   getLeadDemands,
   createLeadDemand,
@@ -263,7 +266,13 @@ export default function LeadershipHubDashboard({ onClose, currentUser, onLogout,
     !/operational|regional|admin|founder|ceo|director|head of|dept head|department head/i.test(currentUser.role || '')
   );
 
-  // Auto-open assigned branch ONLY if logged in as a dedicated Branch Manager
+  const isHeadOfTrainer = Boolean(
+    currentUser &&
+    (/head of trainer|training head|head of training/i.test(currentUser.role || '') ||
+     /manoj|keerthika|vaishna|pavithra/i.test(currentUser.name || currentUser.userName || ''))
+  );
+
+  // Auto-open assigned branch if dedicated Branch Manager, or Head of Training dashboard if Head of Trainer
   useEffect(() => {
     if (isBranchManager && currentUser?.branch) {
       const branchName = currentUser.branch;
@@ -276,8 +285,11 @@ export default function LeadershipHubDashboard({ onClose, currentUser, onLogout,
 
       setSelectedBranch(matched);
       setView('branch');
+    } else if (isHeadOfTrainer) {
+      setView('department');
+      setSelectedDept('training');
     }
-  }, [branches, currentUser, isBranchManager]);
+  }, [branches, currentUser, isBranchManager, isHeadOfTrainer]);
 
   const regions = useMemo(() => {
     const map = {};
@@ -3285,36 +3297,93 @@ const TRAINING_ZONES_CONFIG = [
   }
 ];
 
+const studentBelongsToRegion = (st, z) => {
+  if (!st || !z) return false;
+  if (st.headOfTrainer && z.head && st.headOfTrainer.toLowerCase().includes(z.head.toLowerCase())) {
+    return true;
+  }
+  const text = `${st.branch || ''} ${st.location || ''} ${st.leadBranch || ''} ${st.state || ''} ${st.mode || ''} ${st.batchMode || ''}`;
+  return z.matcher ? z.matcher(text) : false;
+};
+
 function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, onSwitchDepartment }) {
   const [selectedRegion, setSelectedRegion] = useState(null);
   const [trainersList, setTrainersList] = useState([]);
   const [batchesList, setBatchesList] = useState([]);
   const [branchesList, setBranchesList] = useState([]);
+  const [studentsList, setStudentsList] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    let isMounted = true;
+  // Student Allocation Modal State
+  const [allocationStudent, setAllocationStudent] = useState(null);
+  const [allocationForm, setAllocationForm] = useState({
+    trainerId: '',
+    trainerName: '',
+    batchName: '',
+    batchTiming: '',
+    trainerNote: ''
+  });
+  const [allocating, setAllocating] = useState(false);
+  const [allocationToast, setAllocationToast] = useState(null);
+  const [studentTab, setStudentTab] = useState('pending'); // 'pending' | 'allocated' | 'all'
+  const [studentSearch, setStudentSearch] = useState('');
+  const [zoneFilter, setZoneFilter] = useState('all'); // for all-regions view
+
+  const loadData = useCallback(() => {
     Promise.all([
       getTrainerSettings().catch(() => []),
       getBatches().catch(() => []),
-      getBranches().catch(() => [])
-    ]).then(([tData, bData, brData]) => {
-      if (!isMounted) return;
+      getBranches().catch(() => []),
+      getStudents().catch(() => [])
+    ]).then(([tData, bData, brData, sData]) => {
       setTrainersList(Array.isArray(tData) ? tData : []);
       setBatchesList(Array.isArray(bData) ? bData : []);
       setBranchesList(Array.isArray(brData) ? brData : []);
+      setStudentsList(Array.isArray(sData) ? sData : []);
       setLoading(false);
     }).catch(() => {
-      if (isMounted) setLoading(false);
+      setLoading(false);
     });
-    return () => { isMounted = false; };
   }, []);
+
+  useEffect(() => {
+    loadData();
+    const unsub = onDataUpdate((entity) => {
+      if (entity === 'students' || entity === 'trainers' || entity === 'batches') {
+        loadData();
+      }
+    });
+    return () => unsub();
+  }, [loadData]);
+
+  // If logged in as one of the 4 Heads of Trainer, default focus to their region
+  useEffect(() => {
+    if (!selectedRegion && currentUser) {
+      const name = String(currentUser.name || currentUser.userName || '').toLowerCase();
+      if (name.includes('manoj')) {
+        setSelectedRegion(TRAINING_ZONES_CONFIG.find(z => z.id === 'tn') || null);
+      } else if (name.includes('keerthika')) {
+        setSelectedRegion(TRAINING_ZONES_CONFIG.find(z => z.id === 'on') || null);
+      } else if (name.includes('vaishna')) {
+        setSelectedRegion(TRAINING_ZONES_CONFIG.find(z => z.id === 'kl') || null);
+      } else if (name.includes('pavithra')) {
+        setSelectedRegion(TRAINING_ZONES_CONFIG.find(z => z.id === 'tg') || null);
+      }
+    }
+  }, [currentUser]);
 
   const regionsData = useMemo(() => {
     return TRAINING_ZONES_CONFIG.map((z) => {
       const matchingTrainers = trainersList.filter(t => z.matcher(`${t.branchName || ''} ${t.specialization || ''} ${t.expertCourse || ''}`));
       const matchingBatches = batchesList.filter(b => z.matcher(`${b.batch || ''} ${b.location || ''} ${b.course || ''}`));
       const matchingBranches = branchesList.filter(br => z.matcher(`${br.name || ''} ${br.state || ''} ${br.city || ''}`));
+
+      const regionStudents = studentsList.filter(st => studentBelongsToRegion(st, z));
+      const pendingAllocationCount = regionStudents.filter(st => {
+        const isHandedOver = st.handoverStatus === 'Handed Over to Head of Trainer' || (st.handoverStatus === 'Sent to Training' && !st.trainerId);
+        return isHandedOver && !st.trainerId;
+      }).length;
+      const allocatedCount = regionStudents.filter(st => Boolean(st.trainerId)).length;
 
       const trainersCount = matchingTrainers.length > 0 ? matchingTrainers.length : (trainersList.length > 0 ? 1 : 0);
       const availableNow = matchingTrainers.filter(t => t.active !== false).length || (trainersCount > 0 ? trainersCount : 0);
@@ -3327,178 +3396,158 @@ function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, o
         availableNow,
         batches: batchesCount,
         branches: branchesCount,
+        pendingAllocationCount,
+        allocatedCount,
         trainersList: matchingTrainers.length > 0 ? matchingTrainers : trainersList.slice(0, 2),
         batchesList: matchingBatches.length > 0 ? matchingBatches : batchesList.slice(0, 2)
       };
     });
-  }, [trainersList, batchesList, branchesList]);
+  }, [trainersList, batchesList, branchesList, studentsList]);
 
-  if (selectedRegion) {
-    const reg = regionsData.find(r => r.id === selectedRegion.id) || selectedRegion;
+  // Current scope of students based on selectedRegion or zoneFilter
+  const scopedStudents = useMemo(() => {
+    if (selectedRegion) {
+      return studentsList.filter(st => studentBelongsToRegion(st, selectedRegion));
+    }
+    if (zoneFilter && zoneFilter !== 'all') {
+      const matchedZone = TRAINING_ZONES_CONFIG.find(z => z.id === zoneFilter);
+      return studentsList.filter(st => studentBelongsToRegion(st, matchedZone));
+    }
+    return studentsList;
+  }, [studentsList, selectedRegion, zoneFilter]);
 
-    return (
-      <div className="w-full space-y-6 animate-fadeIn font-sans text-slate-800">
-        {/* Top Back Button & Live Dashboard Action */}
-        <div className="flex items-center justify-between flex-wrap gap-3">
-          <button
-            onClick={() => setSelectedRegion(null)}
-            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold text-slate-700 bg-white border border-slate-200/90 shadow-xs hover:bg-slate-50 hover:text-slate-900 transition-all cursor-pointer"
-          >
-            <ChevronLeft className="w-3.5 h-3.5 text-slate-500" />
-            All regions
-          </button>
+  // Tab & search filtering
+  const displayStudents = useMemo(() => {
+    let list = scopedStudents;
+    if (studentTab === 'pending') {
+      list = list.filter(st => {
+        const isHandedOver = st.handoverStatus === 'Handed Over to Head of Trainer' || (st.handoverStatus === 'Sent to Training' && !st.trainerId);
+        return isHandedOver && !st.trainerId;
+      });
+    } else if (studentTab === 'allocated') {
+      list = list.filter(st => Boolean(st.trainerId));
+    } else {
+      list = list.filter(st => st.handoverStatus === 'Handed Over to Head of Trainer' || st.handoverStatus === 'Sent to Training' || Boolean(st.trainerId));
+    }
 
-          {onSwitchDepartment && (
-            <button
-              onClick={() => onSwitchDepartment('training')}
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold text-white bg-blue-600 shadow-xs hover:bg-blue-700 transition-all cursor-pointer"
-            >
-              <span>Open Live Training Department Dashboard</span>
-              <ArrowRight className="w-3.5 h-3.5" />
-            </button>
-          )}
-        </div>
+    if (studentSearch.trim()) {
+      const q = studentSearch.toLowerCase().trim();
+      list = list.filter(st =>
+        (st.name || '').toLowerCase().includes(q) ||
+        (st.studentId || '').toLowerCase().includes(q) ||
+        (st.course || '').toLowerCase().includes(q) ||
+        (st.branch || '').toLowerCase().includes(q) ||
+        (st.hrName || '').toLowerCase().includes(q) ||
+        (st.trainerName || '').toLowerCase().includes(q) ||
+        (st.batchName || '').toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [scopedStudents, studentTab, studentSearch]);
 
-        {/* Regional Head Banner Card */}
-        <div className="bg-white border border-slate-200/90 rounded-3xl p-6 shadow-xs flex items-center justify-between relative overflow-hidden flex-wrap gap-4">
-          <div className="flex items-center gap-4">
-            <div
-              className="w-12 h-12 rounded-full flex items-center justify-center text-white text-lg font-extrabold shadow-sm flex-shrink-0"
-              style={{ backgroundColor: reg.badgeBg || '#2563EB' }}
-            >
-              {reg.head[0]}
-            </div>
-            <div>
-              <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight">{reg.head}</h2>
-              <p className="text-xs font-semibold text-slate-500 mt-0.5">Regional Training Head · {reg.state} · {reg.code}</p>
-              <p className="text-xs text-slate-400 mt-0.5">Branches: {reg.state}</p>
-            </div>
-          </div>
-          <div
-            className="w-10 h-10 rounded-xl flex items-center justify-center text-white shadow-xs"
-            style={{ backgroundColor: reg.badgeBg || '#2563EB' }}
-          >
-            <GraduationCap className="w-5 h-5" />
-          </div>
-        </div>
+  const pendingCount = useMemo(() => {
+    return scopedStudents.filter(st => {
+      const isHandedOver = st.handoverStatus === 'Handed Over to Head of Trainer' || (st.handoverStatus === 'Sent to Training' && !st.trainerId);
+      return isHandedOver && !st.trainerId;
+    }).length;
+  }, [scopedStudents]);
 
-        {/* 4 Stat Cards Row */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs text-center">
-            <div className="text-2xl font-extrabold text-slate-900">{loading ? '…' : reg.trainers}</div>
-            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mt-1">TRAINERS</div>
-          </div>
-          <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs text-center">
-            <div className="text-2xl font-extrabold text-slate-900">{loading ? '…' : reg.availableNow}</div>
-            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mt-1">AVAILABLE NOW</div>
-          </div>
-          <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs text-center">
-            <div className="text-2xl font-extrabold text-slate-900">{loading ? '…' : reg.batches}</div>
-            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mt-1">ACTIVE BATCHES</div>
-          </div>
-          <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs text-center">
-            <div className="text-2xl font-extrabold text-emerald-600">92%</div>
-            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mt-1">AVG PERFORMANCE</div>
-          </div>
-        </div>
+  const allocatedCount = useMemo(() => {
+    return scopedStudents.filter(st => Boolean(st.trainerId)).length;
+  }, [scopedStudents]);
 
-        {/* Section 1: Trainers Table */}
-        <div className="bg-white border border-slate-200/90 rounded-2xl p-6 shadow-xs space-y-4">
-          <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
-            <span>🧑‍🏫</span> Trainers in {reg.state}
-          </h3>
+  const totalHandoverCount = useMemo(() => {
+    return scopedStudents.filter(st => st.handoverStatus === 'Handed Over to Head of Trainer' || st.handoverStatus === 'Sent to Training' || Boolean(st.trainerId)).length;
+  }, [scopedStudents]);
 
-          {reg.trainersList && reg.trainersList.length > 0 ? (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead>
-                  <tr className="text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">
-                    <th className="pb-3 font-bold">TRAINER</th>
-                    <th className="pb-3 font-bold">BRANCH</th>
-                    <th className="pb-3 font-bold">COURSE SPECIALIZATION</th>
-                    <th className="pb-3 font-bold">LANGUAGES</th>
-                    <th className="pb-3 font-bold">STATUS</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {reg.trainersList.map((t) => (
-                    <tr key={t.trainerId || t._id} className="hover:bg-slate-50/60 transition-colors">
-                      <td className="py-3.5 pr-4">
-                        <div className="font-extrabold text-slate-900">{t.trainerName}</div>
-                        <div className="text-[10px] text-slate-400 font-mono mt-0.5">{t.trainerId}</div>
-                      </td>
-                      <td className="py-3.5 pr-4 text-slate-600 font-medium">{t.branchName || 'Academy-wide'}</td>
-                      <td className="py-3.5 pr-4 text-slate-600 font-medium">{t.expertCourse || t.specialization || 'Medical Coding'}</td>
-                      <td className="py-3.5 pr-4 text-slate-600 font-medium">{Array.isArray(t.languages) ? t.languages.join(', ') : 'Tamil, English'}</td>
-                      <td className="py-3.5 pr-4">
-                        <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-600">
-                          <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-                          {t.active !== false ? 'Active on Duty' : 'On Leave'}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="py-8 text-center text-xs text-slate-400">No trainers assigned to this region yet.</div>
-          )}
-        </div>
+  // Open Allocation modal
+  const openAllocationModal = (stu) => {
+    const studentTiming = stu.batchTiming || stu.preferredTiming || 'Morning (9:30 AM - 12:30 PM)';
+    const defaultBatch = stu.batchName || `${stu.course || 'Medical Coding'} · ${studentTiming.split(' ')[0] || 'Regular'}`;
 
-        {/* Section 2: Batches Table */}
-        <div className="bg-white border border-slate-200/90 rounded-2xl p-6 shadow-xs space-y-4">
-          <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
-            <span>📚</span> Batches in {reg.state}
-          </h3>
+    const activeTrainers = trainersList.filter(t => t.active !== false);
+    const matchedTrainer = activeTrainers.find(t => {
+      const tBranch = (t.branchName || '').toLowerCase();
+      const sBranch = (stu.branch || stu.location || '').toLowerCase();
+      return tBranch && sBranch && (tBranch.includes(sBranch) || sBranch.includes(tBranch));
+    }) || activeTrainers[0];
 
-          {reg.batchesList && reg.batchesList.length > 0 ? (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead>
-                  <tr className="text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">
-                    <th className="pb-3 font-bold">BATCH NAME</th>
-                    <th className="pb-3 font-bold">COURSE</th>
-                    <th className="pb-3 font-bold">FACULTY TRAINER</th>
-                    <th className="pb-3 font-bold">STUDENTS</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {reg.batchesList.map((b, idx) => (
-                    <tr key={b.batch || idx} className="hover:bg-slate-50/60 transition-colors">
-                      <td className="py-3.5 pr-4 font-extrabold text-slate-900">{b.batch || 'Batch'}</td>
-                      <td className="py-3.5 pr-4 text-slate-600 font-medium">{b.course || 'Medical Coding'}</td>
-                      <td className="py-3.5 pr-4 text-slate-600 font-medium">{b.trainerName || 'Assigned'}</td>
-                      <td className="py-3.5 pr-4 text-slate-600 font-medium">{b.students ? `${b.students} students` : '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="py-8 text-center text-xs text-slate-400">No active batches recorded in this region.</div>
-          )}
-        </div>
+    setAllocationForm({
+      trainerId: stu.trainerId || matchedTrainer?.trainerId || '',
+      trainerName: stu.trainerName || matchedTrainer?.trainerName || '',
+      batchName: defaultBatch,
+      batchTiming: stu.batchTiming || studentTiming,
+      trainerNote: stu.trainerNote || ''
+    });
+    setAllocationStudent(stu);
+  };
 
-        {/* Bottom Blue Notice Banner */}
-        <div className="bg-sky-50 border border-sky-200/90 text-sky-700 text-xs py-3 px-4.5 rounded-2xl flex items-center gap-2.5">
-          <span className="text-base flex-shrink-0">ℹ️</span>
-          <span>Live regional view for {reg.state} — trainer assignments and active batch delivery connected directly to MongoDB.</span>
-        </div>
-      </div>
-    );
-  }
+  const handleConfirmAllocation = async () => {
+    if (!allocationStudent) return;
+    if (!allocationForm.trainerId) {
+      setAllocationToast({ type: 'error', message: 'Please select an active trainer from the list' });
+      setTimeout(() => setAllocationToast(null), 3500);
+      return;
+    }
+    setAllocating(true);
+    try {
+      const stuId = allocationStudent._id || allocationStudent.studentId;
+      const targetTrainer = trainersList.find(t => t.trainerId === allocationForm.trainerId);
+      const updated = await allocateTrainerToStudent(stuId, {
+        ...allocationForm,
+        trainerName: targetTrainer?.trainerName || allocationForm.trainerName,
+        allocatedBy: currentUser?.name || 'Head of Trainer'
+      });
+
+      setStudentsList(prev => prev.map(s => (
+        (s._id === stuId || s.studentId === stuId) ? { ...s, ...updated } : s
+      )));
+
+      setAllocationToast({
+        type: 'success',
+        message: `✓ Successfully assigned ${allocationStudent.name} to ${targetTrainer?.trainerName || allocationForm.trainerName} (Batch: ${allocationForm.batchName})`
+      });
+      setTimeout(() => setAllocationToast(null), 4500);
+      setAllocationStudent(null);
+      if (onChanged) onChanged();
+    } catch (err) {
+      setAllocationToast({
+        type: 'error',
+        message: `Failed to assign trainer: ${err?.response?.data?.error || err.message}`
+      });
+      setTimeout(() => setAllocationToast(null), 4000);
+    } finally {
+      setAllocating(false);
+    }
+  };
 
   return (
-    <div className="w-full animate-fadeIn">
-      {/* Top back button & live switch */}
+    <div className="w-full space-y-6 animate-fadeIn font-sans text-slate-800 relative">
+      {/* Toast message banner */}
+      {allocationToast && (
+        <div className={`fixed top-5 right-5 z-50 px-5 py-3 rounded-2xl shadow-xl text-xs font-bold border flex items-center gap-2 animate-bounce ${
+          allocationToast.type === 'success'
+            ? 'bg-emerald-600 text-white border-emerald-500 shadow-emerald-500/20'
+            : 'bg-rose-600 text-white border-rose-500 shadow-rose-500/20'
+        }`}>
+          <span>{allocationToast.message}</span>
+        </div>
+      )}
+
+      {/* Top back button & live department navigation */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <button
-          onClick={onBack}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 bg-white border border-slate-200/90 shadow-xs hover:bg-slate-50 hover:text-slate-900 transition-all cursor-pointer"
+          onClick={() => {
+            if (selectedRegion) {
+              setSelectedRegion(null);
+            } else {
+              onBack();
+            }
+          }}
+          className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold text-slate-700 bg-white border border-slate-200/90 shadow-xs hover:bg-slate-50 hover:text-slate-900 transition-all cursor-pointer"
         >
           <ChevronLeft className="w-3.5 h-3.5 text-slate-500" />
-          Departments
+          {selectedRegion ? 'All Training Zones' : 'Departments'}
         </button>
 
         {onSwitchDepartment && (
@@ -3512,92 +3561,779 @@ function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, o
         )}
       </div>
 
-      {/* Heading & Subtitle matching user specification */}
-      <div className="mt-5 mb-8">
-        <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
-          Training Department <span className="text-slate-400 font-normal">·</span> Regions
-        </h2>
-        <p className="text-xs sm:text-sm text-slate-400 font-mono mt-1 flex items-center gap-2">
-          <span>{regionsData.length} training regions</span>
-          <span className="text-slate-300">·</span>
-          <span>live data connected to MongoDB</span>
-        </p>
-      </div>
-
-      {/* 4 Cards Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {regionsData.map((region) => {
-          const isHighlight = region.highlight;
+      {selectedRegion ? (
+        /* REGIONAL DETAIL VIEW */
+        (() => {
+          const reg = regionsData.find(r => r.id === selectedRegion.id) || selectedRegion;
           return (
-            <div
-              key={region.id}
-              onClick={() => setSelectedRegion(region)}
-              className={`text-left bg-white rounded-[24px] p-6 sm:p-7 border transition-all duration-200 group flex flex-col justify-between min-h-[220px] relative overflow-hidden cursor-pointer ${
-                isHighlight
-                  ? 'border-2 border-orange-400/80 bg-gradient-to-b from-orange-50/20 to-white shadow-xl shadow-orange-500/10 hover:shadow-2xl hover:-translate-y-1'
-                  : 'border-slate-100/90 shadow-[0_2px_14px_rgba(0,0,0,0.03)] hover:shadow-xl hover:-translate-y-1 hover:border-slate-200'
-              }`}
-            >
-              {/* Subtle top accent bar */}
-              <div className="absolute top-0 left-0 right-0 h-1.5" style={{ background: region.topBarGrad }} />
-
-              <div>
-                {/* Header row: Badge + optional Open button */}
-                <div className="flex items-center justify-between mb-4 mt-1">
+            <div className="space-y-6">
+              {/* Regional Head Banner Card */}
+              <div className="bg-white border border-slate-200/90 rounded-3xl p-6 shadow-xs flex items-center justify-between relative overflow-hidden flex-wrap gap-4">
+                <div className="flex items-center gap-4">
                   <div
-                    className="w-11 h-11 rounded-2xl flex items-center justify-center font-extrabold text-sm shadow-sm"
-                    style={{ backgroundColor: region.badgeBg, color: '#FFFFFF' }}
+                    className="w-14 h-14 rounded-full flex items-center justify-center text-white text-xl font-black shadow-sm flex-shrink-0"
+                    style={{ backgroundColor: reg.badgeBg || '#2563EB' }}
                   >
-                    {region.badge}
+                    {reg.head[0]}
                   </div>
-                  <span className="px-3 py-1 rounded-full text-xs font-bold text-blue-600 bg-blue-50 border border-blue-200 hover:bg-blue-100 transition-all flex items-center gap-1 shadow-xs">
-                    View Desk →
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight">{reg.head}</h2>
+                      <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold text-white" style={{ backgroundColor: reg.badgeBg || '#2563EB' }}>
+                        {reg.badge}
+                      </span>
+                    </div>
+                    <p className="text-xs font-semibold text-slate-500 mt-0.5">Head of Trainer · {reg.state} ({reg.code})</p>
+                    <p className="text-xs text-slate-400 mt-0.5">Assigned Coverage: {reg.state} branches & live student admissions</p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setSelectedRegion(null)}
+                    className="px-3 py-1.5 rounded-xl text-xs font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 border border-slate-200 transition-colors"
+                  >
+                    Switch Zone
+                  </button>
+                  <div
+                    className="w-10 h-10 rounded-xl flex items-center justify-center text-white shadow-xs"
+                    style={{ backgroundColor: reg.badgeBg || '#2563EB' }}
+                  >
+                    <GraduationCap className="w-5 h-5" />
+                  </div>
+                </div>
+              </div>
+
+              {/* 4 Stat Cards Row */}
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs text-center relative overflow-hidden">
+                  <div className="text-2xl font-extrabold text-rose-600 flex items-center justify-center gap-1.5">
+                    {loading ? '…' : pendingCount}
+                    {pendingCount > 0 && (
+                      <span className="inline-flex h-2.5 w-2.5 rounded-full bg-rose-500 animate-ping"></span>
+                    )}
+                  </div>
+                  <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mt-1">AWAITING ACTIVE TRAINER</div>
+                </div>
+
+                <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs text-center">
+                  <div className="text-2xl font-extrabold text-slate-900">{loading ? '…' : reg.trainers}</div>
+                  <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mt-1">TRAINERS IN ZONE</div>
+                </div>
+
+                <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs text-center">
+                  <div className="text-2xl font-extrabold text-emerald-600">{loading ? '…' : reg.availableNow}</div>
+                  <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mt-1">ACTIVE ON DUTY</div>
+                </div>
+
+                <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs text-center">
+                  <div className="text-2xl font-extrabold text-blue-600">{loading ? '…' : allocatedCount}</div>
+                  <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mt-1">STUDENTS ALLOCATED</div>
+                </div>
+              </div>
+
+              {/* SECTION 1: STUDENT HANDOVER & ACTIVE TRAINER ALLOCATION */}
+              <div className="bg-white border border-slate-200/90 rounded-3xl p-6 shadow-xs space-y-4">
+                <div className="flex items-center justify-between flex-wrap gap-3 pb-3 border-b border-slate-100">
+                  <div>
+                    <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
+                      <span>🎓</span>
+                      <span>Students Handed Over to {reg.head}</span>
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      HR admissions awaiting trainer assignment in {reg.state}. Assign each student to an active faculty trainer & batch.
+                    </p>
+                  </div>
+
+                  {/* Tabs: Pending / Allocated / All */}
+                  <div className="flex items-center bg-slate-100 p-1 rounded-xl text-xs font-bold">
+                    <button
+                      onClick={() => setStudentTab('pending')}
+                      className={`px-3 py-1.5 rounded-lg transition-all ${
+                        studentTab === 'pending'
+                          ? 'bg-white text-rose-600 shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Awaiting Allocation ({pendingCount})
+                    </button>
+                    <button
+                      onClick={() => setStudentTab('allocated')}
+                      className={`px-3 py-1.5 rounded-lg transition-all ${
+                        studentTab === 'allocated'
+                          ? 'bg-white text-emerald-700 shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Allocated ({allocatedCount})
+                    </button>
+                    <button
+                      onClick={() => setStudentTab('all')}
+                      className={`px-3 py-1.5 rounded-lg transition-all ${
+                        studentTab === 'all'
+                          ? 'bg-white text-blue-700 shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      All ({totalHandoverCount})
+                    </button>
+                  </div>
+                </div>
+
+                {/* Search Bar */}
+                <div className="relative">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={studentSearch}
+                    onChange={(e) => setStudentSearch(e.target.value)}
+                    placeholder="Search by student name, student ID, course, branch or counsellor..."
+                    className="w-full pl-9 pr-4 py-2 text-xs rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                  />
+                  {studentSearch && (
+                    <button onClick={() => setStudentSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+
+                {/* Students Table */}
+                {displayStudents.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead>
+                        <tr className="text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">
+                          <th className="pb-3 font-bold">STUDENT</th>
+                          <th className="pb-3 font-bold">COURSE & MODE</th>
+                          <th className="pb-3 font-bold">BRANCH & TIMING</th>
+                          <th className="pb-3 font-bold">COUNSELLOR & PREFERENCES</th>
+                          <th className="pb-3 font-bold">ASSIGNMENT STATUS</th>
+                          <th className="pb-3 font-bold text-right">ACTION</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {displayStudents.map((st) => {
+                          const isAllocated = Boolean(st.trainerId);
+                          return (
+                            <tr key={st._id || st.studentId} className="hover:bg-slate-50/60 transition-colors">
+                              <td className="py-3.5 pr-4">
+                                <div className="font-extrabold text-slate-900">{st.name}</div>
+                                <div className="text-[10px] text-slate-400 font-mono mt-0.5">{st.studentId || 'ID Pending'}</div>
+                                {st.mobile && <div className="text-[10px] text-slate-500 font-mono">{st.mobile}</div>}
+                              </td>
+                              <td className="py-3.5 pr-4">
+                                <div className="font-bold text-slate-800">{st.course || 'Medical Coding'}</div>
+                                <div className="text-[10px] text-slate-500 mt-0.5">{st.mode || st.batchMode || 'Offline'}</div>
+                              </td>
+                              <td className="py-3.5 pr-4">
+                                <div className="font-medium text-slate-700">{st.branch || st.location || reg.state}</div>
+                                <div className="text-[10px] text-slate-500 mt-0.5">Timing: <strong className="text-slate-700">{st.batchTiming || 'Flexible'}</strong></div>
+                              </td>
+                              <td className="py-3.5 pr-4 max-w-xs">
+                                <div className="text-slate-600 font-medium">HR: {st.hrName || '—'}</div>
+                                {(st.trainerNote || st.handoverNote) ? (
+                                  <div className="mt-1 p-1.5 rounded-lg bg-amber-50/70 border border-amber-200/60 text-[11px] text-amber-900 line-clamp-2">
+                                    {st.trainerNote || st.handoverNote}
+                                  </div>
+                                ) : (
+                                  <div className="text-[10px] text-slate-400 italic mt-0.5">No specific notes</div>
+                                )}
+                              </td>
+                              <td className="py-3.5 pr-4">
+                                {isAllocated ? (
+                                  <div>
+                                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200">
+                                      <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                                      {st.trainerName}
+                                    </span>
+                                    {st.batchName && (
+                                      <div className="text-[10px] text-slate-500 font-medium mt-0.5">
+                                        Batch: <strong className="text-slate-700">{st.batchName}</strong>
+                                      </div>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold text-rose-700 bg-rose-50 border border-rose-200 animate-pulse">
+                                    <Clock className="w-3 h-3 text-rose-500" />
+                                    Awaiting Active Trainer
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-3.5 pl-2 text-right">
+                                {isAllocated ? (
+                                  <button
+                                    onClick={() => openAllocationModal(st)}
+                                    className="px-3 py-1.5 rounded-xl text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 border border-slate-200/90 shadow-xs transition-all cursor-pointer"
+                                  >
+                                    Reassign
+                                  </button>
+                                ) : (
+                                  <button
+                                    onClick={() => openAllocationModal(st)}
+                                    className="inline-flex items-center gap-1 px-3.5 py-1.5 rounded-xl text-xs font-black text-white bg-emerald-600 hover:bg-emerald-700 shadow-xs hover:shadow transition-all cursor-pointer"
+                                  >
+                                    <span>⚡ Assign Trainer</span>
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="py-12 text-center text-xs text-slate-400 border border-dashed border-slate-200 rounded-2xl">
+                    <CheckCircle2 className="w-8 h-8 text-emerald-400 mx-auto mb-2" />
+                    <div className="font-bold text-slate-700 text-sm">All clear! No students in this list</div>
+                    <p className="text-slate-400 mt-1">
+                      {studentTab === 'pending'
+                        ? `All students in ${reg.state} have been assigned to active trainers and batches.`
+                        : 'No student records match the active search filter.'}
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* SECTION 2: ACTIVE TRAINERS IN REGION */}
+              <div className="bg-white border border-slate-200/90 rounded-3xl p-6 shadow-xs space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+                    <span>🧑‍🏫</span> Active Trainers in {reg.state}
+                  </h3>
+                  <span className="text-xs text-slate-400 font-mono">
+                    {reg.trainersList?.length || 0} trainers listed
                   </span>
                 </div>
 
-                {/* Head Name & Region Subtitle */}
-                <h3 className="text-lg font-extrabold text-slate-900 group-hover:text-indigo-600 transition-colors tracking-tight">
-                  {region.head}
-                </h3>
-                <p className="text-xs text-slate-400 font-mono mt-0.5">
-                  {region.state} <span className="text-slate-300">·</span> {region.code}
-                </p>
+                {reg.trainersList && reg.trainersList.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead>
+                        <tr className="text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">
+                          <th className="pb-3 font-bold">TRAINER</th>
+                          <th className="pb-3 font-bold">BRANCH</th>
+                          <th className="pb-3 font-bold">COURSE SPECIALIZATION</th>
+                          <th className="pb-3 font-bold">LANGUAGES</th>
+                          <th className="pb-3 font-bold">ASSIGNED STUDENTS</th>
+                          <th className="pb-3 font-bold">STATUS</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {reg.trainersList.map((t) => {
+                          const assignedCount = studentsList.filter(s => s.trainerId === t.trainerId).length;
+                          return (
+                            <tr key={t.trainerId || t._id} className="hover:bg-slate-50/60 transition-colors">
+                              <td className="py-3.5 pr-4">
+                                <div className="font-extrabold text-slate-900">{t.trainerName}</div>
+                                <div className="text-[10px] text-slate-400 font-mono mt-0.5">{t.trainerId}</div>
+                              </td>
+                              <td className="py-3.5 pr-4 text-slate-600 font-medium">{t.branchName || 'Academy-wide'}</td>
+                              <td className="py-3.5 pr-4 text-slate-600 font-medium">{t.expertCourse || t.specialization || 'Medical Coding'}</td>
+                              <td className="py-3.5 pr-4 text-slate-600 font-medium">{Array.isArray(t.languages) ? t.languages.join(', ') : 'Tamil, English'}</td>
+                              <td className="py-3.5 pr-4">
+                                <span className="font-extrabold text-blue-600">{assignedCount}</span> students
+                              </td>
+                              <td className="py-3.5 pr-4">
+                                <span className={`inline-flex items-center gap-1.5 text-xs font-bold ${t.active !== false ? 'text-emerald-600' : 'text-slate-400'}`}>
+                                  <span className={`w-2 h-2 rounded-full ${t.active !== false ? 'bg-emerald-500' : 'bg-slate-300'}`}></span>
+                                  {t.active !== false ? 'Active on Duty' : 'On Leave'}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="py-8 text-center text-xs text-slate-400">No trainers assigned to this region yet.</div>
+                )}
               </div>
 
-              {/* Divider line */}
-              <div className="border-t border-slate-100 my-4" />
+              {/* SECTION 3: BATCHES IN REGION */}
+              <div className="bg-white border border-slate-200/90 rounded-3xl p-6 shadow-xs space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+                    <span>📚</span> Active Batches in {reg.state}
+                  </h3>
+                  <span className="text-xs text-slate-400 font-mono">
+                    {reg.batchesList?.length || 0} batches
+                  </span>
+                </div>
 
-              {/* 3 Column Statistics */}
-              <div className="grid grid-cols-3 gap-2 text-center">
-                <div>
-                  <div className={`text-xl font-extrabold ${region.accentText}`}>
-                    {loading ? '…' : region.trainers}
+                {reg.batchesList && reg.batchesList.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead>
+                        <tr className="text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">
+                          <th className="pb-3 font-bold">BATCH NAME</th>
+                          <th className="pb-3 font-bold">COURSE</th>
+                          <th className="pb-3 font-bold">FACULTY TRAINER</th>
+                          <th className="pb-3 font-bold">ENROLLED STUDENTS</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {reg.batchesList.map((b, idx) => (
+                          <tr key={b.batch || idx} className="hover:bg-slate-50/60 transition-colors">
+                            <td className="py-3.5 pr-4 font-extrabold text-slate-900">{b.batch || 'Batch'}</td>
+                            <td className="py-3.5 pr-4 text-slate-600 font-medium">{b.course || 'Medical Coding'}</td>
+                            <td className="py-3.5 pr-4 text-slate-600 font-medium">{b.trainerName || 'Assigned'}</td>
+                            <td className="py-3.5 pr-4 text-slate-600 font-medium">{b.students ? `${b.students} students` : '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
-                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">
-                    TRAINERS
-                  </div>
-                </div>
-                <div>
-                  <div className={`text-xl font-extrabold ${region.accentText}`}>
-                    {loading ? '…' : region.batches}
-                  </div>
-                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">
-                    BATCHES
-                  </div>
-                </div>
-                <div>
-                  <div className={`text-xl font-extrabold ${region.accentText}`}>
-                    {loading ? '…' : region.branches}
-                  </div>
-                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">
-                    {region.stat3Label}
-                  </div>
-                </div>
+                ) : (
+                  <div className="py-8 text-center text-xs text-slate-400">No active batches recorded in this region.</div>
+                )}
+              </div>
+
+              {/* Bottom Notice Banner */}
+              <div className="bg-sky-50 border border-sky-200/90 text-sky-700 text-xs py-3 px-4.5 rounded-2xl flex items-center gap-2.5">
+                <span className="text-base flex-shrink-0">ℹ️</span>
+                <span>Regional Training Control for {reg.state} ({reg.head}) — All student handovers, active trainer assignments and batch continuity linked directly to MongoDB.</span>
               </div>
             </div>
           );
-        })}
-      </div>
+        })()
+      ) : (
+        /* ALL REGIONS OVERVIEW */
+        <div className="space-y-8">
+          {/* Heading */}
+          <div>
+            <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
+              Head of Trainer Dashboard <span className="text-slate-400 font-normal">·</span> Training Regions
+            </h2>
+            <p className="text-xs sm:text-sm text-slate-400 font-mono mt-1 flex items-center gap-2">
+              <span>{regionsData.length} training zones (Manoj, Keerthika, Vaishna, Pavithra)</span>
+              <span className="text-slate-300">·</span>
+              <span>{pendingCount} total students awaiting trainer assignment</span>
+            </p>
+          </div>
+
+          {/* 4 Cards Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
+            {regionsData.map((region) => {
+              const hasPending = region.pendingAllocationCount > 0;
+              return (
+                <div
+                  key={region.id}
+                  onClick={() => setSelectedRegion(region)}
+                  className={`text-left bg-white rounded-[24px] p-6 border transition-all duration-200 group flex flex-col justify-between min-h-[230px] relative overflow-hidden cursor-pointer ${
+                    hasPending
+                      ? 'border-2 border-rose-300/80 bg-gradient-to-b from-rose-50/20 to-white shadow-lg hover:shadow-xl hover:-translate-y-1'
+                      : 'border-slate-100/90 shadow-[0_2px_14px_rgba(0,0,0,0.03)] hover:shadow-xl hover:-translate-y-1 hover:border-slate-200'
+                  }`}
+                >
+                  <div className="absolute top-0 left-0 right-0 h-1.5" style={{ background: region.topBarGrad }} />
+
+                  <div>
+                    <div className="flex items-center justify-between mb-3 mt-1">
+                      <div
+                        className="w-10 h-10 rounded-2xl flex items-center justify-center font-extrabold text-sm shadow-sm"
+                        style={{ backgroundColor: region.badgeBg, color: '#FFFFFF' }}
+                      >
+                        {region.badge}
+                      </div>
+
+                      {hasPending ? (
+                        <span className="px-2.5 py-0.5 rounded-full text-[11px] font-black text-rose-700 bg-rose-100 border border-rose-200 flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-rose-600 animate-ping"></span>
+                          {region.pendingAllocationCount} Pending
+                        </span>
+                      ) : (
+                        <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200">
+                          ✓ All Assigned
+                        </span>
+                      )}
+                    </div>
+
+                    <h3 className="text-lg font-extrabold text-slate-900 group-hover:text-blue-600 transition-colors tracking-tight">
+                      {region.head}
+                    </h3>
+                    <p className="text-xs text-slate-400 font-mono mt-0.5">
+                      {region.state} <span className="text-slate-300">·</span> {region.code}
+                    </p>
+                  </div>
+
+                  <div className="border-t border-slate-100 my-3" />
+
+                  <div className="grid grid-cols-3 gap-1 text-center">
+                    <div>
+                      <div className={`text-lg font-extrabold ${region.accentText}`}>
+                        {loading ? '…' : region.trainers}
+                      </div>
+                      <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">
+                        TRAINERS
+                      </div>
+                    </div>
+                    <div>
+                      <div className={`text-lg font-extrabold ${region.accentText}`}>
+                        {loading ? '…' : region.batches}
+                      </div>
+                      <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">
+                        BATCHES
+                      </div>
+                    </div>
+                    <div>
+                      <div className={`text-lg font-extrabold ${hasPending ? 'text-rose-600' : 'text-slate-700'}`}>
+                        {loading ? '…' : region.pendingAllocationCount}
+                      </div>
+                      <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">
+                        PENDING
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* ACADEMY-WIDE HANDOVER QUEUE */}
+          <div className="bg-white border border-slate-200/90 rounded-3xl p-6 shadow-xs space-y-4">
+            <div className="flex items-center justify-between flex-wrap gap-3 pb-3 border-b border-slate-100">
+              <div>
+                <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
+                  <span>⚡</span>
+                  <span>Student Handover & Trainer Allocation Desk (All Zones)</span>
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Select an active trainer from the roster to allocate students handed over from HR.
+                </p>
+              </div>
+
+              {/* Zone Filter & Tab Selector */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <select
+                  value={zoneFilter}
+                  onChange={(e) => setZoneFilter(e.target.value)}
+                  className="px-3 py-1.5 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 focus:outline-none"
+                >
+                  <option value="all">All Zones ({studentsList.length})</option>
+                  <option value="tn">Tamil Nadu · Manoj</option>
+                  <option value="on">Online · Keerthika</option>
+                  <option value="kl">Kerala · Vaishna</option>
+                  <option value="tg">Telangana & Andhra · Pavithra</option>
+                </select>
+
+                <div className="flex items-center bg-slate-100 p-1 rounded-xl text-xs font-bold">
+                  <button
+                    onClick={() => setStudentTab('pending')}
+                    className={`px-3 py-1.5 rounded-lg transition-all ${
+                      studentTab === 'pending'
+                        ? 'bg-white text-rose-600 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Awaiting Allocation ({pendingCount})
+                  </button>
+                  <button
+                    onClick={() => setStudentTab('allocated')}
+                    className={`px-3 py-1.5 rounded-lg transition-all ${
+                      studentTab === 'allocated'
+                        ? 'bg-white text-emerald-700 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Allocated ({allocatedCount})
+                  </button>
+                  <button
+                    onClick={() => setStudentTab('all')}
+                    className={`px-3 py-1.5 rounded-lg transition-all ${
+                      studentTab === 'all'
+                        ? 'bg-white text-blue-700 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    All ({totalHandoverCount})
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Search Bar */}
+            <div className="relative">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={studentSearch}
+                onChange={(e) => setStudentSearch(e.target.value)}
+                placeholder="Search students across all zones by name, ID, course, branch or HR..."
+                className="w-full pl-9 pr-4 py-2 text-xs rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+              />
+              {studentSearch && (
+                <button onClick={() => setStudentSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+
+            {/* Table */}
+            {displayStudents.length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">
+                      <th className="pb-3 font-bold">STUDENT</th>
+                      <th className="pb-3 font-bold">COURSE & MODE</th>
+                      <th className="pb-3 font-bold">BRANCH & TIMING</th>
+                      <th className="pb-3 font-bold">HEAD OF TRAINER</th>
+                      <th className="pb-3 font-bold">ASSIGNMENT STATUS</th>
+                      <th className="pb-3 font-bold text-right">ACTION</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {displayStudents.map((st) => {
+                      const isAllocated = Boolean(st.trainerId);
+                      return (
+                        <tr key={st._id || st.studentId} className="hover:bg-slate-50/60 transition-colors">
+                          <td className="py-3.5 pr-4">
+                            <div className="font-extrabold text-slate-900">{st.name}</div>
+                            <div className="text-[10px] text-slate-400 font-mono mt-0.5">{st.studentId || 'ID Pending'}</div>
+                            {st.mobile && <div className="text-[10px] text-slate-500 font-mono">{st.mobile}</div>}
+                          </td>
+                          <td className="py-3.5 pr-4">
+                            <div className="font-bold text-slate-800">{st.course || 'Medical Coding'}</div>
+                            <div className="text-[10px] text-slate-500 mt-0.5">{st.mode || st.batchMode || 'Offline'}</div>
+                          </td>
+                          <td className="py-3.5 pr-4">
+                            <div className="font-medium text-slate-700">{st.branch || st.location || 'Branch'}</div>
+                            <div className="text-[10px] text-slate-500 mt-0.5">Timing: <strong className="text-slate-700">{st.batchTiming || 'Flexible'}</strong></div>
+                          </td>
+                          <td className="py-3.5 pr-4">
+                            <span className="font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded text-[11px] border border-blue-100">
+                              {st.headOfTrainer || 'Manoj'}
+                            </span>
+                            {st.hrName && <div className="text-[10px] text-slate-400 mt-0.5">HR: {st.hrName}</div>}
+                          </td>
+                          <td className="py-3.5 pr-4">
+                            {isAllocated ? (
+                              <div>
+                                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200">
+                                  <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                                  {st.trainerName}
+                                </span>
+                                {st.batchName && (
+                                  <div className="text-[10px] text-slate-500 font-medium mt-0.5">
+                                    Batch: <strong className="text-slate-700">{st.batchName}</strong>
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold text-rose-700 bg-rose-50 border border-rose-200 animate-pulse">
+                                <Clock className="w-3 h-3 text-rose-500" />
+                                Awaiting Active Trainer
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-3.5 pl-2 text-right">
+                            {isAllocated ? (
+                              <button
+                                onClick={() => openAllocationModal(st)}
+                                className="px-3 py-1.5 rounded-xl text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 border border-slate-200/90 shadow-xs transition-all cursor-pointer"
+                              >
+                                Reassign
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => openAllocationModal(st)}
+                                className="inline-flex items-center gap-1 px-3.5 py-1.5 rounded-xl text-xs font-black text-white bg-emerald-600 hover:bg-emerald-700 shadow-xs hover:shadow transition-all cursor-pointer"
+                              >
+                                <span>⚡ Assign Trainer</span>
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="py-12 text-center text-xs text-slate-400 border border-dashed border-slate-200 rounded-2xl">
+                <CheckCircle2 className="w-8 h-8 text-emerald-400 mx-auto mb-2" />
+                <div className="font-bold text-slate-700 text-sm">All clear! No students awaiting allocation</div>
+                <p className="text-slate-400 mt-1">All handed over students have been allocated to active trainers.</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* INTERACTIVE ALLOCATION MODAL */}
+      {allocationStudent && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-xl w-full p-6 sm:p-7 shadow-2xl border border-slate-100 animate-in fade-in zoom-in-95 duration-150 max-h-[90vh] overflow-y-auto">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100 mb-5">
+              <div>
+                <h3 className="text-lg font-black text-slate-900">
+                  {allocationStudent.trainerId ? 'Reassign Active Trainer & Batch' : 'Assign to Active Trainer & Batch'}
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Head of Trainer Allocation Desk · {allocationStudent.name}
+                </p>
+              </div>
+              <button
+                onClick={() => setAllocationStudent(null)}
+                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Student Info Card */}
+            <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200/80 mb-5 space-y-2 text-xs">
+              <div className="grid grid-cols-2 gap-2 text-slate-600">
+                <div>Student: <strong className="text-slate-900">{allocationStudent.name}</strong> ({allocationStudent.studentId || 'ID Pending'})</div>
+                <div>Course: <strong className="text-slate-900">{allocationStudent.course || 'Medical Coding'}</strong></div>
+                <div>Branch: <strong className="text-slate-900">{allocationStudent.branch || allocationStudent.location || 'Academy'}</strong></div>
+                <div>Mode: <strong className="text-slate-900">{allocationStudent.mode || allocationStudent.batchMode || 'Offline'}</strong></div>
+                <div>Preferred Timing: <strong className="text-slate-900">{allocationStudent.batchTiming || 'Flexible'}</strong></div>
+                <div>HR Counsellor: <strong className="text-slate-900">{allocationStudent.hrName || 'HR Team'}</strong></div>
+              </div>
+
+              {(allocationStudent.trainerNote || allocationStudent.handoverNote) && (
+                <div className="pt-2 mt-2 border-t border-slate-200 text-[11px] text-amber-900 bg-amber-50/70 p-2 rounded-xl border border-amber-200/50">
+                  <span className="font-bold">HR Handover Notes:</span> {allocationStudent.trainerNote || allocationStudent.handoverNote}
+                </div>
+              )}
+            </div>
+
+            {/* Allocation Form */}
+            <div className="space-y-4 text-xs">
+              {/* Active Trainer Selection */}
+              <div>
+                <label className="font-bold text-slate-800 block mb-1.5">
+                  Select Active Trainer <span className="text-rose-500">*</span>
+                </label>
+                <select
+                  value={allocationForm.trainerId}
+                  onChange={(e) => {
+                    const sel = trainersList.find(t => t.trainerId === e.target.value);
+                    setAllocationForm(prev => ({
+                      ...prev,
+                      trainerId: e.target.value,
+                      trainerName: sel?.trainerName || ''
+                    }));
+                  }}
+                  className="w-full p-2.5 rounded-xl border border-slate-300 bg-white font-medium focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 text-xs"
+                >
+                  <option value="">-- Choose Active Trainer --</option>
+                  {trainersList
+                    .filter(t => t.active !== false)
+                    .map(t => {
+                      const stuBranch = (allocationStudent.branch || allocationStudent.location || '').toLowerCase();
+                      const tBranch = (t.branchName || '').toLowerCase();
+                      const isMatch = stuBranch && tBranch && (tBranch.includes(stuBranch) || stuBranch.includes(tBranch));
+                      const activeCount = studentsList.filter(s => s.trainerId === t.trainerId).length;
+                      return (
+                        <option key={t.trainerId || t._id} value={t.trainerId}>
+                          {isMatch ? '★ [Branch Match] ' : ''}{t.trainerName} · {t.branchName || 'All Branches'} ({t.expertCourse || t.specialization || 'Medical Coding'}) — {activeCount} students assigned
+                        </option>
+                      );
+                    })}
+                </select>
+              </div>
+
+              {/* Batch Name */}
+              <div>
+                <label className="font-bold text-slate-800 block mb-1">
+                  Batch Name <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={allocationForm.batchName}
+                  onChange={(e) => setAllocationForm(prev => ({ ...prev, batchName: e.target.value }))}
+                  placeholder="e.g. Medical Coding - Morning Batch"
+                  className="w-full p-2.5 rounded-xl border border-slate-300 text-xs font-medium focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                />
+
+                {/* Preset Chips */}
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {[
+                    `${allocationStudent.course || 'Medical Coding'} - Regular`,
+                    `${allocationStudent.course || 'Medical Coding'} - Weekend`,
+                    `${allocationStudent.course || 'Medical Coding'} · Morning`,
+                    `${allocationStudent.course || 'Medical Coding'} · Evening`
+                  ].map(chip => (
+                    <button
+                      key={chip}
+                      type="button"
+                      onClick={() => setAllocationForm(prev => ({ ...prev, batchName: chip }))}
+                      className="px-2 py-0.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-semibold border border-slate-200 transition-colors"
+                    >
+                      + {chip}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Batch Timing */}
+              <div>
+                <label className="font-bold text-slate-800 block mb-1">
+                  Batch Schedule / Timing
+                </label>
+                <select
+                  value={allocationForm.batchTiming}
+                  onChange={(e) => setAllocationForm(prev => ({ ...prev, batchTiming: e.target.value }))}
+                  className="w-full p-2.5 rounded-xl border border-slate-300 text-xs font-medium"
+                >
+                  <option value="Morning (9:30 AM - 12:30 PM)">Morning (9:30 AM - 12:30 PM)</option>
+                  <option value="Afternoon (2:00 PM - 5:00 PM)">Afternoon (2:00 PM - 5:00 PM)</option>
+                  <option value="Evening (6:00 PM - 8:30 PM)">Evening (6:00 PM - 8:30 PM)</option>
+                  <option value="Weekend Batch (10:00 AM - 4:00 PM)">Weekend Batch (10:00 AM - 4:00 PM)</option>
+                  <option value="Flexible / Online Batches">Flexible / Online Batches</option>
+                </select>
+              </div>
+
+              {/* Note to Trainer */}
+              <div>
+                <label className="font-bold text-slate-800 block mb-1">
+                  Instructions / Coaching Note for Trainer
+                </label>
+                <textarea
+                  rows={3}
+                  value={allocationForm.trainerNote}
+                  onChange={(e) => setAllocationForm(prev => ({ ...prev, trainerNote: e.target.value }))}
+                  placeholder="Special instructions for the faculty trainer regarding language, student background or pace..."
+                  className="w-full p-2.5 rounded-xl border border-slate-300 text-xs"
+                />
+              </div>
+            </div>
+
+            {/* Modal Actions */}
+            <div className="flex items-center justify-end gap-3 pt-5 mt-5 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setAllocationStudent(null)}
+                disabled={allocating}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                onClick={handleConfirmAllocation}
+                disabled={allocating || !allocationForm.trainerId}
+                className="px-5 py-2 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 shadow-md hover:shadow-lg disabled:opacity-50 transition-all flex items-center gap-1.5 cursor-pointer"
+              >
+                {allocating ? (
+                  <span>Allocating…</span>
+                ) : (
+                  <>
+                    <Check className="w-4 h-4" />
+                    <span>Confirm Trainer Assignment</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
