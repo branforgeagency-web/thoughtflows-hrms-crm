@@ -39,7 +39,12 @@ const callRecordingSchema = new mongoose.Schema({
   },
   audioUrl: {
     type: String,
-    required: true
+    default: ''
+  },
+  isDeleted: {
+    type: Boolean,
+    default: false,
+    index: true
   },
   source: {
     type: String,

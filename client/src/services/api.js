@@ -270,7 +270,6 @@ export const hangupCall = async (callSid) => {
 
 export const syncEdesyRecordings = async () => {
   const res = await api.post('/calls/edesy/sync');
-  notifyDataUpdate('recordings');
   return res.data;
 };
 

@@ -39,7 +39,6 @@ export default function HrCallRecordingsTable({ currentUser }) {
   const loadRecordings = async () => {
     try {
       setLoading(true);
-      syncEdesyRecordings().catch(() => {});
       const data = await getRecordings();
       setRecordings(Array.isArray(data) ? data : []);
       setLoading(false);

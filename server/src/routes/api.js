@@ -461,6 +461,11 @@ async function processEdesyCallRecord(d) {
   const callSid = String(pickField(d, 'call_sid', 'jambonz_call_sid', 'id', 'sid', 'callId', 'call_id') || '');
   if (!callSid) return null;
 
+  const existing = await CallRecording.findOne({ callSid });
+  if (existing && existing.isDeleted) {
+    return null; // Intentionally deleted by user — do not resurrect
+  }
+
   const ctx = pendingCalls.get(callSid) || {};
   const status = mapEdesyStatus(pickField(d, 'status', 'call_status', 'state'));
   const rawDirection = String(pickField(d, 'direction') || '').toLowerCase();
@@ -585,10 +590,12 @@ async function edesySyncHandler(req, res) {
       const sid = String(pickField(item, 'call_sid', 'jambonz_call_sid', 'id', 'sid') || '');
       if (!sid) continue;
       const existing = await CallRecording.findOne({ callSid: sid });
-      if (!existing || !existing.audioUrl) {
-        const saved = await processEdesyCallRecord(item);
-        if (saved) synced++;
+      if (existing) {
+        if (existing.isDeleted) continue; // Skip user-deleted recordings
+        if (existing.audioUrl) continue;
       }
+      const saved = await processEdesyCallRecord(item);
+      if (saved) synced++;
     }
     res.json({ success: true, count: list.length, newlySynced: synced });
   } catch (err) {
@@ -759,7 +766,7 @@ router.get('/recordings', async (req, res) => {
     const { leadPhone, leadId, search } = req.query;
     // Counsellors only hear their own calls; managers may filter by name
     const counselorName = isScopedHr(req) ? req.user?.name : (req.query.counselorName || req.query.counselor);
-    let query = {};
+    let query = { isDeleted: { $ne: true } };
     if (leadPhone) {
       const digits = leadPhone.replace(/[^\d]/g, '');
       if (digits) query.leadPhone = { $regex: digits, $options: 'i' };
@@ -990,15 +997,20 @@ router.post('/recordings/phone-sync', async (req, res) => {
 
 router.delete('/recordings/:id', async (req, res) => {
   try {
-    const recording = await CallRecording.findByIdAndDelete(req.params.id);
+    const recording = await CallRecording.findById(req.params.id);
     if (!recording) return res.status(404).json({ error: 'Recording not found' });
     if (recording.audioUrl && recording.audioUrl.startsWith('/recordings/')) {
       const filename = path.basename(recording.audioUrl);
       const filePath = path.join(process.cwd(), 'uploads/recordings', filename);
       if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
+        try { fs.unlinkSync(filePath); } catch (_) {}
       }
     }
+    // Mark as deleted so it is excluded from all queries AND never resurrected by Edesy sync
+    recording.isDeleted = true;
+    recording.audioUrl = '';
+    await recording.save();
+
     res.json({ success: true, message: 'Recording deleted successfully' });
   } catch (err) {
     res.status(500).json({ error: err.message });
