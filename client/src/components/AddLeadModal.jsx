@@ -39,7 +39,7 @@ import { parseGoogleSheetOrCsv, downloadSampleGoogleSheetTemplate } from '../uti
 const CURRENT_YEAR = new Date().getFullYear();
 const PASSOUT_YEARS = Array.from({ length: CURRENT_YEAR - 1980 + 1 }, (_, i) => String(CURRENT_YEAR - i));
 
-export default function AddLeadModal({ isOpen, onClose, onAddLead, initialMode = 'single', currentUser }) {
+export default function AddLeadModal({ isOpen, onClose, onAddLead, onBulkImported, initialMode = 'single', currentUser }) {
   if (!isOpen) return null;
 
   // Mode: 'single' (individual enquiry form) or 'bulk' (Google Sheet / CSV import)
@@ -170,8 +170,8 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead, initialMode =
 
       setImportResult(res);
       showToast(`✓ Successfully imported ${res.createdCount} enquiries to dashboard!`);
-      if (onAddLead) {
-        onAddLead(res.createdLeads?.[0] || { name: 'Bulk Upload Leads' });
+      if (onBulkImported) {
+        onBulkImported(res);
       }
     } catch (err) {
       showToast(`Failed to import enquiries: ${err?.response?.data?.error || err.message}`);
@@ -857,11 +857,11 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead, initialMode =
                       {importResult.duplicates.map((dup, i) => (
                         <div key={i} className="text-xs bg-white/90 border border-amber-200 p-2.5 rounded-xl flex items-center justify-between gap-2">
                           <div>
-                            <span className="font-bold text-slate-800">{dup.lead?.fullName || dup.lead?.name || 'Candidate'}</span>
-                            <span className="text-slate-500 font-mono ml-2">({dup.lead?.phone || dup.lead?.email})</span>
+                            <span className="font-bold text-slate-800">{dup.name || 'Candidate'}</span>
+                            <span className="text-slate-500 font-mono ml-2">({dup.phone || dup.email})</span>
                           </div>
                           <span className="text-[11px] font-medium text-amber-800 bg-amber-100/80 px-2 py-0.5 rounded-md">
-                            {dup.reason}
+                            {dup.error || 'Duplicate record'}
                           </span>
                         </div>
                       ))}
@@ -1074,9 +1074,9 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead, initialMode =
                         <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
                           {parsedRows.filter(r => r.isValid).length} ready
                         </span>
-                        {parsedRows.filter(r => !r.isValid).length > 0 && (
-                          <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-800">
-                            {parsedRows.filter(r => !r.isValid).length} invalid / warnings
+                        {parsedRows.filter(r => r.errorReason).length > 0 && (
+                          <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800">
+                            {parsedRows.filter(r => r.errorReason).length} missing name/mobile — will still import
                           </span>
                         )}
                       </div>
@@ -1109,25 +1109,27 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead, initialMode =
                               <tr
                                 key={idx}
                                 className={`hover:bg-slate-50/80 transition-colors ${
-                                  !r.isValid ? 'bg-rose-50/50 text-rose-950' : ''
+                                  r.errorReason ? 'bg-amber-50/40' : ''
                                 }`}
                               >
                                 <td className="p-2.5 pl-3 font-mono text-slate-400 text-[11px]">
                                   {idx + 1}
                                 </td>
                                 <td className="p-2.5">
-                                  {r.isValid ? (
+                                  {/* Every row imports — missing name / invalid mobile is a
+                                      heads-up, never a block. */}
+                                  {r.errorReason ? (
+                                    <span
+                                      className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-800 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200"
+                                      title={`${r.errorReason} — will still be imported`}
+                                    >
+                                      <AlertTriangle className="w-3 h-3 text-amber-600" />
+                                      {r.errorReason}
+                                    </span>
+                                  ) : (
                                     <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
                                       <CheckCircle2 className="w-3 h-3 text-emerald-600" />
                                       Ready
-                                    </span>
-                                  ) : (
-                                    <span
-                                      className="inline-flex items-center gap-1 text-[11px] font-bold text-rose-700 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200"
-                                      title={r.errorReason}
-                                    >
-                                      <AlertTriangle className="w-3 h-3 text-rose-600" />
-                                      {r.errorReason || 'Invalid'}
                                     </span>
                                   )}
                                 </td>

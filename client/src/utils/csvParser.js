@@ -195,8 +195,10 @@ function parseVerticalStream(lines) {
       passoutYear,
       location: '',
       notes: fullNotes,
-      isValid: Boolean(cleanPhone && cleanPhone.length === 10),
-      errorReason: cleanPhone.length === 10 ? '' : 'Invalid phone number'
+      // Every parsed row is imported — a missing/invalid phone number is
+      // flagged as a warning only, never a reason to drop the row.
+      isValid: true,
+      errorReason: cleanPhone.length === 10 ? '' : 'Invalid or missing phone number'
     });
   }
 
@@ -360,7 +362,10 @@ export function parseGoogleSheetOrCsv(rawText) {
 
     const hasName = Boolean(rawName && rawName.length >= 2);
     const hasContact = Boolean(cleanPhone && cleanPhone.length >= 10) || Boolean(email && email.includes('@'));
-    const isValid = hasName && hasContact;
+    // Every parsed row is imported — a missing name or a missing/invalid
+    // mobile number is surfaced as a warning only, never a reason to skip
+    // the row.
+    const isValid = true;
 
     let errorReason = '';
     if (!hasName) errorReason = 'Missing candidate name';

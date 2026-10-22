@@ -2111,6 +2111,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         isOpen={showAddLeadModal}
         onClose={() => setShowAddLeadModal(false)}
         onAddLead={handleAddLeadSubmit}
+        onBulkImported={() => loadAllData(true)}
         initialMode={addLeadModalMode}
         currentUser={currentUser}
       />

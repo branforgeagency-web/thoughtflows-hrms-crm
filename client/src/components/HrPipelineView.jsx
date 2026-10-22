@@ -195,6 +195,7 @@ export default function HrPipelineView({
         const updateData = {
           followUpStatus: 'no_followup_needed',
           decisionStatus: 'No Follow-up Needed',
+          stage: 'closed',
           status: 'completed',
           followUpNote: updatedNote
         };
@@ -1217,7 +1218,6 @@ export default function HrPipelineView({
                   <th className="py-3 px-3.5">Candidate Name</th>
                   <th className="py-3 px-3.5">Contact</th>
                   <th className="py-3 px-3.5">Interested Course</th>
-                  <th className="py-3 px-3.5">Preferred Branch</th>
                   <th className="py-3 px-3.5">Stage</th>
                   <th className="py-3 px-3.5">Source</th>
                   <th className="py-3 px-3.5">Follow-up</th>
@@ -1228,7 +1228,7 @@ export default function HrPipelineView({
               <tbody className="divide-y divide-slate-100 text-[11px]">
                 {tableLeads.length === 0 ? (
                   <tr>
-                    <td colSpan="9" className="py-12 text-center text-slate-400">
+                    <td colSpan="8" className="py-12 text-center text-slate-400">
                       <div className="text-3xl mb-1">📭</div>
                       <div className="font-bold text-slate-600">No student enquiries found</div>
                       <p className="text-xs text-slate-400 mt-0.5">Try adjusting your search query or filter</p>
@@ -1293,11 +1293,6 @@ export default function HrPipelineView({
                           {lead.batchTiming && (
                             <div className="text-[10px] text-slate-400 truncate max-w-[150px]">{lead.batchTiming}</div>
                           )}
-                        </td>
-
-                        {/* Branch */}
-                        <td className="py-3 px-3.5 whitespace-nowrap text-slate-600 font-medium">
-                          {lead.branch || '—'}
                         </td>
 
                         {/* Stage */}

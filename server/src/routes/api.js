@@ -3135,13 +3135,16 @@ router.post('/leads/bulk', async (req, res) => {
         payload.phone = cleanPhone;
       }
 
-      if (!payload.fullName || (!payload.phone && !payload.email)) {
-        invalidRows.push({
-          row: i + 1,
-          name: payload.fullName || `Row ${i + 1}`,
-          reason: 'Missing candidate name or valid contact phone/email'
-        });
-        continue;
+      // Every row gets imported — a missing/blank name or an invalid mobile
+      // number is no longer a reason to skip the row. We only need a
+      // non-empty placeholder here because the StudentLead schema requires
+      // both fields; the real (even malformed) value the sheet had is kept
+      // whenever one was supplied.
+      if (!payload.fullName || !String(payload.fullName).trim()) {
+        payload.fullName = `Unnamed Enquiry (Row ${i + 1})`;
+      }
+      if (!payload.phone || !String(payload.phone).trim()) {
+        payload.phone = payload.whatsappNumber || payload.email || 'Not Provided';
       }
 
       // Check for duplicate enquiry by mobile number and/or email ID

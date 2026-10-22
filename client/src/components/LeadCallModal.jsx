@@ -38,6 +38,9 @@ const OUTCOME_STAGE = {
   'Demo Booked': 'demo_booked',
   'Follow-up Needed': 'contacted',
   'Call Back Later': 'contacted',
+  // 'Not Reachable' has no fixed mapping here — handled specially below,
+  // since it should only ever move a lead FORWARD out of 'new', never
+  // demote one that's already further along the pipeline.
   'Not Reachable': null,
   'Not Interested': 'closed'
 };
@@ -505,9 +508,17 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
       }
     }
 
+    // A logged call attempt — even an unanswered one — is no longer an
+    // untouched "new" enquiry. "Not Reachable" only promotes a lead OUT of
+    // 'new' into 'contacted'; it never demotes a lead that's already
+    // further along the pipeline (e.g. demo_booked).
+    const nextStage = selectedOutcome === 'Not Reachable'
+      ? ((leadData?.stage || 'new') === 'new' ? 'contacted' : undefined)
+      : (selectedOutcome ? OUTCOME_STAGE[selectedOutcome] : undefined);
+
     const payload = {
       outcome: selectedOutcome || undefined,
-      stage: selectedOutcome ? OUTCOME_STAGE[selectedOutcome] : undefined,
+      stage: nextStage,
       notes: leadForm.notes,
       durationSeconds: callSeconds,
       wasAnswered: hasBeenAnsweredRef.current,
