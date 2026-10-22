@@ -35,7 +35,8 @@ export default function CompleteRegistrationModal({
   const [fatherName, setFatherName] = useState(initialData?.fatherName || '');
   const [dob, setDob] = useState(initialData?.dob || '');
   const [phone, setPhone] = useState(initialData?.phone || '');
-  const [whatsappNumber, setWhatsappNumber] = useState(initialData?.whatsappNumber || initialData?.phone || '');
+  const [whatsappNumber, setWhatsappNumber] = useState(initialData?.whatsappNumber || '');
+  const [sameAsMobile, setSameAsMobile] = useState(false);
   const [email, setEmail] = useState(initialData?.email || '');
   const [locationAddress, setLocationAddress] = useState(initialData?.location || initialData?.address || '');
 
@@ -344,15 +345,16 @@ export default function CompleteRegistrationModal({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
               <div>
                 <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-500 uppercase mb-1">
-                  PHONE
+                  PHONE <span className="text-rose-500">*</span>
                 </label>
                 <input
                   type="tel"
                   required
                   value={phone}
                   onChange={(e) => {
-                    setPhone(e.target.value);
-                    if (!whatsappNumber) setWhatsappNumber(e.target.value);
+                    const val = e.target.value;
+                    setPhone(val);
+                    if (sameAsMobile) setWhatsappNumber(val);
                   }}
                   placeholder="10-digit mobile"
                   className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all font-mono"
@@ -360,15 +362,31 @@ export default function CompleteRegistrationModal({
               </div>
 
               <div>
-                <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-500 uppercase mb-1">
-                  WHATSAPP NUMBER
-                </label>
+                <div className="flex items-center justify-between mb-1 h-4">
+                  <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-500 uppercase">
+                    WHATSAPP NUMBER
+                  </label>
+                  <label className="flex items-center gap-1.5 text-[10.5px] text-slate-500 hover:text-slate-800 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={sameAsMobile}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setSameAsMobile(checked);
+                        if (checked) setWhatsappNumber(phone);
+                      }}
+                      className="accent-[#00897b] rounded cursor-pointer"
+                    />
+                    <span>Same as phone</span>
+                  </label>
+                </div>
                 <input
                   type="tel"
-                  value={whatsappNumber}
+                  value={sameAsMobile ? phone : whatsappNumber}
+                  disabled={sameAsMobile}
                   onChange={(e) => setWhatsappNumber(e.target.value)}
                   placeholder="WhatsApp mobile number"
-                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all font-mono"
+                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all font-mono disabled:bg-slate-100 disabled:text-slate-500"
                 />
               </div>
             </div>

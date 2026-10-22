@@ -42,8 +42,8 @@ export default function StudentRegistrationPage({ onBack }) {
   const [address, setAddress] = useState('');
   const [dob, setDob] = useState('');
   const [phone, setPhone] = useState(queryParams.get('phone') || '');
-  const [whatsappNumber, setWhatsappNumber] = useState(queryParams.get('phone') || '');
-  const [sameAsMobile, setSameAsMobile] = useState(true);
+  const [whatsappNumber, setWhatsappNumber] = useState(queryParams.get('whatsapp') || '');
+  const [sameAsMobile, setSameAsMobile] = useState(false);
   const [consultHr, setConsultHr] = useState(queryParams.get('hr') || '');
   const [branch, setBranch] = useState(queryParams.get('branch') || 'Saravanampatti (CBE)');
   const [email, setEmail] = useState(queryParams.get('email') || '');
