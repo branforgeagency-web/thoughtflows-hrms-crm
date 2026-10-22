@@ -152,12 +152,12 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead, initialMode =
         sourceName: r.sourceName || bulkDefaultSource,
         source: r.sourceName || bulkDefaultSource,
         category: r.category || bulkDefaultCategory,
+        stage: r.stage || 'new',
+        counselorAssigned: r.counselorAssigned || currentUser?.name || '',
         education: r.education,
         passoutYear: r.passoutYear,
         location: r.location,
-        notes: r.notes,
-        stage: 'new',
-        counselorAssigned: currentUser?.name || ''
+        notes: r.notes
       }));
 
       const res = await createLeadsBulk(payloadLeads, {
@@ -1119,6 +1119,8 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead, initialMode =
                               <th className="p-2.5">Course</th>
                               <th className="p-2.5">Branch</th>
                               <th className="p-2.5">Source</th>
+                              <th className="p-2.5">Allocated To</th>
+                              <th className="p-2.5">Category</th>
                               <th className="p-2.5">Edu / Year</th>
                               <th className="p-2.5 text-center">Action</th>
                             </tr>
@@ -1188,6 +1190,18 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead, initialMode =
                                       {bulkDefaultSource}
                                     </span>
                                   )}
+                                </td>
+                                <td className="p-2.5 text-slate-700 truncate max-w-[120px]">
+                                  {r.counselorAssigned ? (
+                                    <span className="font-semibold text-slate-900">{r.counselorAssigned}</span>
+                                  ) : (
+                                    <span className="text-slate-400 font-mono text-[10px]">{currentUser?.name || '-'}</span>
+                                  )}
+                                </td>
+                                <td className="p-2.5 text-slate-700 truncate max-w-[120px]">
+                                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 text-slate-800 font-semibold">
+                                    {r.category || 'Enquiry'}
+                                  </span>
                                 </td>
                                 <td className="p-2.5 text-slate-600 text-[11px]">
                                   {[r.education, r.passoutYear].filter(Boolean).join(' ') || '-'}
