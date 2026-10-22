@@ -9,7 +9,7 @@
  * - Stage auto-mapping (JOINED WITH US -> admitted, INTERESTED -> contacted, etc.)
  */
 
-import { detectBranchFromText } from '../constants/branches';
+import { detectBranchFromText } from '../constants/branches.js';
 
 // Known Google Sheet sources
 const KNOWN_SOURCES = [
@@ -215,11 +215,12 @@ export function parseGoogleSheetOrCsv(rawText) {
   if (!rawLines.length) return [];
 
   // Check if text is a vertical stream (few or no horizontal delimiters, but has phone numbers on separate lines)
-  const firstFew = rawLines.slice(0, 10);
-  const hasTabsOrCommas = firstFew.some(l => l.includes('\t') || l.includes(','));
+  const hasTabs = rawLines.some(l => l.includes('\t'));
+  const commaLines = rawLines.filter(l => l.includes(',')).length;
+  const isTabular = hasTabs || (commaLines >= rawLines.length * 0.5);
   const hasPhoneLines = rawLines.some(l => /^[6-9]\d{9}$/.test(l.replace(/\D+/g, '')));
 
-  if (!hasTabsOrCommas && hasPhoneLines) {
+  if (!isTabular && hasPhoneLines) {
     const verticalResult = parseVerticalStream(rawLines);
     if (verticalResult.length > 0) {
       return verticalResult;
@@ -327,27 +328,28 @@ export function parseGoogleSheetOrCsv(rawText) {
 
     const email = fieldIndex.email !== undefined ? String(cols[fieldIndex.email] || '').trim() : '';
     const course = fieldIndex.course !== undefined ? String(cols[fieldIndex.course] || '').trim() : '';
-    let branch = fieldIndex.branch !== undefined ? String(cols[fieldIndex.branch] || '').trim() : '';
-    if (branch) {
-      const normalized = detectBranchFromText(branch);
-      if (normalized) branch = normalized;
-    } else {
-      branch = detectBranchFromText(location + ' ' + (cols[fieldIndex.notes] || ''));
-    }
+    const location = fieldIndex.location !== undefined ? String(cols[fieldIndex.location] || '').trim() : '';
     const sourceName = fieldIndex.source !== undefined ? String(cols[fieldIndex.source] || '').trim() : '';
     const category = fieldIndex.category !== undefined ? String(cols[fieldIndex.category] || '').trim() : '';
     const counselorAssigned = fieldIndex.counselor !== undefined ? String(cols[fieldIndex.counselor] || '').trim() : '';
     const spokenBy = fieldIndex.spokenBy !== undefined ? String(cols[fieldIndex.spokenBy] || '').trim() : '';
     const fetchedBy = fieldIndex.fetchedBy !== undefined ? String(cols[fieldIndex.fetchedBy] || '').trim() : '';
 
-    let education = fieldIndex.qualification !== undefined ? String(cols[fieldIndex.qualification] || '').trim() : '';
-    let passoutYear = fieldIndex.passoutYear !== undefined ? String(cols[fieldIndex.passoutYear] || '').trim() : '';
-    const location = fieldIndex.location !== undefined ? String(cols[fieldIndex.location] || '').trim() : '';
-
     // Collect all remarks, follow ups, and comments
     const mainNote = fieldIndex.notes !== undefined ? String(cols[fieldIndex.notes] || '').trim() : '';
     const extraNotes = extraNotesIndices.map(idx => String(cols[idx] || '').trim()).filter(Boolean);
     const combinedNotes = [fetchedBy ? `Fetched by: ${fetchedBy}` : '', mainNote, ...extraNotes].filter(Boolean).join(' | ');
+
+    let branch = fieldIndex.branch !== undefined ? String(cols[fieldIndex.branch] || '').trim() : '';
+    if (branch) {
+      const normalized = detectBranchFromText(branch);
+      if (normalized) branch = normalized;
+    } else {
+      branch = detectBranchFromText(location + ' ' + combinedNotes);
+    }
+
+    let education = fieldIndex.qualification !== undefined ? String(cols[fieldIndex.qualification] || '').trim() : '';
+    let passoutYear = fieldIndex.passoutYear !== undefined ? String(cols[fieldIndex.passoutYear] || '').trim() : '';
 
     // Extract degree & year from notes if missing
     if (!education || !passoutYear) {
