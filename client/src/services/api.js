@@ -207,6 +207,12 @@ export const createLead = async (leadData) => {
   return res.data;
 };
 
+export const createLeadsBulk = async (leads, defaultOptions = {}) => {
+  const res = await api.post('/leads/bulk', { leads, ...defaultOptions });
+  notifyDataUpdate('leads');
+  return res.data;
+};
+
 export const updateLead = async (id, leadData) => {
   const res = await api.put(`/leads/${id}`, leadData);
   surfaceLmsWarning(res.data);

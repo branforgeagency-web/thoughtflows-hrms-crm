@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   X,
   Star,
@@ -11,7 +11,15 @@ import {
   FileText,
   ChevronDown,
   ChevronUp,
-  AlertTriangle
+  AlertTriangle,
+  Table,
+  Upload,
+  Download,
+  CheckCircle2,
+  FileSpreadsheet,
+  RefreshCw,
+  HelpCircle,
+  Trash2
 } from 'lucide-react';
 import { COURSE_CATEGORIES } from '../constants/courses';
 import { QUALIFICATION_GROUPS } from '../constants/qualifications';
@@ -25,12 +33,17 @@ import {
   EXTRA_CATEGORIES
 } from '../constants/leadSources';
 import SearchableSelect from './SearchableSelect';
+import { createLeadsBulk } from '../services/api';
+import { parseGoogleSheetOrCsv, downloadSampleGoogleSheetTemplate } from '../utils/csvParser';
 
 const CURRENT_YEAR = new Date().getFullYear();
 const PASSOUT_YEARS = Array.from({ length: CURRENT_YEAR - 1980 + 1 }, (_, i) => String(CURRENT_YEAR - i));
 
-export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
+export default function AddLeadModal({ isOpen, onClose, onAddLead, initialMode = 'single', currentUser }) {
   if (!isOpen) return null;
+
+  // Mode: 'single' (individual enquiry form) or 'bulk' (Google Sheet / CSV import)
+  const [importMode, setImportMode] = useState(initialMode || 'single');
 
   // Selected Source (defaulting to #21 Facebook Job Post as in screenshot)
   const [selectedSourceId, setSelectedSourceId] = useState('s21');
@@ -47,19 +60,123 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
   const [education, setEducation] = useState('');
   const [passoutYear, setPassoutYear] = useState('');
   const [interestedCourse, setInterestedCourse] = useState('AMCT Beginner (Classroom)');
-  const [preferredBranch, setPreferredBranch] = useState('Saravanampatti (CBE)');
+  const [preferredBranch, setPreferredBranch] = useState(currentUser?.branch || 'Saravanampatti (CBE)');
 
   // Selected Category
   const [selectedCategory, setSelectedCategory] = useState('Fresh Graduate');
   const [showMoreCategories, setShowMoreCategories] = useState(false);
 
+  // Bulk Upload State
+  const [bulkInputMethod, setBulkInputMethod] = useState('paste'); // 'paste' | 'file'
+  const [pastedText, setPastedText] = useState('');
+  const [parsedRows, setParsedRows] = useState([]);
+  const [bulkDefaultCourse, setBulkDefaultCourse] = useState('AMCT Beginner (Classroom)');
+  const [bulkDefaultBranch, setBulkDefaultBranch] = useState(currentUser?.branch || 'Saravanampatti (CBE)');
+  const [bulkDefaultSource, setBulkDefaultSource] = useState('Google Sheet Bulk Import');
+  const [bulkDefaultCategory, setBulkDefaultCategory] = useState('Fresh Graduate');
+  const [isParsing, setIsParsing] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [importResult, setImportResult] = useState(null);
+
   // Toast feedback
   const [toastMsg, setToastMsg] = useState(null);
   const [submitError, setSubmitError] = useState(null);
 
+  useEffect(() => {
+    if (isOpen) {
+      setImportMode(initialMode || 'single');
+      setSubmitError(null);
+      setImportResult(null);
+    }
+  }, [isOpen, initialMode]);
+
   const showToast = (msg) => {
     setToastMsg(msg);
     setTimeout(() => setToastMsg(null), 3000);
+  };
+
+  const handleParseData = (textToParse = pastedText) => {
+    if (!textToParse || !textToParse.trim()) {
+      showToast('Please paste your Google Sheet data or select a CSV file first');
+      return;
+    }
+    setIsParsing(true);
+    setImportResult(null);
+    try {
+      const rows = parseGoogleSheetOrCsv(textToParse);
+      setParsedRows(rows);
+      if (rows.length === 0) {
+        showToast('No valid rows detected. Please check the data.');
+      } else {
+        const validCount = rows.filter(r => r.isValid).length;
+        showToast(`Parsed ${rows.length} rows (${validCount} ready to import)`);
+      }
+    } catch (err) {
+      showToast(`Error parsing data: ${err.message}`);
+    } finally {
+      setIsParsing(false);
+    }
+  };
+
+  const handleFileUpload = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      const content = evt.target?.result;
+      if (typeof content === 'string') {
+        setPastedText(content);
+        handleParseData(content);
+      }
+    };
+    reader.onerror = () => showToast('Failed to read file');
+    reader.readAsText(file);
+  };
+
+  const handleBulkImport = async () => {
+    const validRows = parsedRows.filter(r => r.isValid);
+    if (!validRows.length) {
+      showToast('No valid enquiries to import');
+      return;
+    }
+    setIsImporting(true);
+    try {
+      const payloadLeads = validRows.map(r => ({
+        fullName: r.fullName,
+        name: r.fullName,
+        phone: r.phone,
+        whatsappNumber: r.whatsappNumber || r.phone,
+        email: r.email,
+        course: r.course || bulkDefaultCourse,
+        branch: r.branch || bulkDefaultBranch,
+        sourceName: r.sourceName || bulkDefaultSource,
+        source: r.sourceName || bulkDefaultSource,
+        category: r.category || bulkDefaultCategory,
+        education: r.education,
+        passoutYear: r.passoutYear,
+        location: r.location,
+        notes: r.notes,
+        stage: 'new',
+        counselorAssigned: currentUser?.name || ''
+      }));
+
+      const res = await createLeadsBulk(payloadLeads, {
+        defaultCourse: bulkDefaultCourse,
+        defaultBranch: bulkDefaultBranch,
+        defaultSource: bulkDefaultSource,
+        defaultCounselor: currentUser?.name || ''
+      });
+
+      setImportResult(res);
+      showToast(`✓ Successfully imported ${res.createdCount} enquiries to dashboard!`);
+      if (onAddLead) {
+        onAddLead(res.createdLeads?.[0] || { name: 'Bulk Upload Leads' });
+      }
+    } catch (err) {
+      showToast(`Failed to import enquiries: ${err?.response?.data?.error || err.message}`);
+    } finally {
+      setIsImporting(false);
+    }
   };
 
   const currentSelectedSource = ALL_SOURCES.find(s => s.id === selectedSourceId) || TIER_D_SOURCES[8];
@@ -192,7 +309,54 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
           </button>
         </div>
 
+        {/* MODE TABS: SINGLE ENQUIRY vs BULK UPLOAD */}
+        <div className="bg-slate-100/90 border-b border-slate-200 px-5 sm:px-7 py-2.5 flex items-center justify-between gap-3 flex-shrink-0">
+          <div className="inline-flex p-1 bg-slate-200/80 rounded-xl">
+            <button
+              type="button"
+              onClick={() => { setImportMode('single'); setSubmitError(null); }}
+              className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-all flex items-center gap-2 cursor-pointer ${
+                importMode === 'single'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <FileText className="w-3.5 h-3.5 text-teal-600" />
+              <span>Single Enquiry Form</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => { setImportMode('bulk'); setSubmitError(null); }}
+              className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-all flex items-center gap-2 cursor-pointer ${
+                importMode === 'bulk'
+                  ? 'bg-white text-[#0e6977] shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Bulk Upload (Google Sheet / CSV)</span>
+              <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-emerald-100 text-emerald-800 font-extrabold">
+                Sheet
+              </span>
+            </button>
+          </div>
+
+          {importMode === 'bulk' && (
+            <button
+              type="button"
+              onClick={downloadSampleGoogleSheetTemplate}
+              className="text-xs font-bold text-teal-700 hover:text-teal-900 flex items-center gap-1.5 hover:underline cursor-pointer"
+              title="Download pre-formatted Excel / Google Sheets CSV template"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Download Sample Sheet Template</span>
+              <span className="sm:hidden">Template</span>
+            </button>
+          )}
+        </div>
+
         {/* SCROLLABLE BODY */}
+        {importMode === 'single' ? (
         <form onSubmit={handleSubmit} className="overflow-y-auto p-5 sm:p-7 space-y-8 text-left">
           
           {/* Submission Error Alert */}
@@ -638,6 +802,465 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead }) {
             </button>
           </div>
         </form>
+        ) : (
+          <div className="overflow-y-auto p-5 sm:p-7 space-y-6 text-left flex-1">
+            {/* IMPORT RESULTS VIEW (When submitted and report is ready) */}
+            {importResult ? (
+              <div className="space-y-6">
+                <div className="p-6 bg-emerald-50 border-2 border-emerald-300 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="flex items-start gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center flex-shrink-0">
+                      <CheckCircle2 className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <h4 className="font-extrabold text-emerald-950 text-base">Bulk Import Complete!</h4>
+                      <p className="text-xs text-emerald-800 font-medium mt-1">
+                        Successfully added <strong className="font-bold text-emerald-900">{importResult.createdCount}</strong> new enquiries to the CRM pipeline.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setImportResult(null);
+                        setParsedRows([]);
+                        setPastedText('');
+                      }}
+                      className="px-4 py-2 bg-white border border-emerald-300 hover:bg-emerald-100 text-emerald-900 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-1.5"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>Import Another Sheet</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={onClose}
+                      className="px-5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer"
+                    >
+                      Done & View Dashboard
+                    </button>
+                  </div>
+                </div>
+
+                {/* Duplicates Report (if any skipped) */}
+                {importResult.duplicateCount > 0 && (
+                  <div className="p-4 bg-amber-50 border border-amber-300 rounded-2xl space-y-3">
+                    <div className="flex items-center gap-2 text-amber-900 font-bold text-xs uppercase tracking-wide">
+                      <AlertTriangle className="w-4 h-4 text-amber-600" />
+                      <span>{importResult.duplicateCount} Duplicate Enquiries Skipped (Already Registered)</span>
+                    </div>
+                    <p className="text-xs text-amber-800">
+                      The following leads already exist in your CRM database with identical mobile numbers or email IDs to prevent duplicate calls:
+                    </p>
+                    <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1">
+                      {importResult.duplicates.map((dup, i) => (
+                        <div key={i} className="text-xs bg-white/90 border border-amber-200 p-2.5 rounded-xl flex items-center justify-between gap-2">
+                          <div>
+                            <span className="font-bold text-slate-800">{dup.lead?.fullName || dup.lead?.name || 'Candidate'}</span>
+                            <span className="text-slate-500 font-mono ml-2">({dup.lead?.phone || dup.lead?.email})</span>
+                          </div>
+                          <span className="text-[11px] font-medium text-amber-800 bg-amber-100/80 px-2 py-0.5 rounded-md">
+                            {dup.reason}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Invalid rows Report (if any skipped) */}
+                {importResult.invalidCount > 0 && (
+                  <div className="p-4 bg-rose-50 border border-rose-300 rounded-2xl space-y-2">
+                    <div className="flex items-center gap-2 text-rose-900 font-bold text-xs uppercase tracking-wide">
+                      <AlertTriangle className="w-4 h-4 text-rose-600" />
+                      <span>{importResult.invalidCount} Invalid Rows Skipped</span>
+                    </div>
+                    <p className="text-xs text-rose-800">
+                      Rows skipped due to missing candidate name or phone numbers with less than 10 digits.
+                    </p>
+                  </div>
+                )}
+              </div>
+            ) : (
+              /* UPLOAD / PASTE WORKFLOW */
+              <>
+                {/* Step 1 banner & Method Switcher */}
+                <div className="bg-slate-50 border border-slate-200/80 p-4 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div className="flex items-start gap-3">
+                    <div className="w-8 h-8 rounded-xl bg-teal-100 text-[#0e6977] flex items-center justify-center font-bold text-sm flex-shrink-0">
+                      1
+                    </div>
+                    <div>
+                      <h4 className="font-extrabold text-slate-900 text-sm">Choose Import Method</h4>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        Copy cells from Google Sheets and paste below, or upload a .csv / .tsv file
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 self-start md:self-auto">
+                    <button
+                      type="button"
+                      onClick={() => setBulkInputMethod('paste')}
+                      className={`px-3 py-1.5 text-xs font-bold rounded-xl border transition-all flex items-center gap-1.5 cursor-pointer ${
+                        bulkInputMethod === 'paste'
+                          ? 'bg-teal-600 text-white border-teal-600 shadow-xs'
+                          : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      <Table className="w-3.5 h-3.5" />
+                      <span>Copy-Paste Sheet</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBulkInputMethod('file')}
+                      className={`px-3 py-1.5 text-xs font-bold rounded-xl border transition-all flex items-center gap-1.5 cursor-pointer ${
+                        bulkInputMethod === 'file'
+                          ? 'bg-teal-600 text-white border-teal-600 shadow-xs'
+                          : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>Upload CSV / File</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Default Values Strip (Fallbacks if not provided per row in the sheet) */}
+                <div className="bg-white border border-slate-200 p-4 rounded-2xl space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-teal-600" />
+                      <span>Default Fallback Values (applied when row cell is blank in Google Sheet)</span>
+                    </span>
+                    <span className="text-[11px] font-mono text-slate-400">Optional</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+                    <div>
+                      <label className="text-[10px] font-mono font-bold uppercase text-slate-500 block mb-1">
+                        Default Branch
+                      </label>
+                      <select
+                        value={bulkDefaultBranch}
+                        onChange={(e) => setBulkDefaultBranch(e.target.value)}
+                        className="w-full text-xs font-semibold p-2 border border-slate-200 rounded-xl bg-slate-50 text-slate-800 outline-none focus:border-teal-500"
+                      >
+                        <option value="Saravanampatti (CBE)">Saravanampatti (CBE)</option>
+                        <option value="Gandhipuram (CBE)">Gandhipuram (CBE)</option>
+                        <option value="Hopes (CBE)">Hopes (CBE)</option>
+                        <option value="Anna Nagar (Chennai)">Anna Nagar (Chennai)</option>
+                        <option value="OMR (Chennai)">OMR (Chennai)</option>
+                        <option value="Tambaram (Chennai)">Tambaram (Chennai)</option>
+                        <option value="Madurai">Madurai</option>
+                        <option value="Trichy">Trichy</option>
+                        <option value="Salem">Salem</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-mono font-bold uppercase text-slate-500 block mb-1">
+                        Default Course
+                      </label>
+                      <select
+                        value={bulkDefaultCourse}
+                        onChange={(e) => setBulkDefaultCourse(e.target.value)}
+                        className="w-full text-xs font-semibold p-2 border border-slate-200 rounded-xl bg-slate-50 text-slate-800 outline-none focus:border-teal-500"
+                      >
+                        <option value="AMCT Beginner (Classroom)">AMCT Beginner (Classroom)</option>
+                        <option value="AMCT Advanced (Master Class)">AMCT Advanced (Master Class)</option>
+                        <option value="CPCT - Certificate in Professional Clinical Trials">CPCT - Clinical Trials</option>
+                        <option value="Clinical Research & Pharmacovigilance Combo">CR & Pharmacovigilance Combo</option>
+                        <option value="Regulatory Affairs & Medical Writing">Regulatory Affairs</option>
+                        <option value="Healthcare Data Analytics">Healthcare Data Analytics</option>
+                        <option value="Medical Coding Certified Specialist">Medical Coding</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-mono font-bold uppercase text-slate-500 block mb-1">
+                        Default Source
+                      </label>
+                      <input
+                        type="text"
+                        value={bulkDefaultSource}
+                        onChange={(e) => setBulkDefaultSource(e.target.value)}
+                        className="w-full text-xs font-semibold p-2 border border-slate-200 rounded-xl bg-slate-50 text-slate-800 outline-none focus:border-teal-500"
+                        placeholder="Google Sheet Bulk Upload"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-mono font-bold uppercase text-slate-500 block mb-1">
+                        Default Category
+                      </label>
+                      <select
+                        value={bulkDefaultCategory}
+                        onChange={(e) => setBulkDefaultCategory(e.target.value)}
+                        className="w-full text-xs font-semibold p-2 border border-slate-200 rounded-xl bg-slate-50 text-slate-800 outline-none focus:border-teal-500"
+                      >
+                        <option value="Fresh Graduate">Fresh Graduate</option>
+                        <option value="Job Seeker">Job Seeker</option>
+                        <option value="Working Professional">Working Professional</option>
+                        <option value="College Final Year">College Final Year</option>
+                        <option value="Career Break / Relaunch">Career Break / Relaunch</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Input Methods */}
+                {bulkInputMethod === 'paste' ? (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                        <span>Paste Google Sheet Data</span>
+                        <span className="text-[11px] font-normal text-slate-500">(select cells in Sheet, press Ctrl+C, then Ctrl+V here)</span>
+                      </label>
+                      {pastedText && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPastedText('');
+                            setParsedRows([]);
+                          }}
+                          className="text-xs font-semibold text-rose-600 hover:text-rose-800 flex items-center gap-1 cursor-pointer"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>Clear</span>
+                        </button>
+                      )}
+                    </div>
+
+                    <textarea
+                      rows={6}
+                      value={pastedText}
+                      onChange={(e) => {
+                        setPastedText(e.target.value);
+                        if (e.target.value.trim()) handleParseData(e.target.value);
+                      }}
+                      placeholder={`Candidate Name\tMobile Number\tWhatsApp\tEmail\tCourse\tBranch\tSource\tEducation\tYear\tLocation\tNotes\nPriya Sharma\t9876543210\t9876543210\tpriya@gmail.com\tAMCT Beginner\tSaravanampatti (CBE)\tGoogle Sheet\tB.Pharm\t2024\tCoimbatore\tInterested in weekend batch`}
+                      className="w-full font-mono text-[11px] p-3.5 border border-slate-300 rounded-2xl focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none bg-slate-50/50 leading-relaxed"
+                    />
+
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] text-slate-500 flex items-center gap-1">
+                        <HelpCircle className="w-3.5 h-3.5 text-teal-600" />
+                        Columns are automatically recognized (Name, Mobile, WhatsApp, Email, Course, Branch, Source, etc.)
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleParseData()}
+                        disabled={!pastedText.trim() || isParsing}
+                        className="px-4 py-2 bg-teal-600 hover:bg-teal-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-xs transition-all flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Table className="w-3.5 h-3.5" />
+                        <span>Parse Data</span>
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="border-2 border-dashed border-teal-300 hover:border-teal-500 rounded-2xl p-8 bg-teal-50/20 text-center transition-all cursor-pointer relative">
+                      <input
+                        type="file"
+                        accept=".csv,.tsv,.txt"
+                        onChange={handleFileUpload}
+                        className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                      />
+                      <div className="w-12 h-12 rounded-2xl bg-teal-100 text-teal-700 flex items-center justify-center mx-auto mb-3">
+                        <Upload className="w-6 h-6" />
+                      </div>
+                      <h5 className="font-extrabold text-slate-900 text-sm">Upload Google Sheet Export or CSV</h5>
+                      <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
+                        Download your Google Sheet as CSV (File → Download → Comma Separated Values .csv) and drop it here.
+                      </p>
+                      <div className="mt-3 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-teal-100 text-[#0e6977] text-xs font-mono font-bold">
+                        Supported: .csv, .tsv, .txt
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Live Data Preview Table */}
+                {parsedRows.length > 0 && (
+                  <div className="space-y-3 pt-2">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 pb-2">
+                      <div className="flex items-center gap-3">
+                        <h4 className="font-extrabold text-slate-900 text-sm">Preview Upload Data</h4>
+                        <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700">
+                          {parsedRows.length} total rows
+                        </span>
+                        <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
+                          {parsedRows.filter(r => r.isValid).length} ready
+                        </span>
+                        {parsedRows.filter(r => !r.isValid).length > 0 && (
+                          <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-800">
+                            {parsedRows.filter(r => !r.isValid).length} invalid / warnings
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-[11px] font-mono text-slate-400">
+                        Review rows before importing
+                      </span>
+                    </div>
+
+                    <div className="border border-slate-200 rounded-2xl overflow-hidden shadow-xs">
+                      <div className="max-h-64 overflow-y-auto">
+                        <table className="w-full text-left text-xs border-collapse">
+                          <thead className="bg-slate-100/90 text-slate-700 text-[10.5px] uppercase font-mono font-bold sticky top-0 z-10 border-b border-slate-200">
+                            <tr>
+                              <th className="p-2.5 pl-3">#</th>
+                              <th className="p-2.5">Status</th>
+                              <th className="p-2.5">Candidate Name</th>
+                              <th className="p-2.5">Mobile</th>
+                              <th className="p-2.5">WhatsApp</th>
+                              <th className="p-2.5">Email</th>
+                              <th className="p-2.5">Course</th>
+                              <th className="p-2.5">Branch</th>
+                              <th className="p-2.5">Source</th>
+                              <th className="p-2.5">Edu / Year</th>
+                              <th className="p-2.5 text-center">Action</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 font-medium">
+                            {parsedRows.map((r, idx) => (
+                              <tr
+                                key={idx}
+                                className={`hover:bg-slate-50/80 transition-colors ${
+                                  !r.isValid ? 'bg-rose-50/50 text-rose-950' : ''
+                                }`}
+                              >
+                                <td className="p-2.5 pl-3 font-mono text-slate-400 text-[11px]">
+                                  {idx + 1}
+                                </td>
+                                <td className="p-2.5">
+                                  {r.isValid ? (
+                                    <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
+                                      <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                                      Ready
+                                    </span>
+                                  ) : (
+                                    <span
+                                      className="inline-flex items-center gap-1 text-[11px] font-bold text-rose-700 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200"
+                                      title={r.errorReason}
+                                    >
+                                      <AlertTriangle className="w-3 h-3 text-rose-600" />
+                                      {r.errorReason || 'Invalid'}
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="p-2.5 font-bold text-slate-900">
+                                  {r.fullName || <span className="text-rose-500 italic">Missing Name</span>}
+                                </td>
+                                <td className="p-2.5 font-mono text-slate-800">
+                                  {r.phone || <span className="text-rose-500 italic">Missing Phone</span>}
+                                </td>
+                                <td className="p-2.5 font-mono text-slate-600">
+                                  {r.whatsappNumber || r.phone || '-'}
+                                </td>
+                                <td className="p-2.5 text-slate-600 truncate max-w-[140px]">
+                                  {r.email || '-'}
+                                </td>
+                                <td className="p-2.5 text-slate-700 truncate max-w-[140px]">
+                                  {r.course ? (
+                                    r.course
+                                  ) : (
+                                    <span className="text-teal-700 text-[10px] font-mono bg-teal-50 px-1.5 py-0.5 rounded">
+                                      {bulkDefaultCourse}
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="p-2.5 text-slate-700 truncate max-w-[120px]">
+                                  {r.branch ? (
+                                    r.branch
+                                  ) : (
+                                    <span className="text-teal-700 text-[10px] font-mono bg-teal-50 px-1.5 py-0.5 rounded">
+                                      {bulkDefaultBranch}
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="p-2.5 text-slate-700 truncate max-w-[120px]">
+                                  {r.sourceName ? (
+                                    r.sourceName
+                                  ) : (
+                                    <span className="text-slate-500 text-[10px] font-mono bg-slate-100 px-1.5 py-0.5 rounded">
+                                      {bulkDefaultSource}
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="p-2.5 text-slate-600 text-[11px]">
+                                  {[r.education, r.passoutYear].filter(Boolean).join(' ') || '-'}
+                                </td>
+                                <td className="p-2.5 text-center">
+                                  <button
+                                    type="button"
+                                    onClick={() => setParsedRows(prev => prev.filter((_, i) => i !== idx))}
+                                    className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                                    title="Remove row from import"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* BOTTOM STICKY FOOTER FOR BULK IMPORT */}
+                <div className="sticky -bottom-5 sm:-bottom-7 -mx-5 sm:-mx-7 -mb-5 sm:-mb-7 bg-slate-50/95 backdrop-blur-md border-t border-slate-200 px-5 sm:px-7 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-lg z-20">
+                  <div className="text-xs font-mono text-slate-600">
+                    {parsedRows.length > 0 ? (
+                      <>
+                        Ready to import:{' '}
+                        <strong className="text-emerald-700 font-bold">
+                          {parsedRows.filter(r => r.isValid).length}
+                        </strong>{' '}
+                        valid enquiries into CRM
+                      </>
+                    ) : (
+                      <span>Paste Google Sheet data above or upload a CSV file to preview.</span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={onClose}
+                      className="px-4 py-2.5 border border-slate-300 hover:bg-slate-100 text-slate-700 font-bold text-xs rounded-xl transition-all cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleBulkImport}
+                      disabled={isImporting || parsedRows.filter(r => r.isValid).length === 0}
+                      className="bg-[#0e6977] hover:bg-[#0a4f5a] disabled:opacity-50 text-white font-bold text-xs sm:text-sm px-6 py-2.5 rounded-xl shadow-md transition-all active:scale-95 flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      {isImporting ? (
+                        <>
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                          <span>Importing Enquiries...</span>
+                        </>
+                      ) : (
+                        <>
+                          <span>
+                            Import {parsedRows.filter(r => r.isValid).length || ''} Enquiries to Dashboard
+                          </span>
+                          <ArrowRight className="w-4 h-4" />
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

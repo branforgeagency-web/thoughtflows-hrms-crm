@@ -3064,6 +3064,114 @@ router.post('/leads', async (req, res) => {
   }
 });
 
+// Bulk lead/enquiry upload (from Google Sheets / CSV)
+router.post('/leads/bulk', async (req, res) => {
+  try {
+    const rawLeads = Array.isArray(req.body?.leads) ? req.body.leads : [];
+    if (!rawLeads.length) {
+      return res.status(400).json({ error: 'No enquiries provided for bulk upload' });
+    }
+
+    const createdLeads = [];
+    const duplicates = [];
+    const invalidRows = [];
+
+    const counselor = (isScopedHr(req) && req.user?.name) ? req.user.name : (req.body?.defaultCounselor || req.user?.name || '');
+    const userBranch = req.user?.branch || req.body?.defaultBranch || '';
+
+    for (let i = 0; i < rawLeads.length; i++) {
+      const item = rawLeads[i];
+      const payload = { ...item };
+      delete payload.createStudentLogin;
+      delete payload.admittedStudentId;
+
+      if (!payload.fullName && payload.name) {
+        payload.fullName = payload.name;
+      }
+      if (!payload.sourceName && payload.source) {
+        payload.sourceName = payload.source;
+      }
+      if (!payload.sourceName) {
+        payload.sourceName = req.body?.defaultSource || 'Google Sheet Bulk Import';
+      }
+      if (!payload.stage) {
+        payload.stage = 'new';
+      }
+      if (!payload.branch) {
+        payload.branch = userBranch || 'Saravanampatti (CBE)';
+      }
+      if (!payload.course) {
+        payload.course = req.body?.defaultCourse || 'AMCT Beginner (Classroom)';
+      }
+      if (!payload.counselorAssigned && counselor) {
+        payload.counselorAssigned = counselor;
+      }
+
+      // Normalize phone number to clean 10 digits if possible
+      const rawPhone = String(payload.phone || payload.whatsappNumber || payload.mobile || '');
+      const digitsOnly = rawPhone.replace(/\D+/g, '');
+      const cleanPhone = digitsOnly.length >= 10 ? digitsOnly.slice(-10) : rawPhone.trim();
+      if (cleanPhone) {
+        payload.phone = cleanPhone;
+      }
+
+      if (!payload.fullName || (!payload.phone && !payload.email)) {
+        invalidRows.push({
+          row: i + 1,
+          name: payload.fullName || `Row ${i + 1}`,
+          reason: 'Missing candidate name or valid contact phone/email'
+        });
+        continue;
+      }
+
+      // Check for duplicate enquiry by mobile number and/or email ID
+      const dup = await checkDuplicateRegistration({
+        phone: payload.phone || payload.whatsappNumber,
+        whatsappNumber: payload.whatsappNumber,
+        email: payload.email
+      });
+
+      if (dup) {
+        duplicates.push({
+          row: i + 1,
+          name: payload.fullName,
+          phone: payload.phone || payload.whatsappNumber || '',
+          email: payload.email || '',
+          error: dup.error || 'Duplicate record',
+          matchedName: dup.firstRegistrationMember?.name || '',
+          counselor: dup.firstRegistrationMember?.lastContactedHr || ''
+        });
+        continue;
+      }
+
+      try {
+        const newLead = new StudentLead(payload);
+        await newLead.save();
+        createdLeads.push(newLead);
+      } catch (saveErr) {
+        invalidRows.push({
+          row: i + 1,
+          name: payload.fullName,
+          reason: saveErr.message
+        });
+      }
+    }
+
+    res.status(201).json({
+      success: true,
+      total: rawLeads.length,
+      createdCount: createdLeads.length,
+      duplicateCount: duplicates.length,
+      invalidCount: invalidRows.length,
+      createdLeads,
+      duplicates,
+      invalidRows
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.put('/leads/:id', async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Lead not found' });

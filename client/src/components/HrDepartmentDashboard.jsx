@@ -27,7 +27,8 @@ import {
   RefreshCw,
   PhoneCall,
   Users,
-  AlertTriangle
+  AlertTriangle,
+  FileSpreadsheet
 } from 'lucide-react';
 import HrPipelineView from './HrPipelineView';
 import HrFollowUpBoard from './HrFollowUpBoard';
@@ -250,6 +251,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   const [showBookDemoModal, setShowBookDemoModal] = useState(false);
   const [bookDemoInitialData, setBookDemoInitialData] = useState(null);
   const [showAddLeadModal, setShowAddLeadModal] = useState(false);
+  const [addLeadModalMode, setAddLeadModalMode] = useState('single');
   const [studentLogin, setStudentLogin] = useState(null);
   const [toastMsg, setToastMsg] = useState(null);
 
@@ -1031,7 +1033,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
           </div>
 
           <button 
-            onClick={() => setShowAddLeadModal(true)}
+            onClick={() => { setAddLeadModalMode('single'); setShowAddLeadModal(true); }}
             className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold transition-all flex-shrink-0 active:scale-95 cursor-pointer ${
             barTheme === 'clay'
               ? 'clay-btn clay-btn-primary'
@@ -1045,6 +1047,24 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
           }`}>
             <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
             <span>Add Enquiry</span>
+          </button>
+
+          <button 
+            onClick={() => { setAddLeadModalMode('bulk'); setShowAddLeadModal(true); }}
+            title="Bulk Upload Enquiries from Google Sheets or CSV"
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold transition-all flex-shrink-0 active:scale-95 cursor-pointer ${
+            barTheme === 'clay'
+              ? 'clay-btn clay-btn-secondary text-[#073734]'
+              : barTheme === 'turquoise'
+                ? 'rounded-xl bg-white/90 hover:bg-white text-[#08363e] border border-white/60 shadow-xs font-bold'
+                : barTheme === 'slate'
+                  ? 'rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-teal-300'
+                  : barTheme === 'teal'
+                    ? 'rounded-xl bg-teal-800/80 hover:bg-teal-800 text-white border border-teal-600'
+                    : 'rounded-xl bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-700'
+          }`}>
+            <FileSpreadsheet className="w-3.5 h-3.5 stroke-[2.2] text-emerald-600" />
+            <span>Bulk Upload</span>
           </button>
 
           <div className="relative flex-shrink-0">
@@ -1352,7 +1372,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
           <HrPipelineView 
             leads={scopedLeads} 
             onRefreshLeads={loadAllData} 
-            onAddLeadClick={() => setShowAddLeadModal(true)} 
+            onAddLeadClick={() => { setAddLeadModalMode('single'); setShowAddLeadModal(true); }} 
             onAdmitLead={setAdmittingLead}
             onCallLead={(lead) => openCallFor(lead, false)}
             initialViewMode={activeTab === 'Follow-up Board' ? 'followup' : 'kanban'}
@@ -2072,6 +2092,8 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         isOpen={showAddLeadModal}
         onClose={() => setShowAddLeadModal(false)}
         onAddLead={handleAddLeadSubmit}
+        initialMode={addLeadModalMode}
+        currentUser={currentUser}
       />
     </div>
   );
