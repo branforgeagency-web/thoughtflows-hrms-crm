@@ -17,7 +17,7 @@ import {
   AlertCircle,
   Smartphone
 } from 'lucide-react';
-import { getRecordings, deleteRecording, onDataUpdate, recordingUrl } from '../services/api';
+import { getRecordings, deleteRecording, onDataUpdate, recordingUrl, syncEdesyRecordings } from '../services/api';
 import RecordingAudio from './RecordingAudio';
 import PhoneRecordingSync from './PhoneRecordingSync';
 
@@ -39,6 +39,7 @@ export default function HrCallRecordingsTable({ currentUser }) {
   const loadRecordings = async () => {
     try {
       setLoading(true);
+      syncEdesyRecordings().catch(() => {});
       const data = await getRecordings();
       setRecordings(Array.isArray(data) ? data : []);
       setLoading(false);
@@ -140,6 +141,7 @@ export default function HrCallRecordingsTable({ currentUser }) {
   };
 
   const OUTCOME_BADGES = {
+    'inbound': 'bg-cyan-100 text-cyan-800 border-cyan-300',
     'will join': 'bg-emerald-100 text-emerald-800 border-emerald-300',
     'demo booked': 'bg-purple-100 text-purple-800 border-purple-300',
     'follow-up': 'bg-blue-100 text-blue-800 border-blue-300',

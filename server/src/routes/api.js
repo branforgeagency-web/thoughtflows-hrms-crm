@@ -457,6 +457,92 @@ function edesyHangupHandler(req, res) {
   });
 }
 
+async function processEdesyCallRecord(d) {
+  const callSid = String(pickField(d, 'call_sid', 'jambonz_call_sid', 'id', 'sid', 'callId', 'call_id') || '');
+  if (!callSid) return null;
+
+  const ctx = pendingCalls.get(callSid) || {};
+  const status = mapEdesyStatus(pickField(d, 'status', 'call_status', 'state'));
+  const rawDirection = String(pickField(d, 'direction') || '').toLowerCase();
+
+  const numA = String(pickField(d, 'from', 'caller_number', 'from_number') || ctx.from || '').replace(/\D/g, '').slice(-10);
+  const numB = String(pickField(d, 'to', 'target_number', 'to_number') || ctx.to || '').replace(/\D/g, '').slice(-10);
+
+  // Inbound call detection:
+  // If direction is explicitly inbound, OR if ctx has no outbound record and target is a staff member
+  let isInbound = rawDirection === 'inbound' || rawDirection.includes('inbound');
+  if (!isInbound && !rawDirection && !ctx.to && numB) {
+    const counselorInB = await User.findOne({ phone: new RegExp(numB + '$') }).catch(() => null);
+    if (counselorInB) isInbound = true;
+  }
+
+  // For inbound calls: caller (numA) is the student, target (numB) is the counselor/staff.
+  // For outbound calls: caller (numA) is the counselor/staff, target (numB) is the student.
+  const studentPhone = isInbound ? numA : (numB || numA);
+  const counselorPhone = isInbound ? numB : numA;
+
+  let leadId = ctx.leadId || '';
+  let leadName = ctx.leadName || '';
+  if (studentPhone) {
+    const lead = await StudentLead.findOne({ phone: new RegExp(studentPhone + '$') }).catch(() => null);
+    if (lead) {
+      leadId = lead._id;
+      if (!leadName) leadName = lead.name || lead.fullName || '';
+    } else {
+      const student = await Student.findOne({ mobile: new RegExp(studentPhone + '$') }).catch(() => null);
+      if (student && !leadName) leadName = student.name || 'Student';
+    }
+  }
+  if (!leadName) leadName = isInbound ? `Inbound (${studentPhone || 'Unknown'})` : `Lead (${studentPhone || 'Unknown'})`;
+
+  let counselorName = ctx.counselor || '';
+  if (!counselorName && counselorPhone) {
+    const u = await User.findOne({ phone: new RegExp(counselorPhone + '$') }).catch(() => null);
+    if (u) counselorName = u.name || u.userName || '';
+  }
+
+  let recordingUrl = pickField(d, 'recording_url', 'recordingUrl', 'audio_url', 'url');
+  if (!recordingUrl && (status === 'completed' || d.recording_ready)) {
+    try {
+      const recResp = await fetch(edesyUrl(`/masking/calls/${callSid}/recording`), { headers: edesyHeaders() });
+      const recData = await recResp.json().catch(() => ({}));
+      recordingUrl = recResp.ok ? pickField(recData?.data || recData || {}, 'url', 'recording_url', 'audio_url') : '';
+    } catch (_) {}
+  }
+
+  let audioUrl = '';
+  if (recordingUrl) {
+    audioUrl = await downloadAndStoreRecording(recordingUrl, `edesy_${callSid}`);
+  }
+
+  const durationSeconds = Number(pickField(d, 'duration_sec', 'bill_duration_sec', 'duration') || 0);
+  const outcome = isInbound
+    ? (status === 'completed' || durationSeconds > 0 ? 'Inbound Connected' : 'Inbound Missed')
+    : (status === 'completed' || durationSeconds > 0 ? 'Follow-up Needed' : 'Not Reachable');
+  const notes = isInbound
+    ? `Inbound call from ${studentPhone || 'caller'} received by ${counselorName || counselorPhone || 'Desk'}`
+    : `Outbound call to ${studentPhone}`;
+
+  const saved = await upsertBridgeRecording({
+    callSid,
+    leadId,
+    leadName,
+    leadPhone: studentPhone,
+    counselorName,
+    counselorPhone,
+    durationSeconds,
+    audioUrl,
+    outcome,
+    notes
+  }, 'edesy');
+
+  if (status && status !== 'in-progress' && status !== 'ringing') {
+    pendingCalls.delete(callSid);
+  }
+
+  return saved;
+}
+
 // Edesy call event webhook (call.initiated / call.completed / recording.ready), verified
 // with an HMAC-SHA256 signature when EDESY_WEBHOOK_SECRET is set (header name configurable
 // via EDESY_WEBHOOK_SIGNATURE_HEADER — confirm the exact header Edesy sends on the dashboard).
@@ -474,30 +560,40 @@ async function edesyWebhookHandler(req, res) {
       if (!ok) return res.status(401).json({ error: 'Invalid webhook signature' });
     }
     const body = req.body || {};
-    const callSid = String(pickField(body, 'call_sid', 'id', 'sid', 'callId', 'call_id') || '');
     const d = body.data || body || {};
-    const ctx = pendingCalls.get(callSid) || {};
-    const status = mapEdesyStatus(pickField(d, 'status', 'call_status', 'state'));
-    const leadPhone = String(pickField(d, 'to', 'target_number', 'to_number') || ctx.to || '').replace(/\D/g, '').slice(-10);
-    const recordingUrl = pickField(d, 'recording_url', 'recordingUrl');
-    let audioUrl = '';
-    if (recordingUrl) audioUrl = await downloadAndStoreRecording(recordingUrl, `edesy_${callSid}`);
-    await upsertBridgeRecording({
-      callSid,
-      leadId: ctx.leadId,
-      leadName: ctx.leadName,
-      leadPhone,
-      counselorName: ctx.counselor || '',
-      counselorPhone: String(pickField(d, 'from', 'caller_number', 'from_number') || ctx.from || '').replace(/\D/g, '').slice(-10),
-      durationSeconds: pickField(d, 'duration_sec', 'bill_duration_sec', 'duration') || 0,
-      audioUrl,
-      outcome: status === 'completed' ? 'Follow-up Needed' : 'Not Reachable'
-    }, 'edesy');
-    if (status && status !== 'in-progress' && status !== 'ringing') pendingCalls.delete(callSid);
+    await processEdesyCallRecord(d);
     res.json({ success: true });
   } catch (err) {
     console.error('Edesy webhook error:', err.message);
     res.status(500).json({ error: err.message });
+  }
+}
+
+// Reconcile / sync recent call recordings (both inbound and outbound) from Edesy API
+async function edesySyncHandler(req, res) {
+  try {
+    const missing = edesyMissing();
+    if (missing.length) return res.status(503).json({ error: 'Edesy is not configured.' });
+    const response = await fetch(edesyUrl('/masking/call-logs?limit=50'), { headers: edesyHeaders() });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      return res.status(502).json({ error: data?.error?.message || `Edesy returned HTTP ${response.status}` });
+    }
+    const list = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+    let synced = 0;
+    for (const item of list) {
+      const sid = String(pickField(item, 'call_sid', 'jambonz_call_sid', 'id', 'sid') || '');
+      if (!sid) continue;
+      const existing = await CallRecording.findOne({ callSid: sid });
+      if (!existing || !existing.audioUrl) {
+        const saved = await processEdesyCallRecord(item);
+        if (saved) synced++;
+      }
+    }
+    res.json({ success: true, count: list.length, newlySynced: synced });
+  } catch (err) {
+    console.error('Edesy sync error:', err.message);
+    res.status(502).json({ error: `Sync failed: ${err.message}` });
   }
 }
 
@@ -641,6 +737,9 @@ const knowlarityWebhook = async (req, res) => {
 router.post('/calls/knowlarity/webhook', knowlarityWebhook);
 router.get('/calls/knowlarity/webhook', knowlarityWebhook);
 router.post('/calls/edesy/webhook', edesyWebhookHandler);
+router.get('/calls/edesy/webhook', edesyWebhookHandler);
+router.post('/calls/edesy/sync', edesySyncHandler);
+router.get('/calls/edesy/sync', edesySyncHandler);
 
 router.post('/calls/:callSid/hangup', async (req, res) => {
   if (activeProvider() === 'edesy') return edesyHangupHandler(req, res);

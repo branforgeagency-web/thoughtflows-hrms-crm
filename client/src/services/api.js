@@ -268,6 +268,12 @@ export const hangupCall = async (callSid) => {
   return res.data;
 };
 
+export const syncEdesyRecordings = async () => {
+  const res = await api.post('/calls/edesy/sync');
+  notifyDataUpdate('recordings');
+  return res.data;
+};
+
 // Call Recordings API
 export const getRecordings = async (params) => {
   const res = await api.get('/recordings', { params });
