@@ -3457,63 +3457,52 @@ async function findEligibleTrainers({ language, location, preferredDate, timeSlo
 }
 
 // Head of Trainer list (Trainers with head/lead/chief roles + Branch Head of Trainers + Department Head)
+export const HEAD_OF_TRAINERS_MASTER = [
+  {
+    id: 'HOT_MANOJ',
+    name: 'Manoj',
+    role: 'Head of Trainer · Tamil Nadu',
+    zone: 'Tamil Nadu',
+    state: 'Tamil Nadu',
+    branch: 'Tamil Nadu (Coimbatore, Salem, Trichy, Theni)',
+    email: 'manojs@thoughtflows.in',
+    branches: ['Tamil Nadu', 'Coimbatore', 'Saravanampatti', 'Gandhipuram', 'Hopes', 'Salem', 'Trichy', 'Theni', 'Madurai', 'Erode', 'Tiruppur']
+  },
+  {
+    id: 'HOT_KEERTHIKA',
+    name: 'Keerthika',
+    role: 'Head of Trainer · Online',
+    zone: 'Online',
+    state: 'Online',
+    branch: 'Online / Virtual Batches',
+    email: 'keerthika@thoughtflows.in',
+    branches: ['Online', 'Virtual', 'All Branches', 'Remote']
+  },
+  {
+    id: 'HOT_VAISHNA',
+    name: 'Vaishna',
+    role: 'Head of Trainer · Kerala',
+    zone: 'Kerala',
+    state: 'Kerala',
+    branch: 'Kerala (Kochi, Trivandrum)',
+    email: 'vaishna@thoughtflows.in',
+    branches: ['Kerala', 'Kochi', 'Trivandrum', 'Calicut', 'Kollam']
+  },
+  {
+    id: 'HOT_PAVITHRA',
+    name: 'Pavithra',
+    role: 'Head of Trainer · Telangana & Andhra',
+    zone: 'Telangana & Andhra',
+    state: 'Telangana & Andhra',
+    branch: 'Telangana & Andhra (Hyderabad, Ameerpet, Dilsukhnagar, Tirupati, Vizag)',
+    email: 'pavithra@thoughtflows.in',
+    branches: ['Telangana', 'Andhra', 'Telangana & Andhra', 'Hyderabad', 'Ameerpet', 'Dilsukhnagar', 'Tirupati', 'Vizag', 'Vijayawada']
+  }
+];
+
 router.get('/trainer/heads', async (req, res) => {
   try {
-    const [trainers, users, branches, depts] = await Promise.all([
-      Trainer.find({ active: { $ne: false } }).lean(),
-      User.find({ active: { $ne: false } }).lean(),
-      Branch.find({ status: { $ne: 'Inactive' } }).lean(),
-      Department.find({ $or: [{ code: 'ACAD' }, { dashboard: 'training' }] }).lean()
-    ]);
-    const deptHeadName = depts.find((d) => d.head)?.head || 'Dr. Vikram C.';
-
-    const heads = [];
-
-    // 1. Central Academic / Training Head (Dr. Vikram C. - All Branches)
-    heads.push({
-      id: 'HEAD_FACULTY_001',
-      name: deptHeadName,
-      role: 'Faculty Lead & Head of Training',
-      email: 'training@thoughtflows.in',
-      branch: 'All Branches'
-    });
-
-    // 2. Identify designated Head of Trainer for every branch
-    const allKnownBranches = Array.from(new Set([
-      ...branches.map(b => b.name).filter(Boolean),
-      'Saravanampatti', 'Gandhipuram', 'Hopes', 'Ameerpet', 'Dilsukhnagar',
-      'Kochi', 'Salem', 'Tirupati', 'Trichy', 'Trivandrum', 'Vizag', 'Kollapur', 'Pune', 'Theni'
-    ]));
-
-    allKnownBranches.forEach(branch => {
-      // Look for a trainer in this branch with lead/head role
-      const leadTrainer = trainers.find(t => 
-        t.branchName && t.branchName.toLowerCase() === branch.toLowerCase() && 
-        /head|chief|lead|faculty/i.test(t.role || '')
-      );
-      // Look for any user in this branch with head of trainer or lead trainer role
-      const leadUser = users.find(u => 
-        u.branch && u.branch.toLowerCase() === branch.toLowerCase() && 
-        /head of trainer|training head|head of training|lead trainer|trainer/i.test(u.role || '')
-      );
-      // Look for any trainer assigned to this branch
-      const branchTrainer = trainers.find(t => t.branchName && t.branchName.toLowerCase() === branch.toLowerCase());
-
-      const chosenName = leadTrainer?.trainerName || leadUser?.name || branchTrainer?.trainerName || `${branch} Head of Trainer`;
-      const chosenId = leadTrainer?.trainerId || leadUser?._id?.toString() || branchTrainer?.trainerId || `HEAD_${branch.toUpperCase().replace(/\s+/g, '_')}`;
-      const chosenRole = leadTrainer?.role || leadUser?.role || `Head of Trainer (${branch})`;
-      const chosenEmail = leadTrainer?.email || leadUser?.email || `${branch.toLowerCase().replace(/\s+/g, '')}.training@thoughtflows.in`;
-
-      heads.push({
-        id: chosenId,
-        name: chosenName,
-        role: chosenRole && chosenRole.includes('Head') ? chosenRole : `Head of Trainer (${branch})`,
-        email: chosenEmail,
-        branch: branch
-      });
-    });
-
-    res.json(heads);
+    res.json(HEAD_OF_TRAINERS_MASTER);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -5140,7 +5129,7 @@ async function processHandoverToHead(req, res) {
       if (missing.length) return res.status(400).json({ error: `Complete the handover checklist first — missing: ${missing.join(', ')}` });
     }
 
-    const assignedHead = headOfTrainer || st.headOfTrainer || 'Dr. Vikram C.';
+    const assignedHead = headOfTrainer || st.headOfTrainer || 'Manoj';
     st.handoverStatus = 'Handed Over to Head of Trainer';
     st.headOfTrainer = assignedHead;
     st.headOfTrainerId = headOfTrainerId || st.headOfTrainerId || '';
@@ -5185,6 +5174,10 @@ export const isHeadOfTrainerUser = async (req) => {
   if (!u) return false;
   // Admin & Leadership always have full authority
   if (['admin', 'leadership'].includes(u.department) || ['Admin', 'Super Admin'].includes(u.role)) {
+    return true;
+  }
+  const name = String(u.name || u.userName || '').toLowerCase();
+  if (/manoj|keerthika|vaishna|pavithra|dr\.?\s*vikram/i.test(name)) {
     return true;
   }
   const role = String(u.role || '').toLowerCase();

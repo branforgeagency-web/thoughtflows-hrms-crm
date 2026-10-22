@@ -17,28 +17,99 @@ import {
 
 import { getStudents, updateStudent, getHeadOfTrainers, handoverStudentToHead, onDataUpdate } from '../services/api';
 
+export const DEFAULT_HEADS_OF_TRAINER = [
+  {
+    id: 'HOT_MANOJ',
+    name: 'Manoj',
+    role: 'Head of Trainer · Tamil Nadu',
+    zone: 'Tamil Nadu',
+    branch: 'Tamil Nadu (Coimbatore, Salem, Trichy, Theni)',
+    branches: ['Tamil Nadu', 'Coimbatore', 'Saravanampatti', 'Gandhipuram', 'Hopes', 'Salem', 'Trichy', 'Theni', 'Madurai', 'Erode', 'Tiruppur']
+  },
+  {
+    id: 'HOT_KEERTHIKA',
+    name: 'Keerthika',
+    role: 'Head of Trainer · Online',
+    zone: 'Online',
+    branch: 'Online / Virtual Batches',
+    branches: ['Online', 'Virtual', 'All Branches', 'Remote']
+  },
+  {
+    id: 'HOT_VAISHNA',
+    name: 'Vaishna',
+    role: 'Head of Trainer · Kerala',
+    zone: 'Kerala',
+    branch: 'Kerala (Kochi, Trivandrum)',
+    branches: ['Kerala', 'Kochi', 'Trivandrum', 'Calicut', 'Kollam']
+  },
+  {
+    id: 'HOT_PAVITHRA',
+    name: 'Pavithra',
+    role: 'Head of Trainer · Telangana & Andhra',
+    zone: 'Telangana & Andhra',
+    branch: 'Telangana & Andhra (Hyderabad, Ameerpet, Dilsukhnagar, Tirupati, Vizag)',
+    branches: ['Telangana', 'Andhra', 'Telangana & Andhra', 'Hyderabad', 'Ameerpet', 'Dilsukhnagar', 'Tirupati', 'Vizag', 'Vijayawada']
+  }
+];
+
+export const matchHeadOfTrainerForStudent = (stu, heads = DEFAULT_HEADS_OF_TRAINER) => {
+  const list = heads && heads.length > 0 ? heads : DEFAULT_HEADS_OF_TRAINER;
+
+  // 1. If student already has an assigned head that exists in list
+  if (stu?.headOfTrainer) {
+    const existing = list.find(h => h.name.toLowerCase() === stu.headOfTrainer.toLowerCase());
+    if (existing) return existing;
+  }
+
+  const mode = String(stu?.batchMode || stu?.mode || '').toLowerCase();
+  const loc = `${stu?.branch || ''} ${stu?.location || ''} ${stu?.leadBranch || ''} ${stu?.state || ''} ${stu?.zone || ''}`.toLowerCase();
+
+  // Mode check for Online / Virtual
+  if (mode.includes('online') || mode.includes('virtual') || loc.includes('online') || loc.includes('virtual')) {
+    const onlineHead = list.find(h => /keerthika/i.test(h.name) || /online|virtual/i.test(h.zone || h.branch || ''));
+    if (onlineHead) return onlineHead;
+  }
+
+  // Kerala check
+  if (/kerala|kochi|cochin|trivandrum|thiruvananthapuram|calicut|kozhikode|kollam/i.test(loc)) {
+    const keralaHead = list.find(h => /vaishna/i.test(h.name) || /kerala/i.test(h.zone || h.branch || ''));
+    if (keralaHead) return keralaHead;
+  }
+
+  // Telangana & Andhra check
+  if (/telangana|andhra|hyderabad|ameerpet|dilsukhnagar|tirupati|vizag|visakhapatnam|vijayawada/i.test(loc)) {
+    const telanganaHead = list.find(h => /pavithra/i.test(h.name) || /telangana|andhra/i.test(h.zone || h.branch || ''));
+    if (telanganaHead) return telanganaHead;
+  }
+
+  // Tamil Nadu check
+  if (/tamil|coimbatore|saravanampatti|gandhipuram|hopes|salem|trichy|theni|madurai|erode|tiruppur/i.test(loc)) {
+    const tnHead = list.find(h => /manoj/i.test(h.name) || /tamil/i.test(h.zone || h.branch || ''));
+    if (tnHead) return tnHead;
+  }
+
+  // Fallback to Manoj or first
+  return list.find(h => /manoj/i.test(h.name)) || list[0];
+};
+
 export default function HrHandoverDesk({ students: propStudents, onRefreshStudents, currentUser }) {
   const [toastMsg, setToastMsg] = useState(null);
   const [activeTabFilter, setActiveTabFilter] = useState('ALL'); // ALL, PENDING, READY, SENT
   const [searchQuery, setSearchQuery] = useState('');
   const [editingStudent, setEditingStudent] = useState(null);
   const [students, setStudents] = useState(propStudents || []);
-  const [headsOfTrainer, setHeadsOfTrainer] = useState([]);
+  const [headsOfTrainer, setHeadsOfTrainer] = useState(DEFAULT_HEADS_OF_TRAINER);
   const [assigning, setAssigning] = useState(null); // student being handed over to Head of Trainer
   const [assignForm, setAssignForm] = useState({ headOfTrainer: '', headOfTrainerId: '', trainerNote: '' });
 
   useEffect(() => {
     getHeadOfTrainers()
       .then(res => {
-        const list = Array.isArray(res) && res.length > 0 ? res : [
-          { id: 'HEAD_FACULTY_001', name: 'Dr. Vikram C.', role: 'Faculty Lead & Head of Training' }
-        ];
+        const list = Array.isArray(res) && res.length > 0 ? res : DEFAULT_HEADS_OF_TRAINER;
         setHeadsOfTrainer(list);
       })
       .catch(() => {
-        setHeadsOfTrainer([
-          { id: 'HEAD_FACULTY_001', name: 'Dr. Vikram C.', role: 'Faculty Lead & Head of Training' }
-        ]);
+        setHeadsOfTrainer(DEFAULT_HEADS_OF_TRAINER);
       });
   }, []);
 
@@ -93,19 +164,12 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
 
   const openHandover = (stu) => {
     const studentBranch = stu.branch || stu.location || stu.leadBranch || '';
-    const branchHead = headsOfTrainer.find(h => 
-      h.branch && studentBranch && (
-        h.branch.toLowerCase() === studentBranch.toLowerCase() ||
-        h.branch.toLowerCase().includes(studentBranch.toLowerCase()) ||
-        studentBranch.toLowerCase().includes(h.branch.toLowerCase())
-      )
-    );
-    const defaultHead = branchHead || headsOfTrainer.find(h => h.branch === 'All Branches') || headsOfTrainer[0] || { name: 'Dr. Vikram C.', id: 'HEAD_FACULTY_001', role: 'Faculty Lead & Head of Training', branch: 'All Branches' };
+    const defaultHead = matchHeadOfTrainerForStudent(stu, headsOfTrainer);
 
     setAssignForm({
-      headOfTrainer: stu.headOfTrainer || defaultHead.name,
-      headOfTrainerId: stu.headOfTrainerId || defaultHead.id,
-      headOfTrainerBranch: defaultHead.branch || studentBranch || 'Branch',
+      headOfTrainer: stu.headOfTrainer || defaultHead?.name || 'Manoj',
+      headOfTrainerId: stu.headOfTrainerId || defaultHead?.id || '',
+      headOfTrainerBranch: defaultHead?.branch || studentBranch || 'Tamil Nadu',
       branch: studentBranch,
       trainerNote: stu.trainerNote || ''
     });
@@ -614,15 +678,11 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
                     className="w-full p-2.5 rounded-xl border border-slate-200 bg-white font-medium"
                   >
                     {headsOfTrainer.map(h => {
-                      const stuBranch = assigning.branch || assigning.location || assigning.leadBranch || '';
-                      const isMatch = stuBranch && h.branch && (
-                        h.branch.toLowerCase() === stuBranch.toLowerCase() ||
-                        h.branch.toLowerCase().includes(stuBranch.toLowerCase()) ||
-                        stuBranch.toLowerCase().includes(h.branch.toLowerCase())
-                      );
+                      const matched = matchHeadOfTrainerForStudent(assigning, headsOfTrainer);
+                      const isMatch = matched?.name === h.name;
                       return (
                         <option key={h.id || h.name} value={h.name}>
-                          {isMatch ? '★ [Branch Match] ' : ''}{h.name} · {h.role || 'Head of Trainer'}{h.branch ? ` (${h.branch})` : ''}
+                          {isMatch ? '★ [Zone Match] ' : ''}{h.name} · {h.role || 'Head of Trainer'}{h.branch ? ` (${h.branch})` : ''}
                         </option>
                       );
                     })}
@@ -631,10 +691,10 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
                   <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between">
                     <div>
                       <div className="font-bold text-slate-900 text-xs">
-                        {assignForm.headOfTrainer || headsOfTrainer[0]?.name || 'Dr. Vikram C.'}
+                        {assignForm.headOfTrainer || headsOfTrainer[0]?.name || 'Manoj'}
                       </div>
                       <div className="text-[11px] text-slate-500">
-                        {headsOfTrainer[0]?.role || 'Faculty Lead & Head of Training'} · {headsOfTrainer[0]?.branch || assigning.branch || 'All Branches'}
+                        {headsOfTrainer[0]?.role || 'Head of Trainer · Tamil Nadu'} · {headsOfTrainer[0]?.branch || assigning.branch || 'Tamil Nadu'}
                       </div>
                     </div>
                     <span className="px-2.5 py-1 rounded-md bg-[#00897b] text-white text-[10px] font-bold">

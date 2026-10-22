@@ -128,7 +128,7 @@ export default function TrainingDepartmentDashboard({
     currentUser?.role === 'Centre Manager' ||
     /head of trainer|training head|head of training|chief trainer|chief faculty|faculty lead|branch head/i.test(trainerRole || '') ||
     /head of trainer|training head|head of training|chief trainer|chief faculty|faculty lead|branch head/i.test(currentUser?.role || '') ||
-    /dr\.?\s*vikram/i.test(trainerName || currentUser?.name || currentUser?.userName || '') ||
+    /manoj|keerthika|vaishna|pavithra|dr\.?\s*vikram/i.test(trainerName || currentUser?.name || currentUser?.userName || '') ||
     (trainerCourseKey === 'ALL' && /head|chief|lead/i.test(trainerRole || currentUser?.role || '')) ||
     /trainer|faculty/i.test(currentUser?.role || trainerRole || '')
   );
