@@ -19,12 +19,10 @@ import {
   FileSpreadsheet,
   RefreshCw,
   HelpCircle,
-  Trash2,
-  MapPin
+  Trash2
 } from 'lucide-react';
 import { COURSE_CATEGORIES } from '../constants/courses';
 import { QUALIFICATION_GROUPS } from '../constants/qualifications';
-import { ALL_BRANCH_OPTIONS } from '../constants/branches';
 import {
   TIER_A_SOURCES,
   TIER_B_SOURCES,
@@ -73,7 +71,6 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead, initialMode =
   const [pastedText, setPastedText] = useState('');
   const [parsedRows, setParsedRows] = useState([]);
   const [bulkDefaultCourse, setBulkDefaultCourse] = useState('AMCT Beginner (Classroom)');
-  const [bulkDefaultBranch, setBulkDefaultBranch] = useState(currentUser?.branch || 'Saravanampatti (CBE)');
   const [bulkDefaultSource, setBulkDefaultSource] = useState('Google Sheet Bulk Import');
   const [bulkDefaultCategory, setBulkDefaultCategory] = useState('Fresh Graduate');
   const [isParsing, setIsParsing] = useState(false);
@@ -135,12 +132,6 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead, initialMode =
     reader.readAsText(file);
   };
 
-  const handleApplyBranchToAll = (targetBranch) => {
-    setBulkDefaultBranch(targetBranch);
-    setParsedRows(prev => prev.map(r => ({ ...r, branch: targetBranch })));
-    showToast(`✓ Assigned all enquiries to branch: ${targetBranch}`);
-  };
-
   const handleBulkImport = async () => {
     const validRows = parsedRows.filter(r => r.isValid);
     if (!validRows.length) {
@@ -156,7 +147,7 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead, initialMode =
         whatsappNumber: r.whatsappNumber || r.phone,
         email: r.email,
         course: r.course || bulkDefaultCourse,
-        branch: r.branch || bulkDefaultBranch,
+        branch: r.branch || currentUser?.branch || '',
         sourceName: r.sourceName || bulkDefaultSource,
         source: r.sourceName || bulkDefaultSource,
         category: r.category || bulkDefaultCategory,
@@ -172,7 +163,7 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead, initialMode =
 
       const res = await createLeadsBulk(payloadLeads, {
         defaultCourse: bulkDefaultCourse,
-        defaultBranch: bulkDefaultBranch,
+        defaultBranch: currentUser?.branch || '',
         defaultSource: bulkDefaultSource,
         defaultCounselor: currentUser?.name || ''
       });
@@ -946,24 +937,7 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead, initialMode =
                     <span className="text-[11px] font-mono text-slate-400">Optional</span>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
-                    <div>
-                      <label className="text-[10px] font-mono font-bold uppercase text-slate-500 block mb-1">
-                        Default Branch
-                      </label>
-                      <select
-                        value={bulkDefaultBranch}
-                        onChange={(e) => setBulkDefaultBranch(e.target.value)}
-                        className="w-full text-xs font-semibold p-2 border border-slate-200 rounded-xl bg-slate-50 text-slate-800 outline-none focus:border-teal-500 font-sans cursor-pointer"
-                      >
-                        {ALL_BRANCH_OPTIONS.map((b) => (
-                          <option key={b.value} value={b.value}>
-                            {b.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div>
                       <label className="text-[10px] font-mono font-bold uppercase text-slate-500 block mb-1">
                         Default Course
@@ -1012,55 +986,6 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead, initialMode =
                         <option value="Career Break / Relaunch">Career Break / Relaunch</option>
                       </select>
                     </div>
-                  </div>
-
-                  {/* Quick Manual Branch Assignment Strip */}
-                  <div className="pt-3 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="text-[11px] font-bold text-slate-700 flex items-center gap-1 mr-1">
-                        <MapPin className="w-3.5 h-3.5 text-[#0e6977]" />
-                        <span>Quick Branch:</span>
-                      </span>
-                      {[
-                        { label: 'Ameerpet', val: 'Ameerpet (Hyderabad)' },
-                        { label: 'Dilsukhnagar', val: 'Dilsukhnagar (Hyderabad)' },
-                        { label: 'Gandhipuram', val: 'Gandhipuram (CBE)' },
-                        { label: 'Kochi', val: 'Kochi (Kerala)' },
-                        { label: 'Tirupati', val: 'Tirupati (Andhra)' },
-                        { label: 'Vizag', val: 'Vizag (Visakhapatnam)' },
-                        { label: 'Pune', val: 'Pune (Maharashtra)' },
-                        { label: 'Saravanampatti', val: 'Saravanampatti (CBE)' },
-                        { label: 'Trichy', val: 'Trichy (Tamil Nadu)' },
-                        { label: 'Salem', val: 'Salem (Tamil Nadu)' }
-                      ].map(b => {
-                        const isActive = bulkDefaultBranch === b.val;
-                        return (
-                          <button
-                            key={b.val}
-                            type="button"
-                            onClick={() => handleApplyBranchToAll(b.val)}
-                            className={`px-2.5 py-1 text-[11px] font-bold rounded-lg border transition-all cursor-pointer ${
-                              isActive
-                                ? 'bg-[#0e6977] text-white border-[#0e6977] shadow-xs'
-                                : 'bg-slate-50 text-slate-700 border-slate-200 hover:border-teal-400 hover:bg-teal-50'
-                            }`}
-                          >
-                            {b.label}
-                          </button>
-                        );
-                      })}
-                    </div>
-
-                    {parsedRows.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => handleApplyBranchToAll(bulkDefaultBranch)}
-                        className="text-[11px] font-bold text-teal-700 hover:text-teal-900 bg-teal-50 hover:bg-teal-100/80 px-2.5 py-1 rounded-lg border border-teal-200 transition-all cursor-pointer whitespace-nowrap self-start sm:self-auto"
-                        title="Assign all rows to currently selected branch"
-                      >
-                        ⚡ Set all {parsedRows.length} rows to {bulkDefaultBranch.split(' ')[0]}
-                      </button>
-                    )}
                   </div>
                 </div>
 
@@ -1172,7 +1097,6 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead, initialMode =
                               <th className="p-2.5">WhatsApp</th>
                               <th className="p-2.5">Email</th>
                               <th className="p-2.5">Course</th>
-                              <th className="p-2.5">Branch</th>
                               <th className="p-2.5">Source</th>
                               <th className="p-2.5">Allocated To</th>
                               <th className="p-2.5">Category</th>
@@ -1227,20 +1151,6 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead, initialMode =
                                       {bulkDefaultCourse}
                                     </span>
                                   )}
-                                </td>
-                                <td className="p-2 text-slate-700">
-                                  <select
-                                    value={r.branch || bulkDefaultBranch}
-                                    onChange={(e) => {
-                                      const newBranch = e.target.value;
-                                      setParsedRows(prev => prev.map((item, i) => i === idx ? { ...item, branch: newBranch } : item));
-                                    }}
-                                    className="text-[11px] font-semibold py-1 px-1.5 border border-slate-200 hover:border-teal-400 rounded-lg bg-white text-slate-800 outline-none max-w-[135px] cursor-pointer"
-                                  >
-                                    {ALL_BRANCH_OPTIONS.map(b => (
-                                      <option key={b.value} value={b.value}>{b.short || b.label}</option>
-                                    ))}
-                                  </select>
                                 </td>
                                 <td className="p-2.5 text-slate-700 truncate max-w-[120px]">
                                   {r.sourceName ? (
