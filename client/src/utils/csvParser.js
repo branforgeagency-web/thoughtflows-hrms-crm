@@ -187,6 +187,8 @@ function parseVerticalStream(lines) {
       branch: branch || '',
       sourceName: source || 'Google Sheet Import',
       counselorAssigned: counselor || '',
+      allocatedTo: counselor || '',
+      spokenBy: counselor || '',
       category: category || 'Enquiry',
       stage: mapCategoryToStage(category),
       education,
@@ -298,11 +300,12 @@ export function parseGoogleSheetOrCsv(rawText) {
     else if (/^(source|lead\s*source|source\s*name|channel|mode\s*of\s*source|platform)$/i.test(h)) fieldIndex.source = idx;
     else if (/^(category|student\s*category|lead\s*category|type)$/i.test(h)) fieldIndex.category = idx;
     else if (/^(allocated\s*to|counselor|counselor\s*assigned|assigned\s*to|lead\s*owner|owner|agent)$/i.test(h)) fieldIndex.counselor = idx;
+    else if (/^(spoken\s*by|called\s*by|telecaller)$/i.test(h)) fieldIndex.spokenBy = idx;
     else if (/^(fetched\s*by|lead\s*by|captured\s*by|created\s*by)$/i.test(h)) fieldIndex.fetchedBy = idx;
     else if (/^(qualification|education|degree|qual|highest\s*qualification)$/i.test(h)) fieldIndex.qualification = idx;
     else if (/^(passout|passout\s*year|year\s*of\s*passing|passed\s*out|year|batch)$/i.test(h)) fieldIndex.passoutYear = idx;
     else if (/^(location|city|place|native|address|candidate\s*location)$/i.test(h)) fieldIndex.location = idx;
-    else if (/^(note|notes|remarks|comment|comments|handover\s*note|enquiry\s*notes|follow\s*up|follow\s*up\s*1|follow\s*up\s*2|spoken\s*by|hold|lost|lead)$/i.test(h)) {
+    else if (/^(note|notes|remarks|comment|comments|handover\s*note|enquiry\s*notes|follow\s*up|follow\s*up\s*1|follow\s*up\s*2|hold|lost|lead)$/i.test(h)) {
       if (fieldIndex.notes === undefined) fieldIndex.notes = idx;
       else extraNotesIndices.push(idx);
     }
@@ -334,6 +337,7 @@ export function parseGoogleSheetOrCsv(rawText) {
     const sourceName = fieldIndex.source !== undefined ? String(cols[fieldIndex.source] || '').trim() : '';
     const category = fieldIndex.category !== undefined ? String(cols[fieldIndex.category] || '').trim() : '';
     const counselorAssigned = fieldIndex.counselor !== undefined ? String(cols[fieldIndex.counselor] || '').trim() : '';
+    const spokenBy = fieldIndex.spokenBy !== undefined ? String(cols[fieldIndex.spokenBy] || '').trim() : '';
     const fetchedBy = fieldIndex.fetchedBy !== undefined ? String(cols[fieldIndex.fetchedBy] || '').trim() : '';
 
     let education = fieldIndex.qualification !== undefined ? String(cols[fieldIndex.qualification] || '').trim() : '';
@@ -370,7 +374,9 @@ export function parseGoogleSheetOrCsv(rawText) {
       course,
       branch,
       sourceName,
-      counselorAssigned,
+      counselorAssigned: counselorAssigned || spokenBy || '',
+      allocatedTo: counselorAssigned || spokenBy || '',
+      spokenBy: spokenBy || counselorAssigned || '',
       category,
       stage: mapCategoryToStage(category),
       education,

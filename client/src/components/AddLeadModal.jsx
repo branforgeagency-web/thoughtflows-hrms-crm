@@ -162,6 +162,8 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead, initialMode =
         category: r.category || bulkDefaultCategory,
         stage: r.stage || 'new',
         counselorAssigned: r.counselorAssigned || currentUser?.name || '',
+        allocatedTo: r.allocatedTo || r.counselorAssigned || currentUser?.name || '',
+        spokenBy: r.spokenBy || r.counselorAssigned || currentUser?.name || '',
         education: r.education,
         passoutYear: r.passoutYear,
         location: r.location,
@@ -1249,9 +1251,14 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead, initialMode =
                                     </span>
                                   )}
                                 </td>
-                                <td className="p-2.5 text-slate-700 truncate max-w-[120px]">
-                                  {r.counselorAssigned ? (
-                                    <span className="font-semibold text-slate-900">{r.counselorAssigned}</span>
+                                <td className="p-2.5 text-slate-700 truncate max-w-[130px]">
+                                  {r.counselorAssigned || r.spokenBy ? (
+                                    <div className="flex flex-col">
+                                      <span className="font-bold text-slate-900">{r.counselorAssigned || r.spokenBy}</span>
+                                      {r.spokenBy && r.spokenBy !== r.counselorAssigned && (
+                                        <span className="text-[10px] text-slate-400 font-mono">Spoken: {r.spokenBy}</span>
+                                      )}
+                                    </div>
                                   ) : (
                                     <span className="text-slate-400 font-mono text-[10px]">{currentUser?.name || '-'}</span>
                                   )}

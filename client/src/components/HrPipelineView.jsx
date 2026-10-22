@@ -333,6 +333,8 @@ export default function HrPipelineView({
       (l.phone || '').toLowerCase().includes(q) ||
       (l.course || '').toLowerCase().includes(q) ||
       (l.counselorAssigned || '').toLowerCase().includes(q) ||
+      (l.allocatedTo || '').toLowerCase().includes(q) ||
+      (l.spokenBy || '').toLowerCase().includes(q) ||
       (l.notes || l.followUpNote || '').toLowerCase().includes(q)
     );
   }, [leads, searchQuery]);

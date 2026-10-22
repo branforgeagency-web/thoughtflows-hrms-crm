@@ -158,6 +158,10 @@ const studentLeadSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  spokenBy: {
+    type: String,
+    default: ''
+  },
   // Student ID created when this lead was admitted (guards double admission)
   admittedStudentId: {
     type: String,

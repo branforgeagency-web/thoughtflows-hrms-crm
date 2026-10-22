@@ -2014,18 +2014,32 @@ router.post('/attendance/me', async (req, res) => {
 // (case / spacing ignored) so "Ram" never matches "Ramesh".
 const normName = (v) => String(v || '').trim().replace(/\s+/g, ' ').toLowerCase();
 const exactNameRx = (v) => new RegExp(`^\\s*${escapeRegex(String(v || '').trim()).replace(/\s+/g, '\\s+')}\\s*$`, 'i');
+const counselorNameRx = (name) => {
+  const clean = String(name || '').trim();
+  if (!clean) return /^$/;
+  const firstName = clean.split(/\s+/)[0];
+  const rxParts = [
+    `^\\s*${escapeRegex(clean).replace(/\s+/g, '\\s+')}\\s*$`,
+    `^\\s*${escapeRegex(firstName)}(\\s+.*)?$`
+  ];
+  return new RegExp(rxParts.join('|'), 'i');
+};
 const isScopedHr = (req) => {
   const dept = String(req.user?.department || '').toLowerCase();
   const role = String(req.user?.role || '').toLowerCase();
   return dept === 'hr' || role === 'hr' || dept.includes('counsel') || dept.includes('admission');
 };
-const leadOwner = (l) => l?.counselorAssigned || l?.allocatedTo || '';
-const leadOwnerQuery = (name) => ({
-  $or: [
-    { counselorAssigned: exactNameRx(name) },
-    { counselorAssigned: { $in: ['', null] }, allocatedTo: exactNameRx(name) }
-  ]
-});
+const leadOwner = (l) => l?.counselorAssigned || l?.allocatedTo || l?.spokenBy || '';
+const leadOwnerQuery = (name) => {
+  const rx = counselorNameRx(name);
+  return {
+    $or: [
+      { counselorAssigned: rx },
+      { allocatedTo: rx },
+      { spokenBy: rx }
+    ]
+  };
+};
 const bClean = (v) => String(v || '').toLowerCase().replace(/\s*(branch|\(.*\)|hq)\b/gi, '').replace(/[^a-z0-9]/g, '');
 
 const ownsStudent = (req, st) => {
@@ -3103,8 +3117,14 @@ router.post('/leads/bulk', async (req, res) => {
       if (!payload.course) {
         payload.course = req.body?.defaultCourse || 'AMCT Beginner (Classroom)';
       }
-      if (!payload.counselorAssigned && counselor) {
-        payload.counselorAssigned = counselor;
+      if (!payload.counselorAssigned) {
+        payload.counselorAssigned = payload.allocatedTo || payload.spokenBy || counselor;
+      }
+      if (!payload.allocatedTo) {
+        payload.allocatedTo = payload.counselorAssigned;
+      }
+      if (!payload.spokenBy) {
+        payload.spokenBy = payload.counselorAssigned;
       }
 
       // Normalize phone number to clean 10 digits if possible

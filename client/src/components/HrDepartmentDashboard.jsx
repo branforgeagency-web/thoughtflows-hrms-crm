@@ -424,10 +424,25 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   // no owner belongs to nobody — it never shows up in every counsellor's list.
   const normName = (v) => String(v || '').trim().replace(/\s+/g, ' ').toLowerCase();
   const myName = normName(currentUser?.name);
+
+  // Checks if a record owner (counselorAssigned, allocatedTo, spokenBy) matches the logged in counselor
+  // Handles first-name matches like "Vishnupriya" vs "Vishnupriya DSNR"
+  const matchesMyName = (candidateName, loggedInName) => {
+    if (!candidateName || !loggedInName) return false;
+    const c = normName(candidateName);
+    const m = normName(loggedInName);
+    if (c === m) return true;
+    const cFirst = c.split(' ')[0];
+    const mFirst = m.split(' ')[0];
+    if (cFirst.length >= 3 && mFirst.length >= 3 && cFirst === mFirst) return true;
+    if (c.startsWith(m) || m.startsWith(c)) return true;
+    return false;
+  };
+
   const scopedStudents = useMemo(() => {
     if (scopeMode === 'all' && isElevatedUser) return students;
     if (!myName) return students;
-    return students.filter(s => normName(s.hrName) === myName);
+    return students.filter(s => matchesMyName(s.hrName, myName));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [students, scopeMode, isElevatedUser, myName]);
 
@@ -436,7 +451,11 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     if (scopeMode === 'all' && isElevatedUser) {
       baseLeads = leads;
     } else if (myName) {
-      baseLeads = leads.filter(l => normName(l.counselorAssigned || l.allocatedTo) === myName);
+      baseLeads = leads.filter(l => 
+        matchesMyName(l.counselorAssigned, myName) ||
+        matchesMyName(l.allocatedTo, myName) ||
+        matchesMyName(l.spokenBy, myName)
+      );
     }
 
     // Ensure every admitted student belonging to this counselor is present in the pipeline
@@ -497,7 +516,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     return demos.filter(d => {
       const ph = (d.phone || '').replace(/\D/g, '').slice(-10);
       const isLeadCandidate = ph.length === 10 && leadPhones.has(ph);
-      const isMine = myName && (normName(d.counselor) === myName || normName(d.bookedBy) === myName);
+      const isMine = myName && (matchesMyName(d.counselor, myName) || matchesMyName(d.bookedBy, myName));
       const isMyBranch = myB && (bClean(d.location).includes(myB) || bClean(d.branch).includes(myB));
       return isMine || isMyBranch || isLeadCandidate;
     });
