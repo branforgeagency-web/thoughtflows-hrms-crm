@@ -3103,6 +3103,8 @@ router.post('/leads/bulk', async (req, res) => {
     const createdLeads = [];
     const duplicates = [];
     const invalidRows = [];
+    const toInsert = [];
+    const rowMetas = [];
 
     const counselor = (isScopedHr(req) && req.user?.name) ? req.user.name : (req.body?.defaultCounselor || req.user?.name || '');
     const userBranch = req.user?.branch || req.body?.defaultBranch || '';
@@ -3120,22 +3122,27 @@ router.post('/leads/bulk', async (req, res) => {
       StudentLead.find({}, { phone: 1, whatsappNumber: 1, email: 1 }).lean()
     ]);
 
-    const dupByPhone = new Map(); // 10-digit string -> { type, id }
-    const dupByEmail = new Map(); // lowercase email -> { type, id }
-    const indexDupRecord = (rec, type) => {
-      const id = rec._id;
+    const dupByPhone = new Map(); // 10-digit string -> ref
+    const dupByEmail = new Map(); // lowercase email -> ref
+    // ref is either { type: 'student'|'lead', id } for a record that's
+    // already in the DB (resolved with one cheap findById only when it's
+    // actually hit), or { type: 'pending', record } for a row queued
+    // earlier in THIS same sheet that hasn't been inserted yet — there's
+    // no id to look up yet, so the in-memory payload itself is reused.
+    const indexDupRecord = (rec, type, id) => {
+      const ref = type === 'pending' ? { type, record: rec } : { type, id };
       const p = phoneDigits(rec.phone);
-      if (p && p.length === 10 && !dupByPhone.has(p)) dupByPhone.set(p, { type, id });
+      if (p && p.length === 10 && !dupByPhone.has(p)) dupByPhone.set(p, ref);
       const w = phoneDigits(rec.whatsappNumber);
-      if (w && w.length === 10 && !dupByPhone.has(w)) dupByPhone.set(w, { type, id });
+      if (w && w.length === 10 && !dupByPhone.has(w)) dupByPhone.set(w, ref);
       const mail = String(rec.email || '').trim().toLowerCase();
-      if (mail && !dupByEmail.has(mail)) dupByEmail.set(mail, { type, id });
+      if (mail && !dupByEmail.has(mail)) dupByEmail.set(mail, ref);
     };
     // Students indexed first (and never overwritten below) so a Student
     // record — more authoritative — wins the slot on a shared phone/email,
     // same priority as the old matchedStudent || matchedLead lookup.
-    allStudentsLite.forEach((s) => indexDupRecord(s, 'student'));
-    allLeadsLite.forEach((l) => indexDupRecord(l, 'lead'));
+    allStudentsLite.forEach((s) => indexDupRecord(s, 'student', s._id));
+    allLeadsLite.forEach((l) => indexDupRecord(l, 'lead', l._id));
 
     const findDupRef = (phone, whatsappNumber, email) => {
       const digits = phoneDigits(phone || whatsappNumber);
@@ -3209,8 +3216,11 @@ router.post('/leads/bulk', async (req, res) => {
       const dupRef = findDupRef(payload.phone, payload.whatsappNumber, payload.email);
       let dup = null;
       if (dupRef) {
-        const matchedStudent = dupRef.type === 'student' ? await Student.findById(dupRef.id) : null;
-        const matchedLead = dupRef.type === 'lead' ? await StudentLead.findById(dupRef.id) : null;
+        let matchedStudent = null;
+        let matchedLead = null;
+        if (dupRef.type === 'student') matchedStudent = await Student.findById(dupRef.id);
+        else if (dupRef.type === 'lead') matchedLead = await StudentLead.findById(dupRef.id);
+        else if (dupRef.type === 'pending') matchedLead = dupRef.record; // same-sheet repeat, not in the DB yet
         dup = await buildDuplicateInfo({ matchedStudent, matchedLead, digits: dupDigits, mail: dupMail });
       }
 
@@ -3227,19 +3237,45 @@ router.post('/leads/bulk', async (req, res) => {
         continue;
       }
 
+      // Queue for ONE bulk insert below instead of saving row by row — a
+      // sequential save() per row (even a fast one) still adds up to N
+      // network round-trips to MongoDB, which is exactly what was pushing
+      // large sheets past the live host's ~29s gateway timeout (504) even
+      // after the duplicate-check scans were removed. Index it immediately
+      // (synchronously, before any DB call) so a repeat of this same
+      // phone/email LATER in this same sheet is still caught as a
+      // duplicate against it.
+      rowMetas.push({ row: i + 1, name: payload.fullName });
+      toInsert.push(payload);
+      indexDupRecord(payload, 'pending');
+    }
+
+    if (toInsert.length) {
       try {
-        const newLead = new StudentLead(payload);
-        await newLead.save();
-        createdLeads.push(newLead);
-        // So a later row in this SAME sheet that repeats this phone/email
-        // is still caught as a duplicate, without re-querying the DB.
-        indexDupRecord(newLead, 'lead');
-      } catch (saveErr) {
-        invalidRows.push({
-          row: i + 1,
-          name: payload.fullName,
-          reason: saveErr.message
-        });
+        const inserted = await StudentLead.insertMany(toInsert, { ordered: false });
+        createdLeads.push(...inserted);
+      } catch (bulkErr) {
+        // With ordered:false, Mongo/Mongoose still inserts everything it
+        // can and reports the rest here instead of discarding the whole
+        // batch — insertedDocs are the ones that made it in, writeErrors
+        // say which index failed and why.
+        if (Array.isArray(bulkErr?.insertedDocs)) createdLeads.push(...bulkErr.insertedDocs);
+        const writeErrors = bulkErr?.writeErrors || [];
+        if (writeErrors.length) {
+          writeErrors.forEach((we) => {
+            const idx = we.index ?? we.err?.index;
+            const meta = rowMetas[idx] || {};
+            invalidRows.push({
+              row: meta.row ?? '?',
+              name: meta.name ?? '',
+              reason: we.errmsg || we.err?.errmsg || bulkErr.message
+            });
+          });
+        } else if (!bulkErr?.insertedDocs) {
+          // Unknown failure shape — surface it rather than silently
+          // dropping every queued row.
+          invalidRows.push({ row: 'batch', name: '', reason: bulkErr.message });
+        }
       }
     }
 
