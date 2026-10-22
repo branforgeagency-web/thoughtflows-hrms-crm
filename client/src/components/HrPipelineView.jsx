@@ -11,6 +11,9 @@ import {
   UserPlus,
   Smartphone,
   Check,
+  CheckCircle,
+  XCircle,
+  RotateCcw,
   AlertTriangle,
   Kanban,
   LayoutGrid,
@@ -18,7 +21,8 @@ import {
   Edit2,
   ArrowRight,
   Trash2,
-  Loader2
+  Loader2,
+  ChevronDown
 } from 'lucide-react';
 
 import { getLeads, updateLead, deleteLead, createEscalation } from '../services/api';
@@ -46,6 +50,14 @@ const NEXT_STAGE_LABELS = {
 
 // Classifies a lead's follow-up against real dates instead of guessing.
 function classifyFollowUp(lead) {
+  const rawFollowUpStatus = (lead.followUpStatus || '').toLowerCase();
+  const rawDecision = (lead.decisionStatus || '').toLowerCase();
+  const noteStr = (lead.followUpNote || lead.notes || '');
+  const isResolved = lead.stage === 'admitted' || lead.stage === 'closed' ||
+    rawFollowUpStatus === 'no_followup_needed' || rawFollowUpStatus === 'not_interested' || rawFollowUpStatus === 'done' ||
+    rawDecision.includes('no follow') || rawDecision.includes('not interest') ||
+    noteStr.includes('No Follow-up Needed - Done') || noteStr.includes('Not Interested - Done');
+
   const raw = (lead.followUpDate || '').trim();
   let target = null;
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
@@ -54,6 +66,10 @@ function classifyFollowUp(lead) {
   } else if (raw) {
     const parsed = new Date(raw);
     if (!isNaN(parsed.getTime())) target = parsed;
+  }
+
+  if (isResolved) {
+    return { isOverdue: false, isToday: false, isTomorrow: false, timeframe: 'resolved', hasDate: Boolean(target) };
   }
 
   if (!target) {
@@ -94,6 +110,7 @@ export default function HrPipelineView({
   const [editingLead, setEditingLead] = useState(null);
   const [deletingLead, setDeletingLead] = useState(null);
   const [isDeletingLead, setIsDeletingLead] = useState(false);
+  const [doneMenuCardId, setDoneMenuCardId] = useState(null);
 
   const handleConfirmDeleteLead = async () => {
     if (!deletingLead) return;
@@ -162,44 +179,113 @@ export default function HrPipelineView({
     }
   };
 
-  const handleDoneFollowUp = async (card) => {
+  const handleMarkDoneStatus = async (card, statusType) => {
     const leadId = card.id;
-    const currentStage = card.stage || 'new';
-    const currentIdx = STAGE_ORDER.indexOf(currentStage);
-    const nextStage = currentIdx >= 0 && currentIdx < STAGE_ORDER.length - 1 ? STAGE_ORDER[currentIdx + 1] : 'admitted';
+    setDoneMenuCardId(null);
+    setActionLoading(prev => ({ ...prev, [leadId]: statusType }));
 
-    const targetLead = leads.find(l => (l._id || l.id) === leadId) || card.rawLead;
-
-    if (nextStage === 'admitted') {
-      if (targetLead && onAdmitLead) {
-        onAdmitLead(targetLead);
-        triggerAction(`✓ Opening Admission & Enrollment form for ${card.name}...`);
-      } else {
-        triggerAction(`Ready for Admission: ${card.name}`);
-      }
-      return;
-    }
-
-    const nextStageName = NEXT_STAGE_LABELS[currentStage] || STAGE_LABELS[nextStage] || nextStage;
-
-    setActionLoading(prev => ({ ...prev, [leadId]: 'done' }));
     try {
-      await updateLead(leadId, {
-        stage: nextStage,
-        status: 'in_progress',
-        lastCallTime: new Date()
-      });
+      if (statusType === 'no_followup_needed') {
+        const dateStr = new Date().toLocaleDateString();
+        const existingNote = card.rawLead?.followUpNote || '';
+        const updatedNote = existingNote 
+          ? `[No Follow-up Needed - Done on ${dateStr}]: ${existingNote}`
+          : `[No Follow-up Needed - Done on ${dateStr}]`;
 
-      setLeads(prev => prev.map(l => ((l._id || l.id) === leadId) ? { ...l, stage: nextStage, status: 'in_progress' } : l));
-      triggerAction(`✓ Follow-up Done! Moved ${card.name} → ${nextStageName}`);
-      if (onRefreshLeads) onRefreshLeads();
+        const updateData = {
+          followUpStatus: 'no_followup_needed',
+          decisionStatus: 'No Follow-up Needed',
+          status: 'completed',
+          followUpNote: updatedNote
+        };
+
+        await updateLead(leadId, updateData);
+        setLeads(prev => prev.map(l => ((l._id || l.id) === leadId) ? { ...l, ...updateData } : l));
+        triggerAction(`✓ Marked as No Follow-up Needed Done for ${card.name}`);
+        if (onRefreshLeads) onRefreshLeads();
+      } else if (statusType === 'not_interested') {
+        const dateStr = new Date().toLocaleDateString();
+        const existingNote = card.rawLead?.followUpNote || '';
+        const updatedNote = existingNote 
+          ? `[Not Interested - Done on ${dateStr}]: ${existingNote}`
+          : `[Not Interested - Done on ${dateStr}]`;
+
+        const updateData = {
+          followUpStatus: 'not_interested',
+          decisionStatus: 'Not Interested',
+          stage: 'closed',
+          status: 'cancelled',
+          followUpNote: updatedNote
+        };
+
+        await updateLead(leadId, updateData);
+        setLeads(prev => prev.map(l => ((l._id || l.id) === leadId) ? { ...l, ...updateData } : l));
+        triggerAction(`✓ Marked as Not Interested Done for ${card.name}`);
+        if (onRefreshLeads) onRefreshLeads();
+      } else if (statusType === 'done') {
+        const currentStage = card.stage || 'new';
+        const currentIdx = STAGE_ORDER.indexOf(currentStage);
+        const nextStage = currentIdx >= 0 && currentIdx < STAGE_ORDER.length - 1 ? STAGE_ORDER[currentIdx + 1] : 'admitted';
+
+        const targetLead = leads.find(l => (l._id || l.id) === leadId) || card.rawLead;
+
+        if (nextStage === 'admitted') {
+          if (targetLead && onAdmitLead) {
+            onAdmitLead(targetLead);
+            triggerAction(`✓ Opening Admission & Enrollment form for ${card.name}...`);
+          } else {
+            triggerAction(`Ready for Admission: ${card.name}`);
+          }
+          return;
+        }
+
+        const nextStageName = NEXT_STAGE_LABELS[currentStage] || STAGE_LABELS[nextStage] || nextStage;
+
+        const updateData = {
+          stage: nextStage,
+          followUpStatus: 'done',
+          decisionStatus: 'Follow-up Done',
+          status: 'in_progress',
+          lastCallTime: new Date()
+        };
+
+        await updateLead(leadId, updateData);
+        setLeads(prev => prev.map(l => ((l._id || l.id) === leadId) ? { ...l, ...updateData } : l));
+        triggerAction(`✓ Follow-up Done! Moved ${card.name} → ${nextStageName}`);
+        if (onRefreshLeads) onRefreshLeads();
+      }
     } catch (err) {
-      console.error('Failed to move lead to next process:', err);
-      triggerAction('Error moving lead to next process');
+      console.error('Failed to update follow-up status:', err);
+      triggerAction('Error updating follow-up status');
     } finally {
       setActionLoading(prev => ({ ...prev, [leadId]: false }));
     }
   };
+
+  const handleReopenFollowUp = async (card) => {
+    const leadId = card.id;
+    setActionLoading(prev => ({ ...prev, [leadId]: 'reopen' }));
+    try {
+      const resetStage = card.rawLead?.stage === 'closed' ? 'contacted' : (card.rawLead?.stage || 'new');
+      const updateData = {
+        followUpStatus: '',
+        decisionStatus: '',
+        stage: resetStage,
+        status: 'in_progress'
+      };
+      await updateLead(leadId, updateData);
+      setLeads(prev => prev.map(l => ((l._id || l.id) === leadId) ? { ...l, ...updateData } : l));
+      triggerAction(`Follow-up reopened for ${card.name}`);
+      if (onRefreshLeads) onRefreshLeads();
+    } catch (err) {
+      console.error('Failed to reopen follow-up:', err);
+      triggerAction('Could not reopen follow-up');
+    } finally {
+      setActionLoading(prev => ({ ...prev, [leadId]: false }));
+    }
+  };
+
+  const handleDoneFollowUp = (card) => handleMarkDoneStatus(card, 'done');
 
   const handleEscalate = async (card) => {
     const leadId = card.id;
@@ -304,6 +390,21 @@ export default function HrPipelineView({
         Boolean(lead.notes && lead.notes.includes('[ESCALATED]')) || 
         Boolean(lead.followUpNote && lead.followUpNote.includes('[ESCALATED]'));
 
+      const rawFollowUpStatus = (lead.followUpStatus || '').toLowerCase();
+      const rawDecision = (lead.decisionStatus || '').toLowerCase();
+      const noteStr = (lead.followUpNote || lead.notes || '');
+
+      let followUpDoneStatus = null;
+      if (rawFollowUpStatus === 'no_followup_needed' || rawDecision.includes('no follow') || noteStr.includes('No Follow-up Needed - Done')) {
+        followUpDoneStatus = 'no_followup_needed';
+      } else if (rawFollowUpStatus === 'not_interested' || rawDecision.includes('not interest') || noteStr.includes('Not Interested - Done')) {
+        followUpDoneStatus = 'not_interested';
+      } else if (rawFollowUpStatus === 'done' || rawDecision === 'follow-up done' || rawDecision === 'done' || noteStr.includes('[Follow-up Done')) {
+        followUpDoneStatus = 'done';
+      }
+
+      const isDone = Boolean(followUpDoneStatus);
+
       let badge;
       let badgeClass = isOverdue ? 'bg-rose-100 text-rose-700 font-bold' : 'bg-slate-100 text-slate-700 font-semibold';
       let borderColor = isEscalated ? 'border-l-rose-600' : isOverdue ? 'border-l-rose-500' : timeframe === 'today' ? 'border-l-amber-500' : 'border-l-slate-300';
@@ -312,6 +413,18 @@ export default function HrPipelineView({
         badge = 'Admitted & Enrolled';
         badgeClass = 'bg-emerald-100 text-emerald-800 font-bold';
         borderColor = 'border-l-emerald-500';
+      } else if (followUpDoneStatus === 'no_followup_needed') {
+        badge = 'No follow-up needed (Done)';
+        badgeClass = 'bg-slate-100 text-slate-700 font-bold';
+        borderColor = 'border-l-slate-400';
+      } else if (followUpDoneStatus === 'not_interested') {
+        badge = 'Not interested (Done)';
+        badgeClass = 'bg-rose-100 text-rose-700 font-bold';
+        borderColor = 'border-l-rose-400';
+      } else if (followUpDoneStatus === 'done') {
+        badge = 'Follow-up done';
+        badgeClass = 'bg-emerald-100 text-emerald-800 font-bold';
+        borderColor = 'border-l-emerald-400';
       } else if (hasDate) {
         badge = lead.followUpTime ? `${lead.followUpDate} · ${lead.followUpTime}` : lead.followUpDate;
       } else if (lead.stage === 'new') {
@@ -322,6 +435,14 @@ export default function HrPipelineView({
       }
 
       const currentStageLabel = STAGE_LABELS[lead.stage] || (lead.stage || 'NEW').replace('_', ' ');
+
+      const statusTag = followUpDoneStatus === 'no_followup_needed'
+        ? { label: 'NO FOLLOW-UP', class: 'bg-slate-100 text-slate-700 border-slate-300 font-bold' }
+        : followUpDoneStatus === 'not_interested'
+          ? { label: 'NOT INTERESTED', class: 'bg-rose-100 text-rose-700 border-rose-300 font-bold' }
+          : followUpDoneStatus === 'done'
+            ? { label: 'DONE', class: 'bg-emerald-100 text-emerald-700 border-emerald-300 font-bold' }
+            : null;
 
       return {
         id: lead._id || lead.id,
@@ -334,11 +455,14 @@ export default function HrPipelineView({
         timeframe,
         stage: lead.stage || 'new',
         isEscalated,
+        followUpDoneStatus,
+        isDone,
         type: lead.stage === 'fee_followup' ? 'fee' : (lead.stage && lead.stage.includes('demo')) ? 'demo' : 'general',
         tags: [
           lead.stage === 'admitted'
             ? { label: 'ENROLLED', class: 'bg-emerald-50 text-emerald-700 border-emerald-300 font-bold' }
             : { label: currentStageLabel.toUpperCase(), class: 'bg-teal-50 text-teal-800 border-teal-200 font-bold' },
+          statusTag,
           isEscalated
             ? { label: 'ESCALATED', class: 'bg-rose-100 text-rose-700 border-rose-300 font-bold' }
             : null,
@@ -351,11 +475,20 @@ export default function HrPipelineView({
         rawLead: lead
       };
     });
-  }, [searchFilteredLeads]);
+  }, [searchFilteredLeads, escalatedIds]);
 
   // Overall metric counts
   const stageCounts = useMemo(() => {
     const followUpFlags = leads.map(classifyFollowUp);
+    const doneFollowUpsCount = leads.filter(l => {
+      const raw = (l.followUpStatus || '').toLowerCase();
+      const dec = (l.decisionStatus || '').toLowerCase();
+      const note = (l.followUpNote || l.notes || '');
+      return raw === 'no_followup_needed' || raw === 'not_interested' || raw === 'done' ||
+        dec.includes('no follow') || dec.includes('not interest') ||
+        note.includes('No Follow-up Needed - Done') || note.includes('Not Interested - Done');
+    }).length;
+
     return {
       total: leads.length,
       newCount: leads.filter(l => (l.stage || 'new') === 'new').length,
@@ -366,7 +499,8 @@ export default function HrPipelineView({
       convertedCount: leads.filter(l => l.stage === 'admitted').length,
       todayCount: followUpFlags.filter(f => f.isToday).length,
       overdueCount: followUpFlags.filter(f => f.isOverdue).length,
-      tomorrowCount: followUpFlags.filter(f => f.isTomorrow).length
+      tomorrowCount: followUpFlags.filter(f => f.isTomorrow).length,
+      doneCount: doneFollowUpsCount
     };
   }, [leads]);
 
@@ -374,13 +508,14 @@ export default function HrPipelineView({
   const filteredFollowUps = useMemo(() => {
     return FOLLOW_UPS.filter(item => {
       if (activeFilter === 'all') return true;
-      if (activeFilter === 'overdue') return item.timeframe === 'overdue';
-      if (activeFilter === 'today') return item.timeframe === 'today';
-      if (activeFilter === 'tomorrow') return item.timeframe === 'tomorrow';
-      if (activeFilter === 'this_week') return item.timeframe === 'this_week';
+      if (activeFilter === 'overdue') return item.timeframe === 'overdue' && !item.isDone;
+      if (activeFilter === 'today') return item.timeframe === 'today' && !item.isDone;
+      if (activeFilter === 'tomorrow') return item.timeframe === 'tomorrow' && !item.isDone;
+      if (activeFilter === 'this_week') return item.timeframe === 'this_week' && !item.isDone;
       if (activeFilter === 'demo') return item.type === 'demo';
       if (activeFilter === 'fee') return item.type === 'fee';
       if (activeFilter === 'admitted') return item.stage === 'admitted';
+      if (activeFilter === 'done') return item.isDone;
       return true;
     });
   }, [FOLLOW_UPS, activeFilter]);
@@ -389,6 +524,14 @@ export default function HrPipelineView({
   const tableLeads = useMemo(() => {
     return searchFilteredLeads.filter(lead => {
       if (activeFilter === 'all') return true;
+      if (activeFilter === 'done') {
+        const raw = (lead.followUpStatus || '').toLowerCase();
+        const dec = (lead.decisionStatus || '').toLowerCase();
+        const note = (lead.followUpNote || lead.notes || '');
+        return raw === 'no_followup_needed' || raw === 'not_interested' || raw === 'done' ||
+          dec.includes('no follow') || dec.includes('not interest') ||
+          note.includes('No Follow-up Needed - Done') || note.includes('Not Interested - Done');
+      }
       const flags = classifyFollowUp(lead);
       if (activeFilter === 'overdue') return flags.timeframe === 'overdue';
       if (activeFilter === 'today') return flags.timeframe === 'today';
@@ -407,7 +550,8 @@ export default function HrPipelineView({
     { key: 'tomorrow', label: '⚪ Tomorrow', count: stageCounts.tomorrowCount, activeClass: 'bg-sky-600 text-white' },
     { key: 'demo', label: '🟣 Demos', count: stageCounts.demoCount, activeClass: 'bg-purple-600 text-white' },
     { key: 'fee', label: '🟠 Fees', count: stageCounts.feeCount, activeClass: 'bg-amber-700 text-white' },
-    { key: 'admitted', label: '🟢 Admitted', count: stageCounts.convertedCount, activeClass: 'bg-emerald-600 text-white' }
+    { key: 'admitted', label: '🟢 Admitted', count: stageCounts.convertedCount, activeClass: 'bg-emerald-600 text-white' },
+    { key: 'done', label: '✓ Done', count: stageCounts.doneCount, activeClass: 'bg-slate-700 text-white' }
   ];
 
   return (
@@ -763,7 +907,7 @@ export default function HrPipelineView({
                 <div
                   key={card.id}
                   className={`bg-white border rounded-2xl p-4 shadow-xs transition-all hover:shadow-md hover:border-slate-300 flex flex-col justify-between border-l-4 ${card.borderColor} ${
-                    card.stage === 'admitted' ? 'opacity-75 bg-slate-50/70' : ''
+                    card.stage === 'admitted' || card.isDone ? 'opacity-85 bg-slate-50/50' : ''
                   }`}
                 >
                   <div>
@@ -879,28 +1023,145 @@ export default function HrPipelineView({
                           <Check className="w-3.5 h-3.5 text-emerald-600" />
                           <span>Student Admitted & Enrolled</span>
                         </div>
-                      ) : (
-                        <div className="grid grid-cols-2 gap-1.5">
+                      ) : card.followUpDoneStatus ? (
+                        <div className="flex items-center gap-1.5 w-full">
                           <button
                             type="button"
-                            disabled={Boolean(actionLoading[card.id])}
-                            onClick={() => handleDoneFollowUp(card)}
-                            className="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-300 font-bold text-[10.5px] py-1 px-2 rounded-lg flex items-center justify-center gap-1 transition-all active:scale-95 cursor-pointer disabled:opacity-50"
-                            title={`Mark Done & Move to Next Process (${NEXT_STAGE_LABELS[card.stage] || 'Next Stage'})`}
+                            disabled
+                            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg border font-bold text-[10.5px] cursor-not-allowed shadow-2xs opacity-95 ${
+                              card.followUpDoneStatus === 'no_followup_needed'
+                                ? 'bg-slate-100 text-slate-700 border-slate-300'
+                                : card.followUpDoneStatus === 'not_interested'
+                                  ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                  : 'bg-emerald-50 text-emerald-700 border-emerald-300'
+                            }`}
                           >
-                            {actionLoading[card.id] === 'done' ? (
+                            {card.followUpDoneStatus === 'no_followup_needed' ? (
                               <>
-                                <Loader2 className="w-3 h-3 animate-spin text-emerald-600" />
-                                <span>Moving...</span>
+                                <CheckCircle className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                                <span className="truncate">No Follow-up Needed Done</span>
+                              </>
+                            ) : card.followUpDoneStatus === 'not_interested' ? (
+                              <>
+                                <XCircle className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                                <span className="truncate">Not Interested Done</span>
                               </>
                             ) : (
                               <>
-                                <Check className="w-3 h-3 text-emerald-600" />
-                                <span>Done</span>
-                                <ArrowRight className="w-2.5 h-2.5 text-emerald-600" />
+                                <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                                <span className="truncate">Follow-up Done</span>
                               </>
                             )}
                           </button>
+
+                          <button
+                            type="button"
+                            disabled={Boolean(actionLoading[card.id])}
+                            onClick={() => handleReopenFollowUp(card)}
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 border border-slate-200 text-[10px] font-bold transition-all cursor-pointer shrink-0"
+                            title="Reopen follow-up or change status"
+                          >
+                            {actionLoading[card.id] === 'reopen' ? (
+                              <Loader2 className="w-3 h-3 animate-spin text-slate-600" />
+                            ) : (
+                              <span className="flex items-center gap-0.5">
+                                <RotateCcw className="w-3 h-3" />
+                                <span className="text-[9.5px]">Change</span>
+                              </span>
+                            )}
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-2 gap-1.5 relative">
+                          {/* Done Dropdown Trigger */}
+                          <div className="relative">
+                            <button
+                              type="button"
+                              disabled={Boolean(actionLoading[card.id])}
+                              onClick={() => setDoneMenuCardId(prev => prev === card.id ? null : card.id)}
+                              className="w-full bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-300 font-bold text-[10.5px] py-1 px-2 rounded-lg flex items-center justify-center gap-1 transition-all active:scale-95 cursor-pointer disabled:opacity-50"
+                              title="Click to complete follow-up with status"
+                            >
+                              {actionLoading[card.id] ? (
+                                <>
+                                  <Loader2 className="w-3 h-3 animate-spin text-emerald-600" />
+                                  <span>Saving...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Check className="w-3 h-3 text-emerald-600" />
+                                  <span>Done</span>
+                                  <ChevronDown className="w-2.5 h-2.5 text-emerald-600" />
+                                </>
+                              )}
+                            </button>
+
+                            {/* Done Status Selection Popover Menu */}
+                            {doneMenuCardId === card.id && (
+                              <>
+                                <div
+                                  className="fixed inset-0 z-30"
+                                  onClick={() => setDoneMenuCardId(null)}
+                                />
+                                <div className="absolute bottom-full left-0 mb-1.5 w-56 sm:w-64 bg-white rounded-xl shadow-2xl border border-slate-200 p-1.5 z-40 text-left animate-in fade-in zoom-in-95">
+                                  <div className="text-[9.5px] font-black uppercase text-slate-400 px-2.5 py-1 font-mono tracking-wider border-b border-slate-100 mb-1">
+                                    Select Done Status:
+                                  </div>
+
+                                  {/* 1. No Follow-up Needed */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleMarkDoneStatus(card, 'no_followup_needed')}
+                                    className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-slate-100 flex items-start gap-2 transition-colors cursor-pointer group"
+                                  >
+                                    <span className="text-xs leading-none mt-0.5">🚫</span>
+                                    <div>
+                                      <div className="text-[11px] font-bold text-slate-800 group-hover:text-slate-900">
+                                        No Follow-up Needed
+                                      </div>
+                                      <div className="text-[9.5px] text-slate-500">
+                                        Mark as No Follow-up Needed Done
+                                      </div>
+                                    </div>
+                                  </button>
+
+                                  {/* 2. Not Interested */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleMarkDoneStatus(card, 'not_interested')}
+                                    className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-rose-50 flex items-start gap-2 transition-colors cursor-pointer group"
+                                  >
+                                    <span className="text-xs leading-none mt-0.5">⛔</span>
+                                    <div>
+                                      <div className="text-[11px] font-bold text-rose-700 group-hover:text-rose-800">
+                                        Not Interested
+                                      </div>
+                                      <div className="text-[9.5px] text-rose-500">
+                                        Mark as Not Interested Done
+                                      </div>
+                                    </div>
+                                  </button>
+
+                                  {/* 3. Follow-up Done / Next Process */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleMarkDoneStatus(card, 'done')}
+                                    className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-emerald-50 flex items-start gap-2 transition-colors cursor-pointer group"
+                                  >
+                                    <span className="text-xs leading-none mt-0.5">✓</span>
+                                    <div>
+                                      <div className="text-[11px] font-bold text-emerald-700 group-hover:text-emerald-800">
+                                        Follow-up Done
+                                      </div>
+                                      <div className="text-[9.5px] text-emerald-600">
+                                        Move to {NEXT_STAGE_LABELS[card.stage] || 'Next Process'}
+                                      </div>
+                                    </div>
+                                  </button>
+                                </div>
+                              </>
+                            )}
+                          </div>
 
                           {card.isEscalated ? (
                             <div

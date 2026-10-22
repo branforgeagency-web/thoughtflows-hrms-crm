@@ -121,6 +121,7 @@ export default function EditLeadModal({ isOpen, onClose, lead, onSuccess, onDele
         followUpDate,
         followUpTime,
         followUpNote,
+        followUpStatus: lead.followUpStatus || '',
         category
       };
 

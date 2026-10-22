@@ -236,14 +236,18 @@ function activeProvider() {
 
 function edesyConfig() {
   return {
-    // Shown on the Edesy dashboard's "API Credentials" panel as a Twilio-shaped pair:
-    // Account SID (a UUID, not secret) + Auth Token (secret). Sent as HTTP Basic auth
-    // per the dashboard's own example (`curl ... -u "<AccountSID>:<AuthToken>"`).
-    accountSid: process.env.EDESY_ACCOUNT_SID || '',
-    authToken: process.env.EDESY_AUTH_TOKEN || '',
-    baseUrl: String(process.env.EDESY_BASE_URL || 'https://voice-api.edesy.in').replace(/\/+$/, ''),
+    // Confirmed working 2026-10-21 via direct testing: masking.edesy.in > API Keys >
+    // create key, sent as a plain Bearer token. (The Account SID/Auth Token pair shown
+    // on the dashboard's "API Credentials" panel is for a different, Twilio-shaped
+    // product — it returns NUMBER_NOT_OWNED / 404s against the /v1/masking/* endpoints
+    // below, which is what this integration actually needs.)
+    apiKey: process.env.EDESY_API_KEY || '',
+    baseUrl: String(process.env.EDESY_BASE_URL || 'https://voice-api.edesy.in/v1').replace(/\/+$/, ''),
     defaultAgentPhone: process.env.EDESY_DEFAULT_AGENT_PHONE || '',
     maxDurationSec: Number(process.env.EDESY_MAX_CALL_DURATION_SEC || 0) || undefined,
+    // How long the masked number stays reachable for an inbound callback after this
+    // dial, via the Session API (separate from the call itself). Default 3 hours.
+    sessionExpiryMinutes: Number(process.env.EDESY_SESSION_EXPIRY_MINUTES || 180),
     webhookSecret: process.env.EDESY_WEBHOOK_SECRET || '',  // HMAC-SHA256 signing secret from the Edesy dashboard
     webhookSignatureHeader: String(process.env.EDESY_WEBHOOK_SIGNATURE_HEADER || 'x-edesy-signature').toLowerCase()
   };
@@ -251,7 +255,7 @@ function edesyConfig() {
 
 function edesyMissing() {
   const c = edesyConfig();
-  return [['EDESY_ACCOUNT_SID', c.accountSid], ['EDESY_AUTH_TOKEN', c.authToken]].filter(([, v]) => !v).map(([k]) => k);
+  return [['EDESY_API_KEY', c.apiKey]].filter(([, v]) => !v).map(([k]) => k);
 }
 
 function edesyUrl(p) {
@@ -260,11 +264,10 @@ function edesyUrl(p) {
 
 function edesyHeaders() {
   const c = edesyConfig();
-  const basic = Buffer.from(`${c.accountSid}:${c.authToken}`).toString('base64');
   return {
     accept: 'application/json',
     'content-type': 'application/json',
-    authorization: `Basic ${basic}`
+    authorization: `Bearer ${c.apiKey}`
   };
 }
 
@@ -328,11 +331,35 @@ async function edesyDialHandler(req, res) {
   if (from === to) return res.status(400).json({ error: "Your number and the lead's number cannot be the same." });
 
   try {
-    // Confirmed against Edesy's own curl example: POST /v1/calls, full +91 E.164 numbers,
-    // { from, to } (not { party_a, party_b } on /v1/masking/calls as the docs page implied).
-    const payload = { from, to };
+    // Confirmed working 2026-10-21 via direct testing: POST /v1/masking/calls, with
+    // { party_a, party_b } as bare 10-digit Indian numbers — NOT { from, to }, and NOT
+    // E.164 with a +91 prefix (both of those were the earlier, wrong assumption).
+    const partyA = from.replace(/^\+?91/, '');
+    const partyB = to.replace(/^\+?91/, '');
+
+    // Best-effort: also open/refresh a two-way Session so the student can call the
+    // masked number back later and still reach this counsellor — the one-shot dial
+    // below only covers the outbound leg. Idempotent on `reference`, so repeat clicks
+    // for the same lead extend the existing session instead of erroring. Non-blocking:
+    // if this fails (e.g. capacity busy), the outbound dial below still proceeds.
+    try {
+      await fetch(edesyUrl('/masking/sessions'), {
+        method: 'POST',
+        headers: edesyHeaders(),
+        body: JSON.stringify({
+          party_a: partyA,
+          party_b: partyB,
+          reference: `lead_${leadId || partyB}`,
+          expiry_minutes: c.sessionExpiryMinutes
+        })
+      });
+    } catch (sessionErr) {
+      console.warn('Edesy session upsert (inbound callback window) failed — continuing with outbound-only dial:', sessionErr.message);
+    }
+
+    const payload = { party_a: partyA, party_b: partyB };
     if (c.maxDurationSec) payload.max_duration_sec = c.maxDurationSec;
-    const response = await fetch(edesyUrl('/calls'), {
+    const response = await fetch(edesyUrl('/masking/calls'), {
       method: 'POST',
       headers: edesyHeaders(),
       body: JSON.stringify(payload)
@@ -343,10 +370,10 @@ async function edesyDialHandler(req, res) {
       return res.status(502).json({ error: typeof message === 'string' ? message : JSON.stringify(message) });
     }
     const ok = data?.data || data || {};
-    // Response shape isn't confirmed yet, so every likely field name is tried.
+    // Confirmed response fields: call_sid, status ("initiated"), party_a, party_b, masked_number.
     const callSid = String(pickField(ok, 'call_sid', 'id', 'sid', 'callId', 'call_id') || '');
     rememberCall(callSid, { leadId, leadName, counselor: req.user?.name || '', from, to });
-    res.json({ provider: 'edesy', callSid, status: mapEdesyStatus(pickField(ok, 'status', 'call_status', 'state')) || 'queued', from, to });
+    res.json({ provider: 'edesy', callSid, status: mapEdesyStatus(pickField(ok, 'status', 'call_status', 'state')) || 'queued', from, to, maskedNumber: pickField(ok, 'masked_number') || '' });
   } catch (err) {
     res.status(502).json({ error: `Could not reach Edesy: ${err.message}` });
   }
@@ -369,9 +396,10 @@ async function edesyStatusHandler(req, res) {
         recordingUrl: rec.audioUrl || null
       });
     }
-    // Endpoint inferred from the confirmed /v1/calls dial endpoint — not independently
-    // confirmed, so verify this path (and the field names below) once you can test a real call.
-    const response = await fetch(edesyUrl(`/calls/${callSid}`), { headers: edesyHeaders() });
+    // Path confirmed working 2026-10-21 (same base fix as the dial handler above).
+    // Field names below for status are confirmed; the recording field name just under
+    // this block is still a best guess — verify once a completed call has a recording.
+    const response = await fetch(edesyUrl(`/masking/calls/${callSid}`), { headers: edesyHeaders() });
     const data = await response.json().catch(() => ({}));
     if (response.ok) {
       const d = data?.data || data || {};
@@ -380,7 +408,7 @@ async function edesyStatusHandler(req, res) {
       if (status === 'completed') {
         let recordingUrl = '';
         try {
-          const recResp = await fetch(edesyUrl(`/calls/${callSid}/recording`), { headers: edesyHeaders() });
+          const recResp = await fetch(edesyUrl(`/masking/calls/${callSid}/recording`), { headers: edesyHeaders() });
           const recData = await recResp.json().catch(() => ({}));
           recordingUrl = recResp.ok ? pickField(recData?.data || recData || {}, 'url', 'recording_url', 'audio_url') : '';
         } catch (_) {}

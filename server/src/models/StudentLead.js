@@ -112,6 +112,10 @@ const studentLeadSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  followUpStatus: {
+    type: String,
+    default: ''
+  },
   callCount: {
     type: Number,
     default: 0

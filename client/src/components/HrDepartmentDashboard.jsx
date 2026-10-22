@@ -1951,6 +1951,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
               followUpNote: data.notes || undefined,
               followUpDate: data.followUpDate || undefined,
               followUpTime: data.followUpTime || undefined,
+              followUpStatus: data.followUpStatus || data.leadForm?.followUpStatus || undefined,
               ...(data.leadForm ? {
                 fullName: data.leadForm.name || undefined,
                 name: data.leadForm.name || undefined,

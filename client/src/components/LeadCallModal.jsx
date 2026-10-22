@@ -26,7 +26,7 @@ import {
 } from 'lucide-react';
 
 import BookNewDemoModal from './BookNewDemoModal';
-import { createDemo, getRecordings, saveRecording, recordingUrl } from '../services/api';
+import { createDemo, getRecordings, saveRecording, recordingUrl, dialCall, getCallStatus } from '../services/api';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 import { copyToClipboard } from '../utils/clipboard';
 import { COURSE_CATEGORIES } from '../constants/courses';
@@ -78,6 +78,8 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
   const fileInputRef = useRef(null);
   const timerRef = useRef(null);
   const hasBeenAnsweredRef = useRef(false);
+  const pollRef = useRef(null);
+  const providerCallSidRef = useRef(null);
 
   // Lead Form State - starts completely blank with no fake defaults
   const [leadForm, setLeadForm] = useState({
@@ -129,6 +131,10 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
+    }
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
     }
   };
 
@@ -335,19 +341,67 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
     }, 1000);
   };
 
-  // Direct dial via mobile / desktop default dialer (Windows Phone Link, native phone dialer)
-  const handleCall = () => {
+  // Click-to-call via Edesy Number Masking: bridges the counsellor's own phone to the
+  // student through a masked number. Edesy records and stores the call itself, so no
+  // browser mic capture is needed for this path. Falls back to the legacy tel: +
+  // browser-mic flow if the provider isn't configured or the dial request fails.
+  const pollProviderCallStatus = (callSid) => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(async () => {
+      try {
+        const status = await getCallStatus(callSid);
+        const s = status?.status;
+        if (s === 'in-progress' && callStatus !== 'in-progress') {
+          setCallStatus('in-progress');
+          hasBeenAnsweredRef.current = true;
+          startTimer();
+          showToast('🔴 Call connected — Edesy is recording on their end.');
+        } else if (['completed', 'failed', 'busy', 'no-answer', 'canceled'].includes(s)) {
+          clearInterval(pollRef.current);
+          pollRef.current = null;
+          clearTimers();
+          providerCallSidRef.current = null;
+          setCallStatus('completed');
+          if (s === 'completed') {
+            showToast('✓ Call ended. Recording will appear below shortly.');
+            setTimeout(() => fetchLeadRecordings(leadForm.phone), 2500);
+          } else {
+            showToast(`Call ${s === 'no-answer' ? 'not answered' : s}.`);
+          }
+        }
+      } catch (e) {
+        console.warn('Call status poll failed:', e);
+      }
+    }, 3000);
+  };
+
+  const handleCall = async () => {
     if (!leadForm.phone) {
       showToast('This student has no phone number on file.');
       return;
     }
-    const cleanPhone = leadForm.phone.replace(/[^\d+]/g, '');
-    window.open(`tel:${cleanPhone}`, '_self');
-    // A tel: call gives the browser no connect/disconnect events, so the timer
-    // waits until the counsellor marks the call as connected.
+
     if (callStatus !== 'in-progress') setCallStatus('dialing');
-    if (!mediaRecorderRef.current) startAudioRecording();
-    showToast(`Dialing ${leadForm.phone} via Phone / Phone Link… Tap "Connected" once the student picks up.`);
+    showToast(`Calling ${leadForm.phone} via Edesy… your phone will ring first.`);
+
+    try {
+      const result = await dialCall({
+        leadPhone: leadForm.phone,
+        leadId: leadData?._id || leadData?.id,
+        leadName: leadForm.name
+      });
+      if (!result?.callSid) throw new Error('No callSid returned');
+      providerCallSidRef.current = result.callSid;
+      pollProviderCallStatus(result.callSid);
+    } catch (err) {
+      console.warn('Edesy dial failed, falling back to tel: dialer:', err?.message || err);
+      const cleanPhone = leadForm.phone.replace(/[^\d+]/g, '');
+      window.open(`tel:${cleanPhone}`, '_self');
+      // A tel: call gives the browser no connect/disconnect events, so the timer
+      // waits until the counsellor marks the call as connected.
+      if (!mediaRecorderRef.current) startAudioRecording();
+      showToast(`Dialing ${leadForm.phone} via Phone / Phone Link… Tap "Connected" once the student picks up.`);
+    }
   };
 
   const handleCallConnected = () => {
@@ -361,6 +415,13 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
   const handleEndCall = async () => {
     const wasConnected = callStatus === 'in-progress';
     clearTimers();
+    if (providerCallSidRef.current) {
+      // Edesy ends the bridged call from the handset — this just resets the UI.
+      providerCallSidRef.current = null;
+      setCallStatus('completed');
+      showToast('Call ended. Hang up on your phone if it is still connected.');
+      return null;
+    }
     const blob = await stopAudioRecording();
     setCallStatus('completed');
     showToast(blob ? '✓ Call ended. Audio recording ready.' : (wasConnected ? 'Call ended — no audio captured.' : 'Call ended before it connected.'));
