@@ -84,7 +84,7 @@ app.use((err, req, res, next) => {
 const startServer = (port) => {
   const server = app.listen(port, () => {
     console.log(`🚀 [Thoughtflows Server] running at http://localhost:${port}`);
-    const activeTelephonyProvider = String(process.env.TELEPHONY_PROVIDER || 'knowlarity').toLowerCase();
+    const activeTelephonyProvider = String(process.env.TELEPHONY_PROVIDER || (process.env.KNOWLARITY_X_API_KEY && !process.env.EDESY_API_KEY ? 'knowlarity' : 'edesy')).toLowerCase();
     const knowlarityReady = !!((process.env.KNOWLARITY_X_API_KEY || process.env.KNOWLARITY_API_KEY) && (process.env.KNOWLARITY_SR_API_KEY || process.env.KNOWLARITY_AUTH_KEY) && process.env.KNOWLARITY_SR_NUMBER);
     const edesyReady = !!process.env.EDESY_API_KEY;
     const providerReady = activeTelephonyProvider === 'edesy' ? edesyReady : knowlarityReady;

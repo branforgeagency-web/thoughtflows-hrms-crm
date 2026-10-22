@@ -231,7 +231,10 @@ async function fetchKnowlarityCallLog(callId, { customerNumber = '' } = {}) {
 //   keeps it on our own disk, the same way browser_mic/phone_sync recordings are stored.
 // ==========================================
 function activeProvider() {
-  return String(process.env.TELEPHONY_PROVIDER || 'knowlarity').toLowerCase();
+  const p = String(process.env.TELEPHONY_PROVIDER || '').toLowerCase().trim();
+  if (p === 'knowlarity') return 'knowlarity';
+  if (p === 'edesy') return 'edesy';
+  return process.env.KNOWLARITY_X_API_KEY && !process.env.EDESY_API_KEY ? 'knowlarity' : 'edesy';
 }
 
 function edesyConfig() {
@@ -4101,7 +4104,7 @@ const mapRoleOrDeptToDashboard = (role = '', department = '') => {
       color: '#4338ca'
     };
   }
-  if (r.includes('counsel') || r.includes('advisor') || d.includes('counsel') || d.includes('admission') || d === 'hr') {
+  if (r.includes('counsel') || r.includes('advisor') || r.includes('hr') || r === 'hr' || d.includes('counsel') || d.includes('admission') || d === 'hr') {
     return {
       department: 'hr',
       departmentCode: 'HR',

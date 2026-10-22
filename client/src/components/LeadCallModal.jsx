@@ -387,20 +387,22 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
     try {
       const result = await dialCall({
         leadPhone: leadForm.phone,
+        agentPhone: currentUser?.phone || currentUser?.mobile || '',
         leadId: leadData?._id || leadData?.id,
         leadName: leadForm.name
       });
-      if (!result?.callSid) throw new Error('No callSid returned');
+      if (!result?.callSid) throw new Error(result?.error || 'No callSid returned');
       providerCallSidRef.current = result.callSid;
       pollProviderCallStatus(result.callSid);
     } catch (err) {
-      console.warn('Edesy dial failed, falling back to tel: dialer:', err?.message || err);
+      const errMsg = err?.response?.data?.error || err?.message || 'Call failed';
+      console.warn('Edesy dial failed, falling back to tel: dialer:', errMsg);
       const cleanPhone = leadForm.phone.replace(/[^\d+]/g, '');
       window.open(`tel:${cleanPhone}`, '_self');
       // A tel: call gives the browser no connect/disconnect events, so the timer
       // waits until the counsellor marks the call as connected.
       if (!mediaRecorderRef.current) startAudioRecording();
-      showToast(`Dialing ${leadForm.phone} via Phone / Phone Link… Tap "Connected" once the student picks up.`);
+      showToast(`Edesy call error: ${errMsg}. Switched to Phone Link dialer.`);
     }
   };
 

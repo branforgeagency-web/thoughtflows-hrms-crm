@@ -68,7 +68,9 @@ const PUBLIC_ROUTES = [
   ['GET', /^\/auth\/departments$/],
   ['GET', /^\/departments$/],
   ['POST', /^\/calls\/knowlarity\/webhook$/],
-  ['GET', /^\/calls\/knowlarity\/webhook$/]
+  ['GET', /^\/calls\/knowlarity\/webhook$/],
+  ['POST', /^\/calls\/edesy\/webhook$/],
+  ['GET', /^\/calls\/edesy\/webhook$/]
 ];
 
 // Staff routes limited to Admin / Leadership
@@ -102,7 +104,7 @@ const STAFF_RULES = [
   ['POST', /^\/students\/[^/]+\/payments$/, ['hr']],
   ['POST', /^\/fees\/rates$/, ['hr']],
   ['POST', /^\/closures$/, ['hr']],
-  ['*', /^\/calls\/(dial|log|[^/]+\/hangup)$/, ['hr']],
+  ['*', /^\/calls\/(dial|log|[^/]+\/hangup)$/, ['hr', 'admin', 'leadership']],
   ['POST', /^\/recordings$/, ['hr']],
   ['POST', /^\/recordings\/phone-sync$/, ['hr']],
   ['DELETE', /^\/recordings\/[^/]+$/, ['hr']],
