@@ -2432,61 +2432,13 @@ async function findLastlyContactedHr({ student, lead, phone, email }) {
 }
 
 // Checks whether a student or lead already exists with the given phone or email
-async function checkDuplicateRegistration({ phone, whatsappNumber, email, leadId = '', excludeStudentId = '' }) {
-  const digits = phoneDigits(phone || whatsappNumber);
-  const mail = String(email || '').trim().toLowerCase();
-
-  if ((!digits || digits.length < 10) && !mail) {
-    return null;
-  }
-
-  // 1. Search existing Student records
-  const studentQueries = [];
-  if (digits && digits.length === 10) {
-    const rx = new RegExp(`${digits.slice(-4).split('').join('\\D*')}\\D*$`);
-    studentQueries.push({ phone: rx });
-    studentQueries.push({ whatsappNumber: rx });
-  }
-  if (mail) {
-    studentQueries.push({ email: exactNameRx(mail) });
-  }
-
-  const existingStudents = await Student.find({ $or: studentQueries }).sort({ createdAt: -1 });
-  const matchedStudent = existingStudents.find((s) => {
-    if (excludeStudentId && (s.studentId === excludeStudentId || String(s._id) === String(excludeStudentId))) {
-      return false;
-    }
-    const sPhone = phoneDigits(s.phone);
-    const sWa = phoneDigits(s.whatsappNumber);
-    const sMail = String(s.email || '').trim().toLowerCase();
-    const phoneMatch = Boolean(digits && (sPhone === digits || sWa === digits));
-    const mailMatch = Boolean(mail && sMail === mail);
-    return phoneMatch || mailMatch;
-  });
-
-  // 2. Search existing StudentLead records
-  const leadQueries = [];
-  if (digits && digits.length === 10) {
-    const rx = new RegExp(`${digits.slice(-4).split('').join('\\D*')}\\D*$`);
-    leadQueries.push({ phone: rx });
-    leadQueries.push({ whatsappNumber: rx });
-  }
-  if (mail) {
-    leadQueries.push({ email: exactNameRx(mail) });
-  }
-
-  const existingLeads = await StudentLead.find({ $or: leadQueries }).sort({ createdAt: -1 });
-  const matchedLead = existingLeads.find((l) => {
-    if (leadId && String(l._id) === String(leadId)) return false;
-    const lPhone = phoneDigits(l.phone);
-    const lWa = phoneDigits(l.whatsappNumber);
-    const lMail = String(l.email || '').trim().toLowerCase();
-    const phoneMatch = Boolean(digits && (lPhone === digits || lWa === digits));
-    const mailMatch = Boolean(mail && lMail === mail);
-    return phoneMatch || mailMatch;
-  });
-
-  // If no match found in either Student or StudentLead
+// Shared tail of the duplicate check: given an already-matched Student
+// and/or StudentLead (however they were found), builds the same
+// isDuplicate/error/firstRegistrationMember shape every caller expects.
+// Split out of checkDuplicateRegistration so the bulk import route below
+// can reuse it with a candidate found via a fast in-memory index instead
+// of re-running the expensive regex collection scan for every row.
+async function buildDuplicateInfo({ matchedStudent, matchedLead, digits, mail }) {
   if (!matchedStudent && !matchedLead) {
     return null;
   }
@@ -2548,6 +2500,68 @@ async function checkDuplicateRegistration({ phone, whatsappNumber, email, leadId
       contactDate: hrInfo.contactDate
     }
   };
+}
+
+async function checkDuplicateRegistration({ phone, whatsappNumber, email, leadId = '', excludeStudentId = '' }) {
+  const digits = phoneDigits(phone || whatsappNumber);
+  const mail = String(email || '').trim().toLowerCase();
+
+  if ((!digits || digits.length < 10) && !mail) {
+    return null;
+  }
+
+  // 1. Search existing Student records
+  const studentQueries = [];
+  if (digits && digits.length === 10) {
+    const rx = new RegExp(`${digits.slice(-4).split('').join('\\D*')}\\D*$`);
+    studentQueries.push({ phone: rx });
+    studentQueries.push({ whatsappNumber: rx });
+  }
+  if (mail) {
+    studentQueries.push({ email: exactNameRx(mail) });
+  }
+
+  const existingStudents = await Student.find({ $or: studentQueries }).sort({ createdAt: -1 });
+  const matchedStudent = existingStudents.find((s) => {
+    if (excludeStudentId && (s.studentId === excludeStudentId || String(s._id) === String(excludeStudentId))) {
+      return false;
+    }
+    const sPhone = phoneDigits(s.phone);
+    const sWa = phoneDigits(s.whatsappNumber);
+    const sMail = String(s.email || '').trim().toLowerCase();
+    const phoneMatch = Boolean(digits && (sPhone === digits || sWa === digits));
+    const mailMatch = Boolean(mail && sMail === mail);
+    return phoneMatch || mailMatch;
+  });
+
+  // 2. Search existing StudentLead records
+  const leadQueries = [];
+  if (digits && digits.length === 10) {
+    const rx = new RegExp(`${digits.slice(-4).split('').join('\\D*')}\\D*$`);
+    leadQueries.push({ phone: rx });
+    leadQueries.push({ whatsappNumber: rx });
+  }
+  if (mail) {
+    leadQueries.push({ email: exactNameRx(mail) });
+  }
+
+  const existingLeads = await StudentLead.find({ $or: leadQueries }).sort({ createdAt: -1 });
+  const matchedLead = existingLeads.find((l) => {
+    if (leadId && String(l._id) === String(leadId)) return false;
+    const lPhone = phoneDigits(l.phone);
+    const lWa = phoneDigits(l.whatsappNumber);
+    const lMail = String(l.email || '').trim().toLowerCase();
+    const phoneMatch = Boolean(digits && (lPhone === digits || lWa === digits));
+    const mailMatch = Boolean(mail && lMail === mail);
+    return phoneMatch || mailMatch;
+  });
+
+  // If no match found in either Student or StudentLead
+  if (!matchedStudent && !matchedLead) {
+    return null;
+  }
+
+  return buildDuplicateInfo({ matchedStudent, matchedLead, digits, mail });
 }
 
 router.get('/students/check-duplicate', async (req, res) => {
@@ -3093,6 +3107,45 @@ router.post('/leads/bulk', async (req, res) => {
     const counselor = (isScopedHr(req) && req.user?.name) ? req.user.name : (req.body?.defaultCounselor || req.user?.name || '');
     const userBranch = req.user?.branch || req.body?.defaultBranch || '';
 
+    // --- Fast duplicate index --------------------------------------------
+    // checkDuplicateRegistration() runs an unanchored-regex $or scan against
+    // the WHOLE Student collection and the WHOLE StudentLead collection —
+    // fine for one row, but called once per row it was timing out (504 on
+    // the live server) once a sheet had more than a handful of rows, since
+    // every pasted row is now sent (nothing is filtered out client-side any
+    // more). Build one phone/email index up front with two lightweight
+    // queries instead, and do every row's lookup against it in memory.
+    const [allStudentsLite, allLeadsLite] = await Promise.all([
+      Student.find({}, { phone: 1, whatsappNumber: 1, email: 1 }).lean(),
+      StudentLead.find({}, { phone: 1, whatsappNumber: 1, email: 1 }).lean()
+    ]);
+
+    const dupByPhone = new Map(); // 10-digit string -> { type, id }
+    const dupByEmail = new Map(); // lowercase email -> { type, id }
+    const indexDupRecord = (rec, type) => {
+      const id = rec._id;
+      const p = phoneDigits(rec.phone);
+      if (p && p.length === 10 && !dupByPhone.has(p)) dupByPhone.set(p, { type, id });
+      const w = phoneDigits(rec.whatsappNumber);
+      if (w && w.length === 10 && !dupByPhone.has(w)) dupByPhone.set(w, { type, id });
+      const mail = String(rec.email || '').trim().toLowerCase();
+      if (mail && !dupByEmail.has(mail)) dupByEmail.set(mail, { type, id });
+    };
+    // Students indexed first (and never overwritten below) so a Student
+    // record — more authoritative — wins the slot on a shared phone/email,
+    // same priority as the old matchedStudent || matchedLead lookup.
+    allStudentsLite.forEach((s) => indexDupRecord(s, 'student'));
+    allLeadsLite.forEach((l) => indexDupRecord(l, 'lead'));
+
+    const findDupRef = (phone, whatsappNumber, email) => {
+      const digits = phoneDigits(phone || whatsappNumber);
+      const mail = String(email || '').trim().toLowerCase();
+      if (digits && digits.length === 10 && dupByPhone.has(digits)) return dupByPhone.get(digits);
+      if (mail && dupByEmail.has(mail)) return dupByEmail.get(mail);
+      return null;
+    };
+    // ----------------------------------------------------------------------
+
     for (let i = 0; i < rawLeads.length; i++) {
       const item = rawLeads[i];
       const payload = { ...item };
@@ -3147,12 +3200,19 @@ router.post('/leads/bulk', async (req, res) => {
         payload.phone = payload.whatsappNumber || payload.email || 'Not Provided';
       }
 
-      // Check for duplicate enquiry by mobile number and/or email ID
-      const dup = await checkDuplicateRegistration({
-        phone: payload.phone || payload.whatsappNumber,
-        whatsappNumber: payload.whatsappNumber,
-        email: payload.email
-      });
+      // Check for duplicate enquiry by mobile number and/or email ID — an
+      // in-memory lookup against the index built above, so this costs
+      // nothing per row (only an actual duplicate hit pays for one more
+      // findById, which is an indexed primary-key lookup, not a scan).
+      const dupDigits = phoneDigits(payload.phone || payload.whatsappNumber);
+      const dupMail = String(payload.email || '').trim().toLowerCase();
+      const dupRef = findDupRef(payload.phone, payload.whatsappNumber, payload.email);
+      let dup = null;
+      if (dupRef) {
+        const matchedStudent = dupRef.type === 'student' ? await Student.findById(dupRef.id) : null;
+        const matchedLead = dupRef.type === 'lead' ? await StudentLead.findById(dupRef.id) : null;
+        dup = await buildDuplicateInfo({ matchedStudent, matchedLead, digits: dupDigits, mail: dupMail });
+      }
 
       if (dup) {
         duplicates.push({
@@ -3171,6 +3231,9 @@ router.post('/leads/bulk', async (req, res) => {
         const newLead = new StudentLead(payload);
         await newLead.save();
         createdLeads.push(newLead);
+        // So a later row in this SAME sheet that repeats this phone/email
+        // is still caught as a duplicate, without re-querying the DB.
+        indexDupRecord(newLead, 'lead');
       } catch (saveErr) {
         invalidRows.push({
           row: i + 1,
