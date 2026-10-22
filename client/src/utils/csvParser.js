@@ -9,6 +9,8 @@
  * - Stage auto-mapping (JOINED WITH US -> admitted, INTERESTED -> contacted, etc.)
  */
 
+import { detectBranchFromText } from '../constants/branches';
+
 // Known Google Sheet sources
 const KNOWN_SOURCES = [
   'google calls',
@@ -138,8 +140,13 @@ function parseVerticalStream(lines) {
     let passoutYear = '';
     const noteParts = [];
 
+    let branch = '';
     recordLines.forEach(l => {
       const lower = l.toLowerCase();
+      if (!branch) {
+        const detected = detectBranchFromText(l);
+        if (detected) branch = detected;
+      }
       if (!email && l.includes('@') && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(l)) {
         email = l;
       } else if (!source && KNOWN_SOURCES.some(s => lower.includes(s))) {
@@ -177,7 +184,7 @@ function parseVerticalStream(lines) {
       whatsappNumber: cleanPhone,
       email,
       course: 'AMCT Beginner (Classroom)',
-      branch: 'Saravanampatti (CBE)',
+      branch: branch || '',
       sourceName: source || 'Google Sheet Import',
       counselorAssigned: counselor || '',
       category: category || 'Enquiry',
@@ -317,7 +324,13 @@ export function parseGoogleSheetOrCsv(rawText) {
 
     const email = fieldIndex.email !== undefined ? String(cols[fieldIndex.email] || '').trim() : '';
     const course = fieldIndex.course !== undefined ? String(cols[fieldIndex.course] || '').trim() : '';
-    const branch = fieldIndex.branch !== undefined ? String(cols[fieldIndex.branch] || '').trim() : '';
+    let branch = fieldIndex.branch !== undefined ? String(cols[fieldIndex.branch] || '').trim() : '';
+    if (branch) {
+      const normalized = detectBranchFromText(branch);
+      if (normalized) branch = normalized;
+    } else {
+      branch = detectBranchFromText(location + ' ' + (cols[fieldIndex.notes] || ''));
+    }
     const sourceName = fieldIndex.source !== undefined ? String(cols[fieldIndex.source] || '').trim() : '';
     const category = fieldIndex.category !== undefined ? String(cols[fieldIndex.category] || '').trim() : '';
     const counselorAssigned = fieldIndex.counselor !== undefined ? String(cols[fieldIndex.counselor] || '').trim() : '';
