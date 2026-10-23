@@ -2386,7 +2386,11 @@ function DepartmentHeadsView({ departments = [], onBack, onSelectHead, onSwitchD
           return (
             <div
               key={dept.id}
-              className="bg-white rounded-3xl p-6 sm:p-7 border border-slate-100/90 shadow-[0_2px_14px_rgba(0,0,0,0.03)] hover:shadow-xl transition-all duration-200 flex flex-col justify-between min-h-[220px]"
+              onClick={() => onSelectHead && onSelectHead(dept.id)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelectHead && onSelectHead(dept.id); } }}
+              className="group bg-white rounded-3xl p-6 sm:p-7 border border-slate-100/90 shadow-[0_2px_14px_rgba(0,0,0,0.03)] hover:shadow-xl hover:border-indigo-200 transition-all duration-200 flex flex-col justify-between min-h-[220px] cursor-pointer"
             >
               <div>
                 <div className="flex items-center justify-between mb-4">
@@ -2396,16 +2400,6 @@ function DepartmentHeadsView({ departments = [], onBack, onSelectHead, onSwitchD
                   >
                     <Icon className={`w-6 h-6 ${dept.iconColor}`} />
                   </div>
-                  {onSwitchDepartment && (
-                    <button
-                      onClick={() => onSwitchDepartment(dept.id)}
-                      className="px-2.5 py-1 rounded-full text-[11px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 transition-all flex items-center gap-1 cursor-pointer"
-                      title={`Open live ${dept.title} dashboard`}
-                    >
-                      <span>Live Dashboard</span>
-                      <ArrowRight className="w-3 h-3" />
-                    </button>
-                  )}
                 </div>
 
                 <h3 className="text-base sm:text-[17px] font-extrabold text-slate-900 tracking-tight">
@@ -2421,21 +2415,12 @@ function DepartmentHeadsView({ departments = [], onBack, onSelectHead, onSwitchD
               </div>
 
               <div className="pt-4 mt-3 border-t border-slate-100 flex items-center justify-between">
-                <button
-                  onClick={() => onSelectHead && onSelectHead(dept.id)}
-                  className="text-xs font-bold text-slate-700 hover:text-indigo-600 transition-colors flex items-center gap-1 cursor-pointer"
+                <span
+                  className="text-xs font-bold text-slate-700 group-hover:text-indigo-600 transition-colors flex items-center gap-1"
                 >
                   <span>Open Head Desk</span>
                   <ChevronRight className="w-3.5 h-3.5" />
-                </button>
-                {onSwitchDepartment && (
-                  <button
-                    onClick={() => onSwitchDepartment(dept.id)}
-                    className="text-[11px] font-extrabold text-indigo-600 hover:text-indigo-800 transition-colors cursor-pointer"
-                  >
-                    Enter Live →
-                  </button>
-                )}
+                </span>
               </div>
             </div>
           );
