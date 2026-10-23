@@ -7792,6 +7792,18 @@ router.get('/demos/:id/zoom-join', async (req, res) => {
         return res.status(403).json({ error: 'This demo is not booked for your account' });
       }
       if (!demo.zoomMeetingId) return res.status(409).json({ error: 'Your trainer has not started the demo yet' });
+      // The meeting a student is pointed at can go stale (trainer ended it,
+      // Zoom auto-closed it after the time limit, it was reassigned/rescheduled
+      // elsewhere) without anyone clearing demo.zoomMeetingId. Students never
+      // recreate meetings themselves, so catch that here with a friendly
+      // message instead of handing them a signature Zoom will reject with a
+      // raw "meeting number not found" (errorCode 3707).
+      try {
+        const m = await zoomApi(`/meetings/${demo.zoomMeetingId}`);
+        if (m.status === 404 || m.data?.code === 3001 || m.data?.code === 3000) {
+          return res.status(409).json({ error: "Your trainer's session isn't live right now — wait for them to (re)start it, then try joining again." });
+        }
+      } catch (_) { /* Zoom API hiccup — fall through and let the join attempt itself surface any real error */ }
     }
 
     let zak;
