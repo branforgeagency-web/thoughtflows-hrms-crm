@@ -260,6 +260,25 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
   };
   const closeModal = () => { setModal(null); setForm({}); };
 
+  // --------------------------------------------------------------------------
+  // Derived view of the real record
+  // --------------------------------------------------------------------------
+  const st = portal?.student || null;
+  const trainer = portal?.trainer || null;
+  const live = portal?.liveSession || null;
+  const attendance = portal?.attendance || [];
+  const assessments = portal?.assessments || [];
+  const materials = portal?.materials || [];
+  const doubts = portal?.doubts || [];
+  const submissions = portal?.submissions || [];
+  const requests = portal?.requests || [];
+  const referrals = portal?.referrals || [];
+  const placements = portal?.placements || [];
+  const tickets = portal?.tickets || [];
+  const classNotes = portal?.classNotes || [];
+  const partners = portal?.hiringPartners || [];
+  const timetable = portal?.timetable || [];
+
   // Heartbeat tracking student attendance duration during live class (1 hr 45 min rule)
   useEffect(() => {
     if (modal?.type !== 'liveClass' || !live?.sessionId || !st?.studentId) return undefined;
@@ -314,25 +333,6 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
     });
     return () => { clearInterval(poll); unsub(); document.removeEventListener('visibilitychange', onVisible); };
   }, [load]);
-
-  // --------------------------------------------------------------------------
-  // Derived view of the real record
-  // --------------------------------------------------------------------------
-  const st = portal?.student || null;
-  const trainer = portal?.trainer || null;
-  const live = portal?.liveSession || null;
-  const attendance = portal?.attendance || [];
-  const assessments = portal?.assessments || [];
-  const materials = portal?.materials || [];
-  const doubts = portal?.doubts || [];
-  const submissions = portal?.submissions || [];
-  const requests = portal?.requests || [];
-  const referrals = portal?.referrals || [];
-  const placements = portal?.placements || [];
-  const tickets = portal?.tickets || [];
-  const classNotes = portal?.classNotes || [];
-  const partners = portal?.hiringPartners || [];
-  const timetable = portal?.timetable || [];
 
   // Batch Conversion Ticket — Student is permitted to raise only once
   const hasBatchConversionTicket = Boolean(
