@@ -2906,7 +2906,19 @@ function HeadOfHrDashboard({ department, onBack, currentUser, onChanged, onSwitc
 
 // ---- Reusable Head of Department Dashboard (CCCP, Marketing, Students, etc.) ----
 
-function HeadOfDeptDashboard({ deptConfig, onBack, currentUser, onChanged, onSwitchDepartment }) {
+function HeadOfDeptDashboard({
+  deptConfig,
+  onBack,
+  currentUser,
+  onChanged,
+  onSwitchDepartment,
+  // Scopes the Roster tab's team list (e.g. to one zone's trainers) without
+  // changing deptConfig.code, which is still what every other tab (real,
+  // populated Approvals/Escalations/Daily Tracker/Reports/Targets/SOP Hub
+  // data) fetches by. Optional — omitted for the single-head departments
+  // (HR/CCCP/Marketing/Student/Admin) that don't need it.
+  rosterAllowedNames = null
+}) {
   const [tab, setTab] = useState('desk');
   const counts = useDeskCounts({ departmentCode: deptConfig.code });
   const IconComponent = deptConfig.icon || Users;
@@ -2992,7 +3004,7 @@ function HeadOfDeptDashboard({ deptConfig, onBack, currentUser, onChanged, onSwi
           className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 bg-white border border-slate-200/90 shadow-xs hover:bg-slate-50 hover:text-slate-900 transition-all cursor-pointer"
         >
           <ChevronLeft className="w-3.5 h-3.5 text-slate-500" />
-          Departments
+          {deptConfig.backLabel || 'Departments'}
         </button>
       </div>
 
@@ -3009,7 +3021,7 @@ function HeadOfDeptDashboard({ deptConfig, onBack, currentUser, onChanged, onSwi
           <div>
             <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight">{deptConfig.title}</h2>
             <p className="text-xs text-slate-400 font-mono mt-0.5">
-              {deptConfig.headName} <span className="text-slate-300">·</span> Department Head <span className="text-slate-300">·</span> {deptConfig.code}
+              {deptConfig.headName} <span className="text-slate-300">·</span> {deptConfig.headTitle || 'Department Head'} <span className="text-slate-300">·</span> {deptConfig.displayCode || deptConfig.code}
             </p>
           </div>
         </div>
@@ -3208,7 +3220,7 @@ function HeadOfDeptDashboard({ deptConfig, onBack, currentUser, onChanged, onSwi
       {tab === 'reports' && <ReportsExportBoard departmentCode={deptConfig.code} departmentName={deptConfig.title} />}
 
       {/* Tab 7: Roster */}
-      {tab === 'roster' && <TeamRosterBoard departmentCode={deptConfig.code} />}
+      {tab === 'roster' && <TeamRosterBoard departmentCode={deptConfig.code} managerLabel={deptConfig.headTitle || deptConfig.title} allowedNames={rosterAllowedNames} />}
 
       {/* Tab 8: Targets */}
       {tab === 'targets' && <DepartmentTargetsBoard departmentCode={deptConfig.code} />}
@@ -3308,7 +3320,7 @@ const studentBelongsToRegion = (st, z) => {
 
 function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, onSwitchDepartment }) {
   const [selectedRegion, setSelectedRegion] = useState(null);
-  const [showRoster, setShowRoster] = useState(false);
+  const [showDesk, setShowDesk] = useState(false); // per-zone "Head Desk" (approvals/escalations/roster/etc.)
   const [trainersList, setTrainersList] = useState([]);
   const [batchesList, setBatchesList] = useState([]);
   const [branchesList, setBranchesList] = useState([]);
@@ -3552,8 +3564,8 @@ function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, o
       <div className="flex items-center justify-between flex-wrap gap-3">
         <button
           onClick={() => {
-            if (showRoster) {
-              setShowRoster(false);
+            if (showDesk) {
+              setShowDesk(false);
             } else if (selectedRegion) {
               setSelectedRegion(null);
             } else {
@@ -3563,19 +3575,20 @@ function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, o
           className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold text-slate-700 bg-white border border-slate-200/90 shadow-xs hover:bg-slate-50 hover:text-slate-900 transition-all cursor-pointer"
         >
           <ChevronLeft className="w-3.5 h-3.5 text-slate-500" />
-          {showRoster ? 'Training Department' : selectedRegion ? 'All Training Zones' : 'Departments'}
+          {showDesk ? 'Training Department' : selectedRegion ? 'All Training Zones' : 'Departments'}
         </button>
 
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Each Head of Trainer manages only their own zone's roster —
-              this never shows from the all-zones overview, so there's no
-              single company-wide roster shared across zones. */}
-          {!showRoster && selectedRegion && (
+          {/* Each Head of Trainer gets their own Desk (approvals,
+              escalations, daily tracker, reports, roster, targets, SOP
+              hub, mgmt summary) for their own zone — never a single
+              company-wide desk shared across all four Heads of Trainer. */}
+          {!showDesk && selectedRegion && (
             <button
-              onClick={() => setShowRoster(true)}
+              onClick={() => setShowDesk(true)}
               className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold text-white bg-purple-600 shadow-xs hover:bg-purple-700 transition-all cursor-pointer"
             >
-              <span>📅 Trainer Roster &amp; Shifts · {currentRegionData?.state || currentRegionData?.head}</span>
+              <span>🖥️ Head Desk · {currentRegionData?.state || currentRegionData?.head}</span>
             </button>
           )}
 
@@ -3591,12 +3604,23 @@ function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, o
         </div>
       </div>
 
-      {showRoster && selectedRegion ? (
-        <TeamRosterBoard
-          departmentCode="ACAD"
-          managerLabel={`Head of Trainer · ${currentRegionData?.state || currentRegionData?.head || ''}`}
-          allowedNames={currentRegionTrainerNames}
-          onBack={() => setShowRoster(false)}
+      {showDesk && selectedRegion ? (
+        <HeadOfDeptDashboard
+          deptConfig={{
+            code: 'ACAD',
+            displayCode: currentRegionData?.code || 'ACAD',
+            title: `Head of Trainer — ${currentRegionData?.state || ''}`,
+            headName: currentRegionData?.head || currentUser?.name || '',
+            headTitle: 'Head of Trainer',
+            backLabel: `${currentRegionData?.state || 'Zone'} Overview`,
+            accentBg: currentRegionData?.badgeBg || '#2563EB',
+            icon: GraduationCap,
+            targetGapLabel: 'vs batch readiness target'
+          }}
+          rosterAllowedNames={currentRegionTrainerNames}
+          onBack={() => setShowDesk(false)}
+          currentUser={currentUser}
+          onChanged={onChanged}
         />
       ) : selectedRegion ? (
         /* REGIONAL DETAIL VIEW */
