@@ -56,6 +56,25 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
   const studentId = student.studentId || student.id || '—';
   const courseName = student.course || '—';
   const modeName = student.mode || '—';
+
+  // Enquiry Month / Date — enquiryMonth ("YYYY-MM") and enquiryDate ("YYYY-MM-DD")
+  // come from the lead's bulk-upload sheet row (or registration date for walk-ins).
+  // Older records that predate these fields fall back to the legacy enqDate
+  // (a bare month name, no year) with no year guessed onto it.
+  const enquiryMonthLabel = (() => {
+    const m = String(student.enquiryMonth || '').match(/^(\d{4})-(\d{2})$/);
+    if (m) {
+      const y = Number(m[1]); const mo = Number(m[2]);
+      return new Date(y, mo - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+    }
+    return student.enqDate || '';
+  })();
+  const enquiryDateLabel = (() => {
+    const d = String(student.enquiryDate || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return '';
+    const dt = new Date(`${d}T00:00:00`);
+    return isNaN(dt.getTime()) ? '' : dt.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  })();
   const qualification = student.qualification || '—';
 
   // Onboarding checklist — real boolean flags from student.checklist
@@ -430,7 +449,8 @@ export default function StudentProfileModal({ isOpen, onClose, student: propStud
                 <InfoRow label="Payment Method" value={student.paymentMethod} />
                 {student.nextDueDate && <InfoRow label="Next Due Date" value={student.nextDueDate} />}
                 <InfoRow label="Mode of Source" value={student.source} />
-                <InfoRow label="Enquiry Month" value={student.enqDate ? `${student.enqDate} 2026` : '—'} />
+                <InfoRow label="Enquiry Month" value={enquiryMonthLabel} />
+                <InfoRow label="Enquiry Date" value={enquiryDateLabel} />
               </div>
             </div>
           )}

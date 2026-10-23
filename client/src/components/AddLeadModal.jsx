@@ -158,6 +158,7 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead, onBulkImporte
         sourceName: r.sourceName || bulkDefaultSource,
         source: r.sourceName || bulkDefaultSource,
         category: r.category || bulkDefaultCategory,
+        enquiryDate: r.enquiryDate || '',
         enquiryMonth: r.enquiryMonth || bulkDefaultMonth,
         stage: r.stage || 'new',
         counselorAssigned: r.counselorAssigned || currentUser?.name || '',

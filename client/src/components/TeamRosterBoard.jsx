@@ -13,7 +13,10 @@ import { getCurrentWeekScheduleDays } from '../utils/dateUtils';
 
 export default function TeamRosterBoard({ 
   customMembers = null, 
-  onRosterChange = null 
+  onRosterChange = null,
+  departmentCode = 'DEP-HR-001',
+  managerLabel = 'Head of HR',
+  onBack = null
 }) {
   const [members, setMembers] = useState(customMembers || []);
   const [searchQuery, setSearchQuery] = useState('');
@@ -35,7 +38,7 @@ export default function TeamRosterBoard({
   // Load team members from DB
   const loadMembers = async () => {
     try {
-      const data = await getTeam({ departmentCode: 'DEP-HR-001' });
+      const data = await getTeam({ departmentCode });
       if (Array.isArray(data)) {
         setMembers(data.map(m => ({
           id: m._id || m.id,
@@ -61,7 +64,7 @@ export default function TeamRosterBoard({
       if (entity === 'team' && !customMembers) loadMembers();
     });
     return unsub;
-  }, [customMembers]);
+  }, [customMembers, departmentCode]);
 
   // Sync custom members prop
   useEffect(() => {
@@ -185,6 +188,15 @@ export default function TeamRosterBoard({
       {/* Main Header Container */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
         <div>
+          {onBack && (
+            <button
+              type="button"
+              onClick={onBack}
+              className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500 hover:text-slate-800 mb-2 cursor-pointer"
+            >
+              ← Back
+            </button>
+          )}
           <div className="flex items-center gap-2.5">
             <span className="text-xl sm:text-2xl select-none">📅</span>
             <h3 className="text-xl sm:text-2xl font-bold text-[#0f172a] tracking-tight">
@@ -192,7 +204,7 @@ export default function TeamRosterBoard({
             </h3>
           </div>
           <p className="text-xs sm:text-sm text-slate-400 font-mono mt-1 font-medium pl-0.5">
-            Head of HR Console &middot; Allocate work days and week offs for each employee
+            {managerLabel} Console &middot; Allocate work days and week offs for each employee
           </p>
         </div>
 
@@ -358,7 +370,7 @@ export default function TeamRosterBoard({
             </div>
 
             <p className="text-xs text-slate-600 bg-purple-50 p-3 rounded-xl border border-purple-200/70">
-              ⚡ <strong>Head of HR Control:</strong> Set work shift timings or assign <strong>Week Off</strong> for each day. This updates {scheduleModalMember.name}&apos;s schedule in real time.
+              ⚡ <strong>{managerLabel} Control:</strong> Set work shift timings or assign <strong>Week Off</strong> for each day. This updates {scheduleModalMember.name}&apos;s schedule in real time.
             </p>
 
             {/* 7 Days Allocation Grid */}

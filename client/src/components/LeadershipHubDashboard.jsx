@@ -3308,6 +3308,7 @@ const studentBelongsToRegion = (st, z) => {
 
 function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, onSwitchDepartment }) {
   const [selectedRegion, setSelectedRegion] = useState(null);
+  const [showRoster, setShowRoster] = useState(false);
   const [trainersList, setTrainersList] = useState([]);
   const [batchesList, setBatchesList] = useState([]);
   const [branchesList, setBranchesList] = useState([]);
@@ -3538,7 +3539,9 @@ function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, o
       <div className="flex items-center justify-between flex-wrap gap-3">
         <button
           onClick={() => {
-            if (selectedRegion) {
+            if (showRoster) {
+              setShowRoster(false);
+            } else if (selectedRegion) {
               setSelectedRegion(null);
             } else {
               onBack();
@@ -3547,21 +3550,38 @@ function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, o
           className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold text-slate-700 bg-white border border-slate-200/90 shadow-xs hover:bg-slate-50 hover:text-slate-900 transition-all cursor-pointer"
         >
           <ChevronLeft className="w-3.5 h-3.5 text-slate-500" />
-          {selectedRegion ? 'All Training Zones' : 'Departments'}
+          {showRoster ? 'Training Department' : selectedRegion ? 'All Training Zones' : 'Departments'}
         </button>
 
-        {onSwitchDepartment && (
-          <button
-            onClick={() => onSwitchDepartment('training')}
-            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold text-white bg-blue-600 shadow-xs hover:bg-blue-700 transition-all cursor-pointer"
-          >
-            <span>Open Live Training Department Dashboard</span>
-            <ArrowRight className="w-3.5 h-3.5" />
-          </button>
-        )}
+        <div className="flex items-center gap-2 flex-wrap">
+          {!showRoster && (
+            <button
+              onClick={() => setShowRoster(true)}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold text-white bg-purple-600 shadow-xs hover:bg-purple-700 transition-all cursor-pointer"
+            >
+              <span>📅 Trainer Roster &amp; Shifts</span>
+            </button>
+          )}
+
+          {onSwitchDepartment && (
+            <button
+              onClick={() => onSwitchDepartment('training')}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold text-white bg-blue-600 shadow-xs hover:bg-blue-700 transition-all cursor-pointer"
+            >
+              <span>Open Live Training Department Dashboard</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
       </div>
 
-      {selectedRegion ? (
+      {showRoster ? (
+        <TeamRosterBoard
+          departmentCode="ACAD"
+          managerLabel="Head of Trainer"
+          onBack={() => setShowRoster(false)}
+        />
+      ) : selectedRegion ? (
         /* REGIONAL DETAIL VIEW */
         (() => {
           const reg = regionsData.find(r => r.id === selectedRegion.id) || selectedRegion;

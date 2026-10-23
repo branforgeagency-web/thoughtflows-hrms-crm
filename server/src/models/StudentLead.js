@@ -64,6 +64,12 @@ const studentLeadSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  // Exact enquiry date ("YYYY-MM-DD") when the sheet itself has a Date column —
+  // more precise than enquiryMonth, which is derived from this when present.
+  enquiryDate: {
+    type: String,
+    default: ''
+  },
   sourceName: {
     type: String,
     default: ''

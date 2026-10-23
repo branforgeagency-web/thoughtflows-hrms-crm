@@ -1,8 +1,8 @@
-import React, { useMemo, useState } from 'react';
-import { localDateKey } from '../utils/dateUtils';
-import { AlertTriangle, CalendarOff, Trash2 } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { localDateKey, getCurrentWeekScheduleDays, getWeekRangeString } from '../utils/dateUtils';
+import { AlertTriangle, CalendarOff, Trash2, Lock } from 'lucide-react';
 import { parseSlotToRange, minutesToLabel, evaluateDemoSlot } from '../utils/slotUtils';
-import { addTrainerLeave, deleteTrainerLeave } from '../services/api';
+import { addTrainerLeave, deleteTrainerLeave, getTeam, onDataUpdate } from '../services/api';
 
 // Shift, scheduled classes and demo-notification eligibility — all read from
 // the trainer's roster record (admin: Trainer Settings) and real demo bookings.
@@ -14,6 +14,51 @@ export default function TrainingShiftAvailability({ trainer, demos = [], batches
   const [leaveMsg, setLeaveMsg] = useState('');
   const upcomingLeaves = (trainer?.leaves || []).filter((l) => (l.to || l.from) >= todayKey).sort((a, b) => a.from.localeCompare(b.from));
   const onLeaveToday = upcomingLeaves.some((l) => l.from <= todayKey && (l.to || l.from) >= todayKey);
+
+  // Weekly roster set by the Head of Trainer (Leadership → Trainer Roster), same
+  // pattern as HR's read-only "My Shift Roster" card.
+  const [teamRosterData, setTeamRosterData] = useState(null);
+  const trainerName = trainer?.trainerName || '';
+
+  useEffect(() => {
+    if (!trainerName) return undefined;
+    const loadRoster = async () => {
+      try {
+        const tData = await getTeam({ departmentCode: 'ACAD' }).catch(() => []);
+        if (Array.isArray(tData) && tData.length > 0) {
+          const uFirst = trainerName.split(' ')[0].toLowerCase();
+          const exact = tData.find((m) => (m.name || '').toLowerCase() === trainerName.toLowerCase());
+          const byFirst = tData.filter((m) => (m.name || '').toLowerCase().split(' ')[0] === uFirst);
+          const myRec = exact || (byFirst.length === 1 ? byFirst[0] : null);
+          setTeamRosterData(myRec || null);
+        }
+      } catch (e) {
+        console.warn('Trainer roster fetch notice:', e.message);
+      }
+    };
+    loadRoster();
+    const unsub = onDataUpdate((entity) => {
+      if (entity === 'team') loadRoster();
+    });
+    return unsub;
+  }, [trainerName]);
+
+  const weeklyRosterDays = useMemo(() => {
+    const customSchedule = Array.isArray(teamRosterData?.weeklySchedule) && teamRosterData.weeklySchedule.length
+      ? teamRosterData.weeklySchedule
+      : null;
+    const baseDays = customSchedule || getCurrentWeekScheduleDays();
+    return baseDays.map((item) => {
+      const dayLabel = item.day || `${item.dayKey || ''} ${item.dateStr || ''}`.trim();
+      const isOffDay = item.type === 'off' || item.timing === 'Week Off' || item.timing === 'On Leave' || item.isOff;
+      return {
+        ...item,
+        day: dayLabel,
+        timing: item.timing || (isOffDay ? 'Week Off' : '10–7'),
+        isOff: isOffDay
+      };
+    });
+  }, [teamRosterData]);
 
   const saveLeave = async () => {
     if (!leaveForm.from) { setLeaveMsg('Pick a start date'); return; }
@@ -114,6 +159,51 @@ export default function TrainingShiftAvailability({ trainer, demos = [], batches
             Over max load: {classesCount} scheduled classes vs a limit of {maxLoad} per day.
           </div>
         )}
+      </div>
+
+      <div className="bg-white rounded-2xl p-5 border border-slate-200/90 shadow-xs space-y-4">
+        <div>
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2">
+              <span className="text-base">📅</span>
+              <h3 className="font-extrabold text-sm sm:text-base text-slate-900">My Shift Roster</h3>
+            </div>
+            <span className="text-[10px] font-mono font-bold bg-amber-50 text-amber-900 border border-amber-300/80 px-2.5 py-1 rounded-full flex items-center gap-1">
+              <Lock className="w-3 h-3 text-amber-700" /> Read-Only &middot; Managed by Head of Trainer
+            </span>
+          </div>
+          <p className="text-[11px] text-slate-400 font-mono mt-1">
+            Updated by Head of Trainer &middot; Week of {getWeekRangeString()}
+          </p>
+        </div>
+
+        <div className="grid grid-cols-7 gap-1.5 sm:gap-2">
+          {weeklyRosterDays.map((shift, idx) => (
+            <div
+              key={idx}
+              className={`rounded-xl p-2 sm:p-2.5 text-center border transition-all flex flex-col justify-between min-h-[62px] sm:min-h-[68px] ${
+                shift.isToday
+                  ? 'border-2 border-teal-600 bg-teal-50 text-teal-800 shadow-xs'
+                  : shift.isOff
+                    ? 'bg-[#fee2e2] text-[#b91c1c] border-red-200 font-bold'
+                    : 'bg-white border-slate-200 text-slate-700'
+              }`}
+            >
+              <div className="text-[10px] sm:text-[11px] font-extrabold tracking-wider font-mono">
+                {shift.day}
+              </div>
+              <div className={`text-xs sm:text-sm font-black ${
+                shift.isToday
+                  ? 'text-teal-800'
+                  : shift.isOff
+                    ? 'text-[#b91c1c]'
+                    : 'text-slate-900'
+              }`}>
+                {shift.timing}
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
 
       <div className="bg-white rounded-3xl p-6 border border-slate-200/90 shadow-xs space-y-4">

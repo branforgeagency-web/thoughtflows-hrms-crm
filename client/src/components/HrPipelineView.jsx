@@ -337,6 +337,18 @@ export default function HrPipelineView({
     return new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
   };
 
+  // "Sep 12" style label for the Enquiries Table's Date column — short month + day.
+  // Falls back to the month alone (no day) when only enquiryMonth is known.
+  const enquiryDateLabel = (l) => {
+    const d = String(l.enquiryDate || '');
+    if (/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+      const dt = new Date(`${d}T00:00:00`);
+      if (!isNaN(dt.getTime())) return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    }
+    const key = leadMonthKey(l);
+    return key ? MONTH_LABEL(key) : '—';
+  };
+
   // Every distinct month present across this counselor's leads, newest first
   const availableMonths = useMemo(() => {
     const set = new Set(leads.map(leadMonthKey).filter(Boolean));
@@ -1259,6 +1271,8 @@ export default function HrPipelineView({
                   <th className="py-3 px-3.5">Interested Course</th>
                   <th className="py-3 px-3.5">Stage</th>
                   <th className="py-3 px-3.5">Source</th>
+                  <th className="py-3 px-3.5">Enquiry Date</th>
+                  <th className="py-3 px-3.5">Enquiry Month</th>
                   <th className="py-3 px-3.5">Follow-up</th>
                   <th className="py-3 px-3.5">Counsellor</th>
                   <th className="py-3 px-3.5 text-center">Actions</th>
@@ -1267,7 +1281,7 @@ export default function HrPipelineView({
               <tbody className="divide-y divide-slate-100 text-[11px]">
                 {tableLeads.length === 0 ? (
                   <tr>
-                    <td colSpan="8" className="py-12 text-center text-slate-400">
+                    <td colSpan="10" className="py-12 text-center text-slate-400">
                       <div className="text-3xl mb-1">📭</div>
                       <div className="font-bold text-slate-600">No student enquiries found</div>
                       <p className="text-xs text-slate-400 mt-0.5">Try adjusting your search query or filter</p>
@@ -1346,6 +1360,16 @@ export default function HrPipelineView({
                           <span className="bg-purple-50 text-purple-800 text-[10px] font-bold px-2 py-0.5 rounded-md border border-purple-200">
                             {lead.sourceName || lead.source || 'DIRECT'}
                           </span>
+                        </td>
+
+                        {/* Enquiry Date — "Sep 12" style, from the bulk-upload sheet's own Date/Month column */}
+                        <td className="py-3 px-3.5 whitespace-nowrap font-mono font-bold text-slate-700">
+                          {enquiryDateLabel(lead)}
+                        </td>
+
+                        {/* Enquiry Month */}
+                        <td className="py-3 px-3.5 whitespace-nowrap text-slate-600 font-medium">
+                          {leadMonthKey(lead) ? MONTH_LABEL(leadMonthKey(lead)) : '—'}
                         </td>
 
                         {/* Follow-up */}

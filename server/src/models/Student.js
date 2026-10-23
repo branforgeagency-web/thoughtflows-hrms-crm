@@ -92,6 +92,18 @@ const studentSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  // Structured enquiry month/date ("YYYY-MM" / "YYYY-MM-DD") — carried over
+  // from the lead's own enquiryMonth/enquiryDate at admission (set from the
+  // bulk upload sheet), or from the registration date for walk-ins. enqDate
+  // above is kept only for older records that predate these fields.
+  enquiryMonth: {
+    type: String,
+    default: ''
+  },
+  enquiryDate: {
+    type: String,
+    default: ''
+  },
   onboardStatus: {
     type: String,
     default: '7/7 ✓'

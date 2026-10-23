@@ -79,6 +79,92 @@ function extractEduAndYear(text) {
   return { education, passoutYear };
 }
 
+const MONTH_NAMES = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+
+// Normalize a sheet's date cell ("12/10/2026", "2026-10-12", "12-Oct-2026", "12 Oct 2026" …)
+// into { date: "YYYY-MM-DD", month: "YYYY-MM" }, or null if it doesn't look like a date.
+// Indian sheets write dates DD/MM/YYYY, so a slash/dash numeric date is read day-first.
+function parseDateCell(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/); // YYYY-MM-DD
+  if (m) {
+    const [, y, mo, d] = m;
+    return { date: `${y}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`, month: `${y}-${mo.padStart(2, '0')}` };
+  }
+
+  m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/); // DD/MM/YYYY or DD-MM-YY
+  if (m) {
+    let [, d, mo, y] = m;
+    if (y.length === 2) y = (Number(y) > 50 ? '19' : '20') + y;
+    if (Number(mo) > 12 && Number(d) <= 12) { [d, mo] = [mo, d]; } // tolerate an accidental MM/DD sheet
+    if (Number(mo) >= 1 && Number(mo) <= 12 && Number(d) >= 1 && Number(d) <= 31) {
+      return { date: `${y}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`, month: `${y}-${mo.padStart(2, '0')}` };
+    }
+  }
+
+  m = s.match(/^(\d{1,2})[\s\-]([a-zA-Z]{3,})[\s\-](\d{2,4})$/); // "12-Oct-2026" / "12 October 2026"
+  if (m) {
+    const [, d, monText, yRaw] = m;
+    const mi = MONTH_NAMES.indexOf(monText.toLowerCase().slice(0, 3));
+    if (mi >= 0) {
+      const y = yRaw.length === 2 ? (Number(yRaw) > 50 ? '19' : '20') + yRaw : yRaw;
+      const mo = String(mi + 1).padStart(2, '0');
+      return { date: `${y}-${mo}-${d.padStart(2, '0')}`, month: `${y}-${mo}` };
+    }
+  }
+
+  // "Sep 1" / "Sept 21" — month name first, no year at all. These running sheets
+  // are updated through the same month, so the year is always the current one;
+  // without this, an undated-looking cell like "Sep 1" fell all the way through
+  // to today's month instead of the sheet's own month.
+  m = s.match(/^([a-zA-Z]{3,})[\s\-]+(\d{1,2})(?:st|nd|rd|th)?$/i);
+  if (m) {
+    const [, monText, d] = m;
+    const mi = MONTH_NAMES.indexOf(monText.toLowerCase().slice(0, 3));
+    if (mi >= 0 && Number(d) >= 1 && Number(d) <= 31) {
+      const y = new Date().getFullYear();
+      const mo = String(mi + 1).padStart(2, '0');
+      return { date: `${y}-${mo}-${d.padStart(2, '0')}`, month: `${y}-${mo}` };
+    }
+  }
+
+  return null;
+}
+
+// Normalize a sheet's standalone month cell ("October 2026", "Oct-26", "10/2026") into "YYYY-MM".
+function parseMonthCell(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+
+  let m = s.match(/^(\d{4})-(\d{1,2})$/); // YYYY-MM
+  if (m) return `${m[1]}-${m[2].padStart(2, '0')}`;
+
+  m = s.match(/^(\d{1,2})[\/\-](\d{2,4})$/); // MM/YYYY or MM-YY
+  if (m) {
+    let [, mo, y] = m;
+    if (y.length === 2) y = (Number(y) > 50 ? '19' : '20') + y;
+    if (Number(mo) >= 1 && Number(mo) <= 12) return `${y}-${mo.padStart(2, '0')}`;
+  }
+
+  m = s.match(/^([a-zA-Z]{3,})[\s\-,]*'?(\d{2,4})$/); // "October 2026" / "Oct-26"
+  if (m) {
+    const [, monText, yRaw] = m;
+    const mi = MONTH_NAMES.indexOf(monText.toLowerCase().slice(0, 3));
+    if (mi >= 0) {
+      const y = yRaw.length === 2 ? (Number(yRaw) > 50 ? '19' : '20') + yRaw : yRaw;
+      return `${y}-${String(mi + 1).padStart(2, '0')}`;
+    }
+  }
+
+  // Bare month name, no year — assume the current year
+  const mi = MONTH_NAMES.indexOf(s.toLowerCase().slice(0, 3));
+  if (mi >= 0) return `${new Date().getFullYear()}-${String(mi + 1).padStart(2, '0')}`;
+
+  return '';
+}
+
 // Map Google Sheet category to CRM pipeline stage
 function mapCategoryToStage(cat) {
   if (!cat) return 'new';
@@ -176,6 +262,13 @@ function parseVerticalStream(lines) {
       ...noteParts
     ].filter(Boolean).join(' | ');
 
+    // The sheet date line often has no year (e.g. "12-Oct") — fall back to
+    // a bare month-only read (assuming the current year) when a full date
+    // can't be parsed.
+    const parsedVDate = dateStr ? parseDateCell(dateStr) : null;
+    const enquiryDate = parsedVDate ? parsedVDate.date : '';
+    const enquiryMonth = (parsedVDate && parsedVDate.month) || (dateStr ? parseMonthCell(dateStr) : '');
+
     records.push({
       rowNumber: i + 1,
       fullName: name,
@@ -194,6 +287,8 @@ function parseVerticalStream(lines) {
       education,
       passoutYear,
       location: '',
+      enquiryDate,
+      enquiryMonth,
       notes: fullNotes,
       // Every parsed row is imported — a missing/invalid phone number is
       // flagged as a warning only, never a reason to drop the row.
@@ -208,11 +303,16 @@ function parseVerticalStream(lines) {
 export function parseGoogleSheetOrCsv(rawText) {
   if (!rawText || !rawText.trim()) return [];
 
-  // Split into raw lines
+  // Split into raw lines. Deliberately NOT trimming each whole line here (only
+  // dropping lines that are blank once trimmed) — a row whose first column is
+  // blank (e.g. a tab-separated sheet's DATE cell left empty on a continuation
+  // row) starts with a tab character, and String.trim() treats a tab as
+  // whitespace too, so trimming the line would eat that leading empty column
+  // and shift every value in the row one column to the left. Individual cells
+  // are still trimmed per-cell below in parseLine().
   const rawLines = rawText
     .split(/\r?\n/)
-    .map(line => line.trim())
-    .filter(Boolean);
+    .filter(line => line.trim() !== '');
 
   if (!rawLines.length) return [];
 
@@ -274,7 +374,7 @@ export function parseGoogleSheetOrCsv(rawText) {
   // Check if first line contains header titles
   const headerRow = parsedMatrix[0].map(h => String(h || '').toLowerCase().trim());
   const hasRecognizedHeader = headerRow.some(h => 
-    /name|phone|contact|mobile|whatsapp|email|course|branch|source|qual|degree|passout|location|city|note|category|remark|allocated/i.test(h)
+    /name|phone|contact|mobile|whatsapp|email|course|branch|source|qual|degree|passout|location|city|note|category|remark|allocated|date|month/i.test(h)
   );
 
   let headers = [];
@@ -302,12 +402,14 @@ export function parseGoogleSheetOrCsv(rawText) {
     else if (/^(branch|preferred\s*branch|location\s*branch|centre|center|campus)$/i.test(h)) fieldIndex.branch = idx;
     else if (/^(source|lead\s*source|source\s*name|channel|mode\s*of\s*source|platform)$/i.test(h)) fieldIndex.source = idx;
     else if (/^(category|student\s*category|lead\s*category|type)$/i.test(h)) fieldIndex.category = idx;
-    else if (/^(allocated\s*to|counselor|counselor\s*assigned|assigned\s*to|lead\s*owner|owner|agent)$/i.test(h)) fieldIndex.counselor = idx;
+    else if (/^(allocated(\s*to)?|counselor|counselor\s*assigned|assigned\s*to|lead\s*owner|owner|agent)$/i.test(h)) fieldIndex.counselor = idx;
     else if (/^(spoken\s*by|called\s*by|telecaller)$/i.test(h)) fieldIndex.spokenBy = idx;
     else if (/^(fetched\s*by|lead\s*by|captured\s*by|created\s*by)$/i.test(h)) fieldIndex.fetchedBy = idx;
     else if (/^(qualification|education|degree|qual|highest\s*qualification)$/i.test(h)) fieldIndex.qualification = idx;
     else if (/^(passout|passout\s*year|year\s*of\s*passing|passed\s*out|year|batch)$/i.test(h)) fieldIndex.passoutYear = idx;
     else if (/^(location|city|place|native|address|candidate\s*location)$/i.test(h)) fieldIndex.location = idx;
+    else if (/^(date|enquiry\s*date|lead\s*date|entry\s*date|call\s*date|contact\s*date|registration\s*date)$/i.test(h)) fieldIndex.date = idx;
+    else if (/^(month|enquiry\s*month|lead\s*month)$/i.test(h)) fieldIndex.month = idx;
     else if (/^(note|notes|remarks|comment|comments|handover\s*note|enquiry\s*notes|follow\s*up|follow\s*up\s*1|follow\s*up\s*2|hold|lost|lead)$/i.test(h)) {
       if (fieldIndex.notes === undefined) fieldIndex.notes = idx;
       else extraNotesIndices.push(idx);
@@ -317,6 +419,11 @@ export function parseGoogleSheetOrCsv(rawText) {
   // Fallbacks if primary fields not mapped by name
   if (fieldIndex.name === undefined) fieldIndex.name = 0;
   if (fieldIndex.phone === undefined && headers.length > 1) fieldIndex.phone = 1;
+
+  // Carried forward onto a row whose own Date/Month cell is blank — the sheet
+  // only writes the date once per day and leaves it blank on the rows below.
+  let lastEnquiryDate = '';
+  let lastEnquiryMonth = '';
 
   return dataRows.map((cols, rowIdx) => {
     const rawName = String(cols[fieldIndex.name] || '').trim();
@@ -336,6 +443,19 @@ export function parseGoogleSheetOrCsv(rawText) {
     const counselorAssigned = fieldIndex.counselor !== undefined ? String(cols[fieldIndex.counselor] || '').trim() : '';
     const spokenBy = fieldIndex.spokenBy !== undefined ? String(cols[fieldIndex.spokenBy] || '').trim() : '';
     const fetchedBy = fieldIndex.fetchedBy !== undefined ? String(cols[fieldIndex.fetchedBy] || '').trim() : '';
+
+    const dateCell = fieldIndex.date !== undefined ? String(cols[fieldIndex.date] || '').trim() : '';
+    const monthCell = fieldIndex.month !== undefined ? String(cols[fieldIndex.month] || '').trim() : '';
+    const parsedDate = dateCell ? parseDateCell(dateCell) : null;
+    let enquiryDate = parsedDate ? parsedDate.date : '';
+    let enquiryMonth = (parsedDate && parsedDate.month) || (monthCell ? parseMonthCell(monthCell) : '');
+    if (enquiryDate || enquiryMonth) {
+      lastEnquiryDate = enquiryDate;
+      lastEnquiryMonth = enquiryMonth || lastEnquiryMonth;
+    } else {
+      enquiryDate = lastEnquiryDate;
+      enquiryMonth = lastEnquiryMonth;
+    }
 
     // Collect all remarks, follow ups, and comments
     const mainNote = fieldIndex.notes !== undefined ? String(cols[fieldIndex.notes] || '').trim() : '';
@@ -389,6 +509,8 @@ export function parseGoogleSheetOrCsv(rawText) {
       education,
       passoutYear,
       location,
+      enquiryDate,
+      enquiryMonth,
       notes: combinedNotes,
       isValid,
       errorReason

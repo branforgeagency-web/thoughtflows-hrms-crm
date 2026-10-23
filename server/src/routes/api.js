@@ -2629,9 +2629,27 @@ router.post('/students', async (req, res) => {
       payload.leadId = String(lead._id);
       if (!payload.leadBranch && lead.branch) payload.leadBranch = lead.branch;
       if (!payload.branch && lead.branch) payload.branch = lead.branch;
+      // Carry the enquiry month/date set on the lead (from its bulk-upload
+      // sheet row) through to the admitted student's own profile.
+      if (!payload.enquiryDate && lead.enquiryDate) payload.enquiryDate = lead.enquiryDate;
+      if (!payload.enquiryMonth && lead.enquiryMonth) payload.enquiryMonth = lead.enquiryMonth;
     }
     if (!payload.branch && payload.location) payload.branch = payload.location;
     if (!payload.location && payload.branch) payload.location = payload.branch;
+
+    // No lead (direct walk-in / self-registration), or the lead itself never
+    // got an enquiry date/month — fall back to the registration date so the
+    // field is never blank on a student's profile.
+    if (!payload.enquiryDate) {
+      payload.enquiryDate = String(payload.registeredAt || new Date().toISOString()).slice(0, 10);
+    }
+    if (!payload.enquiryMonth) {
+      payload.enquiryMonth = monthKeyFromDateStr(payload.enquiryDate) || currentMonthKey();
+    }
+    // Keep the legacy enqDate (short month name) in sync for older UI that still reads it.
+    if (!payload.enqDate) {
+      payload.enqDate = shortMonthFromKey(payload.enquiryMonth);
+    }
 
     // No fee given → take it from the course rate card
     if (!(Number(payload.courseFee) > 0) && payload.course) {
@@ -3053,6 +3071,22 @@ function currentMonthKey() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
+// "YYYY-MM" out of an "YYYY-MM-DD" enquiry date string, or '' if it doesn't match.
+function monthKeyFromDateStr(s) {
+  const m = String(s || '').match(/^(\d{4}-\d{2})/);
+  return m ? m[1] : '';
+}
+
+// Short month name ("Oct") from a "YYYY-MM" key — populates the legacy
+// Student.enqDate field so older UI reading it keeps working.
+const SHORT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function shortMonthFromKey(key) {
+  const m = String(key || '').match(/^\d{4}-(\d{2})$/);
+  if (!m) return '';
+  const idx = Number(m[1]) - 1;
+  return SHORT_MONTHS[idx] || '';
+}
+
 router.post('/leads', async (req, res) => {
   try {
     const payload = { ...req.body };
@@ -3067,7 +3101,7 @@ router.post('/leads', async (req, res) => {
       payload.stage = 'new';
     }
     if (!payload.enquiryMonth) {
-      payload.enquiryMonth = currentMonthKey();
+      payload.enquiryMonth = monthKeyFromDateStr(payload.enquiryDate) || currentMonthKey();
     }
 
     // Check for duplicate enquiry by mobile number and/or email ID
@@ -3181,7 +3215,7 @@ router.post('/leads/bulk', async (req, res) => {
         payload.stage = 'new';
       }
       if (!payload.enquiryMonth) {
-        payload.enquiryMonth = req.body?.defaultMonth || currentMonthKey();
+        payload.enquiryMonth = monthKeyFromDateStr(payload.enquiryDate) || req.body?.defaultMonth || currentMonthKey();
       }
       if (!payload.branch) {
         payload.branch = userBranch || 'Saravanampatti (CBE)';
