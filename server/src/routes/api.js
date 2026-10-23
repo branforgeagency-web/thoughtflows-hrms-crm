@@ -2870,6 +2870,19 @@ router.put('/students/:id', async (req, res) => {
     const existing = await findStudentByAnyId(req.params.id);
     if (!existing) return res.status(404).json({ error: 'Student not found' });
     if (!ownsStudent(req, existing)) return res.status(403).json(NOT_YOURS);
+    // Mode of training (Online/Classroom) can be switched only once per
+    // student — most commonly offline -> online. Once that one switch has
+    // been used, the mode is locked and the student completes the course
+    // in that mode; any further attempt to change it is rejected here.
+    if (payload.mode && payload.mode !== existing.mode) {
+      if (existing.modeChangeUsed) {
+        return res.status(400).json({
+          error: `Course mode is locked to "${existing.mode}" — it was already changed once (on ${existing.modeChangedAt ? new Date(existing.modeChangedAt).toLocaleDateString() : 'an earlier date'}) and cannot be changed again.`
+        });
+      }
+      payload.modeChangeUsed = true;
+      payload.modeChangedAt = new Date();
+    }
     // Money only moves through POST /students/:id/payments (receipt ledger);
     // Admin / Leadership may still correct the totals directly.
     const elevated = ['admin', 'leadership'].includes(req.user?.department);

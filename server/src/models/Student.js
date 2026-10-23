@@ -40,6 +40,18 @@ const studentSchema = new mongoose.Schema({
     enum: ['Online', 'Classroom'],
     default: 'Online'
   },
+  // Course mode (Online/Classroom) can be changed only once after admission —
+  // typically a student moving from offline (Classroom) to online. Once that
+  // one change is used, further mode edits are blocked server-side so the
+  // student completes the course in whichever mode they switched to.
+  modeChangeUsed: {
+    type: Boolean,
+    default: false
+  },
+  modeChangedAt: {
+    type: Date,
+    default: null
+  },
   batchDate: {
     type: String,
     default: ''

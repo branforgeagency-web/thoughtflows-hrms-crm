@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { X, Save, User, Phone, Mail, GraduationCap, Building2, MapPin, Calendar, Clock, BookOpen, AlertCircle, Sparkles, Check, Trash2 } from 'lucide-react';
+import { X, Save, User, Phone, Mail, GraduationCap, Building2, MapPin, Calendar, Clock, BookOpen, AlertCircle, Sparkles, Check, Trash2, Lock } from 'lucide-react';
 import { updateStudent, deleteStudent } from '../services/api';
 import { COURSE_CATEGORIES } from '../constants/courses';
 import { QUALIFICATION_GROUPS } from '../constants/qualifications';
@@ -381,17 +381,36 @@ export default function EditStudentModal({ isOpen, onClose, student, onSuccess, 
               </div>
 
               <div>
-                <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                <label className="flex items-center gap-1.5 text-[11px] font-bold text-slate-700 mb-1">
                   Mode of Training
+                  {student.modeChangeUsed && (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-full normal-case">
+                      <Lock className="w-2.5 h-2.5" /> Locked
+                    </span>
+                  )}
                 </label>
                 <select
                   value={mode}
                   onChange={(e) => setMode(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 focus:bg-white rounded-xl px-3.5 py-2 text-xs text-slate-900 font-semibold outline-none focus:border-[#00897b] transition-all cursor-pointer"
+                  disabled={student.modeChangeUsed}
+                  className={`w-full border rounded-xl px-3.5 py-2 text-xs font-semibold outline-none transition-all ${
+                    student.modeChangeUsed
+                      ? 'bg-slate-100 border-slate-200 text-slate-500 cursor-not-allowed'
+                      : 'bg-slate-50 border-slate-200 focus:bg-white text-slate-900 focus:border-[#00897b] cursor-pointer'
+                  }`}
                 >
                   <option value="Online">Online (Live Interactive)</option>
                   <option value="Classroom">Classroom (Branch Center)</option>
                 </select>
+                {student.modeChangeUsed ? (
+                  <p className="text-[10px] text-amber-700 mt-1">
+                    Already switched once{student.modeChangedAt ? ` on ${new Date(student.modeChangedAt).toLocaleDateString()}` : ''} — mode can't be changed again.
+                  </p>
+                ) : (
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    Can be switched (e.g. offline → online) only once — it locks after that.
+                  </p>
+                )}
               </div>
 
               <div>
