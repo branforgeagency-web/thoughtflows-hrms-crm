@@ -173,6 +173,22 @@ export default function TrainingDepartmentDashboard({
     return () => window.removeEventListener('beforeunload', warn);
   }, [demoRoom]);
 
+  // A Google Meet demo runs in its own tab (Google blocks embedding it), so
+  // there's nothing to "minimize" in the Zoom sense — but switching sections
+  // here used to make the session disappear from view entirely, which read as
+  // the meeting itself getting cancelled. This just keeps a small persistent
+  // marker of "a Meet session is running" that survives navigating around the
+  // dashboard (and a refresh), with a one-click way back to it.
+  const [activeMeetSession, setActiveMeetSession] = useState(() => {
+    try { return JSON.parse(sessionStorage.getItem('tf_active_meet') || 'null'); } catch (_) { return null; }
+  });
+  useEffect(() => {
+    try {
+      if (activeMeetSession) sessionStorage.setItem('tf_active_meet', JSON.stringify(activeMeetSession));
+      else sessionStorage.removeItem('tf_active_meet');
+    } catch (_) {}
+  }, [activeMeetSession]);
+
   // Live Database States
   const [loading, setLoading] = useState(true);
   const [students, setStudents] = useState([]);
@@ -1153,6 +1169,19 @@ export default function TrainingDepartmentDashboard({
     flashDemoToast(`✓ Group demo session ended · ${studentsToMark.length} candidate(s) marked Attended`, 4000);
   };
 
+  // Once every candidate in the active Google Meet session has a final
+  // outcome (attended / missed), the session marker clears itself — no need
+  // for the trainer to remember to dismiss it.
+  useEffect(() => {
+    if (!activeMeetSession) return;
+    const siblings = demos.filter(d =>
+      `${d.trainerId}__${d.preferredDate}__${d.timeSlot || d.time}` === activeMeetSession.key
+    );
+    if (siblings.length && siblings.every(d => ['attended', 'missed'].includes(lc(d.status)))) {
+      setActiveMeetSession(null);
+    }
+  }, [demos, activeMeetSession]);
+
   const handleJoinDemo = async (lead, customSiblings = null) => {
     if (lead.disabledForStart) {
       flashDemoToast('This demo\'s scheduled time has passed and it was auto-marked missed — ask the Head of Trainer to reschedule it.', 5000);
@@ -1160,16 +1189,27 @@ export default function TrainingDepartmentDashboard({
     }
     let d = lead;
     if (!d.link) { d = await handleCreateDemoMeeting(lead); if (!d) return; }
-    // A Google Meet link can't be embedded in-page (Google blocks iframing it),
-    // so it opens in its own tab for the actual call; attendance/outcomes for
-    // the session are still managed from this dashboard either way.
-    if (d.meetingProvider === 'google_meet') {
-      window.open(d.link, '_blank', 'noopener,noreferrer');
-      return;
-    }
     const siblings = customSiblings || myExpertDemos.filter(s =>
       s.preferredDate === d.preferredDate && (s.timeSlot || s.time) === (d.timeSlot || d.time)
     );
+    // A Google Meet link can't be embedded in-page (Google blocks iframing it),
+    // so it opens in its own tab for the actual call; attendance/outcomes for
+    // the session are still managed from this dashboard either way. Keep a
+    // small marker of the session so it doesn't vanish — and look cancelled —
+    // the moment the trainer switches to another section like Library.
+    if (d.meetingProvider === 'google_meet') {
+      window.open(d.link, '_blank', 'noopener,noreferrer');
+      setActiveMeetSession({
+        key: `${d.trainerId}__${d.preferredDate}__${d.timeSlot || d.time}`,
+        course: d.course,
+        preferredDate: d.preferredDate,
+        timeSlot: d.timeSlot || d.time,
+        link: d.link,
+        count: (siblings.length ? siblings : [d]).length,
+        startedAt: Date.now()
+      });
+      return;
+    }
     setDemoMin(false);
     setDemoRoom({
       ...d,
@@ -1723,6 +1763,40 @@ export default function TrainingDepartmentDashboard({
           </div>
         )}
 
+        {/* Active Google Meet demo marker – lives at page level (not inside any
+            activeNav tab) so it survives the trainer switching to Library or
+            any other section instead of looking like the meeting was cancelled. */}
+        {activeMeetSession && !demoRoom && (
+          <div className="fixed bottom-4 right-4 z-[80] bg-[#0f212d] text-white rounded-2xl border border-blue-500/60 shadow-2xl px-4 py-3 flex items-center gap-3">
+            <span className="relative flex h-2.5 w-2.5"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span><span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-400"></span></span>
+            <div className="leading-tight">
+              <div className="text-xs font-bold">Google Meet running · {activeMeetSession.course}</div>
+              <div className="text-[10.5px] text-slate-400">{activeMeetSession.count} candidate(s) · still minimized here — not cancelled</div>
+            </div>
+            <button
+              onClick={() => window.open(activeMeetSession.link, '_blank', 'noopener,noreferrer')}
+              className="ml-1 px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-[11px] font-bold cursor-pointer"
+            >
+              Reopen tab
+            </button>
+            {activeNav !== 'demos' && (
+              <button
+                onClick={() => setActiveNav('demos')}
+                className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-[11px] font-bold cursor-pointer"
+              >
+                Manage attendance
+              </button>
+            )}
+            <button
+              onClick={() => setActiveMeetSession(null)}
+              className="px-2 py-1.5 rounded-xl hover:bg-slate-800 text-slate-400 hover:text-white text-[11px] font-bold cursor-pointer"
+              title="Dismiss this marker (does not end the Google Meet call itself)"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
         {/* Demo Zoom room – lives at page level so it stays connected while the trainer browses other sections */}
         {demoRoom && (
           <>
@@ -1833,7 +1907,17 @@ export default function TrainingDepartmentDashboard({
                   </div>
                 )}
 
-                <ZoomMeeting demoId={demoRoom._id} userName={trainerName} height={560} onBusy={handleZoomBusyFallback} />
+                <ZoomMeeting
+                  demoId={demoRoom._id}
+                  userName={trainerName}
+                  height={560}
+                  onBusy={handleZoomBusyFallback}
+                  onLeft={() => {
+                    setDemoRoom(null);
+                    setDemoMin(false);
+                    flashDemoToast('You left the meeting. Mark attendance for each candidate from the Demos tab, or reopen to rejoin.', 5500);
+                  }}
+                />
               </div>
             </div>
           </>
@@ -1849,6 +1933,21 @@ export default function TrainingDepartmentDashboard({
 
         {/* VIEW CONTAINER */}
         <div className="p-6 max-w-[1400px] w-full mx-auto space-y-6 flex-1">
+
+          {/* Class Session Room — kept mounted here regardless of which tab
+              is active, so the live Zoom connection survives the trainer
+              switching to Library or any other section instead of getting
+              disconnected and failing to rejoin on the way back. Only
+              visually hidden (off-screen), not unmounted, on other tabs. */}
+          <div className={activeNav === 'session_room' ? '' : 'fixed top-0 -left-[4000px] w-[1100px] pointer-events-none'} aria-hidden={activeNav !== 'session_room'}>
+            <ClassSessionRoom
+              trainerId={trainerId}
+              trainerName={trainerName}
+              batches={batches}
+              materials={materials}
+              onAttendanceSaved={loadRealData}
+            />
+          </div>
 
           {/* ================= TAB 1: HOME (EXACT MATCH TO REFERENCE SCREENSHOT) ================= */}
           {activeNav === 'home' && (
@@ -2550,16 +2649,7 @@ export default function TrainingDepartmentDashboard({
             )
           )}
 
-          {/* ================= TAB 2: CLASS SESSION ROOM ================= */}
-          {activeNav === 'session_room' && (
-            <ClassSessionRoom
-              trainerId={trainerId}
-              trainerName={trainerName}
-              batches={batches}
-              materials={materials}
-              onAttendanceSaved={loadRealData}
-            />
-          )}
+          {/* ================= TAB 2: CLASS SESSION ROOM — moved to page level below, stays mounted across tabs ================= */}
 
           {/* ================= TAB 3: ATTENDANCE ================= */}
           {activeNav === 'attendance' && (

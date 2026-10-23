@@ -94,7 +94,7 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
     }
   };
 
-  const joinDetails = useCallback(() => getTrainerClassJoin(live?.sessionId), [live?.sessionId]);
+  const joinDetails = useCallback((_reset, noHost) => getTrainerClassJoin(live?.sessionId, { noHost }), [live?.sessionId]);
 
   const handleEnd = async () => {
     if (!live) return;
@@ -257,7 +257,14 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             <div className="lg:col-span-8 space-y-4">
-              <ZoomMeeting key={live.sessionId} getJoinDetails={joinDetails} userName={trainerName} height={560} isTrainerHost />
+              <ZoomMeeting
+                key={live.sessionId}
+                getJoinDetails={joinDetails}
+                userName={trainerName}
+                height={560}
+                isTrainerHost
+                onLeft={() => flash('You left the Zoom call. The class is still live — rejoin anytime, or click "End Class" when you\'re done.', 6000)}
+              />
               {live.zoomJoinUrl && (
                 <a href={live.zoomJoinUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-bold text-[#00897b] hover:underline">
                   <ExternalLink className="w-3.5 h-3.5" />Open in the Zoom app instead

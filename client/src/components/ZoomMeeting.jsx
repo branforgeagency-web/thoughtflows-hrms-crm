@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { RefreshCw, AlertCircle } from 'lucide-react';
+import { RefreshCw, AlertCircle, X } from 'lucide-react';
 import ZoomMtgEmbedded from '@zoom/meetingsdk/embedded';
 import { authHeaders } from '../services/api';
 
@@ -44,7 +44,12 @@ export default function ZoomMeeting({
   // Called once when Zoom reports this host already has another live
   // meeting — lets the parent offer a Google Meet fallback instead of
   // forcing the trainer to end the other session first.
-  onBusy
+  onBusy,
+  // Called when the SDK reports the connection closed (the user clicked
+  // Zoom's own Leave button, or the host ended the meeting) — the parent
+  // can close its modal / reset its "in a meeting" state instead of being
+  // left showing a dead call.
+  onLeft
 }) {
   const getJoinRef = useRef(getJoinDetails);
   getJoinRef.current = getJoinDetails;
@@ -52,6 +57,8 @@ export default function ZoomMeeting({
   onJoinedRef.current = onJoined;
   const onBusyRef = useRef(onBusy);
   onBusyRef.current = onBusy;
+  const onLeftRef = useRef(onLeft);
+  onLeftRef.current = onLeft;
   const useLoader = Boolean(getJoinDetails);
   const containerRef = useRef(null);
   const runRef = useRef(0); // increments per attempt; stale attempts bail out
@@ -65,7 +72,7 @@ export default function ZoomMeeting({
   // Fresh join details from the server on EVERY attempt (server frees the trainer's Zoom user first)
   const fetchDetails = useCallback(async (reset = false) => {
     if (useLoader) {
-      const data = await getJoinRef.current(reset);
+      const data = await getJoinRef.current(reset, forceNoHostRef.current);
       return {
         meetingNumber: String(data.meetingNumber || '').replace(/\D/g, ''),
         password: data.password || '',
@@ -122,9 +129,34 @@ export default function ZoomMeeting({
 
       const client = ZoomMtgEmbedded.createClient();
       sharedClient = client;
-      await client.init({ zoomAppRoot: containerRef.current, language: 'en-US', patchJsMedia: true });
+      // Left unconfigured, the SDK renders as its own small (~244px) floating,
+      // draggable "smart mode" widget instead of filling our container — that's
+      // why the native Leave-meeting confirmation looked cut off to just a
+      // "Cancel" button, there simply wasn't room for the rest of it. Locking
+      // an explicit size + disabling drag/resize (per Zoom's documented
+      // customize.video options) makes it fill the room instead.
+      const rect = containerRef.current.getBoundingClientRect();
+      const viewWidth = Math.round(Math.min(1400, Math.max(360, rect.width || 900)));
+      const viewHeight = Math.round(Math.min(810, Math.max(240, rect.height || height)));
+      await client.init({
+        zoomAppRoot: containerRef.current,
+        language: 'en-US',
+        patchJsMedia: true,
+        customize: {
+          video: {
+            popper: { disableDraggable: true },
+            isResizable: false,
+            viewSizes: { default: { width: viewWidth, height: viewHeight } }
+          }
+        }
+      });
       if (run !== runRef.current) return;
 
+      // Fires when the user leaves via Zoom's own Leave button, or the host
+      // ends the meeting — otherwise our side would never learn the call ended.
+      client.on('connection-change', (payload) => {
+        if (payload?.state === 'Closed' && run === runRef.current) onLeftRef.current?.();
+      });
       await client.join({
         sdkKey: d.sdkKey,
         signature: d.signature,
@@ -180,12 +212,60 @@ export default function ZoomMeeting({
     };
   }, [connect]);
 
+  // Our OWN leave control. Zoom's native floating toolbar's leave button
+  // renders its confirmation popup inside the SDK's own DOM, independent of
+  // our markup — when that popup misbehaves in an embedded context there is
+  // nothing in our CSS left to fix. This calls the SDK's leaveMeeting()
+  // directly, so leaving never depends on that popup rendering correctly.
+  const handleLeave = async () => {
+    const run = runRef.current;
+    try { await sharedClient?.leaveMeeting(); } catch (_) {}
+    await resetSharedClient();
+    if (run === runRef.current) {
+      setStatus('left');
+      onLeftRef.current?.();
+    }
+  };
+
   return (
     <div
-      className="relative bg-[#07151c] rounded-2xl border border-[#1a4250] overflow-hidden shadow-2xl text-white flex flex-col w-full h-full"
+      // overflow was previously "hidden" to keep the rounded corners clean,
+      // but the Zoom SDK renders its own native popups (notably the Leave-
+      // meeting confirmation) positioned relative to this box — "hidden"
+      // clipped off everything past this box's edge, which is exactly why
+      // only the "Cancel" button was ever visible/clickable. "visible" lets
+      // those popups render in full; the corners staying square underneath
+      // a popup is a much smaller tradeoff than Leave not working at all.
+      className="relative bg-[#07151c] rounded-2xl border border-[#1a4250] overflow-visible shadow-2xl text-white flex flex-col w-full h-full"
       style={{ minHeight: height, height: '100%' }}
     >
-      <div className="relative flex-1 w-full h-full bg-[#030b0f] flex flex-col items-center justify-center">
+      <div className="relative flex-1 w-full h-full bg-[#030b0f] rounded-2xl flex flex-col items-center justify-center">
+        {status === 'joined' && (
+          <button
+            onClick={handleLeave}
+            title="Leave this call"
+            className="absolute top-3 right-3 z-20 px-3 py-2 rounded-xl bg-rose-600/90 hover:bg-rose-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-lg backdrop-blur-sm"
+          >
+            <X className="w-3.5 h-3.5" />
+            <span>Leave call</span>
+          </button>
+        )}
+        {status === 'left' && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-center p-6 z-10">
+            <div className="w-14 h-14 rounded-2xl bg-slate-700/40 border border-slate-600 flex items-center justify-center shadow-xl">
+              <X className="w-7 h-7 text-slate-300" />
+            </div>
+            <h4 className="text-base font-extrabold text-white">You left the call</h4>
+            <button
+              onClick={() => connect(1)}
+              className="mt-1 px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-lg"
+            >
+              <RefreshCw className="w-4 h-4" />
+              <span>Rejoin</span>
+            </button>
+          </div>
+        )}
+
         {status === 'loading' && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-center p-6 z-10 pointer-events-none">
             <div className="w-14 h-14 rounded-2xl bg-teal-500/20 border border-teal-400/40 flex items-center justify-center shadow-xl">

@@ -9293,8 +9293,31 @@ router.get('/trainer/live-class/:id/join', async (req, res) => {
     if (!sess || !isSessionLive(sess)) return res.status(404).json({ error: 'This class is not live any more' });
     if (!trainerOwnsRecord(req, sess)) return res.status(403).json(NOT_YOUR_RECORD);
     if (!sess.zoomMeetingId) return res.status(409).json({ error: 'No Zoom meeting for this class' });
+
+    // Class meetings are created with join_before_host:false, so when the
+    // trainer (sole participant) leaves, Zoom auto-ends the meeting entirely —
+    // a plain "Leave" then "Rejoin" would otherwise sign a join for an id
+    // Zoom no longer recognizes ("meeting not found"). Catch that here and
+    // transparently issue a fresh meeting under the same live session instead
+    // of making the trainer re-start the whole class.
+    if (sess.meetingSource === 'zoom_api') {
+      try {
+        const m = await zoomApi(`/meetings/${sess.zoomMeetingId}`);
+        if (m.status === 404 || m.data?.code === 3001) {
+          const trainer = await Trainer.findOne({ trainerId: sess.trainerId });
+          await createClassZoomMeeting(sess, trainer);
+          await sess.save();
+        }
+      } catch (_) { /* Zoom API hiccup — fall through with whatever's on the session */ }
+    }
+
     let zak = '';
-    if (sess.meetingSource === 'zoom_api' && sess.zoomHostEmail) {
+    // After the SDK reports it can't START the meeting via a host token (the
+    // account/plan doesn't support it), the client asks us to skip the ZAK
+    // entirely and sign a regular participant join instead — the meeting
+    // still works since join_before_host is on for these.
+    const noHost = req.query.noHost === '1';
+    if (!noHost && sess.meetingSource === 'zoom_api' && sess.zoomHostEmail) {
       try {
         let z = await zoomApi(`/users/${encodeURIComponent(sess.zoomHostEmail)}/token?type=zak`);
         if (!z.ok && sess.zoomHostEmail !== 'me') {

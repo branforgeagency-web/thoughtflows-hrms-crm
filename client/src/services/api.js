@@ -1178,8 +1178,9 @@ export const startLiveClass = async (data) => {
 };
 
 // Host join details (signature + ZAK) for the trainer's own session
-export const getTrainerClassJoin = async (sessionId) => {
-  const res = await api.get(`/trainer/live-class/${sessionId}/join`);
+export const getTrainerClassJoin = async (sessionId, { noHost } = {}) => {
+  const q = noHost ? '?noHost=1' : '';
+  const res = await api.get(`/trainer/live-class/${sessionId}/join${q}`);
   return res.data;
 };
 
