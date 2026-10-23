@@ -68,6 +68,7 @@ import {
   updateDemosBulkOutcome,
   createDemoMeeting,
   endDemoMeeting,
+  setDemoMeetingLink,
   sendDemoLinkEmail,
   getTrainerDoubts,
   replyTrainerDoubt,
@@ -782,6 +783,14 @@ export default function TrainingDepartmentDashboard({
     ));
   }, [demos, trainerId]);
 
+  // Demos that were originally booked for ME but the Head of Trainer has since
+  // moved to someone else (e.g. I was on leave) — shown so I know not to
+  // expect/prepare for these, and who is covering them now.
+  const reassignedAwayDemos = React.useMemo(() => {
+    if (!trainerId) return [];
+    return demos.filter(d => d.reassigned && d.originalTrainerId === trainerId && d.trainerId !== trainerId);
+  }, [demos, trainerId]);
+
   // Group Demos into shared sessions (per date + timeSlot).
   // A trainer takes the demo for all students in that session together (up to 6 students at a time).
   const myDemoSessions = React.useMemo(() => {
@@ -985,6 +994,75 @@ export default function TrainingDepartmentDashboard({
   const [demoToast, setDemoToast] = useState(null);
   const flashDemoToast = (msg, ms = 3500) => { setDemoToast(msg); setTimeout(() => setDemoToast(null), ms); };
 
+  // ---- Google Meet link (manual) for a group demo session — one link for every
+  // student in that trainer + date + time slot, shown & managed right here. ----
+  const [meetLinkDrafts, setMeetLinkDrafts] = useState({});
+  const [savingMeetLinkKey, setSavingMeetLinkKey] = useState('');
+
+  const handleSaveMeetLink = async (session) => {
+    const draft = (meetLinkDrafts[session.key] ?? session.link ?? '').trim();
+    if (!draft) { flashDemoToast('Paste a Google Meet link first'); return; }
+    const primary = session.students[0];
+    if (!primary?._id) return;
+    setSavingMeetLinkKey(session.key);
+    try {
+      const updated = await setDemoMeetingLink(primary._id, draft);
+      setDemos(prev => prev.map(d => {
+        const sameSession = d.trainerId === updated.trainerId
+          && d.preferredDate === updated.preferredDate
+          && (d.timeSlot || d.time) === updated.timeSlot;
+        return sameSession ? { ...d, link: updated.link, meetingProvider: updated.meetingProvider, zoomMeetingId: '', zoomHostEmail: '' } : d;
+      }));
+      flashDemoToast('✓ Google Meet link saved — shared with every student in this session', 4000);
+    } catch (e) {
+      flashDemoToast(e?.response?.data?.error || 'Could not save the link', 5000);
+    } finally {
+      setSavingMeetLinkKey('');
+    }
+  };
+
+  const handleCopyMeetLink = async (session) => {
+    if (!session.link) return;
+    try {
+      await navigator.clipboard.writeText(session.link);
+      flashDemoToast('✓ Meeting link copied', 2500);
+    } catch (_) {
+      flashDemoToast('Could not copy automatically — select and copy the link manually', 3500);
+    }
+  };
+
+  // Zoom reported this trainer's host account already has another live
+  // meeting in progress (two overlapping group demos). Rather than forcing
+  // the trainer to end that session first, let them run THIS one on Google
+  // Meet instead — it just opens a new tab, no Zoom account concurrency
+  // limit applies, and the other meeting keeps running undisturbed.
+  const handleZoomBusyFallback = () => {
+    const current = demoRoom;
+    if (!current?._id) return;
+    const link = window.prompt(
+      "This trainer's Zoom account is already running another meeting.\n\nPaste a Google Meet link to run THIS session instead (opens in a new tab; attendance is still tracked here) — the other Zoom meeting won't be interrupted:"
+    );
+    const draft = (link || '').trim();
+    if (!draft) return;
+    (async () => {
+      try {
+        const updated = await setDemoMeetingLink(current._id, draft);
+        setDemos(prev => prev.map(d => {
+          const sameSession = d.trainerId === updated.trainerId
+            && d.preferredDate === updated.preferredDate
+            && (d.timeSlot || d.time) === updated.timeSlot;
+          return sameSession ? { ...d, link: updated.link, meetingProvider: updated.meetingProvider, zoomMeetingId: '', zoomHostEmail: '' } : d;
+        }));
+        setDemoRoom(null);
+        setDemoMin(false);
+        window.open(updated.link, '_blank', 'noopener,noreferrer');
+        flashDemoToast('✓ This session now runs on Google Meet — your other Zoom meeting keeps running', 5000);
+      } catch (e) {
+        flashDemoToast(e?.response?.data?.error || 'Could not save the Google Meet link', 5000);
+      }
+    })();
+  };
+
   const handleAcknowledgeDemo = async (demoId) => {
     try {
       const updated = await acknowledgeDemo(demoId, { trainerId, trainerName });
@@ -1025,7 +1103,7 @@ export default function TrainingDepartmentDashboard({
 
   const handleSendDemoLink = async (lead) => {
     let d = lead;
-    if (!d.zoomMeetingId) { d = await handleCreateDemoMeeting(lead); if (!d) return; }
+    if (!d.link) { d = await handleCreateDemoMeeting(lead); if (!d) return; }
     let phone = String(lead.phone || '').replace(/\D/g, '');
     if (phone.length === 10) phone = '91' + phone;
     const when = [lead.preferredDate, lead.timeSlot || lead.time].filter(Boolean).join(' ');
@@ -1038,7 +1116,7 @@ export default function TrainingDepartmentDashboard({
   const handleEmailDemoLink = async (lead) => {
     if (!lead.email) { flashDemoToast('No student email on this demo'); return; }
     let d = lead;
-    if (!d.zoomMeetingId) { d = await handleCreateDemoMeeting(lead); if (!d) return; }
+    if (!d.link) { d = await handleCreateDemoMeeting(lead); if (!d) return; }
     try {
       setDemoToast('Sending email…');
       await sendDemoLinkEmail(d._id);
@@ -1047,7 +1125,7 @@ export default function TrainingDepartmentDashboard({
       // Email service not set up (or failed): open the trainer's own mail app with the message ready
       const when = [lead.preferredDate, lead.timeSlot || lead.time].filter(Boolean).join(' ');
       const subject = `Your ${lead.course} demo class link – Thoughtflows Academy`;
-      const body = `Hi ${lead.candidateName},\n\nYour ${lead.course} demo class with ${trainerName} is scheduled for ${when}.\n\nJoin on Zoom: ${d.link}\n\nPlease join 5 minutes early.`;
+      const body = `Hi ${lead.candidateName},\n\nYour ${lead.course} demo class with ${trainerName} is scheduled for ${when}.\n\nJoin here: ${d.link}\n\nPlease join 5 minutes early.`;
       window.open(`mailto:${lead.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`, '_self');
       flashDemoToast((e?.response?.data?.error || 'Email failed') + ' — opened your mail app instead', 5000);
     }
@@ -1076,8 +1154,19 @@ export default function TrainingDepartmentDashboard({
   };
 
   const handleJoinDemo = async (lead, customSiblings = null) => {
+    if (lead.disabledForStart) {
+      flashDemoToast('This demo\'s scheduled time has passed and it was auto-marked missed — ask the Head of Trainer to reschedule it.', 5000);
+      return;
+    }
     let d = lead;
-    if (!d.zoomMeetingId) { d = await handleCreateDemoMeeting(lead); if (!d) return; }
+    if (!d.link) { d = await handleCreateDemoMeeting(lead); if (!d) return; }
+    // A Google Meet link can't be embedded in-page (Google blocks iframing it),
+    // so it opens in its own tab for the actual call; attendance/outcomes for
+    // the session are still managed from this dashboard either way.
+    if (d.meetingProvider === 'google_meet') {
+      window.open(d.link, '_blank', 'noopener,noreferrer');
+      return;
+    }
     const siblings = customSiblings || myExpertDemos.filter(s =>
       s.preferredDate === d.preferredDate && (s.timeSlot || s.time) === (d.timeSlot || d.time)
     );
@@ -1134,8 +1223,8 @@ export default function TrainingDepartmentDashboard({
       flashDemoToast('No email addresses recorded for candidates in this session', 4000);
       return;
     }
-    let sample = session.students.find(s => s.zoomMeetingId) || session.students[0];
-    if (!sample.zoomMeetingId) {
+    let sample = session.students.find(s => s.link) || session.students[0];
+    if (!sample.link) {
       sample = await handleCreateDemoMeeting(sample);
       if (!sample) return;
     }
@@ -1146,7 +1235,7 @@ export default function TrainingDepartmentDashboard({
         sentCount++;
       } catch (_) {}
     }
-    flashDemoToast(`✓ Zoom meeting link emailed to ${sentCount} candidate${sentCount > 1 ? 's' : ''}`, 4000);
+    flashDemoToast(`✓ Meeting link emailed to ${sentCount} candidate${sentCount > 1 ? 's' : ''}`, 4000);
   };
 
   // Save attendance marks to the server — updates each student's attendance %,
@@ -1744,7 +1833,7 @@ export default function TrainingDepartmentDashboard({
                   </div>
                 )}
 
-                <ZoomMeeting demoId={demoRoom._id} userName={trainerName} height={560} />
+                <ZoomMeeting demoId={demoRoom._id} userName={trainerName} height={560} onBusy={handleZoomBusyFallback} />
               </div>
             </div>
           </>
@@ -2756,6 +2845,29 @@ export default function TrainingDepartmentDashboard({
                 </div>
               )}
 
+              {/* Demos reassigned AWAY from me (e.g. I was on leave) */}
+              {reassignedAwayDemos.length > 0 && (
+                <div className="bg-amber-50 rounded-2xl p-5 border border-amber-200/90 shadow-sm space-y-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm">↪️</span>
+                    <h3 className="text-sm font-bold text-amber-900">
+                      {reassignedAwayDemos.length} demo{reassignedAwayDemos.length === 1 ? '' : 's'} reassigned away from you
+                    </h3>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                    {reassignedAwayDemos.map((d) => (
+                      <div key={d._id} className="p-3 rounded-xl bg-white border border-amber-200/80 text-xs space-y-1">
+                        <div className="font-bold text-slate-900 truncate">{d.candidateName}</div>
+                        <div className="text-[11px] text-slate-500">{d.course} · {d.preferredDate} {d.timeSlot || d.time || ''}</div>
+                        <div className="text-[11px] text-amber-700 font-semibold">
+                          Now with {d.trainer || 'another trainer'}{d.reassignmentReason ? ` · ${d.reassignmentReason}` : ''}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Card 2: HR–Booked Demos · Your Course Expert Bucket */}
               <div className="bg-white rounded-2xl p-6 sm:p-7 border border-slate-200/90 shadow-sm space-y-4">
                 <div className="flex items-center justify-between flex-wrap gap-2">
@@ -2860,12 +2972,12 @@ export default function TrainingDepartmentDashboard({
                                   className="px-3.5 py-2 rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white text-xs font-bold shadow-sm flex items-center gap-1.5 cursor-pointer transition-all active:scale-95"
                                 >
                                   <Play className="w-3.5 h-3.5 fill-current" />
-                                  <span>Start Group Demo (Zoom)</span>
+                                  <span>{session.link && session.meetingProvider === 'google_meet' ? 'Open Google Meet' : 'Start Group Demo (Zoom)'}</span>
                                 </button>
                                 <button
                                   onClick={() => handleEmailAllSession(session)}
                                   className="px-3 py-2 rounded-xl bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-200 text-xs font-bold transition-all cursor-pointer"
-                                  title="Send Zoom link email to all candidates who provided an email"
+                                  title="Email the meeting link to all candidates who provided an email"
                                 >
                                   ✉️ Email All ({session.students.filter(s => s.email).length})
                                 </button>
@@ -2888,6 +3000,33 @@ export default function TrainingDepartmentDashboard({
                                   </button>
                                 )}
                               </div>
+
+                              {/* Google Meet link — one link for the whole group session;
+                                  paste it once, it's shared with every candidate below. */}
+                              <div className="flex items-center gap-2 flex-wrap w-full pt-1">
+                                <input
+                                  value={meetLinkDrafts[session.key] ?? session.link ?? ''}
+                                  onChange={(e) => setMeetLinkDrafts((d) => ({ ...d, [session.key]: e.target.value }))}
+                                  placeholder="Paste your Google Meet link for this session…"
+                                  className="flex-1 min-w-[220px] px-3 py-1.5 rounded-lg border border-slate-200 text-[11px] focus:outline-none focus:border-teal-500 bg-white"
+                                />
+                                <button
+                                  onClick={() => handleSaveMeetLink(session)}
+                                  disabled={savingMeetLinkKey === session.key}
+                                  className="px-2.5 py-1.5 rounded-lg bg-slate-900 text-white text-[11px] font-bold disabled:opacity-40 cursor-pointer"
+                                >
+                                  {savingMeetLinkKey === session.key ? 'Saving…' : session.link ? 'Update' : 'Save & Share'}
+                                </button>
+                                {session.link && (
+                                  <button
+                                    onClick={() => handleCopyMeetLink(session)}
+                                    className="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-bold cursor-pointer"
+                                    title="Copy meeting link"
+                                  >
+                                    📋 Copy
+                                  </button>
+                                )}
+                              </div>
                             </div>
 
                             {/* Candidate Attendees Grid */}
@@ -2903,6 +3042,18 @@ export default function TrainingDepartmentDashboard({
                                       'bg-amber-100 text-amber-800'
                                     }`}>{lead.status?.toUpperCase() || 'BOOKED'}</span>
                                   </div>
+
+                                  {lead.reassigned && lead.originalTrainerId && lead.originalTrainerId !== trainerId && (
+                                    <div className="text-[9.5px] text-blue-700 font-bold bg-blue-50 px-1.5 py-1 rounded-lg border border-blue-200">
+                                      ↪ Reassigned to you from {lead.originalTrainerName || 'another trainer'}{lead.reassignmentReason ? ` · ${lead.reassignmentReason}` : ''}
+                                    </div>
+                                  )}
+
+                                  {lead.autoMissed && (
+                                    <div className="text-[9.5px] text-rose-700 font-bold bg-rose-50 px-1.5 py-1 rounded-lg border border-rose-200">
+                                      ⏱ Auto-marked missed · scheduled time passed without being started. Ask Head of Trainer to reschedule.
+                                    </div>
+                                  )}
 
                                   <div className="text-[11px] text-slate-500 font-medium space-y-0.5">
                                     <div>📞 <span className="font-mono text-slate-700">{lead.phone}</span></div>

@@ -242,6 +242,25 @@ export const getDemos = async (params) => {
   const res = await api.get('/demos', { params });
   return res.data;
 };
+// Head of Trainer only — move one demo (or every upcoming demo of a trainer,
+// optionally scoped to one date) to a different trainer, e.g. on leave.
+export const reassignDemo = async (id, { toTrainerId, reason }) => {
+  const res = await api.post(`/demos/${id}/reassign`, { toTrainerId, reason });
+  notifyDataUpdate('demos');
+  return res.data;
+};
+export const bulkReassignDemos = async ({ fromTrainerId, toTrainerId, date, reason }) => {
+  const res = await api.post('/demos/bulk-reassign', { fromTrainerId, toTrainerId, date, reason });
+  notifyDataUpdate('demos');
+  return res.data;
+};
+// Move a (typically missed) demo to a new date/time, optionally to a different
+// trainer in the same step. Head of Trainer only.
+export const rescheduleDemo = async (id, { preferredDate, timeSlot, toTrainerId, reason }) => {
+  const res = await api.post(`/demos/${id}/reschedule`, { preferredDate, timeSlot, toTrainerId, reason });
+  notifyDataUpdate('demos');
+  return res.data;
+};
 
 // Live preview of which trainers will be notified for a given
 // language + location + date + time (Demo Booking Notification Requirement)
@@ -362,6 +381,14 @@ export const updateDemo = async (id, demoData) => {
 
 export const createDemoMeeting = async (id) => {
   const res = await api.post(`/demos/${id}/zoom-meeting`);
+  notifyDataUpdate('demos');
+  return res.data;
+};
+
+// A trainer's own Google Meet link for a group demo session — shared with
+// every student booked at that same trainer + date + time slot.
+export const setDemoMeetingLink = async (id, link) => {
+  const res = await api.put(`/demos/${id}/meeting-link`, { link });
   notifyDataUpdate('demos');
   return res.data;
 };
@@ -1278,12 +1305,28 @@ export const getTodayCallLog = async (params) => {
 };
 
 // ---- Learning features: syllabus, announcements, online tests, recordings, doubt follow-ups ----
-export const getBatchSyllabus = async (batch) => {
-  const res = await api.get('/training/syllabus', { params: { batch } });
+// Course syllabus (the master module list) is Head-of-Trainer-managed only — see
+// getCourseSyllabus/saveCourseSyllabus below. getBatchSyllabus/saveBatchSyllabus
+// only read/write a batch's progress (done/undone) against that master list.
+export const getBatchSyllabus = async (batch, course) => {
+  const res = await api.get('/training/syllabus', { params: { batch, course } });
   return res.data;
 };
 export const saveBatchSyllabus = async (data) => {
   const res = await api.put('/training/syllabus', data);
+  notifyDataUpdate('syllabus');
+  return res.data;
+};
+export const getCourseSyllabus = async (course) => {
+  const res = await api.get('/training/course-syllabus', { params: { course } });
+  return res.data;
+};
+export const getAllCourseSyllabi = async () => {
+  const res = await api.get('/training/course-syllabus/all');
+  return res.data;
+};
+export const saveCourseSyllabus = async (data) => {
+  const res = await api.put('/training/course-syllabus', data);
   notifyDataUpdate('syllabus');
   return res.data;
 };

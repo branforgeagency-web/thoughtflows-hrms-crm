@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { ListChecks, Megaphone, Video, Plus, Trash2, RefreshCw, ExternalLink, ArrowUp, ArrowDown } from 'lucide-react';
+import { ListChecks, Megaphone, Video, RefreshCw, ExternalLink, Lock, Trash2 } from 'lucide-react';
 import {
   getBatchSyllabus,
   saveBatchSyllabus,
@@ -26,10 +26,10 @@ export default function TrainerBatchDesk({ batches = [] }) {
   const [toast, setToast] = useState('');
   const flash = (m, ms = 3500) => { setToast(m); setTimeout(() => setToast(''), ms); };
 
-  // ---- syllabus ----
+  // ---- syllabus (module list is Head-of-Trainer managed; trainers only tick progress) ----
   const [modules, setModules] = useState([]);
   const [dirty, setDirty] = useState(false);
-  const [newModule, setNewModule] = useState('');
+  const [hasCourseSyllabus, setHasCourseSyllabus] = useState(true);
   const [savingSyl, setSavingSyl] = useState(false);
 
   // ---- announcements ----
@@ -46,12 +46,13 @@ export default function TrainerBatchDesk({ batches = [] }) {
     if (!batch) return;
     try {
       const [syl, ann, hist] = await Promise.all([
-        getBatchSyllabus(batch.name).catch(() => ({ modules: [] })),
+        getBatchSyllabus(batch.name, batch.course).catch(() => ({ modules: [], hasCourseSyllabus: true })),
         getBatchAnnouncements({ batch: batch.name }).catch(() => []),
         getLiveClassHistory({ batch: batch.name }).catch(() => [])
       ]);
       setModules((syl?.modules || []).map((m) => ({ _id: m._id, name: m.name, done: Boolean(m.done), doneAt: m.doneAt })));
       setDirty(false);
+      setHasCourseSyllabus(syl?.hasCourseSyllabus !== false);
       setPosts(Array.isArray(ann) ? ann : []);
       setSessions(Array.isArray(hist) ? hist : []);
       setRecDrafts({});
@@ -69,21 +70,16 @@ export default function TrainerBatchDesk({ batches = [] }) {
   const doneCount = modules.filter((m) => m.done).length;
   const pct = modules.length ? Math.round((doneCount / modules.length) * 100) : 0;
 
-  const editModules = (fn) => { setModules((prev) => fn([...prev])); setDirty(true); };
-  const addModule = (e) => {
-    e.preventDefault();
-    const name = newModule.trim();
-    if (!name) return;
-    if (modules.some((m) => m.name.toLowerCase() === name.toLowerCase())) { flash('That module is already in the list'); return; }
-    editModules((list) => [...list, { name, done: false }]);
-    setNewModule('');
+  // Trainers may only tick/untick existing modules — the module list itself (adding,
+  // renaming, removing, reordering) is managed solely by the Head of Trainer, per course.
+  const toggleModule = (i) => {
+    setModules((prev) => {
+      const next = [...prev];
+      next[i] = { ...next[i], done: !next[i].done };
+      return next;
+    });
+    setDirty(true);
   };
-  const move = (i, dir) => editModules((list) => {
-    const j = i + dir;
-    if (j < 0 || j >= list.length) return list;
-    [list[i], list[j]] = [list[j], list[i]];
-    return list;
-  });
 
   const saveSyllabus = async () => {
     setSavingSyl(true);
@@ -91,9 +87,9 @@ export default function TrainerBatchDesk({ batches = [] }) {
       const doc = await saveBatchSyllabus({ batch: batch.name, course: batch.course, modules });
       setModules((doc?.modules || []).map((m) => ({ _id: m._id, name: m.name, done: Boolean(m.done), doneAt: m.doneAt })));
       setDirty(false);
-      flash('✓ Syllabus saved — students of this batch see the progress');
+      flash('✓ Progress saved — students of this batch see it');
     } catch (e) {
-      flash(`⚠ ${errOf(e, 'Could not save the syllabus')}`, 5000);
+      flash(`⚠ ${errOf(e, 'Could not save progress')}`, 5000);
     } finally {
       setSavingSyl(false);
     }
@@ -158,7 +154,7 @@ export default function TrainerBatchDesk({ batches = [] }) {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-        {/* ---------------- Syllabus tracker ---------------- */}
+        {/* ---------------- Syllabus tracker (view-only list; Head of Trainer manages modules) ---------------- */}
         <div className={`${card} lg:col-span-7 space-y-4`}>
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
@@ -170,30 +166,29 @@ export default function TrainerBatchDesk({ batches = [] }) {
           <div className="w-full h-2 rounded-full bg-slate-100 overflow-hidden"><div className="h-full bg-[#00897b] transition-all" style={{ width: `${pct}%` }} /></div>
 
           {modules.length === 0 ? (
-            <p className="text-xs text-slate-500 py-3">Add the modules of this course in teaching order (e.g. "ICD-10-CM Guidelines", "CPT E/M", "Modifiers"). Tick each one when it's covered — students see the progress and get notified.</p>
+            <p className="text-xs text-slate-500 py-3 flex items-start gap-1.5">
+              <Lock className="w-3.5 h-3.5 mt-0.5 shrink-0 text-slate-400" />
+              {hasCourseSyllabus === false
+                ? `The Head of Trainer hasn't added a syllabus for "${batch.course || 'this course'}" yet — once they do, it will appear here to tick off as you teach it.`
+                : "No modules on this course's syllabus yet."}
+            </p>
           ) : (
             <div className="divide-y divide-slate-100 border border-slate-100 rounded-xl">
               {modules.map((m, i) => (
-                <div key={m._id || `new-${i}`} className="flex items-center gap-3 px-3 py-2.5 text-xs">
-                  <input type="checkbox" checked={m.done} onChange={() => editModules((list) => { list[i] = { ...list[i], done: !list[i].done }; return list; })} className="w-4 h-4 accent-[#00897b] cursor-pointer" aria-label={`Mark ${m.name} done`} />
+                <div key={m._id || `mod-${i}`} className="flex items-center gap-3 px-3 py-2.5 text-xs">
+                  <input type="checkbox" checked={m.done} onChange={() => toggleModule(i)} className="w-4 h-4 accent-[#00897b] cursor-pointer" aria-label={`Mark ${m.name} done`} />
                   <div className="flex-1 min-w-0">
                     <div className={`font-semibold truncate ${m.done ? 'text-slate-400 line-through' : 'text-slate-800'}`}>{i + 1}. {m.name}</div>
                     {m.done && m.doneAt && <div className="text-[10px] text-slate-400">Covered {fmtDate(m.doneAt)}</div>}
                   </div>
-                  <button onClick={() => move(i, -1)} disabled={i === 0} className="p-1 rounded text-slate-400 hover:text-slate-700 disabled:opacity-30" title="Move up"><ArrowUp className="w-3.5 h-3.5" /></button>
-                  <button onClick={() => move(i, 1)} disabled={i === modules.length - 1} className="p-1 rounded text-slate-400 hover:text-slate-700 disabled:opacity-30" title="Move down"><ArrowDown className="w-3.5 h-3.5" /></button>
-                  <button onClick={() => editModules((list) => list.filter((_, k) => k !== i))} className="p-1 rounded text-slate-400 hover:text-rose-600" title="Remove"><Trash2 className="w-3.5 h-3.5" /></button>
                 </div>
               ))}
             </div>
           )}
+          <p className="text-[10px] text-slate-400 flex items-center gap-1"><Lock className="w-3 h-3 inline" /> Modules are set by the Head of Trainer for this course — tick them off as you teach them.</p>
 
-          <form onSubmit={addModule} className="flex gap-2">
-            <input value={newModule} onChange={(e) => setNewModule(e.target.value)} placeholder="Add a module…" className={inputCls} />
-            <button type="submit" className="px-3 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold flex items-center gap-1 shrink-0"><Plus className="w-3.5 h-3.5" />Add</button>
-          </form>
-          <button onClick={saveSyllabus} disabled={!dirty || savingSyl} className="w-full py-2.5 rounded-xl bg-[#009688] hover:bg-[#00897b] text-white text-xs font-bold disabled:opacity-40">
-            {savingSyl ? 'Saving…' : dirty ? 'Save syllabus' : 'Saved'}
+          <button onClick={saveSyllabus} disabled={!dirty || savingSyl || modules.length === 0} className="w-full py-2.5 rounded-xl bg-[#009688] hover:bg-[#00897b] text-white text-xs font-bold disabled:opacity-40">
+            {savingSyl ? 'Saving…' : dirty ? 'Save progress' : 'Saved'}
           </button>
         </div>
 

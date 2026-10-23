@@ -43,6 +43,11 @@ export default function TrainingShiftAvailability({ trainer, demos = [], batches
     return unsub;
   }, [trainerName]);
 
+  // True only when this trainer's name was matched unambiguously against the
+  // Head-of-Trainer-managed roster — if it's false, the grid below is a generic
+  // placeholder week, not a roster the Head of Trainer actually set for them.
+  const rosterMatched = Boolean(teamRosterData && Array.isArray(teamRosterData?.weeklySchedule) && teamRosterData.weeklySchedule.length);
+
   const weeklyRosterDays = useMemo(() => {
     const customSchedule = Array.isArray(teamRosterData?.weeklySchedule) && teamRosterData.weeklySchedule.length
       ? teamRosterData.weeklySchedule
@@ -168,12 +173,20 @@ export default function TrainingShiftAvailability({ trainer, demos = [], batches
               <span className="text-base">📅</span>
               <h3 className="font-extrabold text-sm sm:text-base text-slate-900">My Shift Roster</h3>
             </div>
-            <span className="text-[10px] font-mono font-bold bg-amber-50 text-amber-900 border border-amber-300/80 px-2.5 py-1 rounded-full flex items-center gap-1">
-              <Lock className="w-3 h-3 text-amber-700" /> Read-Only &middot; Managed by Head of Trainer
-            </span>
+            {rosterMatched ? (
+              <span className="text-[10px] font-mono font-bold bg-amber-50 text-amber-900 border border-amber-300/80 px-2.5 py-1 rounded-full flex items-center gap-1">
+                <Lock className="w-3 h-3 text-amber-700" /> Read-Only &middot; Managed by Head of Trainer
+              </span>
+            ) : (
+              <span className="text-[10px] font-mono font-bold bg-slate-100 text-slate-500 border border-slate-300/80 px-2.5 py-1 rounded-full flex items-center gap-1">
+                <AlertTriangle className="w-3 h-3 text-slate-500" /> Default Week &middot; Not Yet Set
+              </span>
+            )}
           </div>
           <p className="text-[11px] text-slate-400 font-mono mt-1">
-            Updated by Head of Trainer &middot; Week of {getWeekRangeString()}
+            {rosterMatched
+              ? <>Updated by Head of Trainer &middot; Week of {getWeekRangeString()}</>
+              : <>No roster set for your account yet &middot; showing a default week &middot; {getWeekRangeString()}</>}
           </p>
         </div>
 

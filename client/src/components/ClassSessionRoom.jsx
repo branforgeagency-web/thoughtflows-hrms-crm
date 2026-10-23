@@ -167,7 +167,8 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
 
   const inviteText = () => {
     const b = liveBatch || batch;
-    return `🎓 *Thoughtflows Academy — Live Class*\n\n📚 *Batch:* ${b?.name || ''}\n${live?.topic ? `📖 *Topic:* ${live.topic}\n` : ''}👨‍🏫 *Trainer:* ${trainerName}\n\n▶ Join now: open your *Student Portal → Dashboard → Join Class*.\n\n⚠ Please join from the portal — that is how your attendance is recorded.`;
+    const link = live?.zoomJoinUrl || '';
+    return `🎓 *Thoughtflows Academy — Live Class*\n\n📚 *Batch:* ${b?.name || ''}\n${live?.topic ? `📖 *Topic:* ${live.topic}\n` : ''}👨‍🏫 *Trainer:* ${trainerName}\n${link ? `\n▶ Join the meeting: ${link}\n` : ''}\n▶ Or join from your *Student Portal → Dashboard → Join Class*.\n\n⚠ Please join from the portal link or the portal itself — that is how your attendance is recorded.`;
   };
 
   // ---------------------------------------------------------------------------

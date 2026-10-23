@@ -35,12 +35,18 @@ export default function ZoomMeeting({
   // Optional async () => { meetingNumber, password, signature, sdkKey, zak }
   // used by live classes (server issues host / student credentials)
   getJoinDetails,
-  onJoined
+  onJoined,
+  // Called once when Zoom reports this host already has another live
+  // meeting — lets the parent offer a Google Meet fallback instead of
+  // forcing the trainer to end the other session first.
+  onBusy
 }) {
   const getJoinRef = useRef(getJoinDetails);
   getJoinRef.current = getJoinDetails;
   const onJoinedRef = useRef(onJoined);
   onJoinedRef.current = onJoined;
+  const onBusyRef = useRef(onBusy);
+  onBusyRef.current = onBusy;
   const useLoader = Boolean(getJoinDetails);
   const containerRef = useRef(null);
   const runRef = useRef(0); // increments per attempt; stale attempts bail out
@@ -132,9 +138,10 @@ export default function ZoomMeeting({
         return;
       }
       console.warn('Zoom SDK join error:', err);
+      if (isBusyError(msg)) onBusyRef.current?.();
       setError(
         isBusyError(msg)
-          ? 'This trainer\'s Zoom account is still running another meeting. End it and retry.'
+          ? 'This trainer\'s Zoom account is still running another meeting. End it and retry, or start this session on Google Meet instead.'
           : err?.errorCode === 3707
             ? 'Zoom says this meeting ID does not exist for this SDK app. Check ZOOM_SDK_KEY/SECRET come from the SAME Zoom account that creates the meetings (S2S app).'
           : err?.errorCode === 3712
@@ -192,13 +199,23 @@ export default function ZoomMeeting({
                 </p>
               )}
             </div>
-            <button
-              onClick={() => connect(2)}
-              className="mt-2 px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-lg"
-            >
-              <RefreshCw className="w-4 h-4" />
-              <span>Retry</span>
-            </button>
+            <div className="flex items-center gap-2 mt-2">
+              <button
+                onClick={() => connect(2)}
+                className="px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-lg"
+              >
+                <RefreshCw className="w-4 h-4" />
+                <span>Retry</span>
+              </button>
+              {isBusyError(error) && (
+                <button
+                  onClick={() => onBusyRef.current?.()}
+                  className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-lg"
+                >
+                  <span>Use Google Meet instead</span>
+                </button>
+              )}
+            </div>
           </div>
         )}
 

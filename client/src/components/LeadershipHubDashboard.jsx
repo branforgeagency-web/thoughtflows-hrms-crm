@@ -56,6 +56,7 @@ import LmsCertificationBoard from './LmsCertificationBoard';
 import EscalationDeskBoard from './EscalationDeskBoard';
 import ReportsExportBoard from './ReportsExportBoard';
 import TeamRosterBoard from './TeamRosterBoard';
+import CourseSyllabusBoard from './CourseSyllabusBoard';
 import DepartmentTargetsBoard from './DepartmentTargetsBoard';
 import SopHubBoard from './SopHubBoard';
 import ManagementSummaryBoard from './ManagementSummaryBoard';
@@ -83,8 +84,10 @@ import {
   setAttendanceBreak,
   getLeads,
   getDemos,
+  reassignDemo,
+  bulkReassignDemos,
+  rescheduleDemo,
   getStudents,
-  allocateTrainerToStudent,
   getDailyClosures,
   getLeadDemands,
   createLeadDemand,
@@ -2409,7 +2412,7 @@ function DepartmentHeadsView({ departments = [], onBack, onSelectHead, onSwitchD
                   {dept.title}
                 </h3>
                 <p className="text-xs text-slate-400 font-medium mt-1">
-                  {headInfo?.head || 'Head not assigned'}
+                  {dept.head || headInfo?.head || 'Head not assigned'}
                   {typeof headInfo?.memberCount === 'number' ? ` · ${headInfo.memberCount} staff` : ''}
                 </p>
                 <p className="text-xs text-slate-500 mt-1 line-clamp-1">
@@ -3258,7 +3261,7 @@ const TRAINING_ZONES_CONFIG = [
     accentText: 'text-blue-600',
     accentBorder: 'border-blue-200',
     accentBg: 'bg-blue-50',
-    matcher: (str = '') => /tamil|coimbatore|chennai|salem|trichy|madurai|erode|tiruppur/i.test(str)
+    matcher: (str = '') => /tamil|coimbatore|chennai|salem|trichy|madurai|erode|tiruppur|theni|hopes|saravanampatti|gandhipuram/i.test(str)
   },
   {
     id: 'on',
@@ -3320,39 +3323,38 @@ const studentBelongsToRegion = (st, z) => {
 
 function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, onSwitchDepartment }) {
   const [selectedRegion, setSelectedRegion] = useState(null);
-  const [showDesk, setShowDesk] = useState(false); // per-zone "Head Desk" (approvals/escalations/roster/etc.)
   const [trainersList, setTrainersList] = useState([]);
   const [batchesList, setBatchesList] = useState([]);
   const [branchesList, setBranchesList] = useState([]);
   const [studentsList, setStudentsList] = useState([]);
+  const [demosList, setDemosList] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  // Student Allocation Modal State
-  const [allocationStudent, setAllocationStudent] = useState(null);
-  const [allocationForm, setAllocationForm] = useState({
-    trainerId: '',
-    trainerName: '',
-    batchName: '',
-    batchTiming: '',
-    trainerNote: ''
-  });
-  const [allocating, setAllocating] = useState(false);
-  const [allocationToast, setAllocationToast] = useState(null);
-  const [studentTab, setStudentTab] = useState('pending'); // 'pending' | 'allocated' | 'all'
-  const [studentSearch, setStudentSearch] = useState('');
-  const [zoneFilter, setZoneFilter] = useState('all'); // for all-regions view
+  // ---- Demo reassignment (Head of Trainer only) ----
+  const [reassignToast, setReassignToast] = useState('');
+  const flashReassign = (m, ms = 4000) => { setReassignToast(m); setTimeout(() => setReassignToast(''), ms); };
+  const [reassignDemoTarget, setReassignDemoTarget] = useState(null); // single demo being reassigned
+  const [reassignForm, setReassignForm] = useState({ toTrainerId: '', reason: '' });
+  const [reassigning, setReassigning] = useState(false);
+  const [bulkReassignForm, setBulkReassignForm] = useState({ fromTrainerId: '', toTrainerId: '', date: '', reason: '' });
+  const [bulkReassigning, setBulkReassigning] = useState(false);
+  const [rescheduleDemoTarget, setRescheduleDemoTarget] = useState(null); // missed demo being rescheduled
+  const [rescheduleForm, setRescheduleForm] = useState({ preferredDate: '', timeSlot: '', toTrainerId: '', reason: '' });
+  const [rescheduling, setRescheduling] = useState(false);
 
   const loadData = useCallback(() => {
     Promise.all([
       getTrainerSettings().catch(() => []),
       getBatches().catch(() => []),
       getBranches().catch(() => []),
-      getStudents().catch(() => [])
-    ]).then(([tData, bData, brData, sData]) => {
+      getStudents().catch(() => []),
+      getDemos().catch(() => [])
+    ]).then(([tData, bData, brData, sData, dData]) => {
       setTrainersList(Array.isArray(tData) ? tData : []);
       setBatchesList(Array.isArray(bData) ? bData : []);
       setBranchesList(Array.isArray(brData) ? brData : []);
       setStudentsList(Array.isArray(sData) ? sData : []);
+      setDemosList(Array.isArray(dData) ? dData : []);
       setLoading(false);
     }).catch(() => {
       setLoading(false);
@@ -3362,7 +3364,7 @@ function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, o
   useEffect(() => {
     loadData();
     const unsub = onDataUpdate((entity) => {
-      if (entity === 'students' || entity === 'trainers' || entity === 'batches') {
+      if (entity === 'students' || entity === 'trainers' || entity === 'batches' || entity === 'demos') {
         loadData();
       }
     });
@@ -3386,36 +3388,70 @@ function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, o
   }, [currentUser]);
 
   const regionsData = useMemo(() => {
-    return TRAINING_ZONES_CONFIG.map((z) => {
-      const matchingTrainers = trainersList.filter(t => z.matcher(`${t.branchName || ''} ${t.specialization || ''} ${t.expertCourse || ''}`));
-      const matchingBatches = batchesList.filter(b => z.matcher(`${b.batch || ''} ${b.location || ''} ${b.course || ''}`));
-      const matchingBranches = branchesList.filter(br => z.matcher(`${br.name || ''} ${br.state || ''} ${br.city || ''}`));
+    // Assign each trainer/batch/branch/student to exactly ONE zone — the first zone
+    // (in TRAINING_ZONES_CONFIG order) it matches — so nothing is double-counted
+    // across two zones, and a zone with genuinely zero matches shows a real 0
+    // instead of being padded with items borrowed from the global list.
+    const buckets = {};
+    TRAINING_ZONES_CONFIG.forEach((z) => {
+      buckets[z.id] = { trainers: [], batches: [], branches: [], students: [], demos: [] };
+    });
 
-      const regionStudents = studentsList.filter(st => studentBelongsToRegion(st, z));
-      const pendingAllocationCount = regionStudents.filter(st => {
+    const trainerZoneById = {};
+    trainersList.forEach((t) => {
+      const text = `${t.branchName || ''} ${t.specialization || ''} ${t.expertCourse || ''}`;
+      const z = TRAINING_ZONES_CONFIG.find((zz) => zz.matcher(text));
+      if (z) {
+        buckets[z.id].trainers.push(t);
+        if (t.trainerId) trainerZoneById[t.trainerId] = z.id;
+      }
+    });
+    batchesList.forEach((b) => {
+      const text = `${b.batch || ''} ${b.location || ''} ${b.course || ''}`;
+      const z = TRAINING_ZONES_CONFIG.find((zz) => zz.matcher(text));
+      if (z) buckets[z.id].batches.push(b);
+    });
+    branchesList.forEach((br) => {
+      const text = `${br.name || ''} ${br.state || ''} ${br.city || ''}`;
+      const z = TRAINING_ZONES_CONFIG.find((zz) => zz.matcher(text));
+      if (z) buckets[z.id].branches.push(br);
+    });
+    studentsList.forEach((st) => {
+      const z = TRAINING_ZONES_CONFIG.find((zz) => studentBelongsToRegion(st, zz));
+      if (z) buckets[z.id].students.push(st);
+    });
+    demosList.forEach((d) => {
+      // Prefer the assigned trainer's own zone (most accurate); fall back to
+      // matching the demo's location/branch text against the zone regexes.
+      const zoneId = (d.trainerId && trainerZoneById[d.trainerId])
+        || (TRAINING_ZONES_CONFIG.find((zz) => zz.matcher(`${d.location || ''} ${d.branch || ''}`)) || {}).id;
+      if (zoneId && buckets[zoneId]) buckets[zoneId].demos.push(d);
+    });
+
+    return TRAINING_ZONES_CONFIG.map((z) => {
+      const b = buckets[z.id];
+      const pendingAllocationCount = b.students.filter((st) => {
         const isHandedOver = st.handoverStatus === 'Handed Over to Head of Trainer' || (st.handoverStatus === 'Sent to Training' && !st.trainerId);
         return isHandedOver && !st.trainerId;
       }).length;
-      const allocatedCount = regionStudents.filter(st => Boolean(st.trainerId)).length;
-
-      const trainersCount = matchingTrainers.length > 0 ? matchingTrainers.length : (trainersList.length > 0 ? 1 : 0);
-      const availableNow = matchingTrainers.filter(t => t.active !== false).length || (trainersCount > 0 ? trainersCount : 0);
-      const batchesCount = matchingBatches.length > 0 ? matchingBatches.length : (batchesList.length > 0 ? 1 : 0);
-      const branchesCount = matchingBranches.length > 0 ? matchingBranches.length : (z.id === 'on' ? 1 : 2);
+      const allocatedCount = b.students.filter((st) => Boolean(st.trainerId)).length;
+      const upcomingDemosCount = b.demos.filter((d) => ['booked', 'confirmed'].includes(String(d.status || '').toLowerCase())).length;
 
       return {
         ...z,
-        trainers: trainersCount,
-        availableNow,
-        batches: batchesCount,
-        branches: branchesCount,
+        trainers: b.trainers.length,
+        availableNow: b.trainers.filter((t) => t.active !== false).length,
+        batches: b.batches.length,
+        branches: b.branches.length,
         pendingAllocationCount,
         allocatedCount,
-        trainersList: matchingTrainers.length > 0 ? matchingTrainers : trainersList.slice(0, 2),
-        batchesList: matchingBatches.length > 0 ? matchingBatches : batchesList.slice(0, 2)
+        upcomingDemosCount,
+        trainersList: b.trainers,
+        batchesList: b.batches,
+        demosList: b.demos
       };
     });
-  }, [trainersList, batchesList, branchesList, studentsList]);
+  }, [trainersList, batchesList, branchesList, studentsList, demosList]);
 
   // The zone currently in view, and just the trainer names in it — each
   // Head of Trainer's roster board is scoped to their own zone only, never
@@ -3430,46 +3466,15 @@ function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, o
       .filter(Boolean);
   }, [currentRegionData]);
 
-  // Current scope of students based on selectedRegion or zoneFilter
+  // Current scope of students: just this zone's when a Head of Trainer has a
+  // region open, otherwise every student (used only for the pending-count badge
+  // on the all-regions overview).
   const scopedStudents = useMemo(() => {
     if (selectedRegion) {
       return studentsList.filter(st => studentBelongsToRegion(st, selectedRegion));
     }
-    if (zoneFilter && zoneFilter !== 'all') {
-      const matchedZone = TRAINING_ZONES_CONFIG.find(z => z.id === zoneFilter);
-      return studentsList.filter(st => studentBelongsToRegion(st, matchedZone));
-    }
     return studentsList;
-  }, [studentsList, selectedRegion, zoneFilter]);
-
-  // Tab & search filtering
-  const displayStudents = useMemo(() => {
-    let list = scopedStudents;
-    if (studentTab === 'pending') {
-      list = list.filter(st => {
-        const isHandedOver = st.handoverStatus === 'Handed Over to Head of Trainer' || (st.handoverStatus === 'Sent to Training' && !st.trainerId);
-        return isHandedOver && !st.trainerId;
-      });
-    } else if (studentTab === 'allocated') {
-      list = list.filter(st => Boolean(st.trainerId));
-    } else {
-      list = list.filter(st => st.handoverStatus === 'Handed Over to Head of Trainer' || st.handoverStatus === 'Sent to Training' || Boolean(st.trainerId));
-    }
-
-    if (studentSearch.trim()) {
-      const q = studentSearch.toLowerCase().trim();
-      list = list.filter(st =>
-        (st.name || '').toLowerCase().includes(q) ||
-        (st.studentId || '').toLowerCase().includes(q) ||
-        (st.course || '').toLowerCase().includes(q) ||
-        (st.branch || '').toLowerCase().includes(q) ||
-        (st.hrName || '').toLowerCase().includes(q) ||
-        (st.trainerName || '').toLowerCase().includes(q) ||
-        (st.batchName || '').toLowerCase().includes(q)
-      );
-    }
-    return list;
-  }, [scopedStudents, studentTab, studentSearch]);
+  }, [studentsList, selectedRegion]);
 
   const pendingCount = useMemo(() => {
     return scopedStudents.filter(st => {
@@ -3478,95 +3483,84 @@ function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, o
     }).length;
   }, [scopedStudents]);
 
-  const allocatedCount = useMemo(() => {
-    return scopedStudents.filter(st => Boolean(st.trainerId)).length;
-  }, [scopedStudents]);
-
-  const totalHandoverCount = useMemo(() => {
-    return scopedStudents.filter(st => st.handoverStatus === 'Handed Over to Head of Trainer' || st.handoverStatus === 'Sent to Training' || Boolean(st.trainerId)).length;
-  }, [scopedStudents]);
-
-  // Open Allocation modal
-  const openAllocationModal = (stu) => {
-    const studentTiming = stu.batchTiming || stu.preferredTiming || 'Morning (9:30 AM - 12:30 PM)';
-    const defaultBatch = stu.batchName || `${stu.course || 'Medical Coding'} · ${studentTiming.split(' ')[0] || 'Regular'}`;
-
-    const activeTrainers = trainersList.filter(t => t.active !== false);
-    const matchedTrainer = activeTrainers.find(t => {
-      const tBranch = (t.branchName || '').toLowerCase();
-      const sBranch = (stu.branch || stu.location || '').toLowerCase();
-      return tBranch && sBranch && (tBranch.includes(sBranch) || sBranch.includes(tBranch));
-    }) || activeTrainers[0];
-
-    setAllocationForm({
-      trainerId: stu.trainerId || matchedTrainer?.trainerId || '',
-      trainerName: stu.trainerName || matchedTrainer?.trainerName || '',
-      batchName: defaultBatch,
-      batchTiming: stu.batchTiming || studentTiming,
-      trainerNote: stu.trainerNote || ''
-    });
-    setAllocationStudent(stu);
+  const openReassign = (demo) => {
+    setReassignDemoTarget(demo);
+    setReassignForm({ toTrainerId: '', reason: '' });
   };
 
-  const handleConfirmAllocation = async () => {
-    if (!allocationStudent) return;
-    if (!allocationForm.trainerId) {
-      setAllocationToast({ type: 'error', message: 'Please select an active trainer from the list' });
-      setTimeout(() => setAllocationToast(null), 3500);
+  const confirmReassignOne = async () => {
+    if (!reassignDemoTarget || !reassignForm.toTrainerId) return;
+    setReassigning(true);
+    try {
+      await reassignDemo(reassignDemoTarget._id, { toTrainerId: reassignForm.toTrainerId, reason: reassignForm.reason });
+      const toName = (currentRegionData?.trainersList || trainersList).find(t => t.trainerId === reassignForm.toTrainerId)?.trainerName || 'the new trainer';
+      flashReassign(`✓ ${reassignDemoTarget.candidateName}'s demo reassigned to ${toName}`);
+      setReassignDemoTarget(null);
+      loadData();
+      if (onChanged) onChanged();
+    } catch (e) {
+      flashReassign(`⚠ ${e?.response?.data?.error || e.message || 'Could not reassign this demo'}`, 5000);
+    } finally {
+      setReassigning(false);
+    }
+  };
+
+  const confirmBulkReassign = async () => {
+    const { fromTrainerId, toTrainerId, date, reason } = bulkReassignForm;
+    if (!fromTrainerId || !toTrainerId) { flashReassign('⚠ Pick both trainers first', 3000); return; }
+    if (fromTrainerId === toTrainerId) { flashReassign('⚠ Pick two different trainers', 3000); return; }
+    setBulkReassigning(true);
+    try {
+      const res = await bulkReassignDemos({ fromTrainerId, toTrainerId, date, reason });
+      const count = res?.reassigned || 0;
+      if (count === 0) {
+        flashReassign('No upcoming demos found for that trainer' + (date ? ` on ${date}` : '') + '.', 4000);
+      } else {
+        const fromName = (currentRegionData?.trainersList || trainersList).find(t => t.trainerId === fromTrainerId)?.trainerName || 'the trainer';
+        const toName = (currentRegionData?.trainersList || trainersList).find(t => t.trainerId === toTrainerId)?.trainerName || 'the new trainer';
+        flashReassign(`✓ ${count} demo${count === 1 ? '' : 's'} moved from ${fromName} to ${toName}`);
+        setBulkReassignForm({ fromTrainerId: '', toTrainerId: '', date: '', reason: '' });
+      }
+      loadData();
+      if (onChanged) onChanged();
+    } catch (e) {
+      flashReassign(`⚠ ${e?.response?.data?.error || e.message || 'Could not reassign these demos'}`, 5000);
+    } finally {
+      setBulkReassigning(false);
+    }
+  };
+
+  const openReschedule = (demo) => {
+    setRescheduleDemoTarget(demo);
+    setRescheduleForm({ preferredDate: '', timeSlot: demo.timeSlot || demo.time || '', toTrainerId: '', reason: '' });
+  };
+
+  const confirmReschedule = async () => {
+    if (!rescheduleDemoTarget || !rescheduleForm.preferredDate || !rescheduleForm.timeSlot) {
+      flashReassign('⚠ Pick a new date and time first', 3000);
       return;
     }
-    setAllocating(true);
+    setRescheduling(true);
     try {
-      const stuId = allocationStudent._id || allocationStudent.studentId;
-      const targetTrainer = trainersList.find(t => t.trainerId === allocationForm.trainerId);
-      const updated = await allocateTrainerToStudent(stuId, {
-        ...allocationForm,
-        trainerName: targetTrainer?.trainerName || allocationForm.trainerName,
-        allocatedBy: currentUser?.name || 'Head of Trainer'
-      });
-
-      setStudentsList(prev => prev.map(s => (
-        (s._id === stuId || s.studentId === stuId) ? { ...s, ...updated } : s
-      )));
-
-      setAllocationToast({
-        type: 'success',
-        message: `✓ Successfully assigned ${allocationStudent.name} to ${targetTrainer?.trainerName || allocationForm.trainerName} (Batch: ${allocationForm.batchName})`
-      });
-      setTimeout(() => setAllocationToast(null), 4500);
-      setAllocationStudent(null);
+      await rescheduleDemo(rescheduleDemoTarget._id, rescheduleForm);
+      flashReassign(`✓ ${rescheduleDemoTarget.candidateName}'s demo rescheduled to ${rescheduleForm.preferredDate} ${rescheduleForm.timeSlot}`);
+      setRescheduleDemoTarget(null);
+      loadData();
       if (onChanged) onChanged();
-    } catch (err) {
-      setAllocationToast({
-        type: 'error',
-        message: `Failed to assign trainer: ${err?.response?.data?.error || err.message}`
-      });
-      setTimeout(() => setAllocationToast(null), 4000);
+    } catch (e) {
+      flashReassign(`⚠ ${e?.response?.data?.error || e.message || 'Could not reschedule this demo'}`, 5000);
     } finally {
-      setAllocating(false);
+      setRescheduling(false);
     }
   };
 
   return (
     <div className="w-full space-y-6 animate-fadeIn font-sans text-slate-800 relative">
-      {/* Toast message banner */}
-      {allocationToast && (
-        <div className={`fixed top-5 right-5 z-50 px-5 py-3 rounded-2xl shadow-xl text-xs font-bold border flex items-center gap-2 animate-bounce ${
-          allocationToast.type === 'success'
-            ? 'bg-emerald-600 text-white border-emerald-500 shadow-emerald-500/20'
-            : 'bg-rose-600 text-white border-rose-500 shadow-rose-500/20'
-        }`}>
-          <span>{allocationToast.message}</span>
-        </div>
-      )}
-
       {/* Top back button & live department navigation */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <button
           onClick={() => {
-            if (showDesk) {
-              setShowDesk(false);
-            } else if (selectedRegion) {
+            if (selectedRegion) {
               setSelectedRegion(null);
             } else {
               onBack();
@@ -3575,390 +3569,370 @@ function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, o
           className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold text-slate-700 bg-white border border-slate-200/90 shadow-xs hover:bg-slate-50 hover:text-slate-900 transition-all cursor-pointer"
         >
           <ChevronLeft className="w-3.5 h-3.5 text-slate-500" />
-          {showDesk ? 'Training Department' : selectedRegion ? 'All Training Zones' : 'Departments'}
+          {selectedRegion ? 'All Training Zones' : 'Departments'}
         </button>
-
-        <div className="flex items-center gap-2 flex-wrap">
-          {/* Each Head of Trainer gets their own Desk (approvals,
-              escalations, daily tracker, reports, roster, targets, SOP
-              hub, mgmt summary) for their own zone — never a single
-              company-wide desk shared across all four Heads of Trainer. */}
-          {!showDesk && selectedRegion && (
-            <button
-              onClick={() => setShowDesk(true)}
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold text-white bg-purple-600 shadow-xs hover:bg-purple-700 transition-all cursor-pointer"
-            >
-              <span>🖥️ Head Desk · {currentRegionData?.state || currentRegionData?.head}</span>
-            </button>
-          )}
-
-          {onSwitchDepartment && (
-            <button
-              onClick={() => onSwitchDepartment('training')}
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold text-white bg-blue-600 shadow-xs hover:bg-blue-700 transition-all cursor-pointer"
-            >
-              <span>Open Live Training Department Dashboard</span>
-              <ArrowRight className="w-3.5 h-3.5" />
-            </button>
-          )}
-        </div>
       </div>
 
-      {showDesk && selectedRegion ? (
-        <HeadOfDeptDashboard
-          deptConfig={{
-            code: 'ACAD',
-            displayCode: currentRegionData?.code || 'ACAD',
-            title: `Head of Trainer — ${currentRegionData?.state || ''}`,
-            headName: currentRegionData?.head || currentUser?.name || '',
-            headTitle: 'Head of Trainer',
-            backLabel: `${currentRegionData?.state || 'Zone'} Overview`,
-            accentBg: currentRegionData?.badgeBg || '#2563EB',
-            icon: GraduationCap,
-            targetGapLabel: 'vs batch readiness target'
-          }}
-          rosterAllowedNames={currentRegionTrainerNames}
-          onBack={() => setShowDesk(false)}
-          currentUser={currentUser}
-          onChanged={onChanged}
-        />
-      ) : selectedRegion ? (
-        /* REGIONAL DETAIL VIEW */
-        (() => {
-          const reg = regionsData.find(r => r.id === selectedRegion.id) || selectedRegion;
-          return (
-            <div className="space-y-6">
-              {/* Regional Head Banner Card */}
-              <div className="bg-white border border-slate-200/90 rounded-3xl p-6 shadow-xs flex items-center justify-between relative overflow-hidden flex-wrap gap-4">
-                <div className="flex items-center gap-4">
-                  <div
-                    className="w-14 h-14 rounded-full flex items-center justify-center text-white text-xl font-black shadow-sm flex-shrink-0"
-                    style={{ backgroundColor: reg.badgeBg || '#2563EB' }}
-                  >
-                    {reg.head[0]}
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight">{reg.head}</h2>
-                      <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold text-white" style={{ backgroundColor: reg.badgeBg || '#2563EB' }}>
-                        {reg.badge}
-                      </span>
-                    </div>
-                    <p className="text-xs font-semibold text-slate-500 mt-0.5">Head of Trainer · {reg.state} ({reg.code})</p>
-                    <p className="text-xs text-slate-400 mt-0.5">Assigned Coverage: {reg.state} branches & live student admissions</p>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => setSelectedRegion(null)}
-                    className="px-3 py-1.5 rounded-xl text-xs font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 border border-slate-200 transition-colors"
-                  >
-                    Switch Zone
-                  </button>
-                  <div
-                    className="w-10 h-10 rounded-xl flex items-center justify-center text-white shadow-xs"
-                    style={{ backgroundColor: reg.badgeBg || '#2563EB' }}
-                  >
-                    <GraduationCap className="w-5 h-5" />
-                  </div>
-                </div>
+      {selectedRegion ? (
+        <div className="space-y-6">
+          {/* Zone header */}
+          <div
+            className="rounded-3xl p-6 text-white shadow-lg relative overflow-hidden"
+            style={{ background: currentRegionData?.topBarGrad || currentRegionData?.badgeBg || '#2563EB' }}
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-14 h-14 rounded-2xl flex items-center justify-center font-extrabold text-lg shadow-sm bg-white/20">
+                {currentRegionData?.badge}
               </div>
-
-              {/* 4 Stat Cards Row */}
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs text-center relative overflow-hidden">
-                  <div className="text-2xl font-extrabold text-rose-600 flex items-center justify-center gap-1.5">
-                    {loading ? '…' : pendingCount}
-                    {pendingCount > 0 && (
-                      <span className="inline-flex h-2.5 w-2.5 rounded-full bg-rose-500 animate-ping"></span>
-                    )}
-                  </div>
-                  <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mt-1">AWAITING ACTIVE TRAINER</div>
-                </div>
-
-                <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs text-center">
-                  <div className="text-2xl font-extrabold text-slate-900">{loading ? '…' : reg.trainers}</div>
-                  <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mt-1">TRAINERS IN ZONE</div>
-                </div>
-
-                <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs text-center">
-                  <div className="text-2xl font-extrabold text-emerald-600">{loading ? '…' : reg.availableNow}</div>
-                  <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mt-1">ACTIVE ON DUTY</div>
-                </div>
-
-                <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs text-center">
-                  <div className="text-2xl font-extrabold text-blue-600">{loading ? '…' : allocatedCount}</div>
-                  <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mt-1">STUDENTS ALLOCATED</div>
-                </div>
-              </div>
-
-              {/* SECTION 1: STUDENT HANDOVER & ACTIVE TRAINER ALLOCATION */}
-              <div className="bg-white border border-slate-200/90 rounded-3xl p-6 shadow-xs space-y-4">
-                <div className="flex items-center justify-between flex-wrap gap-3 pb-3 border-b border-slate-100">
-                  <div>
-                    <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
-                      <span>🎓</span>
-                      <span>Students Handed Over to {reg.head}</span>
-                    </h3>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      HR admissions awaiting trainer assignment in {reg.state}. Assign each student to an active faculty trainer & batch.
-                    </p>
-                  </div>
-
-                  {/* Tabs: Pending / Allocated / All */}
-                  <div className="flex items-center bg-slate-100 p-1 rounded-xl text-xs font-bold">
-                    <button
-                      onClick={() => setStudentTab('pending')}
-                      className={`px-3 py-1.5 rounded-lg transition-all ${
-                        studentTab === 'pending'
-                          ? 'bg-white text-rose-600 shadow-xs'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      Awaiting Allocation ({pendingCount})
-                    </button>
-                    <button
-                      onClick={() => setStudentTab('allocated')}
-                      className={`px-3 py-1.5 rounded-lg transition-all ${
-                        studentTab === 'allocated'
-                          ? 'bg-white text-emerald-700 shadow-xs'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      Allocated ({allocatedCount})
-                    </button>
-                    <button
-                      onClick={() => setStudentTab('all')}
-                      className={`px-3 py-1.5 rounded-lg transition-all ${
-                        studentTab === 'all'
-                          ? 'bg-white text-blue-700 shadow-xs'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      All ({totalHandoverCount})
-                    </button>
-                  </div>
-                </div>
-
-                {/* Search Bar */}
-                <div className="relative">
-                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="text"
-                    value={studentSearch}
-                    onChange={(e) => setStudentSearch(e.target.value)}
-                    placeholder="Search by student name, student ID, course, branch or counsellor..."
-                    className="w-full pl-9 pr-4 py-2 text-xs rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
-                  />
-                  {studentSearch && (
-                    <button onClick={() => setStudentSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
-
-                {/* Students Table */}
-                {displayStudents.length > 0 ? (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left text-xs">
-                      <thead>
-                        <tr className="text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">
-                          <th className="pb-3 font-bold">STUDENT</th>
-                          <th className="pb-3 font-bold">COURSE & MODE</th>
-                          <th className="pb-3 font-bold">BRANCH & TIMING</th>
-                          <th className="pb-3 font-bold">COUNSELLOR & PREFERENCES</th>
-                          <th className="pb-3 font-bold">ASSIGNMENT STATUS</th>
-                          <th className="pb-3 font-bold text-right">ACTION</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {displayStudents.map((st) => {
-                          const isAllocated = Boolean(st.trainerId);
-                          return (
-                            <tr key={st._id || st.studentId} className="hover:bg-slate-50/60 transition-colors">
-                              <td className="py-3.5 pr-4">
-                                <div className="font-extrabold text-slate-900">{st.name}</div>
-                                <div className="text-[10px] text-slate-400 font-mono mt-0.5">{st.studentId || 'ID Pending'}</div>
-                                {st.mobile && <div className="text-[10px] text-slate-500 font-mono">{st.mobile}</div>}
-                              </td>
-                              <td className="py-3.5 pr-4">
-                                <div className="font-bold text-slate-800">{st.course || 'Medical Coding'}</div>
-                                <div className="text-[10px] text-slate-500 mt-0.5">{st.mode || st.batchMode || 'Offline'}</div>
-                              </td>
-                              <td className="py-3.5 pr-4">
-                                <div className="font-medium text-slate-700">{st.branch || st.location || reg.state}</div>
-                                <div className="text-[10px] text-slate-500 mt-0.5">Timing: <strong className="text-slate-700">{st.batchTiming || 'Flexible'}</strong></div>
-                              </td>
-                              <td className="py-3.5 pr-4 max-w-xs">
-                                <div className="text-slate-600 font-medium">HR: {st.hrName || '—'}</div>
-                                {(st.trainerNote || st.handoverNote) ? (
-                                  <div className="mt-1 p-1.5 rounded-lg bg-amber-50/70 border border-amber-200/60 text-[11px] text-amber-900 line-clamp-2">
-                                    {st.trainerNote || st.handoverNote}
-                                  </div>
-                                ) : (
-                                  <div className="text-[10px] text-slate-400 italic mt-0.5">No specific notes</div>
-                                )}
-                              </td>
-                              <td className="py-3.5 pr-4">
-                                {isAllocated ? (
-                                  <div>
-                                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200">
-                                      <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                                      {st.trainerName}
-                                    </span>
-                                    {st.batchName && (
-                                      <div className="text-[10px] text-slate-500 font-medium mt-0.5">
-                                        Batch: <strong className="text-slate-700">{st.batchName}</strong>
-                                      </div>
-                                    )}
-                                  </div>
-                                ) : (
-                                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold text-rose-700 bg-rose-50 border border-rose-200 animate-pulse">
-                                    <Clock className="w-3 h-3 text-rose-500" />
-                                    Awaiting Active Trainer
-                                  </span>
-                                )}
-                              </td>
-                              <td className="py-3.5 pl-2 text-right">
-                                {isAllocated ? (
-                                  <button
-                                    onClick={() => openAllocationModal(st)}
-                                    className="px-3 py-1.5 rounded-xl text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 border border-slate-200/90 shadow-xs transition-all cursor-pointer"
-                                  >
-                                    Reassign
-                                  </button>
-                                ) : (
-                                  <button
-                                    onClick={() => openAllocationModal(st)}
-                                    className="inline-flex items-center gap-1 px-3.5 py-1.5 rounded-xl text-xs font-black text-white bg-emerald-600 hover:bg-emerald-700 shadow-xs hover:shadow transition-all cursor-pointer"
-                                  >
-                                    <span>⚡ Assign Trainer</span>
-                                  </button>
-                                )}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : (
-                  <div className="py-12 text-center text-xs text-slate-400 border border-dashed border-slate-200 rounded-2xl">
-                    <CheckCircle2 className="w-8 h-8 text-emerald-400 mx-auto mb-2" />
-                    <div className="font-bold text-slate-700 text-sm">All clear! No students in this list</div>
-                    <p className="text-slate-400 mt-1">
-                      {studentTab === 'pending'
-                        ? `All students in ${reg.state} have been assigned to active trainers and batches.`
-                        : 'No student records match the active search filter.'}
-                    </p>
-                  </div>
-                )}
-              </div>
-
-              {/* SECTION 2: ACTIVE TRAINERS IN REGION */}
-              <div className="bg-white border border-slate-200/90 rounded-3xl p-6 shadow-xs space-y-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
-                    <span>🧑‍🏫</span> Active Trainers in {reg.state}
-                  </h3>
-                  <span className="text-xs text-slate-400 font-mono">
-                    {reg.trainersList?.length || 0} trainers listed
-                  </span>
-                </div>
-
-                {reg.trainersList && reg.trainersList.length > 0 ? (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left text-xs">
-                      <thead>
-                        <tr className="text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">
-                          <th className="pb-3 font-bold">TRAINER</th>
-                          <th className="pb-3 font-bold">BRANCH</th>
-                          <th className="pb-3 font-bold">COURSE SPECIALIZATION</th>
-                          <th className="pb-3 font-bold">LANGUAGES</th>
-                          <th className="pb-3 font-bold">ASSIGNED STUDENTS</th>
-                          <th className="pb-3 font-bold">STATUS</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {reg.trainersList.map((t) => {
-                          const assignedCount = studentsList.filter(s => s.trainerId === t.trainerId).length;
-                          return (
-                            <tr key={t.trainerId || t._id} className="hover:bg-slate-50/60 transition-colors">
-                              <td className="py-3.5 pr-4">
-                                <div className="font-extrabold text-slate-900">{t.trainerName}</div>
-                                <div className="text-[10px] text-slate-400 font-mono mt-0.5">{t.trainerId}</div>
-                              </td>
-                              <td className="py-3.5 pr-4 text-slate-600 font-medium">{t.branchName || 'Academy-wide'}</td>
-                              <td className="py-3.5 pr-4 text-slate-600 font-medium">{t.expertCourse || t.specialization || 'Medical Coding'}</td>
-                              <td className="py-3.5 pr-4 text-slate-600 font-medium">{Array.isArray(t.languages) ? t.languages.join(', ') : 'Tamil, English'}</td>
-                              <td className="py-3.5 pr-4">
-                                <span className="font-extrabold text-blue-600">{assignedCount}</span> students
-                              </td>
-                              <td className="py-3.5 pr-4">
-                                <span className={`inline-flex items-center gap-1.5 text-xs font-bold ${t.active !== false ? 'text-emerald-600' : 'text-slate-400'}`}>
-                                  <span className={`w-2 h-2 rounded-full ${t.active !== false ? 'bg-emerald-500' : 'bg-slate-300'}`}></span>
-                                  {t.active !== false ? 'Active on Duty' : 'On Leave'}
-                                </span>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : (
-                  <div className="py-8 text-center text-xs text-slate-400">No trainers assigned to this region yet.</div>
-                )}
-              </div>
-
-              {/* SECTION 3: BATCHES IN REGION */}
-              <div className="bg-white border border-slate-200/90 rounded-3xl p-6 shadow-xs space-y-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
-                    <span>📚</span> Active Batches in {reg.state}
-                  </h3>
-                  <span className="text-xs text-slate-400 font-mono">
-                    {reg.batchesList?.length || 0} batches
-                  </span>
-                </div>
-
-                {reg.batchesList && reg.batchesList.length > 0 ? (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left text-xs">
-                      <thead>
-                        <tr className="text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">
-                          <th className="pb-3 font-bold">BATCH NAME</th>
-                          <th className="pb-3 font-bold">COURSE</th>
-                          <th className="pb-3 font-bold">FACULTY TRAINER</th>
-                          <th className="pb-3 font-bold">ENROLLED STUDENTS</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {reg.batchesList.map((b, idx) => (
-                          <tr key={b.batch || idx} className="hover:bg-slate-50/60 transition-colors">
-                            <td className="py-3.5 pr-4 font-extrabold text-slate-900">{b.batch || 'Batch'}</td>
-                            <td className="py-3.5 pr-4 text-slate-600 font-medium">{b.course || 'Medical Coding'}</td>
-                            <td className="py-3.5 pr-4 text-slate-600 font-medium">{b.trainerName || 'Assigned'}</td>
-                            <td className="py-3.5 pr-4 text-slate-600 font-medium">{b.students ? `${b.students} students` : '—'}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : (
-                  <div className="py-8 text-center text-xs text-slate-400">No active batches recorded in this region.</div>
-                )}
-              </div>
-
-              {/* Bottom Notice Banner */}
-              <div className="bg-sky-50 border border-sky-200/90 text-sky-700 text-xs py-3 px-4.5 rounded-2xl flex items-center gap-2.5">
-                <span className="text-base flex-shrink-0">ℹ️</span>
-                <span>Regional Training Control for {reg.state} ({reg.head}) — All student handovers, active trainer assignments and batch continuity linked directly to MongoDB.</span>
+              <div>
+                <h2 className="text-xl sm:text-2xl font-extrabold tracking-tight">
+                  {currentRegionData?.head} <span className="opacity-70 font-normal">·</span> Head of Trainer
+                </h2>
+                <p className="text-xs sm:text-sm opacity-80 font-mono mt-0.5">
+                  {currentRegionData?.state} · {currentRegionData?.code}
+                </p>
               </div>
             </div>
-          );
-        })()
+          </div>
+
+          {/* Stat row */}
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
+            <div className="bg-white border border-slate-100/90 rounded-2xl p-4 shadow-xs text-center">
+              <div className="text-2xl font-extrabold text-slate-900">{loading ? '…' : currentRegionData?.trainers ?? 0}</div>
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">Trainers</div>
+            </div>
+            <div className="bg-white border border-slate-100/90 rounded-2xl p-4 shadow-xs text-center">
+              <div className="text-2xl font-extrabold text-emerald-600">{loading ? '…' : currentRegionData?.availableNow ?? 0}</div>
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">Available Now</div>
+            </div>
+            <div className="bg-white border border-slate-100/90 rounded-2xl p-4 shadow-xs text-center">
+              <div className="text-2xl font-extrabold text-slate-900">{loading ? '…' : currentRegionData?.batches ?? 0}</div>
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">Batches</div>
+            </div>
+            <div className="bg-white border border-slate-100/90 rounded-2xl p-4 shadow-xs text-center">
+              <div className={`text-2xl font-extrabold ${(currentRegionData?.pendingAllocationCount || 0) > 0 ? 'text-rose-600' : 'text-slate-900'}`}>
+                {loading ? '…' : currentRegionData?.pendingAllocationCount ?? 0}
+              </div>
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">Pending Allocation</div>
+            </div>
+            <div className="bg-white border border-slate-100/90 rounded-2xl p-4 shadow-xs text-center">
+              <div className="text-2xl font-extrabold text-blue-600">{loading ? '…' : currentRegionData?.upcomingDemosCount ?? 0}</div>
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">Upcoming Demos</div>
+            </div>
+          </div>
+
+          {/* Active Trainers table */}
+          <div className="bg-white border border-slate-200/90 rounded-3xl p-6 shadow-xs space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+                <span>🧑‍🏫</span> Active Trainers in {currentRegionData?.state}
+              </h3>
+              <span className="text-xs text-slate-400 font-mono">
+                {currentRegionData?.trainersList?.length || 0} trainers listed
+              </span>
+            </div>
+
+            {currentRegionData?.trainersList && currentRegionData.trainersList.length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">
+                      <th className="pb-3 font-bold">TRAINER</th>
+                      <th className="pb-3 font-bold">BRANCH</th>
+                      <th className="pb-3 font-bold">COURSE SPECIALIZATION</th>
+                      <th className="pb-3 font-bold">LANGUAGES</th>
+                      <th className="pb-3 font-bold">ASSIGNED STUDENTS</th>
+                      <th className="pb-3 font-bold">STATUS</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {currentRegionData.trainersList.map((t) => {
+                      const assignedCount = studentsList.filter(s => s.trainerId === t.trainerId).length;
+                      return (
+                        <tr key={t.trainerId || t._id} className="hover:bg-slate-50/60 transition-colors">
+                          <td className="py-3.5 pr-4">
+                            <div className="font-extrabold text-slate-900">{t.trainerName}</div>
+                            <div className="text-[10px] text-slate-400 font-mono mt-0.5">{t.trainerId}</div>
+                          </td>
+                          <td className="py-3.5 pr-4 text-slate-600 font-medium">{t.branchName || 'Academy-wide'}</td>
+                          <td className="py-3.5 pr-4 text-slate-600 font-medium">{t.expertCourse || t.specialization || 'Medical Coding'}</td>
+                          <td className="py-3.5 pr-4 text-slate-600 font-medium">{Array.isArray(t.languages) ? t.languages.join(', ') : 'Tamil, English'}</td>
+                          <td className="py-3.5 pr-4">
+                            <span className="font-extrabold text-blue-600">{assignedCount}</span> students
+                          </td>
+                          <td className="py-3.5 pr-4">
+                            <span className={`inline-flex items-center gap-1.5 text-xs font-bold ${t.active !== false ? 'text-emerald-600' : 'text-slate-400'}`}>
+                              <span className={`w-2 h-2 rounded-full ${t.active !== false ? 'bg-emerald-500' : 'bg-slate-300'}`}></span>
+                              {t.active !== false ? 'Active on Duty' : 'On Leave'}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="py-8 text-center text-xs text-slate-400">No trainers assigned to this region yet.</div>
+            )}
+          </div>
+
+          {/* Demos — booked for this zone's trainers */}
+          <div className="bg-white border border-slate-200/90 rounded-3xl p-6 shadow-xs space-y-4">
+            {reassignToast && (
+              <div className="p-2.5 rounded-xl bg-slate-900 text-white text-xs font-semibold">{reassignToast}</div>
+            )}
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+                <span>🎥</span> Demos in {currentRegionData?.state}
+              </h3>
+              <span className="text-xs text-slate-400 font-mono">
+                {currentRegionData?.demosList?.length || 0} on record · {currentRegionData?.upcomingDemosCount || 0} upcoming
+                {(currentRegionData?.demosList || []).filter((d) => String(d.status || '').toLowerCase() === 'missed').length > 0 && (
+                  <span className="text-rose-500 font-bold"> · {(currentRegionData?.demosList || []).filter((d) => String(d.status || '').toLowerCase() === 'missed').length} missed</span>
+                )}
+              </span>
+            </div>
+
+            {/* Bulk reassign — e.g. a trainer calls in sick, move every upcoming demo
+                of theirs (optionally just one date) to another available trainer. */}
+            <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 space-y-2.5">
+              <div className="flex items-center gap-2 text-xs font-extrabold text-slate-700">
+                <Shuffle className="w-3.5 h-3.5 text-blue-600" /> Reassign all demos of a trainer on leave
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+                <select
+                  value={bulkReassignForm.fromTrainerId}
+                  onChange={(e) => setBulkReassignForm((f) => ({ ...f, fromTrainerId: e.target.value }))}
+                  className="px-2.5 py-2 rounded-xl border border-slate-200 text-xs bg-white"
+                >
+                  <option value="">From trainer…</option>
+                  {(currentRegionData?.trainersList || []).map((t) => (
+                    <option key={t.trainerId} value={t.trainerId}>{t.trainerName}</option>
+                  ))}
+                </select>
+                <select
+                  value={bulkReassignForm.toTrainerId}
+                  onChange={(e) => setBulkReassignForm((f) => ({ ...f, toTrainerId: e.target.value }))}
+                  className="px-2.5 py-2 rounded-xl border border-slate-200 text-xs bg-white"
+                >
+                  <option value="">To trainer…</option>
+                  {(currentRegionData?.trainersList || []).filter((t) => t.trainerId !== bulkReassignForm.fromTrainerId).map((t) => (
+                    <option key={t.trainerId} value={t.trainerId}>{t.trainerName}</option>
+                  ))}
+                </select>
+                <input
+                  type="date"
+                  value={bulkReassignForm.date}
+                  onChange={(e) => setBulkReassignForm((f) => ({ ...f, date: e.target.value }))}
+                  className="px-2.5 py-2 rounded-xl border border-slate-200 text-xs bg-white"
+                  title="Leave blank to move every upcoming demo, not just one date"
+                />
+                <input
+                  value={bulkReassignForm.reason}
+                  onChange={(e) => setBulkReassignForm((f) => ({ ...f, reason: e.target.value }))}
+                  placeholder="Reason (e.g. On leave)"
+                  className="px-2.5 py-2 rounded-xl border border-slate-200 text-xs bg-white"
+                />
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[10px] text-slate-400">Leave the date blank to move every one of that trainer's upcoming demos, not just one day.</p>
+                <button
+                  onClick={confirmBulkReassign}
+                  disabled={bulkReassigning || !bulkReassignForm.fromTrainerId || !bulkReassignForm.toTrainerId}
+                  className="px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold disabled:opacity-40 shrink-0"
+                >
+                  {bulkReassigning ? 'Reassigning…' : 'Reassign all'}
+                </button>
+              </div>
+            </div>
+
+            {currentRegionData?.demosList && currentRegionData.demosList.length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">
+                      <th className="pb-3 font-bold">CANDIDATE</th>
+                      <th className="pb-3 font-bold">COURSE</th>
+                      <th className="pb-3 font-bold">DATE &amp; TIME</th>
+                      <th className="pb-3 font-bold">LANGUAGE</th>
+                      <th className="pb-3 font-bold">LOCATION</th>
+                      <th className="pb-3 font-bold">TRAINER</th>
+                      <th className="pb-3 font-bold">STATUS</th>
+                      <th className="pb-3 font-bold"></th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {currentRegionData.demosList
+                      .slice()
+                      .sort((a, b) => String(b.preferredDate || '').localeCompare(String(a.preferredDate || '')))
+                      .map((d) => {
+                        const statusKey = String(d.status || 'booked').toLowerCase();
+                        const statusCls = statusKey === 'attended' ? 'text-emerald-600 bg-emerald-50 border-emerald-200'
+                          : statusKey === 'missed' ? 'text-rose-600 bg-rose-50 border-rose-200'
+                          : statusKey === 'confirmed' ? 'text-teal-600 bg-teal-50 border-teal-200'
+                          : 'text-amber-600 bg-amber-50 border-amber-200';
+                        const canReassign = !['attended', 'cancelled'].includes(statusKey);
+                        return (
+                          <tr key={d._id || `${d.candidateName}-${d.preferredDate}`} className="hover:bg-slate-50/60 transition-colors">
+                            <td className="py-3.5 pr-4">
+                              <div className="font-extrabold text-slate-900">{d.candidateName}</div>
+                              <div className="text-[10px] text-slate-400 font-mono mt-0.5">{d.phone}</div>
+                            </td>
+                            <td className="py-3.5 pr-4 text-slate-600 font-medium">{d.course || '—'}</td>
+                            <td className="py-3.5 pr-4 text-slate-600 font-medium">{d.preferredDate || '—'} {d.timeSlot || d.time ? `· ${d.timeSlot || d.time}` : ''}</td>
+                            <td className="py-3.5 pr-4 text-slate-600 font-medium">{d.language || '—'}</td>
+                            <td className="py-3.5 pr-4 text-slate-600 font-medium">{d.location || d.branch || '—'}</td>
+                            <td className="py-3.5 pr-4 text-slate-600 font-medium">
+                              <div>{d.trainer || d.trainerMapping || '—'}</div>
+                              {d.reassigned && (
+                                <div className="text-[10px] text-blue-500 font-semibold mt-0.5">↪ reassigned from {d.originalTrainerName || 'another trainer'}</div>
+                              )}
+                            </td>
+                            <td className="py-3.5 pr-4">
+                              <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-bold border ${statusCls}`}>
+                                {d.status || 'Booked'}
+                              </span>
+                              {d.autoMissed && (
+                                <div className="text-[10px] text-rose-500 font-semibold mt-1">⏱ auto-missed · deadline passed</div>
+                              )}
+                            </td>
+                            <td className="py-3.5 pr-4">
+                              <div className="flex items-center gap-1.5">
+                                {canReassign && (
+                                  <button
+                                    onClick={() => openReassign(d)}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold text-blue-700 bg-blue-50 border border-blue-200 hover:bg-blue-100"
+                                  >
+                                    <Shuffle className="w-3 h-3" /> Reassign
+                                  </button>
+                                )}
+                                {statusKey === 'missed' && (
+                                  <button
+                                    onClick={() => openReschedule(d)}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-200 hover:bg-amber-100"
+                                  >
+                                    <Clock className="w-3 h-3" /> Reschedule
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="py-8 text-center text-xs text-slate-400">No demos booked for this region yet.</div>
+            )}
+          </div>
+
+          {/* Single-demo reassign panel */}
+          {reassignDemoTarget && (
+            <div className="bg-white border-2 border-blue-200 rounded-3xl p-5 shadow-xs space-y-3">
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+                  <Shuffle className="w-3.5 h-3.5 text-blue-600" /> Reassign {reassignDemoTarget.candidateName}'s demo
+                </h4>
+                <button onClick={() => setReassignDemoTarget(null)} className="p-1 rounded text-slate-400 hover:text-slate-700"><X className="w-4 h-4" /></button>
+              </div>
+              <p className="text-[11px] text-slate-400">
+                Currently with <span className="font-bold text-slate-600">{reassignDemoTarget.trainer || reassignDemoTarget.trainerMapping || '—'}</span> · {reassignDemoTarget.preferredDate} {reassignDemoTarget.timeSlot || reassignDemoTarget.time || ''}
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <select
+                  value={reassignForm.toTrainerId}
+                  onChange={(e) => setReassignForm((f) => ({ ...f, toTrainerId: e.target.value }))}
+                  className="px-2.5 py-2 rounded-xl border border-slate-200 text-xs bg-white"
+                >
+                  <option value="">Reassign to…</option>
+                  {(currentRegionData?.trainersList || []).filter((t) => t.trainerId !== reassignDemoTarget.trainerId).map((t) => (
+                    <option key={t.trainerId} value={t.trainerId}>{t.trainerName}</option>
+                  ))}
+                </select>
+                <input
+                  value={reassignForm.reason}
+                  onChange={(e) => setReassignForm((f) => ({ ...f, reason: e.target.value }))}
+                  placeholder="Reason (e.g. On leave)"
+                  className="px-2.5 py-2 rounded-xl border border-slate-200 text-xs bg-white"
+                />
+              </div>
+              <button
+                onClick={confirmReassignOne}
+                disabled={reassigning || !reassignForm.toTrainerId}
+                className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold disabled:opacity-40"
+              >
+                {reassigning ? 'Reassigning…' : 'Confirm reassignment'}
+              </button>
+            </div>
+          )}
+
+          {/* Reschedule panel — for a missed demo: pick a new date/time, and
+              optionally move it to a different trainer in the same step. */}
+          {rescheduleDemoTarget && (
+            <div className="bg-white border-2 border-amber-200 rounded-3xl p-5 shadow-xs space-y-3">
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+                  <Clock className="w-3.5 h-3.5 text-amber-600" /> Reschedule {rescheduleDemoTarget.candidateName}'s demo
+                </h4>
+                <button onClick={() => setRescheduleDemoTarget(null)} className="p-1 rounded text-slate-400 hover:text-slate-700"><X className="w-4 h-4" /></button>
+              </div>
+              <p className="text-[11px] text-slate-400">
+                Was scheduled <span className="font-bold text-slate-600">{rescheduleDemoTarget.preferredDate} {rescheduleDemoTarget.timeSlot || rescheduleDemoTarget.time || ''}</span> with {rescheduleDemoTarget.trainer || rescheduleDemoTarget.trainerMapping || '—'} — not conducted{rescheduleDemoTarget.missedReason ? ` (${rescheduleDemoTarget.missedReason})` : ''}.
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <input
+                  type="date"
+                  value={rescheduleForm.preferredDate}
+                  onChange={(e) => setRescheduleForm((f) => ({ ...f, preferredDate: e.target.value }))}
+                  className="px-2.5 py-2 rounded-xl border border-slate-200 text-xs bg-white"
+                />
+                <input
+                  value={rescheduleForm.timeSlot}
+                  onChange={(e) => setRescheduleForm((f) => ({ ...f, timeSlot: e.target.value }))}
+                  placeholder="Time (e.g. 10:00 AM)"
+                  className="px-2.5 py-2 rounded-xl border border-slate-200 text-xs bg-white"
+                />
+                <select
+                  value={rescheduleForm.toTrainerId}
+                  onChange={(e) => setRescheduleForm((f) => ({ ...f, toTrainerId: e.target.value }))}
+                  className="px-2.5 py-2 rounded-xl border border-slate-200 text-xs bg-white"
+                >
+                  <option value="">Keep same trainer</option>
+                  {(currentRegionData?.trainersList || []).filter((t) => t.trainerId !== rescheduleDemoTarget.trainerId).map((t) => (
+                    <option key={t.trainerId} value={t.trainerId}>Move to {t.trainerName}</option>
+                  ))}
+                </select>
+                <input
+                  value={rescheduleForm.reason}
+                  onChange={(e) => setRescheduleForm((f) => ({ ...f, reason: e.target.value }))}
+                  placeholder="Reason (optional)"
+                  className="px-2.5 py-2 rounded-xl border border-slate-200 text-xs bg-white"
+                />
+              </div>
+              <button
+                onClick={confirmReschedule}
+                disabled={rescheduling || !rescheduleForm.preferredDate || !rescheduleForm.timeSlot}
+                className="w-full py-2.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold disabled:opacity-40"
+              >
+                {rescheduling ? 'Rescheduling…' : 'Confirm reschedule'}
+              </button>
+            </div>
+          )}
+
+          {/* Trainer Roster — Shift & Availability */}
+          <TeamRosterBoard
+            departmentCode="ACAD"
+            managerLabel="Head of Trainer"
+            allowedNames={currentRegionTrainerNames}
+          />
+
+          {/* Course Syllabus — Head of Trainer defines it per course; trainers only view it */}
+          <CourseSyllabusBoard
+            courseOptions={(currentRegionData?.trainersList || []).map((t) => t.expertCourse || t.specialization).filter(Boolean)}
+          />
+        </div>
       ) : (
         /* ALL REGIONS OVERVIEW */
         <div className="space-y-8">
@@ -4050,348 +4024,6 @@ function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, o
                 </div>
               );
             })}
-          </div>
-
-          {/* ACADEMY-WIDE HANDOVER QUEUE */}
-          <div className="bg-white border border-slate-200/90 rounded-3xl p-6 shadow-xs space-y-4">
-            <div className="flex items-center justify-between flex-wrap gap-3 pb-3 border-b border-slate-100">
-              <div>
-                <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
-                  <span>⚡</span>
-                  <span>Student Handover & Trainer Allocation Desk (All Zones)</span>
-                </h3>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Select an active trainer from the roster to allocate students handed over from HR.
-                </p>
-              </div>
-
-              {/* Zone Filter & Tab Selector */}
-              <div className="flex items-center gap-2 flex-wrap">
-                <select
-                  value={zoneFilter}
-                  onChange={(e) => setZoneFilter(e.target.value)}
-                  className="px-3 py-1.5 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 focus:outline-none"
-                >
-                  <option value="all">All Zones ({studentsList.length})</option>
-                  <option value="tn">Tamil Nadu · Manoj</option>
-                  <option value="on">Online · Keerthika</option>
-                  <option value="kl">Kerala · Vaishna</option>
-                  <option value="tg">Telangana & Andhra · Pavithra</option>
-                </select>
-
-                <div className="flex items-center bg-slate-100 p-1 rounded-xl text-xs font-bold">
-                  <button
-                    onClick={() => setStudentTab('pending')}
-                    className={`px-3 py-1.5 rounded-lg transition-all ${
-                      studentTab === 'pending'
-                        ? 'bg-white text-rose-600 shadow-xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    Awaiting Allocation ({pendingCount})
-                  </button>
-                  <button
-                    onClick={() => setStudentTab('allocated')}
-                    className={`px-3 py-1.5 rounded-lg transition-all ${
-                      studentTab === 'allocated'
-                        ? 'bg-white text-emerald-700 shadow-xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    Allocated ({allocatedCount})
-                  </button>
-                  <button
-                    onClick={() => setStudentTab('all')}
-                    className={`px-3 py-1.5 rounded-lg transition-all ${
-                      studentTab === 'all'
-                        ? 'bg-white text-blue-700 shadow-xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    All ({totalHandoverCount})
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Search Bar */}
-            <div className="relative">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                value={studentSearch}
-                onChange={(e) => setStudentSearch(e.target.value)}
-                placeholder="Search students across all zones by name, ID, course, branch or HR..."
-                className="w-full pl-9 pr-4 py-2 text-xs rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
-              />
-              {studentSearch && (
-                <button onClick={() => setStudentSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              )}
-            </div>
-
-            {/* Table */}
-            {displayStudents.length > 0 ? (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs">
-                  <thead>
-                    <tr className="text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">
-                      <th className="pb-3 font-bold">STUDENT</th>
-                      <th className="pb-3 font-bold">COURSE & MODE</th>
-                      <th className="pb-3 font-bold">BRANCH & TIMING</th>
-                      <th className="pb-3 font-bold">HEAD OF TRAINER</th>
-                      <th className="pb-3 font-bold">ASSIGNMENT STATUS</th>
-                      <th className="pb-3 font-bold text-right">ACTION</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {displayStudents.map((st) => {
-                      const isAllocated = Boolean(st.trainerId);
-                      return (
-                        <tr key={st._id || st.studentId} className="hover:bg-slate-50/60 transition-colors">
-                          <td className="py-3.5 pr-4">
-                            <div className="font-extrabold text-slate-900">{st.name}</div>
-                            <div className="text-[10px] text-slate-400 font-mono mt-0.5">{st.studentId || 'ID Pending'}</div>
-                            {st.mobile && <div className="text-[10px] text-slate-500 font-mono">{st.mobile}</div>}
-                          </td>
-                          <td className="py-3.5 pr-4">
-                            <div className="font-bold text-slate-800">{st.course || 'Medical Coding'}</div>
-                            <div className="text-[10px] text-slate-500 mt-0.5">{st.mode || st.batchMode || 'Offline'}</div>
-                          </td>
-                          <td className="py-3.5 pr-4">
-                            <div className="font-medium text-slate-700">{st.branch || st.location || 'Branch'}</div>
-                            <div className="text-[10px] text-slate-500 mt-0.5">Timing: <strong className="text-slate-700">{st.batchTiming || 'Flexible'}</strong></div>
-                          </td>
-                          <td className="py-3.5 pr-4">
-                            <span className="font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded text-[11px] border border-blue-100">
-                              {st.headOfTrainer || 'Manoj'}
-                            </span>
-                            {st.hrName && <div className="text-[10px] text-slate-400 mt-0.5">HR: {st.hrName}</div>}
-                          </td>
-                          <td className="py-3.5 pr-4">
-                            {isAllocated ? (
-                              <div>
-                                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200">
-                                  <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                                  {st.trainerName}
-                                </span>
-                                {st.batchName && (
-                                  <div className="text-[10px] text-slate-500 font-medium mt-0.5">
-                                    Batch: <strong className="text-slate-700">{st.batchName}</strong>
-                                  </div>
-                                )}
-                              </div>
-                            ) : (
-                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold text-rose-700 bg-rose-50 border border-rose-200 animate-pulse">
-                                <Clock className="w-3 h-3 text-rose-500" />
-                                Awaiting Active Trainer
-                              </span>
-                            )}
-                          </td>
-                          <td className="py-3.5 pl-2 text-right">
-                            {isAllocated ? (
-                              <button
-                                onClick={() => openAllocationModal(st)}
-                                className="px-3 py-1.5 rounded-xl text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 border border-slate-200/90 shadow-xs transition-all cursor-pointer"
-                              >
-                                Reassign
-                              </button>
-                            ) : (
-                              <button
-                                onClick={() => openAllocationModal(st)}
-                                className="inline-flex items-center gap-1 px-3.5 py-1.5 rounded-xl text-xs font-black text-white bg-emerald-600 hover:bg-emerald-700 shadow-xs hover:shadow transition-all cursor-pointer"
-                              >
-                                <span>⚡ Assign Trainer</span>
-                              </button>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div className="py-12 text-center text-xs text-slate-400 border border-dashed border-slate-200 rounded-2xl">
-                <CheckCircle2 className="w-8 h-8 text-emerald-400 mx-auto mb-2" />
-                <div className="font-bold text-slate-700 text-sm">All clear! No students awaiting allocation</div>
-                <p className="text-slate-400 mt-1">All handed over students have been allocated to active trainers.</p>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* INTERACTIVE ALLOCATION MODAL */}
-      {allocationStudent && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-xl w-full p-6 sm:p-7 shadow-2xl border border-slate-100 animate-in fade-in zoom-in-95 duration-150 max-h-[90vh] overflow-y-auto">
-            {/* Header */}
-            <div className="flex items-center justify-between pb-4 border-b border-slate-100 mb-5">
-              <div>
-                <h3 className="text-lg font-black text-slate-900">
-                  {allocationStudent.trainerId ? 'Reassign Active Trainer & Batch' : 'Assign to Active Trainer & Batch'}
-                </h3>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Head of Trainer Allocation Desk · {allocationStudent.name}
-                </p>
-              </div>
-              <button
-                onClick={() => setAllocationStudent(null)}
-                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center transition-colors"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            {/* Student Info Card */}
-            <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200/80 mb-5 space-y-2 text-xs">
-              <div className="grid grid-cols-2 gap-2 text-slate-600">
-                <div>Student: <strong className="text-slate-900">{allocationStudent.name}</strong> ({allocationStudent.studentId || 'ID Pending'})</div>
-                <div>Course: <strong className="text-slate-900">{allocationStudent.course || 'Medical Coding'}</strong></div>
-                <div>Branch: <strong className="text-slate-900">{allocationStudent.branch || allocationStudent.location || 'Academy'}</strong></div>
-                <div>Mode: <strong className="text-slate-900">{allocationStudent.mode || allocationStudent.batchMode || 'Offline'}</strong></div>
-                <div>Preferred Timing: <strong className="text-slate-900">{allocationStudent.batchTiming || 'Flexible'}</strong></div>
-                <div>HR Counsellor: <strong className="text-slate-900">{allocationStudent.hrName || 'HR Team'}</strong></div>
-              </div>
-
-              {(allocationStudent.trainerNote || allocationStudent.handoverNote) && (
-                <div className="pt-2 mt-2 border-t border-slate-200 text-[11px] text-amber-900 bg-amber-50/70 p-2 rounded-xl border border-amber-200/50">
-                  <span className="font-bold">HR Handover Notes:</span> {allocationStudent.trainerNote || allocationStudent.handoverNote}
-                </div>
-              )}
-            </div>
-
-            {/* Allocation Form */}
-            <div className="space-y-4 text-xs">
-              {/* Active Trainer Selection */}
-              <div>
-                <label className="font-bold text-slate-800 block mb-1.5">
-                  Select Active Trainer <span className="text-rose-500">*</span>
-                </label>
-                <select
-                  value={allocationForm.trainerId}
-                  onChange={(e) => {
-                    const sel = trainersList.find(t => t.trainerId === e.target.value);
-                    setAllocationForm(prev => ({
-                      ...prev,
-                      trainerId: e.target.value,
-                      trainerName: sel?.trainerName || ''
-                    }));
-                  }}
-                  className="w-full p-2.5 rounded-xl border border-slate-300 bg-white font-medium focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 text-xs"
-                >
-                  <option value="">-- Choose Active Trainer --</option>
-                  {trainersList
-                    .filter(t => t.active !== false)
-                    .map(t => {
-                      const stuBranch = (allocationStudent.branch || allocationStudent.location || '').toLowerCase();
-                      const tBranch = (t.branchName || '').toLowerCase();
-                      const isMatch = stuBranch && tBranch && (tBranch.includes(stuBranch) || stuBranch.includes(tBranch));
-                      const activeCount = studentsList.filter(s => s.trainerId === t.trainerId).length;
-                      return (
-                        <option key={t.trainerId || t._id} value={t.trainerId}>
-                          {isMatch ? '★ [Branch Match] ' : ''}{t.trainerName} · {t.branchName || 'All Branches'} ({t.expertCourse || t.specialization || 'Medical Coding'}) — {activeCount} students assigned
-                        </option>
-                      );
-                    })}
-                </select>
-              </div>
-
-              {/* Batch Name */}
-              <div>
-                <label className="font-bold text-slate-800 block mb-1">
-                  Batch Name <span className="text-rose-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={allocationForm.batchName}
-                  onChange={(e) => setAllocationForm(prev => ({ ...prev, batchName: e.target.value }))}
-                  placeholder="e.g. Medical Coding - Morning Batch"
-                  className="w-full p-2.5 rounded-xl border border-slate-300 text-xs font-medium focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                />
-
-                {/* Preset Chips */}
-                <div className="flex flex-wrap gap-1.5 mt-2">
-                  {[
-                    `${allocationStudent.course || 'Medical Coding'} - Regular`,
-                    `${allocationStudent.course || 'Medical Coding'} - Weekend`,
-                    `${allocationStudent.course || 'Medical Coding'} · Morning`,
-                    `${allocationStudent.course || 'Medical Coding'} · Evening`
-                  ].map(chip => (
-                    <button
-                      key={chip}
-                      type="button"
-                      onClick={() => setAllocationForm(prev => ({ ...prev, batchName: chip }))}
-                      className="px-2 py-0.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-semibold border border-slate-200 transition-colors"
-                    >
-                      + {chip}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Batch Timing */}
-              <div>
-                <label className="font-bold text-slate-800 block mb-1">
-                  Batch Schedule / Timing
-                </label>
-                <select
-                  value={allocationForm.batchTiming}
-                  onChange={(e) => setAllocationForm(prev => ({ ...prev, batchTiming: e.target.value }))}
-                  className="w-full p-2.5 rounded-xl border border-slate-300 text-xs font-medium"
-                >
-                  <option value="Morning (9:30 AM - 12:30 PM)">Morning (9:30 AM - 12:30 PM)</option>
-                  <option value="Afternoon (2:00 PM - 5:00 PM)">Afternoon (2:00 PM - 5:00 PM)</option>
-                  <option value="Evening (6:00 PM - 8:30 PM)">Evening (6:00 PM - 8:30 PM)</option>
-                  <option value="Weekend Batch (10:00 AM - 4:00 PM)">Weekend Batch (10:00 AM - 4:00 PM)</option>
-                  <option value="Flexible / Online Batches">Flexible / Online Batches</option>
-                </select>
-              </div>
-
-              {/* Note to Trainer */}
-              <div>
-                <label className="font-bold text-slate-800 block mb-1">
-                  Instructions / Coaching Note for Trainer
-                </label>
-                <textarea
-                  rows={3}
-                  value={allocationForm.trainerNote}
-                  onChange={(e) => setAllocationForm(prev => ({ ...prev, trainerNote: e.target.value }))}
-                  placeholder="Special instructions for the faculty trainer regarding language, student background or pace..."
-                  className="w-full p-2.5 rounded-xl border border-slate-300 text-xs"
-                />
-              </div>
-            </div>
-
-            {/* Modal Actions */}
-            <div className="flex items-center justify-end gap-3 pt-5 mt-5 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => setAllocationStudent(null)}
-                disabled={allocating}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
-              >
-                Cancel
-              </button>
-
-              <button
-                type="button"
-                onClick={handleConfirmAllocation}
-                disabled={allocating || !allocationForm.trainerId}
-                className="px-5 py-2 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 shadow-md hover:shadow-lg disabled:opacity-50 transition-all flex items-center gap-1.5 cursor-pointer"
-              >
-                {allocating ? (
-                  <span>Allocating…</span>
-                ) : (
-                  <>
-                    <Check className="w-4 h-4" />
-                    <span>Confirm Trainer Assignment</span>
-                  </>
-                )}
-              </button>
-            </div>
           </div>
         </div>
       )}

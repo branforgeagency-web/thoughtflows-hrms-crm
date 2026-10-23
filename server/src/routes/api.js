@@ -45,6 +45,7 @@ import StudentSubmission from '../models/StudentSubmission.js';
 import { PLACEMENT_EDITORS, autoStage, effectiveStage, blockReason, stageChecks } from '../constants/placement.js';
 import StudentRequest, { TRAINER_REQUEST_TYPES } from '../models/StudentRequest.js';
 import BatchSyllabus from '../models/BatchSyllabus.js';
+import CourseSyllabus from '../models/CourseSyllabus.js';
 import BatchAnnouncement from '../models/BatchAnnouncement.js';
 import TestAttempt from '../models/TestAttempt.js';
 import AppSetting from '../models/AppSetting.js';
@@ -2874,7 +2875,10 @@ router.put('/students/:id', async (req, res) => {
     // student — most commonly offline -> online. Once that one switch has
     // been used, the mode is locked and the student completes the course
     // in that mode; any further attempt to change it is rejected here.
-    if (payload.mode && payload.mode !== existing.mode) {
+    // Only a REAL switch away from a previously-set mode consumes the one-time lock.
+    // A legacy record with no mode saved yet (existing.mode is empty) getting its
+    // mode set for the first time is not a "change" and must not burn the lock.
+    if (payload.mode && existing.mode && payload.mode !== existing.mode) {
       if (existing.modeChangeUsed) {
         return res.status(400).json({
           error: `Course mode is locked to "${existing.mode}" — it was already changed once (on ${existing.modeChangedAt ? new Date(existing.modeChangedAt).toLocaleDateString() : 'an earlier date'}) and cannot be changed again.`
@@ -3836,6 +3840,16 @@ router.get('/trainer/settings', async (req, res) => {
 router.put('/trainer/settings/:id', async (req, res) => {
   try {
     const { id } = req.params;
+    // This upserts the full trainer record, including pay/incentive fields, so it must be
+    // restricted to Admin/Leadership/a designated Head of Trainer, or the trainer's own record.
+    const u = req.user || {};
+    const isSelf = u.trainerId && String(u.trainerId) === String(id);
+    if (!isSelf) {
+      const privileged = await isHeadOfTrainerUser(req);
+      if (!privileged) {
+        return res.status(403).json({ error: 'You do not have permission to edit this trainer record.' });
+      }
+    }
     const updated = await Trainer.findOneAndUpdate(
       { trainerId: id },
       { $set: { trainerId: id, ...req.body } },
@@ -4257,6 +4271,199 @@ router.put('/demos/:id/acknowledge', async (req, res) => {
       return res.status(409).json({ error: err.message || 'That trainer is already confirmed for another demo at this exact slot.' });
     }
     res.status(400).json({ error: err.message });
+  }
+});
+
+// Reassign ONE demo to a different trainer — e.g. the original trainer went on
+// leave. Only the Head of Trainer may do this. The current trainerId/trainer
+// fields always point at whoever is CURRENTLY responsible; originalTrainerId/
+// originalTrainerName are captured once (on the first reassignment) and never
+// overwritten again, so both dashboards and the Head of Trainer can always see
+// who a demo was booked for vs who is actually taking it.
+async function reassignOneDemo(demo, { toTrainerId, reason, by }) {
+  const toTrainer = await Trainer.findOne({ trainerId: toTrainerId }).lean();
+  if (!toTrainer) {
+    const err = new Error('That trainer was not found.');
+    err.status = 404;
+    throw err;
+  }
+  if (String(toTrainer.trainerId) === String(demo.trainerId)) {
+    const err = new Error('This demo is already assigned to that trainer.');
+    err.status = 400;
+    throw err;
+  }
+  const fromTrainerId = demo.trainerId || '';
+  const fromTrainerName = demo.trainer || demo.trainerMapping || '';
+
+  if (!demo.reassigned) {
+    demo.originalTrainerId = fromTrainerId;
+    demo.originalTrainerName = fromTrainerName;
+  }
+  demo.reassignmentHistory = demo.reassignmentHistory || [];
+  demo.reassignmentHistory.push({
+    fromTrainerId,
+    fromTrainerName,
+    toTrainerId: toTrainer.trainerId,
+    toTrainerName: toTrainer.trainerName,
+    reason: reason || '',
+    by: by || '',
+    at: new Date()
+  });
+  demo.reassigned = true;
+  demo.reassignedAt = new Date();
+  demo.reassignedBy = by || '';
+  demo.reassignmentReason = reason || '';
+  demo.trainerId = toTrainer.trainerId;
+  demo.trainer = toTrainer.trainerName;
+  demo.trainerMapping = toTrainer.trainerName;
+  demo.trainerRole = toTrainer.role || demo.trainerRole;
+  demo.expertCourse = toTrainer.expertCourse || toTrainer.specialization || demo.expertCourse;
+  // The old meeting was created under the previous trainer's Zoom account —
+  // clear it so the new trainer gets (or shares, if already scheduled) their own.
+  demo.zoomMeetingId = '';
+  demo.link = '';
+  demo.zoomHostEmail = '';
+  // A reassigned demo needs a fresh confirmation from its new trainer.
+  if (['booked', 'confirmed'].includes(String(demo.status || '').toLowerCase())) {
+    demo.status = 'booked';
+    demo.notificationRead = false;
+  }
+  await demo.save();
+
+  pushNotification({
+    audience: 'trainer', recipientId: fromTrainerId, recipientName: fromTrainerName, type: 'demo-reassigned',
+    title: `Demo reassigned: ${demo.candidateName}`,
+    message: `Your demo with ${demo.candidateName} on ${demo.preferredDate} ${demo.timeSlot || ''} has been reassigned to ${toTrainer.trainerName}${reason ? ` (${reason})` : ''}.`,
+    createdBy: by || ''
+  }).catch(() => {});
+  pushNotification({
+    audience: 'trainer', recipientId: toTrainer.trainerId, recipientName: toTrainer.trainerName, type: 'demo-reassigned',
+    title: `New demo assigned to you: ${demo.candidateName}`,
+    message: `${demo.course || ''} · ${demo.language || ''} · ${demo.location || ''} · ${demo.preferredDate} ${demo.timeSlot || ''} — reassigned from ${fromTrainerName}${reason ? ` (${reason})` : ''}.`,
+    createdBy: by || ''
+  }).catch(() => {});
+
+  return demo;
+}
+
+router.post('/demos/:id/reassign', async (req, res) => {
+  try {
+    const privileged = await isHeadOfTrainerUser(req);
+    if (!privileged) {
+      return res.status(403).json({ error: 'Only the Head of Trainer can reassign a demo to another trainer.' });
+    }
+    const demo = await Demo.findById(req.params.id);
+    if (!demo) return res.status(404).json({ error: 'Demo not found' });
+    const { toTrainerId, reason = '' } = req.body || {};
+    if (!toTrainerId) return res.status(400).json({ error: 'toTrainerId is required' });
+    const updated = await reassignOneDemo(demo, { toTrainerId, reason, by: req.user?.name || 'Head of Trainer' });
+    res.json(updated);
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
+});
+
+// Bulk reassign — e.g. "Trainer A is on leave tomorrow, move all of their
+// demos for that date to Trainer B." Scope to a date (recommended) or leave
+// it off to move every one of that trainer's not-yet-attended demos.
+router.post('/demos/bulk-reassign', async (req, res) => {
+  try {
+    const privileged = await isHeadOfTrainerUser(req);
+    if (!privileged) {
+      return res.status(403).json({ error: 'Only the Head of Trainer can reassign demos to another trainer.' });
+    }
+    const { fromTrainerId, toTrainerId, date = '', reason = '' } = req.body || {};
+    if (!fromTrainerId || !toTrainerId) {
+      return res.status(400).json({ error: 'fromTrainerId and toTrainerId are required' });
+    }
+    if (String(fromTrainerId) === String(toTrainerId)) {
+      return res.status(400).json({ error: 'Pick a different trainer to reassign to.' });
+    }
+    const query = { trainerId: fromTrainerId, status: { $nin: ['attended', 'missed', 'cancelled'] } };
+    if (date) query.preferredDate = date;
+    const demos = await Demo.find(query);
+    if (!demos.length) {
+      return res.json({ reassigned: 0, demos: [] });
+    }
+    const by = req.user?.name || 'Head of Trainer';
+    const results = [];
+    for (const demo of demos) {
+      try {
+        const updated = await reassignOneDemo(demo, { toTrainerId, reason, by });
+        results.push(updated);
+      } catch (e) {
+        console.warn(`Bulk reassign skipped demo ${demo._id}:`, e.message);
+      }
+    }
+    res.json({ reassigned: results.length, demos: results });
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
+});
+
+// Reschedule a demo (typically a missed one) to a new date/time, optionally
+// also moving it to a different trainer in the same step. Head of Trainer only.
+// Clears the auto-missed/disabled flags so it can be started again, and keeps
+// a full before/after record in rescheduleHistory.
+router.post('/demos/:id/reschedule', async (req, res) => {
+  try {
+    const privileged = await isHeadOfTrainerUser(req);
+    if (!privileged) {
+      return res.status(403).json({ error: 'Only the Head of Trainer can reschedule a demo.' });
+    }
+    const demo = await Demo.findById(req.params.id);
+    if (!demo) return res.status(404).json({ error: 'Demo not found' });
+
+    const { preferredDate, timeSlot, toTrainerId = '', reason = '' } = req.body || {};
+    if (!preferredDate || !timeSlot) {
+      return res.status(400).json({ error: 'preferredDate and timeSlot are required' });
+    }
+    const by = req.user?.name || 'Head of Trainer';
+
+    if (toTrainerId && String(toTrainerId) !== String(demo.trainerId)) {
+      await reassignOneDemo(demo, { toTrainerId, reason, by });
+    }
+
+    const fromDate = demo.preferredDate;
+    const fromTime = demo.timeSlot || demo.time || '';
+    demo.rescheduleHistory = demo.rescheduleHistory || [];
+    demo.rescheduleHistory.push({
+      fromDate,
+      fromTime,
+      toDate: preferredDate,
+      toTime: timeSlot,
+      toTrainerId: demo.trainerId,
+      toTrainerName: demo.trainer,
+      reason,
+      by,
+      at: new Date()
+    });
+    demo.preferredDate = preferredDate;
+    demo.timeSlot = timeSlot;
+    demo.time = timeSlot;
+    demo.status = 'booked';
+    demo.autoMissed = false;
+    demo.missedAt = null;
+    demo.disabledForStart = false;
+    demo.notificationRead = false;
+    // The old meeting (Zoom or a pasted Meet link) was for the old slot/trainer.
+    demo.zoomMeetingId = '';
+    demo.link = '';
+    demo.zoomHostEmail = '';
+    await demo.save();
+
+    if (demo.trainerId) {
+      pushNotification({
+        audience: 'trainer', recipientId: demo.trainerId, recipientName: demo.trainer, type: 'demo_rescheduled',
+        title: `Demo rescheduled: ${demo.candidateName}`,
+        message: `${demo.candidateName}'s demo moved from ${fromDate} ${fromTime} to ${preferredDate} ${timeSlot}${reason ? ` · ${reason}` : ''}.`,
+        createdBy: by
+      }).catch(() => {});
+    }
+
+    res.json(demo);
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
   }
 });
 
@@ -5062,6 +5269,88 @@ async function checkDoubtSLAs() {
 setInterval(checkDoubtSLAs, 15 * 60 * 1000);
 setTimeout(checkDoubtSLAs, 30 * 1000);
 
+// A demo whose scheduled slot has passed, still 'booked'/'confirmed' (i.e.
+// never started/confirmed-attended/already-missed), is auto-marked 'missed'
+// and the matching Head of Trainer is notified. A grace window after the
+// scheduled START time avoids flagging a trainer who started a minute or two
+// late; anything already 'attended' or 'missed' (or cancelled) is left alone,
+// per "only mark as missed if it has not actually started or been conducted."
+const DEMO_MISSED_GRACE_MINUTES = 30;
+
+function demoScheduledStart(demo) {
+  if (!demo.preferredDate) return null;
+  const range = parseSlotToRange(demo.timeSlot || demo.time || '');
+  if (!range) return null;
+  const h = Math.floor(range.startMin / 60);
+  const m = range.startMin % 60;
+  const local = `${demo.preferredDate}T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00`;
+  const t = new Date(`${local}+05:30`); // academy runs on IST
+  return isNaN(t.getTime()) ? null : t;
+}
+
+// Find the Head of Trainer for a demo's branch/location, falling back to every
+// head when no zone match is found (safer to over-notify than to drop it).
+function headsForDemo(demo) {
+  const text = `${demo.location || ''} ${demo.branch || ''}`.toLowerCase();
+  const matched = HEAD_OF_TRAINERS_MASTER.filter((h) =>
+    (h.branches || []).some((b) => text.includes(String(b).toLowerCase()))
+  );
+  return matched.length ? matched : HEAD_OF_TRAINERS_MASTER;
+}
+
+async function checkMissedDemos() {
+  try {
+    const candidates = await Demo.find({
+      status: { $in: ['booked', 'confirmed'] },
+      preferredDate: { $ne: '' }
+    });
+    for (const demo of candidates) {
+      const start = demoScheduledStart(demo);
+      if (!start) continue;
+      const deadline = new Date(start.getTime() + DEMO_MISSED_GRACE_MINUTES * 60000);
+      if (Date.now() < deadline.getTime()) continue;
+
+      demo.status = 'missed';
+      demo.autoMissed = true;
+      demo.missedAt = new Date();
+      demo.missedReason = 'Scheduled time passed without the demo being started or conducted.';
+      demo.disabledForStart = true;
+      await demo.save();
+
+      const heads = headsForDemo(demo);
+      for (const head of heads) {
+        try {
+          const headTrainer = head.email ? await Trainer.findOne({ email: head.email }).lean() : null;
+          await pushNotification({
+            audience: 'trainer',
+            recipientId: headTrainer?.trainerId || head.id,
+            recipientName: head.name,
+            type: 'demo_missed',
+            title: `Demo missed: ${demo.candidateName}`,
+            message: `${demo.trainer || 'The assigned trainer'}'s demo with ${demo.candidateName} was scheduled for ${demo.preferredDate} ${demo.timeSlot || demo.time || ''} and was not started/conducted. Reassign or reschedule it.`,
+            createdBy: 'System'
+          });
+        } catch (e) { console.warn('Missed-demo notify failed:', e.message); }
+      }
+
+      try {
+        await Escalation.create({
+          title: `Demo missed: ${demo.candidateName}`,
+          description: `${demo.trainer || 'The assigned trainer'} did not start/conduct ${demo.candidateName}'s ${demo.course || ''} demo scheduled for ${demo.preferredDate} ${demo.timeSlot || demo.time || ''}.`,
+          type: 'Demo Missed',
+          priority: 'urgent',
+          departmentCode: 'ACAD',
+          raisedBy: 'System'
+        });
+      } catch (e) { console.warn('Missed-demo escalation create failed:', e.message); }
+    }
+  } catch (e) {
+    console.warn('checkMissedDemos failed:', e.message);
+  }
+}
+setInterval(checkMissedDemos, 5 * 60 * 1000);
+setTimeout(checkMissedDemos, 45 * 1000);
+
 // Trainer profile — the Trainer roster record attached to the signed-in user
 router.get('/trainer/me', async (req, res) => {
   try {
@@ -5074,6 +5363,22 @@ router.get('/trainer/me', async (req, res) => {
     }
     if (name) or.push({ trainerName: new RegExp(`^${escapeRegex(String(name).trim())}$`, 'i') });
     if (!or.length) return res.status(400).json({ error: 'trainerId, email or name is required' });
+
+    // This endpoint returns pay/incentive fields, so it may only be used to fetch the
+    // caller's OWN trainer record (by their own trainerId/email/name) — never someone
+    // else's — unless the caller is Admin/Leadership or a designated Head of Trainer.
+    const u = req.user || {};
+    const isSelf =
+      (trainerId && u.trainerId && String(trainerId) === String(u.trainerId)) ||
+      (email && u.email && String(email).trim().toLowerCase() === String(u.email).trim().toLowerCase()) ||
+      (name && (u.name || u.userName) && String(name).trim().toLowerCase() === String(u.name || u.userName).trim().toLowerCase());
+    if (!isSelf) {
+      const privileged = await isHeadOfTrainerUser(req);
+      if (!privileged) {
+        return res.status(403).json({ error: 'You can only view your own trainer profile.' });
+      }
+    }
+
     const trainer = await Trainer.findOne({ $or: or });
     if (!trainer) return res.status(404).json({ error: 'No trainer roster record found for this account' });
     res.json(trainer);
@@ -5400,51 +5705,48 @@ router.post('/trainer/attendance', async (req, res) => {
     );
     await recomputeAttendance(Object.keys(records));
 
-    // Syllabus Tracker: Automatically mark and update syllabus tracker for the corresponding session
+    // Syllabus Tracker: Automatically tick off the matching module (from the
+    // course's Head-of-Trainer-managed master list) for the corresponding session.
+    // A topic that doesn't match any existing module is logged on the session only —
+    // it is never auto-added as a new syllabus module (only the Head of Trainer adds
+    // modules; trainers, including via this auto-match, can only mark existing ones done).
     let updatedSyllabus = null;
     if (topic && String(topic).trim()) {
       const cleanTopic = String(topic).trim();
       const bKey = batchMatchKey(batch);
       let sylDoc = await BatchSyllabus.findOne({ batchKey: bKey });
-      if (!sylDoc) {
-        sylDoc = new BatchSyllabus({ batch, batchKey: bKey, course: '' });
-      }
-      const existingIndex = (sylDoc.modules || []).findIndex(
+      const existingIndex = sylDoc ? (sylDoc.modules || []).findIndex(
         (m) => m.name.toLowerCase() === cleanTopic.toLowerCase() ||
                cleanTopic.toLowerCase().includes(m.name.toLowerCase()) ||
                m.name.toLowerCase().includes(cleanTopic.toLowerCase())
-      );
+      ) : -1;
       const by = trainerName || req.user?.name || 'Trainer';
-      if (existingIndex >= 0) {
+      if (sylDoc && existingIndex >= 0) {
         sylDoc.modules[existingIndex].done = true;
         sylDoc.modules[existingIndex].doneAt = new Date();
         sylDoc.modules[existingIndex].doneBy = by;
-      } else {
-        sylDoc.modules.push({
-          name: cleanTopic.slice(0, 160),
-          done: true,
-          doneAt: new Date(),
-          doneBy: by
-        });
+        sylDoc.updatedBy = by;
+        if (trainerId) sylDoc.trainerId = trainerId;
+        if (trainerName) sylDoc.trainerName = trainerName;
+        await sylDoc.save();
+        updatedSyllabus = sylDoc;
       }
-      sylDoc.updatedBy = by;
-      if (trainerId) sylDoc.trainerId = trainerId;
-      if (trainerName) sylDoc.trainerName = trainerName;
-      await sylDoc.save();
-      updatedSyllabus = sylDoc;
 
       // Update current syllabus module for all students in this batch
       await Student.updateMany({ batchName: batch }, { $set: { syllabusModule: cleanTopic } });
 
-      // Notify the batch about the syllabus update
-      const doneCount = sylDoc.modules.filter((m) => m.done).length;
-      const pct = sylDoc.modules.length ? Math.round((doneCount / sylDoc.modules.length) * 100) : 0;
-      await notifyBatch(batch, {
-        type: 'module',
-        title: `Syllabus updated: ${cleanTopic}`.slice(0, 180),
-        message: `Session completed and tracked in syllabus tracker (${doneCount} of ${sylDoc.modules.length} modules covered, ${pct}%).`,
-        createdBy: by
-      }).catch(() => {});
+      // Notify the batch about the syllabus update — only when the topic actually
+      // matched a module on the course's master syllabus and progress was saved.
+      if (updatedSyllabus) {
+        const doneCount = updatedSyllabus.modules.filter((m) => m.done).length;
+        const pct = updatedSyllabus.modules.length ? Math.round((doneCount / updatedSyllabus.modules.length) * 100) : 0;
+        await notifyBatch(batch, {
+          type: 'module',
+          title: `Syllabus updated: ${cleanTopic}`.slice(0, 180),
+          message: `Session completed and tracked in syllabus tracker (${doneCount} of ${updatedSyllabus.modules.length} modules covered, ${pct}%).`,
+          createdBy: by
+        }).catch(() => {});
+      }
     }
 
     res.json({
@@ -5541,6 +5843,10 @@ router.post('/students/:id/handover', async (req, res) => {
 });
 
 // Helper: Only Head of Trainer, Academic Director, Chief Faculty, Admin, or Leadership can assign/reassign students
+// Authority is scoped to the designated heads in HEAD_OF_TRAINERS_MASTER (by email) plus
+// Admin/Leadership and a DB-designated Academic/Training Department Head. This deliberately
+// does NOT grant authority based on department==='training' or role containing 'trainer' —
+// that would (and previously did) authorize every ordinary trainer, not just the heads.
 export const isHeadOfTrainerUser = async (req) => {
   const u = req.user;
   if (!u) return false;
@@ -5548,12 +5854,11 @@ export const isHeadOfTrainerUser = async (req) => {
   if (['admin', 'leadership'].includes(u.department) || ['Admin', 'Super Admin'].includes(u.role)) {
     return true;
   }
-  const name = String(u.name || u.userName || '').toLowerCase();
-  if (/manoj|keerthika|vaishna|pavithra|dr\.?\s*vikram/i.test(name)) {
+  const email = String(u.email || '').toLowerCase().trim();
+  if (email && HEAD_OF_TRAINERS_MASTER.some((h) => String(h.email || '').toLowerCase() === email)) {
     return true;
   }
   const role = String(u.role || '').toLowerCase();
-  const dept = String(u.department || '').toLowerCase();
   if (
     role.includes('head of trainer') ||
     role.includes('head of training') ||
@@ -5561,12 +5866,7 @@ export const isHeadOfTrainerUser = async (req) => {
     role.includes('faculty lead') ||
     role.includes('chief trainer') ||
     role.includes('chief faculty') ||
-    role.includes('academic director') ||
-    role.includes('lead trainer') ||
-    role.includes('trainer lead') ||
-    role.includes('trainer') ||
-    dept.includes('training') ||
-    dept.includes('faculty')
+    role.includes('academic director')
   ) {
     return true;
   }
@@ -5577,16 +5877,6 @@ export const isHeadOfTrainerUser = async (req) => {
       return true;
     }
   } catch (_) {}
-
-  // Check if user has Trainer record in DB
-  if (u.trainerId || u.email) {
-    try {
-      const tr = await Trainer.findOne({ $or: [{ trainerId: u.trainerId || '' }, { email: u.email || '' }] }).lean();
-      if (tr && tr.active !== false) {
-        return true;
-      }
-    } catch (_) {}
-  }
 
   return false;
 };
@@ -7301,6 +7591,41 @@ router.post('/zoom-signature', (req, res) => {
 });
 
 // Create or reuse a shared Zoom meeting for a group demo session (hosted by that demo's trainer)
+// Manual meeting link (e.g. a Google Meet link the trainer pastes in) for a
+// group demo session. One link covers everyone booked at the same trainer +
+// date + time slot — the same group-session sharing the Zoom flow below does —
+// so students join that external Meet directly while the trainer still runs
+// attendance/outcomes entirely from this dashboard.
+router.put('/demos/:id/meeting-link', async (req, res) => {
+  try {
+    const demo = await Demo.findById(req.params.id);
+    if (!demo) return res.status(404).json({ error: 'Demo not found' });
+    const link = String(req.body?.link || '').trim();
+    if (!link) return res.status(400).json({ error: 'A meeting link is required' });
+    if (!/^https?:\/\//i.test(link)) {
+      return res.status(400).json({ error: 'Enter a valid meeting link starting with http:// or https://' });
+    }
+
+    demo.link = link;
+    demo.meetingProvider = 'google_meet';
+    // The old Zoom meeting (if any) no longer applies once a manual link takes over.
+    demo.zoomMeetingId = '';
+    demo.zoomHostEmail = '';
+    await demo.save();
+
+    if (demo.trainerId && demo.preferredDate && demo.timeSlot) {
+      await Demo.updateMany(
+        { trainerId: demo.trainerId, preferredDate: demo.preferredDate, timeSlot: demo.timeSlot, _id: { $ne: demo._id } },
+        { $set: { link, meetingProvider: 'google_meet', zoomMeetingId: '', zoomHostEmail: '' } }
+      ).catch(() => {});
+    }
+
+    res.json(demo);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 router.post('/demos/:id/zoom-meeting', async (req, res) => {
   try {
     const demo = await Demo.findById(req.params.id);
@@ -9260,13 +9585,81 @@ async function trainerTeachesBatch(req, batch) {
 }
 const NOT_YOUR_BATCH = { error: 'This batch is not allocated to you.' };
 
-// ---------- Syllabus tracker ----------
+// ---------- Course syllabus (master curriculum — Head of Trainer only) ----------
+// The syllabus — the actual list of module/topic names — is defined once per
+// COURSE by the Head of Trainer. Trainers never add, rename, remove or reorder
+// modules; they can only view this list and tick off which ones their batch has
+// covered (that per-batch progress lives in BatchSyllabus, below).
+const courseMatchKey = (name = '') => String(name).toLowerCase().replace(/[^a-z0-9]/g, '');
+
+router.get('/training/course-syllabus', async (req, res) => {
+  try {
+    const course = tidyBatchName(req.query.course || '');
+    if (!course) return res.status(400).json({ error: 'course is required' });
+    const doc = await CourseSyllabus.findOne({ courseKey: courseMatchKey(course) });
+    res.json(doc || { course, modules: [] });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.get('/training/course-syllabus/all', async (req, res) => {
+  try {
+    const docs = await CourseSyllabus.find().sort({ course: 1 });
+    res.json(docs);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.put('/training/course-syllabus', async (req, res) => {
+  try {
+    const privileged = await isHeadOfTrainerUser(req);
+    if (!privileged) {
+      return res.status(403).json({ error: 'Only the Head of Trainer can add or edit the course syllabus.' });
+    }
+    const course = tidyBatchName(req.body?.course || '');
+    if (!course) return res.status(400).json({ error: 'course is required' });
+    const modules = (Array.isArray(req.body?.modules) ? req.body.modules : [])
+      .map((m) => String(m?.name || '').trim().slice(0, 160))
+      .filter(Boolean)
+      .slice(0, 200)
+      .map((name) => ({ name }));
+    const key = courseMatchKey(course);
+    const doc = await CourseSyllabus.findOneAndUpdate(
+      { courseKey: key },
+      { $set: { course, courseKey: key, modules, updatedBy: req.user?.name || '' } },
+      { new: true, upsert: true, setDefaultsOnInsert: true }
+    );
+    res.json(doc);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ---------- Syllabus tracker (per-batch progress against the course's master list) ----------
 router.get('/training/syllabus', async (req, res) => {
   try {
     const batch = tidyBatchName(req.query.batch || '');
     if (!batch) return res.status(400).json({ error: 'batch is required' });
     const doc = await BatchSyllabus.findOne({ batchKey: batchMatchKey(batch) });
-    res.json(doc || { batch, modules: [] });
+    const course = tidyBatchName(req.query.course || doc?.course || '');
+    const courseDoc = course ? await CourseSyllabus.findOne({ courseKey: courseMatchKey(course) }) : null;
+    const masterModules = courseDoc?.modules || [];
+    // Module NAMES always come from the course's Head-of-Trainer-managed master
+    // list; only done/doneAt/doneBy are overlaid from this batch's own progress.
+    const doneByName = new Map((doc?.modules || []).map((m) => [String(m.name || '').trim().toLowerCase(), m]));
+    const modules = masterModules.map((mm) => {
+      const prev = doneByName.get(String(mm.name || '').trim().toLowerCase());
+      return {
+        _id: prev?._id,
+        name: mm.name,
+        done: Boolean(prev?.done),
+        doneAt: prev?.doneAt || null,
+        doneBy: prev?.doneBy || ''
+      };
+    });
+    res.json({ batch, course, modules, hasCourseSyllabus: masterModules.length > 0 });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -9277,17 +9670,26 @@ router.put('/training/syllabus', async (req, res) => {
     const batch = tidyBatchName(req.body?.batch || '');
     if (!batch) return res.status(400).json({ error: 'batch is required' });
     if (!(await trainerTeachesBatch(req, batch))) return res.status(403).json(NOT_YOUR_BATCH);
+    const course = tidyBatchName(req.body?.course || '');
+    const courseDoc = course ? await CourseSyllabus.findOne({ courseKey: courseMatchKey(course) }) : null;
+    const masterNames = new Set((courseDoc?.modules || []).map((m) => String(m.name || '').trim().toLowerCase()));
+    // Trainers can only toggle done/undone on modules that already exist in the
+    // course's master syllabus — any module name submitted that isn't on that
+    // list (an attempted add/rename) is silently dropped, never saved.
     const incoming = (Array.isArray(req.body?.modules) ? req.body.modules : [])
-      .filter((m) => String(m?.name || '').trim())
-      .slice(0, 100);
+      .filter((m) => {
+        const name = String(m?.name || '').trim();
+        return name && (!masterNames.size || masterNames.has(name.toLowerCase()));
+      })
+      .slice(0, 200);
     const key = batchMatchKey(batch);
     const doc = (await BatchSyllabus.findOne({ batchKey: key })) || new BatchSyllabus({ batch, batchKey: key });
-    const before = new Map((doc.modules || []).map((m) => [String(m._id), m]));
+    const before = new Map((doc.modules || []).map((m) => [String(m.name || '').trim().toLowerCase(), m]));
     const by = req.user?.name || '';
     const newlyDone = [];
     doc.modules = incoming.map((m) => {
-      const prev = m._id ? before.get(String(m._id)) : null;
       const name = String(m.name).trim().slice(0, 160);
+      const prev = before.get(name.toLowerCase());
       const done = Boolean(m.done);
       const wasDone = Boolean(prev?.done);
       if (done && !wasDone) newlyDone.push(name);
@@ -9300,7 +9702,7 @@ router.put('/training/syllabus', async (req, res) => {
       };
     });
     doc.batch = batch;
-    doc.course = String(req.body?.course || doc.course || '');
+    if (course) doc.course = course;
     if (isTrainerReq(req)) doc.trainerId = myTrainerId(req);
     doc.trainerName = by || doc.trainerName;
     doc.updatedBy = by;

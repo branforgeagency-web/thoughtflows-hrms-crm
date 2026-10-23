@@ -157,6 +157,14 @@ const demoSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  // Which platform `link` points to. Defaults to 'zoom' (the auto-created meeting
+  // flow); set to 'google_meet' when a trainer pastes their own Google Meet link
+  // for a group session instead — students join that external Meet directly,
+  // while the trainer still runs the whole session (attendance, outcomes) here.
+  meetingProvider: {
+    type: String,
+    default: 'zoom'
+  },
   zoomMeetingId: {
     type: String,
     default: ''
@@ -178,6 +186,87 @@ const demoSchema = new mongoose.Schema({
   customTimeRequested: {
     type: String,
     default: ''
+  },
+  // Reassignment trail — set the first time a Head of Trainer moves this demo
+  // off its original trainer (e.g. the original trainer went on leave).
+  // trainerId/trainer above always hold the CURRENT trainer; these hold who
+  // it was originally booked for, so both trainers' dashboards and the Head
+  // of Trainer can always tell who was meant to take it vs who actually did.
+  originalTrainerId: {
+    type: String,
+    default: ''
+  },
+  originalTrainerName: {
+    type: String,
+    default: ''
+  },
+  reassigned: {
+    type: Boolean,
+    default: false
+  },
+  reassignedAt: {
+    type: Date,
+    default: null
+  },
+  reassignedBy: {
+    type: String,
+    default: ''
+  },
+  reassignmentReason: {
+    type: String,
+    default: ''
+  },
+  // Full history, in case a demo is reassigned more than once
+  reassignmentHistory: {
+    type: [{
+      fromTrainerId: String,
+      fromTrainerName: String,
+      toTrainerId: String,
+      toTrainerName: String,
+      reason: String,
+      by: String,
+      at: { type: Date, default: Date.now }
+    }],
+    default: []
+  },
+  // Auto-missed tracking — set by the background job when a booked/confirmed
+  // demo's scheduled slot passes with nothing done about it. status becomes
+  // 'missed' (same value a trainer's own "No-show" click sets), and autoMissed
+  // distinguishes "the system gave up on this slot" from "trainer marked the
+  // candidate a no-show after actually running the session".
+  autoMissed: {
+    type: Boolean,
+    default: false
+  },
+  missedAt: {
+    type: Date,
+    default: null
+  },
+  missedReason: {
+    type: String,
+    default: ''
+  },
+  // Once auto-missed, the demo can no longer be "started" at its original
+  // (now past) scheduled time — it stays on record, but needs a reschedule
+  // (or reassignment) by the Head of Trainer before it can be conducted.
+  disabledForStart: {
+    type: Boolean,
+    default: false
+  },
+  // History of date/time changes (and any trainer swap made at the same time)
+  rescheduleHistory: {
+    type: [{
+      fromDate: String,
+      fromTime: String,
+      toDate: String,
+      toTime: String,
+      toTrainerId: String,
+      toTrainerName: String,
+      reason: String,
+      by: String,
+      at: { type: Date, default: Date.now }
+    }],
+    default: []
   }
 }, {
   timestamps: true
