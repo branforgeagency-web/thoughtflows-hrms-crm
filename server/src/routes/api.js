@@ -3047,6 +3047,12 @@ router.get('/leads', async (req, res) => {
   }
 });
 
+// "YYYY-MM" for the current month — the default enquiryMonth tag when none is supplied.
+function currentMonthKey() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
 router.post('/leads', async (req, res) => {
   try {
     const payload = { ...req.body };
@@ -3059,6 +3065,9 @@ router.post('/leads', async (req, res) => {
     }
     if (!payload.stage) {
       payload.stage = 'new';
+    }
+    if (!payload.enquiryMonth) {
+      payload.enquiryMonth = currentMonthKey();
     }
 
     // Check for duplicate enquiry by mobile number and/or email ID
@@ -3170,6 +3179,9 @@ router.post('/leads/bulk', async (req, res) => {
       }
       if (!payload.stage) {
         payload.stage = 'new';
+      }
+      if (!payload.enquiryMonth) {
+        payload.enquiryMonth = req.body?.defaultMonth || currentMonthKey();
       }
       if (!payload.branch) {
         payload.branch = userBranch || 'Saravanampatti (CBE)';
@@ -4920,6 +4932,63 @@ function formatDoubt(d) {
   };
 }
 
+// Doubt SLA watchdog — trainers must reply within DOUBT_SLA_HOURS of the
+// student's (or follow-up's) message. Nudges the trainer as the deadline
+// nears, then escalates to Leadership / Head of Trainer once it's breached.
+// Runs on a timer since this is a long-running server (not serverless).
+const DOUBT_REMINDER_HOURS = 20; // nudge 4h before the 24h SLA
+async function checkDoubtSLAs() {
+  try {
+    const openDoubts = await TrainerDoubt.find({
+      resolvedByStudent: { $ne: true },
+      status: { $nin: ['Replied', 'Resolved'] }
+    });
+    for (const d of openDoubts) {
+      const since = d.lastStudentAt || d.createdAt || new Date();
+      const waitH = (Date.now() - new Date(since).getTime()) / 36e5;
+
+      if (waitH > DOUBT_SLA_HOURS && !d.escalatedAt) {
+        d.escalatedAt = new Date();
+        await d.save();
+        try {
+          await Escalation.create({
+            title: `Doubt unanswered 24h+: ${d.student}`,
+            description: `${d.student}'s doubt on "${d.topic}" has been open ${Math.round(waitH)}h with no trainer reply (24h SLA).${d.trainerName ? ` Routed to ${d.trainerName}.` : ' No trainer was assigned.'}`,
+            type: 'Doubt SLA Breach',
+            priority: 'urgent',
+            departmentCode: 'training',
+            raisedBy: 'System',
+            studentId: d.studentId || ''
+          });
+        } catch (e) { console.warn('Doubt SLA escalation create failed:', e.message); }
+        if (d.trainerId) {
+          await pushNotification({
+            audience: 'trainer', recipientId: d.trainerId, recipientName: d.trainerName, type: 'doubt_overdue',
+            title: `SLA breached: reply to ${d.student}'s doubt`,
+            message: `"${d.topic}" has been open ${Math.round(waitH)}h — past the 24h reply SLA. Escalated to the Head of Trainer.`,
+            studentId: d.studentId
+          });
+        }
+      } else if (waitH > DOUBT_REMINDER_HOURS && !d.reminderSentAt && !d.escalatedAt) {
+        d.reminderSentAt = new Date();
+        await d.save();
+        if (d.trainerId) {
+          await pushNotification({
+            audience: 'trainer', recipientId: d.trainerId, recipientName: d.trainerName, type: 'doubt_overdue',
+            title: `Reply due soon: ${d.student}'s doubt`,
+            message: `"${d.topic}" needs a reply within ${Math.max(0, Math.round(DOUBT_SLA_HOURS - waitH))}h to stay inside the 24h SLA.`,
+            studentId: d.studentId
+          });
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('checkDoubtSLAs failed:', e.message);
+  }
+}
+setInterval(checkDoubtSLAs, 15 * 60 * 1000);
+setTimeout(checkDoubtSLAs, 30 * 1000);
+
 // Trainer profile — the Trainer roster record attached to the signed-in user
 router.get('/trainer/me', async (req, res) => {
   try {
@@ -5006,7 +5075,7 @@ router.put('/trainer/doubts/:id/reply', async (req, res) => {
       else if (doubt.studentId) allowed = trainerOwnsStudent(req, await findStudentByAnyId(doubt.studentId));
       if (!allowed) return res.status(403).json(NOT_YOUR_RECORD);
     }
-    const setFields = { reply, status: 'Replied', repliedAt: new Date() };
+    const setFields = { reply, status: 'Replied', repliedAt: new Date(), reminderSentAt: null, escalatedAt: null };
     const tId = isTrainerReq(req) ? myTrainerId(req) : (trainerId || req.user?.trainerId || req.user?.id);
     const tName = isTrainerReq(req) ? (trainerName || req.user?.name) : (trainerName || req.user?.name);
     if (tId) setFields.trainerId = tId;
@@ -9796,6 +9865,8 @@ router.post('/student-portal/doubts/:id/followup', async (req, res) => {
     doubt.lastStudentAt = now;
     doubt.resolvedByStudent = false;
     doubt.resolvedAt = null;
+    doubt.reminderSentAt = null;
+    doubt.escalatedAt = null;
     await doubt.save();
     if (doubt.trainerId) {
       await pushNotification({

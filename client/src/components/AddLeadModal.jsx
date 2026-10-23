@@ -73,6 +73,13 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead, onBulkImporte
   const [bulkDefaultCourse, setBulkDefaultCourse] = useState('AMCT Beginner (Classroom)');
   const [bulkDefaultSource, setBulkDefaultSource] = useState('Google Sheet Bulk Import');
   const [bulkDefaultCategory, setBulkDefaultCategory] = useState('Fresh Graduate');
+  // Which month this sheet's enquiries belong to — bulk uploads are done one month's
+  // batch at a time, often days/weeks after that month, so this is tracked separately
+  // from the upload's own createdAt timestamp. "YYYY-MM".
+  const [bulkDefaultMonth, setBulkDefaultMonth] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  });
   const [isParsing, setIsParsing] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [importResult, setImportResult] = useState(null);
@@ -151,6 +158,7 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead, onBulkImporte
         sourceName: r.sourceName || bulkDefaultSource,
         source: r.sourceName || bulkDefaultSource,
         category: r.category || bulkDefaultCategory,
+        enquiryMonth: r.enquiryMonth || bulkDefaultMonth,
         stage: r.stage || 'new',
         counselorAssigned: r.counselorAssigned || currentUser?.name || '',
         allocatedTo: r.allocatedTo || r.counselorAssigned || currentUser?.name || '',
@@ -165,6 +173,7 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead, onBulkImporte
         defaultCourse: bulkDefaultCourse,
         defaultBranch: currentUser?.branch || '',
         defaultSource: bulkDefaultSource,
+        defaultMonth: bulkDefaultMonth,
         defaultCounselor: currentUser?.name || ''
       });
 
@@ -937,7 +946,19 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead, onBulkImporte
                     <span className="text-[11px] font-mono text-slate-400">Optional</span>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                    <div>
+                      <label className="text-[10px] font-mono font-bold uppercase text-slate-500 block mb-1">
+                        Enquiry Month
+                      </label>
+                      <input
+                        type="month"
+                        value={bulkDefaultMonth}
+                        onChange={(e) => setBulkDefaultMonth(e.target.value)}
+                        className="w-full text-xs font-semibold p-2 border border-slate-200 rounded-xl bg-slate-50 text-slate-800 outline-none focus:border-teal-500"
+                      />
+                    </div>
+
                     <div>
                       <label className="text-[10px] font-mono font-bold uppercase text-slate-500 block mb-1">
                         Default Course

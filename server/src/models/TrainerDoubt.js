@@ -42,7 +42,10 @@ const trainerDoubtSchema = new mongoose.Schema({
   },
   lastStudentAt: Date, // SLA restarts from the student's latest message
   resolvedByStudent: { type: Boolean, default: false },
-  resolvedAt: Date
+  resolvedAt: Date,
+  // 24h reply SLA watchdog (see checkDoubtSLAs in routes/api.js)
+  reminderSentAt: Date, // trainer nudged as the 24h deadline nears
+  escalatedAt: Date     // Head of Trainer escalated once the 24h SLA is breached
 }, {
   timestamps: true
 });

@@ -103,6 +103,7 @@ export default function HrPipelineView({
   const [viewMode, setViewMode] = useState(initialViewMode); // 'kanban' | 'followup' | 'table'
   const [activeFilter, setActiveFilter] = useState('all'); // all, overdue, today, tomorrow, this_week, demo, fee, admitted
   const [searchQuery, setSearchQuery] = useState('');
+  const [monthFilter, setMonthFilter] = useState('all'); // 'all' or 'YYYY-MM' — bulk uploads are tagged by enquiry month
   const [actionNotice, setActionNotice] = useState(null);
   const [actionLoading, setActionLoading] = useState({});
   const [escalatedIds, setEscalatedIds] = useState(new Set());
@@ -325,20 +326,43 @@ export default function HrPipelineView({
     }
   };
 
-  // Search filtered leads
+  // "YYYY-MM" this lead belongs to — the explicit enquiryMonth tag set at bulk
+  // upload time, falling back to when the record was actually created.
+  const leadMonthKey = (l) => l.enquiryMonth || String(l.createdAt || '').slice(0, 7);
+
+  const MONTH_LABEL = (key) => {
+    if (!key) return 'Unknown';
+    const [y, m] = key.split('-').map(Number);
+    if (!y || !m) return key;
+    return new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  };
+
+  // Every distinct month present across this counselor's leads, newest first
+  const availableMonths = useMemo(() => {
+    const set = new Set(leads.map(leadMonthKey).filter(Boolean));
+    return Array.from(set).sort((a, b) => b.localeCompare(a));
+  }, [leads]);
+
+  // Search + month filtered leads
   const searchFilteredLeads = useMemo(() => {
-    if (!searchQuery.trim()) return leads;
-    const q = searchQuery.toLowerCase();
-    return leads.filter(l => 
-      (l.fullName || l.name || '').toLowerCase().includes(q) ||
-      (l.phone || '').toLowerCase().includes(q) ||
-      (l.course || '').toLowerCase().includes(q) ||
-      (l.counselorAssigned || '').toLowerCase().includes(q) ||
-      (l.allocatedTo || '').toLowerCase().includes(q) ||
-      (l.spokenBy || '').toLowerCase().includes(q) ||
-      (l.notes || l.followUpNote || '').toLowerCase().includes(q)
-    );
-  }, [leads, searchQuery]);
+    let out = leads;
+    if (monthFilter !== 'all') {
+      out = out.filter(l => leadMonthKey(l) === monthFilter);
+    }
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      out = out.filter(l => 
+        (l.fullName || l.name || '').toLowerCase().includes(q) ||
+        (l.phone || '').toLowerCase().includes(q) ||
+        (l.course || '').toLowerCase().includes(q) ||
+        (l.counselorAssigned || '').toLowerCase().includes(q) ||
+        (l.allocatedTo || '').toLowerCase().includes(q) ||
+        (l.spokenBy || '').toLowerCase().includes(q) ||
+        (l.notes || l.followUpNote || '').toLowerCase().includes(q)
+      );
+    }
+    return out;
+  }, [leads, searchQuery, monthFilter]);
 
   // Stage Pipeline columns
   const PIPELINE_COLUMNS = useMemo(() => {
@@ -649,6 +673,21 @@ export default function HrPipelineView({
               className="w-full rounded-xl pl-9 pr-4 py-1.5 text-xs bg-slate-50 border border-slate-200 focus:bg-white focus:border-[#00897b] outline-none transition-all"
             />
           </div>
+
+          {/* Month Filter — bulk uploads are tagged by the enquiry month */}
+          {availableMonths.length > 0 && (
+            <select
+              value={monthFilter}
+              onChange={(e) => setMonthFilter(e.target.value)}
+              className="w-full sm:w-44 rounded-xl px-3 py-1.5 text-xs font-semibold bg-slate-50 border border-slate-200 focus:bg-white focus:border-[#00897b] outline-none transition-all cursor-pointer"
+              title="Filter by the enquiry's month (set when the batch was bulk uploaded)"
+            >
+              <option value="all">All Months</option>
+              {availableMonths.map((m) => (
+                <option key={m} value={m}>{MONTH_LABEL(m)}</option>
+              ))}
+            </select>
+          )}
 
           {/* Quick Filter Pills */}
           <div className="flex items-center gap-1.5 overflow-x-auto w-full no-scrollbar pb-0.5">

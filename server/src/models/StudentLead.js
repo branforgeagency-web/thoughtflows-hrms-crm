@@ -57,6 +57,13 @@ const studentLeadSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  // Which month this enquiry belongs to (bulk uploads are done batch-by-batch,
+  // one month's sheet at a time) — "YYYY-MM". Lets HR filter the pipeline by
+  // month regardless of when the sheet was actually uploaded.
+  enquiryMonth: {
+    type: String,
+    default: ''
+  },
   sourceName: {
     type: String,
     default: ''

@@ -129,8 +129,7 @@ export default function TrainingDepartmentDashboard({
     /head of trainer|training head|head of training|chief trainer|chief faculty|faculty lead|branch head/i.test(trainerRole || '') ||
     /head of trainer|training head|head of training|chief trainer|chief faculty|faculty lead|branch head/i.test(currentUser?.role || '') ||
     /manoj|keerthika|vaishna|pavithra|dr\.?\s*vikram/i.test(trainerName || currentUser?.name || currentUser?.userName || '') ||
-    (trainerCourseKey === 'ALL' && /head|chief|lead/i.test(trainerRole || currentUser?.role || '')) ||
-    /trainer|faculty/i.test(currentUser?.role || trainerRole || '')
+    (trainerCourseKey === 'ALL' && /head|chief|lead/i.test(trainerRole || currentUser?.role || ''))
   );
   const isChiefFaculty = isHeadOfTrainer;
 
@@ -204,6 +203,7 @@ export default function TrainingDepartmentDashboard({
   const [activeScoreModalTest, setActiveScoreModalTest] = useState(null);
   const [activeRationaleModalTest, setActiveRationaleModalTest] = useState(null);
   const [assessmentToast, setAssessmentToast] = useState(null);
+  const [growthTab, setGrowthTab] = useState('all'); // 'all' | 'scorecard' | 'incentives'
 
   const [activeDoubtFilter, setActiveDoubtFilter] = useState('All');
   const [activeDoubtModal, setActiveDoubtModal] = useState(null);
@@ -1342,27 +1342,15 @@ export default function TrainingDepartmentDashboard({
               </div>
               <div className="space-y-1">
                 <button
-                  onClick={() => setActiveNav('scorecard')}
+                  onClick={() => { setActiveNav('scorecard'); setGrowthTab('all'); }}
                   className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold transition-all ${
-                    activeNav === 'scorecard'
+                    activeNav === 'scorecard' || activeNav === 'incentives'
                       ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
                       : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
                   }`}
                 >
-                  <Star className="w-4 h-4 shrink-0" />
-                  <span>My Scorecard</span>
-                </button>
-
-                <button
-                  onClick={() => setActiveNav('incentives')}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold transition-all ${
-                    activeNav === 'incentives'
-                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
-                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
-                  }`}
-                >
-                  <List className="w-4 h-4 shrink-0" />
-                  <span>My Incentive Ledger</span>
+                  <Award className="w-4 h-4 shrink-0" />
+                  <span>My Scorecard & Incentive Ledger</span>
                 </button>
               </div>
             </div>
@@ -1563,8 +1551,7 @@ export default function TrainingDepartmentDashboard({
               {activeNav === 'attendance' && 'Daily Student Attendance'}
               {activeNav === 'demos' && 'Demos'}
               {activeNav === 'doubts' && 'Student Doubt Box'}
-              {activeNav === 'scorecard' && 'My Scorecard'}
-              {activeNav === 'incentives' && 'Incentive Ledger'}
+              {(activeNav === 'scorecard' || activeNav === 'incentives') && 'My Scorecard & Incentive Ledger'}
               {activeNav === 'batches' && 'My Batches'}
               {activeNav === 'students' && 'My Students'}
               {activeNav === 'weak_students' && 'Weak Students'}
@@ -1583,8 +1570,7 @@ export default function TrainingDepartmentDashboard({
               {activeNav === 'batch_desk' && 'Syllabus tracker · batch announcements · class recordings'}
               {activeNav === 'demos' && 'HR–allocated demos'}
               {activeNav === 'doubts' && 'SLA–tracked'}
-              {activeNav === 'scorecard' && 'Action score · zone · variable pay'}
-              {activeNav === 'incentives' && 'Cash events · share split · monthly take'}
+              {(activeNav === 'scorecard' || activeNav === 'incentives') && 'Action score · variable pay · cash events · monthly take'}
               {activeNav === 'batches' && `${batches.length} active batches · ${myStudents.length} students`}
               {activeNav === 'students' && 'Allocated students · module-wise'}
               {activeNav === 'weak_students' && 'Auto-flagged drop-out risk · remediation'}
@@ -2108,7 +2094,7 @@ export default function TrainingDepartmentDashboard({
                       <span className="text-sm">⭐</span> Performance
                     </div>
                     <button
-                      onClick={() => setActiveNav('scorecard')}
+                      onClick={() => { setActiveNav('scorecard'); setGrowthTab('all'); }}
                       className="text-xs font-bold text-[#00897b] hover:underline"
                     >
                       View
@@ -3220,306 +3206,424 @@ export default function TrainingDepartmentDashboard({
             </div>
           )}
 
-          {/* ================= TAB 6: SCORECARD ================= */}
-          {activeNav === 'scorecard' && (
+          {/* ================= COMBINED TAB: SCORECARD & INCENTIVE LEDGER ================= */}
+          {(activeNav === 'scorecard' || activeNav === 'incentives') && (
             <div className="space-y-6 max-w-[1280px] animate-fadeIn">
               
-              {/* 1. Top Hero Dark Indigo Banner */}
-              <div className="bg-[#24234b] rounded-3xl p-6 sm:p-7 text-white shadow-sm flex flex-col md:flex-row items-start md:items-center justify-between gap-6 border border-[#37356c]">
-                <div className="flex items-center gap-7 sm:gap-9">
-                  <div>
-                    <div className="text-5xl sm:text-6xl font-black text-white tracking-tight leading-none">
-                      {scorecardMetrics.actionScore}
+              {/* 1. Unified Hero Dark Indigo & Slate Card */}
+              <div className="bg-gradient-to-br from-[#1e1e3f] via-[#24234b] to-[#1a1936] rounded-3xl p-6 sm:p-7 text-white shadow-lg border border-[#37356c] space-y-6">
+                
+                {/* Header Row: Title & View Pills */}
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-2 border-b border-[#37356c]/70">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2.5">
+                      <span className="w-2.5 h-2.5 bg-amber-400 rounded-sm inline-block shrink-0"></span>
+                      <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight flex items-center gap-2">
+                        <span>My Scorecard & Incentive Ledger</span>
+                      </h2>
+                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-[#353366] text-slate-200 border border-[#484687]">
+                        {monthLabel}
+                      </span>
                     </div>
-                    <div className="text-[10px] sm:text-[11px] font-bold tracking-[0.2em] text-slate-400 uppercase mt-2">
-                      ACTION SCORE / 100
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
-                      {scorecardMetrics.zone}
-                    </div>
-                    <p className="text-xs sm:text-sm text-slate-300 font-normal mt-1 leading-relaxed">
-                      Layer 1 metric — computed live from your active attendance, assessments, doubt SLA, and demo sessions.
+                    <p className="text-xs text-slate-300 font-normal">
+                      Unified performance metrics, dynamic quality variable pay, and demo/admission incentive earnings in one place.
                     </p>
                   </div>
-                </div>
 
-                <div className="bg-[#2f2e5f] border border-[#3e3d79] rounded-2xl px-7 py-4 text-left md:text-right shrink-0 min-w-[150px]">
-                  <div className="text-3xl sm:text-4xl font-black text-white tracking-tight">
-                    {scorecardMetrics.payBase > 0 ? `₹${scorecardMetrics.variablePay.toLocaleString()}` : '—'}
+                  {/* Filter Sub-Tabs */}
+                  <div className="flex items-center gap-1.5 p-1 bg-[#16152e] rounded-2xl border border-[#37356c] self-start md:self-auto shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setGrowthTab('all')}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                        growthTab === 'all'
+                          ? 'bg-[#00897b] text-white shadow-sm'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      All Combined
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setGrowthTab('scorecard')}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                        growthTab === 'scorecard'
+                          ? 'bg-[#00897b] text-white shadow-sm'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      ⭐ Scorecard & Quality
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setGrowthTab('incentives')}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                        growthTab === 'incentives'
+                          ? 'bg-[#00897b] text-white shadow-sm'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      💰 Incentive Ledger ({incentiveEvents.length})
+                    </button>
                   </div>
-                  <div className="text-[10px] sm:text-[11px] font-bold tracking-[0.18em] text-slate-400 uppercase mt-1">
-                    {scorecardMetrics.payBase > 0 ? 'VARIABLE PAY' : 'PAY NOT CONFIGURED'}
+                </div>
+
+                {/* 4 Summary Stat Tiles */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  {/* Metric 1: Action Score */}
+                  <div className="bg-[#2a2955]/80 rounded-2xl p-4 border border-[#3e3d79]">
+                    <div className="text-[10px] font-bold tracking-[0.18em] text-slate-400 uppercase">
+                      ACTION SCORE
+                    </div>
+                    <div className="flex items-baseline gap-2 mt-1">
+                      <span className="text-3xl font-black text-white">{scorecardMetrics.actionScore}</span>
+                      <span className="text-xs text-slate-400 font-bold">/ 100</span>
+                    </div>
+                    <div className="text-xs font-semibold text-emerald-400 mt-1 truncate">
+                      {scorecardMetrics.zone}
+                    </div>
                   </div>
-                </div>
-              </div>
 
-              {/* 2. Layer 1 — Action Score Breakdown Card */}
-              <div className="bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-7 shadow-sm space-y-4">
-                <div className="flex items-center justify-between flex-wrap gap-2">
-                  <div className="flex items-center gap-2 text-sm font-bold text-slate-900">
-                    <span className="text-base">📊</span>
-                    <span>Layer 1 — Action Score Breakdown</span>
-                  </div>
-                  <span className="px-3 py-0.5 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-500 border border-slate-200/80">
-                    Dynamic Weights
-                  </span>
-                </div>
-
-                <p className="text-xs text-slate-500 font-normal leading-relaxed">
-                  Each factor is computed as achievement × weight, normalised over all active performance indicators. <span className="text-slate-600 font-bold">Total applicable score earned: {scorecardMetrics.actionScore} / 100.</span>
-                </p>
-
-                {/* Action Score Table */}
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs border-collapse">
-                    <thead>
-                      <tr className="border-b border-slate-100 text-[10px] font-bold text-slate-400 tracking-wider uppercase">
-                        <th className="py-3 px-3 font-semibold">FACTOR</th>
-                        <th className="py-3 px-3 font-semibold">INPUTS</th>
-                        <th className="py-3 px-3 font-semibold text-center sm:text-left">ACHIEVEMENT</th>
-                        <th className="py-3 px-3 font-semibold text-center sm:text-left">WEIGHT</th>
-                        <th className="py-3 px-3 font-semibold text-right">EARNED</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {scorecardMetrics.factors.map((item, idx) => (
-                        <tr key={idx} className="hover:bg-slate-50/60 transition-colors">
-                          <td className="py-3 px-3">
-                            <span className={`font-bold ${item.isNa ? 'text-slate-400 font-semibold' : 'text-slate-900'}`}>
-                              {item.factor}
-                            </span>
-                            {item.tag && (
-                              <span className="ml-1.5 text-[9px] font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200/60">
-                                {item.tag}
-                              </span>
-                            )}
-                          </td>
-                          <td className="py-3 px-3">
-                            <span className={`font-mono ${item.isNa ? 'text-slate-400 italic text-[11px]' : 'text-slate-500 font-medium'}`}>
-                              {item.inputs}
-                            </span>
-                          </td>
-                          <td className="py-3 px-3 text-center sm:text-left">
-                            <span className={`font-bold ${item.isNa ? 'text-rose-400' : 'text-emerald-600'}`}>
-                              {item.achievement}
-                            </span>
-                          </td>
-                          <td className="py-3 px-3 text-center sm:text-left">
-                            <span className={`font-medium ${item.isNa ? 'text-slate-400' : 'text-slate-500'}`}>
-                              {item.weight}
-                            </span>
-                          </td>
-                          <td className="py-3 px-3 text-right">
-                            <span className={`font-bold font-mono ${item.isNa ? 'text-slate-400 font-normal' : 'text-slate-900'}`}>
-                              {item.earned}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              {/* 3. Variable Pay · Quality Buckets Card */}
-              <div className="bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-7 shadow-sm space-y-4">
-                <div className="flex items-center justify-between flex-wrap gap-2">
-                  <div className="flex items-center gap-2 text-sm font-bold text-slate-900">
-                    <span className="text-base">💰</span>
-                    <span>Variable Pay · Quality Buckets</span>
-                  </div>
-                  <span className={`px-3 py-0.5 rounded-full text-xs font-bold ${
-                    scorecardMetrics.gatesPass 
-                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' 
-                      : 'bg-amber-50 text-amber-700 border border-amber-200'
-                  }`}>
-                    {scorecardMetrics.gatesPass ? 'Gates pass' : 'Gates pending'}
-                  </span>
-                </div>
-
-                <p className="text-xs text-slate-500 font-normal leading-relaxed">
-                  {scorecardMetrics.payBase > 0
-                    ? `Quality score × ₹${scorecardMetrics.payBase.toLocaleString()} = your variable pay. Gate: batch attendance ≥75%.`
-                    : 'Variable pay base is not configured on your trainer profile yet (admin → Trainer Settings).'} Buckets marked N/A have no data source yet and are excluded from the score.
-                </p>
-
-                {/* Quality Buckets Table */}
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs border-collapse">
-                    <thead>
-                      <tr className="border-b border-slate-100 text-[10px] font-bold text-slate-400 tracking-wider uppercase">
-                        <th className="py-3 px-3 font-semibold">BUCKET</th>
-                        <th className="py-3 px-3 font-semibold text-center sm:text-left">WEIGHT</th>
-                        <th className="py-3 px-3 font-semibold text-center sm:text-left">ACHIEVED</th>
-                        <th className="py-3 px-3 font-semibold text-right">EARNED</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {scorecardMetrics.qualityBuckets.map((row, idx) => (
-                        <tr key={idx} className="hover:bg-slate-50/60 transition-colors">
-                          <td className="py-3.5 px-3 font-bold text-slate-900">{row.bucket}</td>
-                          <td className="py-3.5 px-3 text-slate-500 font-medium text-center sm:text-left">{row.weight}</td>
-                          <td className="py-3.5 px-3 font-bold text-slate-800 text-center sm:text-left">{row.achieved}</td>
-                          <td className="py-3.5 px-3 font-bold font-mono text-slate-900 text-right">{row.earned}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                {/* Summary Rows */}
-                <div className="pt-2 space-y-3">
-                  {/* QUALITY SCORE Row */}
-                  <div className="bg-[#f0fdf4] border border-[#bbf7d0] rounded-xl px-4 py-3 flex items-center justify-between">
-                    <div className="text-xs font-black text-[#15803d] tracking-wider uppercase">
+                  {/* Metric 2: Quality Score */}
+                  <div className="bg-[#2a2955]/80 rounded-2xl p-4 border border-[#3e3d79]">
+                    <div className="text-[10px] font-bold tracking-[0.18em] text-slate-400 uppercase">
                       QUALITY SCORE
                     </div>
-                    <div className="text-base sm:text-lg font-black text-[#15803d]">
-                      {scorecardMetrics.qualityScore} / 100
+                    <div className="flex items-baseline gap-2 mt-1">
+                      <span className="text-3xl font-black text-white">{scorecardMetrics.qualityScore}</span>
+                      <span className="text-xs text-slate-400 font-bold">/ 100</span>
+                    </div>
+                    <div className={`text-xs font-semibold mt-1 ${scorecardMetrics.gatesPass ? 'text-emerald-400' : 'text-amber-300'}`}>
+                      {scorecardMetrics.gatesPass ? '✓ Gates pass (≥75% att.)' : '⏳ Gates pending'}
                     </div>
                   </div>
 
-                  {/* VARIABLE PAY (rounded) Row */}
-                  <div className="px-4 py-2 flex items-center justify-between">
-                    <div className="text-xs font-black text-slate-900 tracking-wider uppercase">
-                      VARIABLE PAY (rounded)
+                  {/* Metric 3: Variable Pay (Quality) */}
+                  <div className="bg-[#2a2955]/80 rounded-2xl p-4 border border-[#3e3d79]">
+                    <div className="text-[10px] font-bold tracking-[0.18em] text-slate-400 uppercase">
+                      VARIABLE PAY
                     </div>
-                    <div className="text-2xl sm:text-3xl font-black text-slate-900">
+                    <div className="text-3xl font-black text-white mt-1">
                       {scorecardMetrics.payBase > 0 ? `₹${scorecardMetrics.variablePay.toLocaleString()}` : '—'}
                     </div>
-                  </div>
-                </div>
-              </div>
-
-            </div>
-          )}
-
-          {/* ================= TAB 7: INCENTIVES ================= */}
-          {activeNav === 'incentives' && (
-            <div className="space-y-6 max-w-[1280px] animate-fadeIn">
-
-              {/* 1. Top Hero Dark Card: Incentive Ledger · This Month */}
-              <div className="bg-[#121c2b] border border-[#1f2e42] rounded-3xl p-6 sm:p-7 text-white shadow-sm space-y-3">
-                <div className="flex items-center justify-between flex-wrap gap-2">
-                  <div className="flex items-center gap-2.5 font-bold text-white text-base">
-                    <span className="w-2.5 h-2.5 bg-amber-400 rounded-sm inline-block shrink-0"></span>
-                    <span>Incentive Ledger · This Month</span>
-                  </div>
-                  <span className="px-3 py-0.5 rounded-full text-[11px] font-bold bg-[#fef3c7] text-[#92400e] border border-[#fde68a]">
-                    Verified Ledger
-                  </span>
-                </div>
-
-                <p className="text-xs text-slate-300 font-normal leading-relaxed">
-                  Demos you delivered this month and admissions that came from your demos (matched on the candidate's phone / email).{!incentivesConfigured && ' Incentive rates are not configured on your trainer profile yet — amounts show ₹0 until admin sets them.'}
-                </p>
-              </div>
-
-              {/* 2. Events Card */}
-              <div className="bg-white rounded-3xl border border-slate-200/90 shadow-sm overflow-hidden">
-                <div className="p-6 pb-4 flex items-center justify-between border-b border-slate-100">
-                  <h2 className="text-sm font-bold text-slate-900">Events</h2>
-                  <span className="px-3 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-500 border border-slate-200/80">
-                    {incentiveEvents.length} {incentiveEvents.length === 1 ? 'row' : 'rows'}
-                  </span>
-                </div>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs border-collapse">
-                    <thead>
-                      <tr className="border-b border-slate-100 text-[10px] font-bold text-slate-400 tracking-wider uppercase">
-                        <th className="py-3 px-4 font-semibold">EVENT</th>
-                        <th className="py-3 px-4 font-semibold">TYPE</th>
-                        <th className="py-3 px-4 font-semibold">STUDENT / CANDIDATE</th>
-                        <th className="py-3 px-4 font-semibold">ROLE</th>
-                        <th className="py-3 px-4 font-semibold text-center sm:text-left">BASE ₹</th>
-                        <th className="py-3 px-4 font-semibold text-center sm:text-left">SHARE</th>
-                        <th className="py-3 px-4 font-semibold text-center">VERIFIED</th>
-                        <th className="py-3 px-4 font-semibold text-right">PAYABLE ₹</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {incentiveEvents.length === 0 ? (
-                        <tr>
-                          <td colSpan={8} className="py-8 text-center text-xs text-slate-400 font-medium">
-                            No cash-earning events recorded yet for this month.
-                          </td>
-                        </tr>
-                      ) : (
-                        incentiveEvents.map((ev) => (
-                          <tr key={ev.id} className="hover:bg-slate-50/60 transition-colors">
-                            <td className="py-3 px-4 font-mono text-slate-400 font-medium">{ev.code}</td>
-                            <td className="py-3 px-4 font-bold text-slate-900">{ev.type}</td>
-                            <td className="py-3 px-4 text-slate-600 font-medium">{ev.candidate}</td>
-                            <td className="py-3 px-4 text-slate-500 font-medium">{ev.role}</td>
-                            <td className="py-3 px-4 text-slate-800 font-medium text-center sm:text-left">₹{ev.baseAmt}</td>
-                            <td className="py-3 px-4 text-slate-500 font-medium text-center sm:text-left">{ev.share}</td>
-                            <td className="py-3 px-4 text-center">
-                              {ev.isVerified ? (
-                                <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-emerald-100 text-emerald-600 text-xs font-bold">
-                                  ✓
-                                </span>
-                              ) : (
-                                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-500 border border-slate-200/80">
-                                  Pending
-                                </span>
-                              )}
-                            </td>
-                            <td className="py-3 px-4 text-right">
-                              <span className={`font-bold font-mono ${ev.isVerified ? 'text-emerald-600' : 'text-slate-400'}`}>
-                                ₹{ev.payable}
-                              </span>
-                            </td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-
-                {/* Dark Footer Bar inside Events Card */}
-                <div className="bg-[#111927] px-6 py-4 flex items-center justify-between text-white border-t border-slate-800">
-                  <span className="text-xs font-bold tracking-wider uppercase text-slate-200">
-                    EVENT CASH THIS MONTH
-                  </span>
-                  <span className="text-xl sm:text-2xl font-black text-white">
-                    ₹{totalEventCash.toLocaleString()}
-                  </span>
-                </div>
-              </div>
-
-              {/* 3. Monthly Take · Summary Card */}
-              <div className="bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-7 shadow-sm space-y-3">
-                <h2 className="text-sm font-bold text-slate-900">Monthly Take · Summary</h2>
-                
-                <div className="space-y-2 pt-1">
-                  <div className="flex items-center justify-between text-xs py-1.5 border-b border-slate-100">
-                    <span className="text-slate-600 font-medium">Variable pay (quality)</span>
-                    <span className="font-bold font-mono text-slate-900">₹{scorecardMetrics.variablePay.toLocaleString()}</span>
+                    <div className="text-xs text-slate-400 font-medium mt-1 truncate">
+                      {scorecardMetrics.payBase > 0 ? `Base: ₹${scorecardMetrics.payBase.toLocaleString()}` : 'Base not configured'}
+                    </div>
                   </div>
 
-                  <div className="flex items-center justify-between text-xs py-1.5">
-                    <span className="text-slate-600 font-medium">Event cash (verified)</span>
-                    <span className="font-bold font-mono text-slate-900">₹{totalEventCash.toLocaleString()}</span>
+                  {/* Metric 4: Event Cash */}
+                  <div className="bg-[#2a2955]/80 rounded-2xl p-4 border border-[#3e3d79]">
+                    <div className="text-[10px] font-bold tracking-[0.18em] text-slate-400 uppercase">
+                      EVENT CASH (VERIFIED)
+                    </div>
+                    <div className="text-3xl font-black text-emerald-400 mt-1">
+                      ₹{totalEventCash.toLocaleString()}
+                    </div>
+                    <div className="text-xs text-slate-400 font-medium mt-1 truncate">
+                      {incentiveEvents.filter(e => e.isVerified).length} verified of {incentiveEvents.length} events
+                    </div>
                   </div>
+                </div>
 
-                  {/* Highlighted MONTHLY TAKE Row */}
-                  <div className="bg-[#f0fdf4] border border-[#bbf7d0] rounded-xl px-4 py-3.5 flex items-center justify-between mt-3">
-                    <span className="text-xs font-black text-[#15803d] tracking-wider uppercase">
-                      MONTHLY TAKE
-                    </span>
-                    <span className="text-xl sm:text-2xl font-black text-[#15803d]">
+                {/* Total Monthly Take Highlight Banner */}
+                <div className="bg-gradient-to-r from-emerald-950/60 via-[#1e3a2b] to-emerald-950/60 border border-emerald-500/40 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-emerald-500/20 border border-emerald-400/30 flex items-center justify-center shrink-0">
+                      <TrendingUp className="w-5 h-5 text-emerald-400" />
+                    </div>
+                    <div>
+                      <div className="text-xs font-bold text-emerald-300 tracking-wider uppercase">
+                        TOTAL ESTIMATED MONTHLY TAKE
+                      </div>
+                      <div className="text-xs text-slate-300 font-normal mt-0.5">
+                        Variable pay (₹{scorecardMetrics.variablePay.toLocaleString()}) + Verified event cash (₹{totalEventCash.toLocaleString()})
+                      </div>
+                    </div>
+                  </div>
+                  <div className="text-left sm:text-right">
+                    <div className="text-3xl sm:text-4xl font-black text-emerald-400 tracking-tight">
                       ₹{monthlyTake.toLocaleString()}
-                    </span>
+                    </div>
+                    <div className="text-[10px] font-bold tracking-widest text-emerald-300/80 uppercase mt-0.5">
+                      Earned This Month
+                    </div>
                   </div>
                 </div>
+
               </div>
+
+              {/* ================= SECTION A: SCORECARD & QUALITY ================= */}
+              {(growthTab === 'all' || growthTab === 'scorecard') && (
+                <div className="space-y-6 animate-fadeIn">
+                  
+                  {/* Layer 1 — Action Score Breakdown Card */}
+                  <div className="bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-7 shadow-sm space-y-4">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div className="flex items-center gap-2 text-sm font-bold text-slate-900">
+                        <span className="text-base">📊</span>
+                        <span>Layer 1 — Action Score Breakdown</span>
+                      </div>
+                      <span className="px-3 py-0.5 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-500 border border-slate-200/80">
+                        Dynamic Weights
+                      </span>
+                    </div>
+
+                    <p className="text-xs text-slate-500 font-normal leading-relaxed">
+                      Each factor is computed as achievement × weight, normalised over all active performance indicators. <span className="text-slate-600 font-bold">Total applicable score earned: {scorecardMetrics.actionScore} / 100.</span>
+                    </p>
+
+                    {/* Action Score Table */}
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead>
+                          <tr className="border-b border-slate-100 text-[10px] font-bold text-slate-400 tracking-wider uppercase">
+                            <th className="py-3 px-3 font-semibold">FACTOR</th>
+                            <th className="py-3 px-3 font-semibold">INPUTS</th>
+                            <th className="py-3 px-3 font-semibold text-center sm:text-left">ACHIEVEMENT</th>
+                            <th className="py-3 px-3 font-semibold text-center sm:text-left">WEIGHT</th>
+                            <th className="py-3 px-3 font-semibold text-right">EARNED</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {scorecardMetrics.factors.map((item, idx) => (
+                            <tr key={idx} className="hover:bg-slate-50/60 transition-colors">
+                              <td className="py-3 px-3">
+                                <span className={`font-bold ${item.isNa ? 'text-slate-400 font-semibold' : 'text-slate-900'}`}>
+                                  {item.factor}
+                                </span>
+                                {item.tag && (
+                                  <span className="ml-1.5 text-[9px] font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200/60">
+                                    {item.tag}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-3 px-3">
+                                <span className={`font-mono ${item.isNa ? 'text-slate-400 italic text-[11px]' : 'text-slate-500 font-medium'}`}>
+                                  {item.inputs}
+                                </span>
+                              </td>
+                              <td className="py-3 px-3 text-center sm:text-left">
+                                <span className={`font-bold ${item.isNa ? 'text-rose-400' : 'text-emerald-600'}`}>
+                                  {item.achievement}
+                                </span>
+                              </td>
+                              <td className="py-3 px-3 text-center sm:text-left">
+                                <span className={`font-medium ${item.isNa ? 'text-slate-400' : 'text-slate-500'}`}>
+                                  {item.weight}
+                                </span>
+                              </td>
+                              <td className="py-3 px-3 text-right">
+                                <span className={`font-bold font-mono ${item.isNa ? 'text-slate-400 font-normal' : 'text-slate-900'}`}>
+                                  {item.earned}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {/* Variable Pay · Quality Buckets Card */}
+                  <div className="bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-7 shadow-sm space-y-4">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div className="flex items-center gap-2 text-sm font-bold text-slate-900">
+                        <span className="text-base">💰</span>
+                        <span>Variable Pay · Quality Buckets</span>
+                      </div>
+                      <span className={`px-3 py-0.5 rounded-full text-xs font-bold ${
+                        scorecardMetrics.gatesPass 
+                          ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' 
+                          : 'bg-amber-50 text-amber-700 border border-amber-200'
+                      }`}>
+                        {scorecardMetrics.gatesPass ? 'Gates pass' : 'Gates pending'}
+                      </span>
+                    </div>
+
+                    <p className="text-xs text-slate-500 font-normal leading-relaxed">
+                      {scorecardMetrics.payBase > 0
+                        ? `Quality score × ₹${scorecardMetrics.payBase.toLocaleString()} = your variable pay. Gate: batch attendance ≥75%.`
+                        : 'Variable pay base is not configured on your trainer profile yet (admin → Trainer Settings).'} Buckets marked N/A have no data source yet and are excluded from the score.
+                    </p>
+
+                    {/* Quality Buckets Table */}
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead>
+                          <tr className="border-b border-slate-100 text-[10px] font-bold text-slate-400 tracking-wider uppercase">
+                            <th className="py-3 px-3 font-semibold">BUCKET</th>
+                            <th className="py-3 px-3 font-semibold text-center sm:text-left">WEIGHT</th>
+                            <th className="py-3 px-3 font-semibold text-center sm:text-left">ACHIEVED</th>
+                            <th className="py-3 px-3 font-semibold text-right">EARNED</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {scorecardMetrics.qualityBuckets.map((row, idx) => (
+                            <tr key={idx} className="hover:bg-slate-50/60 transition-colors">
+                              <td className="py-3.5 px-3 font-bold text-slate-900">{row.bucket}</td>
+                              <td className="py-3.5 px-3 text-slate-500 font-medium text-center sm:text-left">{row.weight}</td>
+                              <td className="py-3.5 px-3 font-bold text-slate-800 text-center sm:text-left">{row.achieved}</td>
+                              <td className="py-3.5 px-3 font-bold font-mono text-slate-900 text-right">{row.earned}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Summary Rows */}
+                    <div className="pt-2 space-y-3">
+                      {/* QUALITY SCORE Row */}
+                      <div className="bg-[#f0fdf4] border border-[#bbf7d0] rounded-xl px-4 py-3 flex items-center justify-between">
+                        <div className="text-xs font-black text-[#15803d] tracking-wider uppercase">
+                          QUALITY SCORE
+                        </div>
+                        <div className="text-base sm:text-lg font-black text-[#15803d]">
+                          {scorecardMetrics.qualityScore} / 100
+                        </div>
+                      </div>
+
+                      {/* VARIABLE PAY (rounded) Row */}
+                      <div className="px-4 py-2 flex items-center justify-between">
+                        <div className="text-xs font-black text-slate-900 tracking-wider uppercase">
+                          VARIABLE PAY (rounded)
+                        </div>
+                        <div className="text-2xl sm:text-3xl font-black text-slate-900">
+                          {scorecardMetrics.payBase > 0 ? `₹${scorecardMetrics.variablePay.toLocaleString()}` : '—'}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                </div>
+              )}
+
+              {/* ================= SECTION B: INCENTIVE LEDGER ================= */}
+              {(growthTab === 'all' || growthTab === 'incentives') && (
+                <div className="space-y-6 animate-fadeIn">
+                  
+                  {/* Top Note / Context Header Card */}
+                  <div className="bg-[#121c2b] border border-[#1f2e42] rounded-3xl p-6 sm:p-7 text-white shadow-sm space-y-3">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div className="flex items-center gap-2.5 font-bold text-white text-base">
+                        <span className="w-2.5 h-2.5 bg-amber-400 rounded-sm inline-block shrink-0"></span>
+                        <span>Incentive Ledger · Demos & Admissions</span>
+                      </div>
+                      <span className="px-3 py-0.5 rounded-full text-[11px] font-bold bg-[#fef3c7] text-[#92400e] border border-[#fde68a]">
+                        Verified Ledger
+                      </span>
+                    </div>
+
+                    <p className="text-xs text-slate-300 font-normal leading-relaxed">
+                      Demos you delivered this month and admissions that came from your demos (matched on the candidate's phone / email).{!incentivesConfigured && ' Incentive rates are not configured on your trainer profile yet — amounts show ₹0 until admin sets them.'}
+                    </p>
+                  </div>
+
+                  {/* Events Table Card */}
+                  <div className="bg-white rounded-3xl border border-slate-200/90 shadow-sm overflow-hidden">
+                    <div className="p-6 pb-4 flex items-center justify-between border-b border-slate-100">
+                      <h2 className="text-sm font-bold text-slate-900">Events</h2>
+                      <span className="px-3 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-500 border border-slate-200/80">
+                        {incentiveEvents.length} {incentiveEvents.length === 1 ? 'row' : 'rows'}
+                      </span>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead>
+                          <tr className="border-b border-slate-100 text-[10px] font-bold text-slate-400 tracking-wider uppercase">
+                            <th className="py-3 px-4 font-semibold">EVENT</th>
+                            <th className="py-3 px-4 font-semibold">TYPE</th>
+                            <th className="py-3 px-4 font-semibold">STUDENT / CANDIDATE</th>
+                            <th className="py-3 px-4 font-semibold">ROLE</th>
+                            <th className="py-3 px-4 font-semibold text-center sm:text-left">BASE ₹</th>
+                            <th className="py-3 px-4 font-semibold text-center sm:text-left">SHARE</th>
+                            <th className="py-3 px-4 text-center">VERIFIED</th>
+                            <th className="py-3 px-4 font-semibold text-right">PAYABLE ₹</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {incentiveEvents.length === 0 ? (
+                            <tr>
+                              <td colSpan={8} className="py-8 text-center text-xs text-slate-400 font-medium">
+                                No cash-earning events recorded yet for this month.
+                              </td>
+                            </tr>
+                          ) : (
+                            incentiveEvents.map((ev) => (
+                              <tr key={ev.id} className="hover:bg-slate-50/60 transition-colors">
+                                <td className="py-3 px-4 font-mono text-slate-400 font-medium">{ev.code}</td>
+                                <td className="py-3 px-4 font-bold text-slate-900">{ev.type}</td>
+                                <td className="py-3 px-4 text-slate-600 font-medium">{ev.candidate}</td>
+                                <td className="py-3 px-4 text-slate-500 font-medium">{ev.role}</td>
+                                <td className="py-3 px-4 text-slate-800 font-medium text-center sm:text-left">₹{ev.baseAmt}</td>
+                                <td className="py-3 px-4 text-slate-500 font-medium text-center sm:text-left">{ev.share}</td>
+                                <td className="py-3 px-4 text-center">
+                                  {ev.isVerified ? (
+                                    <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-emerald-100 text-emerald-600 text-xs font-bold">
+                                      ✓
+                                    </span>
+                                  ) : (
+                                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-500 border border-slate-200/80">
+                                      Pending
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="py-3 px-4 text-right">
+                                  <span className={`font-bold font-mono ${ev.isVerified ? 'text-emerald-600' : 'text-slate-400'}`}>
+                                    ₹{ev.payable}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Dark Footer Bar inside Events Card */}
+                    <div className="bg-[#111927] px-6 py-4 flex items-center justify-between text-white border-t border-slate-800">
+                      <span className="text-xs font-bold tracking-wider uppercase text-slate-200">
+                        EVENT CASH THIS MONTH
+                      </span>
+                      <span className="text-xl sm:text-2xl font-black text-white">
+                        ₹{totalEventCash.toLocaleString()}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Monthly Take · Summary Card */}
+                  <div className="bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-7 shadow-sm space-y-3">
+                    <h2 className="text-sm font-bold text-slate-900">Monthly Take · Summary</h2>
+                    
+                    <div className="space-y-2 pt-1">
+                      <div className="flex items-center justify-between text-xs py-1.5 border-b border-slate-100">
+                        <span className="text-slate-600 font-medium">Variable pay (quality)</span>
+                        <span className="font-bold font-mono text-slate-900">₹{scorecardMetrics.variablePay.toLocaleString()}</span>
+                      </div>
+
+                      <div className="flex items-center justify-between text-xs py-1.5">
+                        <span className="text-slate-600 font-medium">Event cash (verified)</span>
+                        <span className="font-bold font-mono text-slate-900">₹{totalEventCash.toLocaleString()}</span>
+                      </div>
+
+                      {/* Highlighted MONTHLY TAKE Row */}
+                      <div className="bg-[#f0fdf4] border border-[#bbf7d0] rounded-xl px-4 py-3.5 flex items-center justify-between mt-3">
+                        <span className="text-xs font-black text-[#15803d] tracking-wider uppercase">
+                          MONTHLY TAKE
+                        </span>
+                        <span className="text-xl sm:text-2xl font-black text-[#15803d]">
+                          ₹{monthlyTake.toLocaleString()}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                </div>
+              )}
 
             </div>
           )}
+
 
           {/* ================= TAB 8: MY BATCHES ================= */}
           {activeNav === 'batches' && (
