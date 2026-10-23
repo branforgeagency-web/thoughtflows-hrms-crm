@@ -16,9 +16,26 @@ export default function TeamRosterBoard({
   onRosterChange = null,
   departmentCode = 'DEP-HR-001',
   managerLabel = 'Head of HR',
-  onBack = null
+  onBack = null,
+  // Optional allow-list of member names (case-insensitive) — scopes the
+  // board down to e.g. just one Head of Trainer's own zone instead of the
+  // whole department, while still fetching live from the server (unlike
+  // customMembers, which replaces the fetch outright).
+  allowedNames = null
 }) {
   const [members, setMembers] = useState(customMembers || []);
+  // A stable primitive key for allowedNames — the caller (e.g. a region's
+  // trainer list) often passes a brand-new array literal every render, and
+  // depending on that array reference directly in the data-fetch effect
+  // below would re-fetch from the server on every re-render. Depending on
+  // this derived string instead means the effect only re-runs when the
+  // actual set of names changes.
+  const allowedNamesKey = useMemo(
+    () => (Array.isArray(allowedNames) && allowedNames.length
+      ? allowedNames.map(n => String(n || '').trim().toLowerCase()).filter(Boolean).sort().join('|')
+      : ''),
+    [allowedNames]
+  );
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
   const [toastMessage, setToastMessage] = useState(null);
@@ -40,16 +57,22 @@ export default function TeamRosterBoard({
     try {
       const data = await getTeam({ departmentCode });
       if (Array.isArray(data)) {
-        setMembers(data.map(m => ({
-          id: m._id || m.id,
-          name: m.name,
-          role: m.role || 'Staff',
-          assignedCount: m.assigned || 0,
-          pendingCount: m.pending || 0,
-          status: m.available !== false ? 'Available' : 'On Leave',
-          shift: m.shift || 'General Shift',
-          weeklySchedule: m.weeklySchedule || null
-        })));
+        const allowSet = Array.isArray(allowedNames) && allowedNames.length
+          ? new Set(allowedNames.map(n => String(n || '').trim().toLowerCase()))
+          : null;
+        const mapped = data
+          .filter(m => !allowSet || allowSet.has(String(m.name || '').trim().toLowerCase()))
+          .map(m => ({
+            id: m._id || m.id,
+            name: m.name,
+            role: m.role || 'Staff',
+            assignedCount: m.assigned || 0,
+            pendingCount: m.pending || 0,
+            status: m.available !== false ? 'Available' : 'On Leave',
+            shift: m.shift || 'General Shift',
+            weeklySchedule: m.weeklySchedule || null
+          }));
+        setMembers(mapped);
       }
     } catch (e) {
       console.warn('Team roster fetch notice:', e.message);
@@ -64,7 +87,7 @@ export default function TeamRosterBoard({
       if (entity === 'team' && !customMembers) loadMembers();
     });
     return unsub;
-  }, [customMembers, departmentCode]);
+  }, [customMembers, departmentCode, allowedNamesKey]);
 
   // Sync custom members prop
   useEffect(() => {

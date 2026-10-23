@@ -3405,6 +3405,19 @@ function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, o
     });
   }, [trainersList, batchesList, branchesList, studentsList]);
 
+  // The zone currently in view, and just the trainer names in it — each
+  // Head of Trainer's roster board is scoped to their own zone only, never
+  // a company-wide list shared across all four zones.
+  const currentRegionData = useMemo(() => {
+    if (!selectedRegion) return null;
+    return regionsData.find(r => r.id === selectedRegion.id) || selectedRegion;
+  }, [selectedRegion, regionsData]);
+  const currentRegionTrainerNames = useMemo(() => {
+    return (currentRegionData?.trainersList || [])
+      .map(t => t.trainerName)
+      .filter(Boolean);
+  }, [currentRegionData]);
+
   // Current scope of students based on selectedRegion or zoneFilter
   const scopedStudents = useMemo(() => {
     if (selectedRegion) {
@@ -3554,12 +3567,15 @@ function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, o
         </button>
 
         <div className="flex items-center gap-2 flex-wrap">
-          {!showRoster && (
+          {/* Each Head of Trainer manages only their own zone's roster —
+              this never shows from the all-zones overview, so there's no
+              single company-wide roster shared across zones. */}
+          {!showRoster && selectedRegion && (
             <button
               onClick={() => setShowRoster(true)}
               className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold text-white bg-purple-600 shadow-xs hover:bg-purple-700 transition-all cursor-pointer"
             >
-              <span>📅 Trainer Roster &amp; Shifts</span>
+              <span>📅 Trainer Roster &amp; Shifts · {currentRegionData?.state || currentRegionData?.head}</span>
             </button>
           )}
 
@@ -3575,10 +3591,11 @@ function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, o
         </div>
       </div>
 
-      {showRoster ? (
+      {showRoster && selectedRegion ? (
         <TeamRosterBoard
           departmentCode="ACAD"
-          managerLabel="Head of Trainer"
+          managerLabel={`Head of Trainer · ${currentRegionData?.state || currentRegionData?.head || ''}`}
+          allowedNames={currentRegionTrainerNames}
           onBack={() => setShowRoster(false)}
         />
       ) : selectedRegion ? (
