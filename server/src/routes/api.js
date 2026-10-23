@@ -2438,7 +2438,7 @@ async function findLastlyContactedHr({ student, lead, phone, email }) {
 // Split out of checkDuplicateRegistration so the bulk import route below
 // can reuse it with a candidate found via a fast in-memory index instead
 // of re-running the expensive regex collection scan for every row.
-async function buildDuplicateInfo({ matchedStudent, matchedLead, digits, mail }) {
+async function buildDuplicateInfo({ matchedStudent, matchedLead, digits, mail, fast = false }) {
   if (!matchedStudent && !matchedLead) {
     return null;
   }
@@ -2452,12 +2452,29 @@ async function buildDuplicateInfo({ matchedStudent, matchedLead, digits, mail })
   const emailMatched = Boolean(mail && docMail === mail);
   const bothMatched = phoneMatched && emailMatched;
 
-  const hrInfo = await findLastlyContactedHr({
-    student: matchedStudent,
-    lead: matchedLead,
-    phone: digits,
-    email: mail
-  });
+  // fast=true (bulk import) skips findLastlyContactedHr entirely — that
+  // helper runs up to 4-5 sequential regex collection scans (CallRecording,
+  // CallLog, Demo) per call, which is fine for a single-row duplicate check
+  // but was exactly what pushed a re-uploaded sheet (where most/all rows
+  // are now duplicates of already-imported ones) past the live host's
+  // ~29s gateway timeout (504) again, even after the main loop's
+  // duplicate-scan was replaced with an in-memory index. We already have
+  // the matched doc in hand, so just read its own cheap fields instead.
+  const hrInfo = fast
+    ? {
+        hrName: matchedStudent?.hrName
+          || matchedLead?.counselorAssigned
+          || matchedLead?.allocatedTo
+          || 'Not Assigned',
+        contactType: isStudent ? 'Student Admission' : 'Lead Allocation',
+        contactDate: existingDoc.registeredAt || existingDoc.updatedAt || existingDoc.createdAt
+      }
+    : await findLastlyContactedHr({
+        student: matchedStudent,
+        lead: matchedLead,
+        phone: digits,
+        email: mail
+      });
 
   const memberName = existingDoc.name || existingDoc.fullName || 'Registered Candidate';
   const memberId = matchedStudent?.studentId || matchedLead?.admittedStudentId || '';
@@ -3160,20 +3177,31 @@ router.post('/leads/bulk', async (req, res) => {
     // every pasted row is now sent (nothing is filtered out client-side any
     // more). Build one phone/email index up front with two lightweight
     // queries instead, and do every row's lookup against it in memory.
+    // Projection also carries every field buildDuplicateInfo({ fast: true })
+    // reads, so a duplicate hit during the loop below needs zero further
+    // DB round-trips (no per-row findById) — just the in-memory lite doc.
     const [allStudentsLite, allLeadsLite] = await Promise.all([
-      Student.find({}, { phone: 1, whatsappNumber: 1, email: 1 }).lean(),
-      StudentLead.find({}, { phone: 1, whatsappNumber: 1, email: 1 }).lean()
+      Student.find({}, {
+        phone: 1, whatsappNumber: 1, email: 1, name: 1, studentId: 1,
+        course: 1, branch: 1, hrName: 1, createdAt: 1, updatedAt: 1
+      }).lean(),
+      StudentLead.find({}, {
+        phone: 1, whatsappNumber: 1, email: 1, fullName: 1, admittedStudentId: 1,
+        course: 1, branch: 1, counselorAssigned: 1, allocatedTo: 1, createdAt: 1, updatedAt: 1
+      }).lean()
     ]);
 
     const dupByPhone = new Map(); // 10-digit string -> ref
     const dupByEmail = new Map(); // lowercase email -> ref
-    // ref is either { type: 'student'|'lead', id } for a record that's
-    // already in the DB (resolved with one cheap findById only when it's
-    // actually hit), or { type: 'pending', record } for a row queued
-    // earlier in THIS same sheet that hasn't been inserted yet — there's
-    // no id to look up yet, so the in-memory payload itself is reused.
-    const indexDupRecord = (rec, type, id) => {
-      const ref = type === 'pending' ? { type, record: rec } : { type, id };
+    // ref is always { type: 'student'|'lead'|'pending', record } — the lite
+    // doc straight from the up-front query above (or, for 'pending', the
+    // in-memory payload of a row queued earlier in THIS same sheet that
+    // hasn't been inserted yet). Keeping the record itself (never just an
+    // id) means a duplicate hit during the loop below costs ZERO further
+    // DB calls — no per-row findById — which is what was still timing the
+    // live host out (504) on a re-upload where most rows are duplicates.
+    const indexDupRecord = (rec, type) => {
+      const ref = { type, record: rec };
       const p = phoneDigits(rec.phone);
       if (p && p.length === 10 && !dupByPhone.has(p)) dupByPhone.set(p, ref);
       const w = phoneDigits(rec.whatsappNumber);
@@ -3184,8 +3212,8 @@ router.post('/leads/bulk', async (req, res) => {
     // Students indexed first (and never overwritten below) so a Student
     // record — more authoritative — wins the slot on a shared phone/email,
     // same priority as the old matchedStudent || matchedLead lookup.
-    allStudentsLite.forEach((s) => indexDupRecord(s, 'student', s._id));
-    allLeadsLite.forEach((l) => indexDupRecord(l, 'lead', l._id));
+    allStudentsLite.forEach((s) => indexDupRecord(s, 'student'));
+    allLeadsLite.forEach((l) => indexDupRecord(l, 'lead'));
 
     const findDupRef = (phone, whatsappNumber, email) => {
       const digits = phoneDigits(phone || whatsappNumber);
@@ -3255,19 +3283,17 @@ router.post('/leads/bulk', async (req, res) => {
 
       // Check for duplicate enquiry by mobile number and/or email ID — an
       // in-memory lookup against the index built above, so this costs
-      // nothing per row (only an actual duplicate hit pays for one more
-      // findById, which is an indexed primary-key lookup, not a scan).
+      // nothing per row, including on a duplicate hit: the lite doc is
+      // already in the index, so buildDuplicateInfo({ fast: true }) below
+      // needs no DB call at all.
       const dupDigits = phoneDigits(payload.phone || payload.whatsappNumber);
       const dupMail = String(payload.email || '').trim().toLowerCase();
       const dupRef = findDupRef(payload.phone, payload.whatsappNumber, payload.email);
       let dup = null;
       if (dupRef) {
-        let matchedStudent = null;
-        let matchedLead = null;
-        if (dupRef.type === 'student') matchedStudent = await Student.findById(dupRef.id);
-        else if (dupRef.type === 'lead') matchedLead = await StudentLead.findById(dupRef.id);
-        else if (dupRef.type === 'pending') matchedLead = dupRef.record; // same-sheet repeat, not in the DB yet
-        dup = await buildDuplicateInfo({ matchedStudent, matchedLead, digits: dupDigits, mail: dupMail });
+        const matchedStudent = dupRef.type === 'student' ? dupRef.record : null;
+        const matchedLead = (dupRef.type === 'lead' || dupRef.type === 'pending') ? dupRef.record : null;
+        dup = await buildDuplicateInfo({ matchedStudent, matchedLead, digits: dupDigits, mail: dupMail, fast: true });
       }
 
       if (dup) {
