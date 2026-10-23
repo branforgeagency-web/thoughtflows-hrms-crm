@@ -7808,6 +7808,7 @@ router.get('/demos/:id/zoom-join', async (req, res) => {
 
     let zak;
     const debug = {};
+    const noHost = req.query.noHost === '1';
     if (!asStudent) {
       const reset = req.query.reset === '1';
       const host = await trainerZoomHost(demo);
@@ -7838,7 +7839,11 @@ router.get('/demos/:id/zoom-join', async (req, res) => {
       debug.meetingId = demo.zoomMeetingId;
 
       const stillBusy = !dedicated && live.ids.some(id => id !== own);
-      if (!stillBusy) {
+      // After the SDK itself reports "can't start via token" for this host's
+      // account/plan, the client asks us to skip the ZAK entirely and just
+      // sign a regular participant join — the meeting still works since
+      // join_before_host is on.
+      if (!stillBusy && !noHost) {
         try {
           const z = await zoomApi(`/users/${encodeURIComponent(host)}/token?type=zak`);
           if (z.ok) zak = z.data.token; else debug.zakError = `${z.status} ${z.data.message || ''}`;

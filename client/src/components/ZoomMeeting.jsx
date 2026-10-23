@@ -14,6 +14,11 @@ export function parseZoomLink(link = '') {
 
 const apiBase = import.meta.env.VITE_API_URL || '';
 const isBusyError = (msg = '') => /already has other meetings in progress/i.test(msg);
+// Zoom SDK's own wording when a ZAK (host-start) token can't be used to open
+// this particular meeting — usually because the host Zoom account/plan
+// doesn't support starting via token. The meeting itself is fine (join_before_host
+// is on), so we just rejoin as a regular participant instead of hard-failing.
+const isNoHostTokenError = (err) => err?.errorCode === 200 || /not support start meeting via tokens/i.test(err?.reason || err?.message || '');
 
 // One embedded client per browser tab. Zoom's embedded SDK can only be in one
 // meeting at a time, so every mount reuses/cleans the same instance.
@@ -50,6 +55,7 @@ export default function ZoomMeeting({
   const useLoader = Boolean(getJoinDetails);
   const containerRef = useRef(null);
   const runRef = useRef(0); // increments per attempt; stale attempts bail out
+  const forceNoHostRef = useRef(false); // set after a "can't start via token" error — rejoin as participant
   const [status, setStatus] = useState('loading'); // 'loading' | 'joined' | 'error'
   const [error, setError] = useState('');
   const [meetingNo, setMeetingNo] = useState('');
@@ -72,6 +78,7 @@ export default function ZoomMeeting({
       const params = new URLSearchParams();
       if (studentEmail) { params.set('as', 'student'); params.set('email', studentEmail); }
       else if (reset) params.set('reset', '1');
+      if (forceNoHostRef.current) params.set('noHost', '1');
       const q = params.toString() ? `?${params}` : '';
       const res = await fetch(`${apiBase}/api/demos/${demoId}/zoom-join${q}`, { headers: authHeaders() });
       const data = await res.json().catch(() => ({}));
@@ -137,6 +144,15 @@ export default function ZoomMeeting({
         setTimeout(() => { if (run === runRef.current) connect(attempt + 1); }, 2500 * attempt);
         return;
       }
+      // This Zoom account/plan can't START the meeting via a host token — the
+      // meeting itself still works (join_before_host is on), so drop the host
+      // token and rejoin as a regular participant instead of failing outright.
+      if (isNoHostTokenError(err) && !forceNoHostRef.current && attempt < 3) {
+        forceNoHostRef.current = true;
+        await resetSharedClient();
+        setTimeout(() => { if (run === runRef.current) connect(attempt + 1); }, 1000);
+        return;
+      }
       console.warn('Zoom SDK join error:', err);
       if (isBusyError(msg)) onBusyRef.current?.();
       setError(
@@ -146,6 +162,8 @@ export default function ZoomMeeting({
             ? 'Zoom says this meeting ID does not exist for this SDK app. Check ZOOM_SDK_KEY/SECRET come from the SAME Zoom account that creates the meetings (S2S app).'
           : err?.errorCode === 3712
             ? 'Zoom SDK signature rejected (SDK key/secret mismatch on server).'
+          : isNoHostTokenError(err)
+            ? 'This Zoom account cannot start the meeting via a host token. Retry — we\'ll rejoin you as a participant automatically.'
             : msg
       );
       setStatus('error');
