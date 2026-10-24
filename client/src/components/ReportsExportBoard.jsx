@@ -3,6 +3,7 @@ import { CheckCircle2, X, Download, Mail } from 'lucide-react';
 import {
   getDailyClosures,
   getTeam,
+  getTrainerDoubts,
   getApprovals,
   getEscalations,
   getHrTargets,
@@ -30,6 +31,17 @@ const inRange = (value, from) => {
 };
 const inr = (n) => `₹${(Number(n) || 0).toLocaleString('en-IN')}`;
 
+// Head of Training regional dept codes (see TRAINING_ZONES_CONFIG in
+// LeadershipHubDashboard.jsx) aren't stored on TeamMember records — trainers
+// are tagged departmentCode 'ACAD' regardless of region. Match on branch
+// name instead so the doubt-box report scopes correctly per region.
+const TRAINING_ZONE_BRANCH_RX = {
+  'DEP-TR-TN-001': /tamil|coimbatore|chennai|salem|trichy|madurai|erode|tiruppur|theni|hopes|saravanampatti|gandhipuram/i,
+  'DEP-TR-ON-002': /online|virtual/i,
+  'DEP-TR-KL-003': /kerala|kochi|trivandrum|calicut/i,
+  'DEP-TR-TG-004': /telangana|andhra|hyderabad|vijayawada|vizag|ameerpet|dilsukhnagar/i
+};
+
 // Each report fetches live records and returns { columns, rows, summary }
 const REPORTS = [
   {
@@ -56,6 +68,48 @@ const REPORTS = [
         columns: ['Name', 'Role', 'Branch', 'Assigned', 'Completed', 'Pending', 'Quality %', 'Quality basis', 'Available'],
         rows: team.map((m) => [m.name, m.role, m.branchName, m.assigned, m.completed, m.pending, m.quality ?? '', m.qualityBasis || '', m.available === false ? 'No' : 'Yes']),
         summary: `${team.length} members · ${team.reduce((s, m) => s + (m.pending || 0), 0)} pending items`
+      };
+    }
+  },
+  {
+    id: 'doubts',
+    title: 'Trainer doubt-box report',
+    description: 'For each trainer: how many student doubts came in, how many they replied to, and how many are still unanswered.',
+    build: async ({ departmentCode }) => {
+      const zoneRx = TRAINING_ZONE_BRANCH_RX[String(departmentCode || '').toUpperCase()];
+      const [team, doubts] = await Promise.all([
+        getTeam(zoneRx ? undefined : (departmentCode ? { departmentCode } : undefined)),
+        getTrainerDoubts()
+      ]);
+      const norm = (s) => String(s || '').trim().toLowerCase();
+      let trainers = team.filter((m) => m.workLabel?.pending === 'open doubts');
+      if (zoneRx) trainers = trainers.filter((m) => zoneRx.test(m.branchName || ''));
+      const byTrainer = new Map();
+      trainers.forEach((m) => byTrainer.set(norm(m.name), { name: m.name, total: 0, replied: 0 }));
+      const scopedNames = zoneRx || departmentCode ? new Set(trainers.map((m) => norm(m.name))) : null;
+      doubts.forEach((d) => {
+        const key = norm(d.trainerName);
+        if (scopedNames && key && !scopedNames.has(key)) return; // outside this region/department
+        const replied = Boolean(d.reply) || d.status === 'Replied' || d.status === 'Resolved';
+        const bucketKey = key || '__unassigned__';
+        let row = byTrainer.get(bucketKey);
+        if (!row) {
+          row = { name: key ? d.trainerName : 'Unassigned (no trainer routed)', total: 0, replied: 0 };
+          byTrainer.set(bucketKey, row);
+        }
+        row.total += 1;
+        if (replied) row.replied += 1;
+      });
+      const rows = Array.from(byTrainer.values())
+        .map((r) => [r.name, r.total, r.replied, r.total - r.replied, r.total ? Math.round((r.replied / r.total) * 100) : ''])
+        .sort((a, b) => b[3] - a[3]);
+      const totalDoubts = rows.reduce((s, r) => s + r[1], 0);
+      const totalReplied = rows.reduce((s, r) => s + r[2], 0);
+      const totalNotReplied = rows.reduce((s, r) => s + r[3], 0);
+      return {
+        columns: ['Trainer', 'Doubts received', 'Replied', 'Not replied', 'Replied %'],
+        rows,
+        summary: `${rows.length} trainers · ${totalDoubts} doubts · ${totalReplied} replied · ${totalNotReplied} not replied`
       };
     }
   },

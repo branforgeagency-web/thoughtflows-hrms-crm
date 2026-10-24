@@ -15,6 +15,7 @@ import {
   IndianRupee,
   Mail,
   Phone,
+  FileText,
   MessageSquare,
   BookOpen,
   Briefcase,
@@ -556,14 +557,12 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
                               e.stopPropagation();
                               if (onCallStudent) {
                                 onCallStudent(s);
-                              } else {
-                                window.location.href = `tel:${s.phone}`;
                               }
                             }}
                             className="p-1 rounded-md bg-[#00897b]/10 hover:bg-[#00897b] text-[#00897b] hover:text-white transition-colors"
-                            title={`Call ${s.name} (${s.phone})`}
+                            title={`Student Details, Questions & Recording - ${s.name}`}
                           >
-                            <Phone className="w-2.5 h-2.5" />
+                            <FileText className="w-2.5 h-2.5" />
                           </button>
                           <button
                             type="button"

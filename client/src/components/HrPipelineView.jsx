@@ -22,7 +22,8 @@ import {
   ArrowRight,
   Trash2,
   Loader2,
-  ChevronDown
+  ChevronDown,
+  FileText
 } from 'lucide-react';
 
 import { getLeads, updateLead, deleteLead, createEscalation } from '../services/api';
@@ -811,7 +812,8 @@ export default function HrPipelineView({
                       return (
                         <div
                           key={card.id}
-                          className="bg-white border border-slate-200/90 rounded-2xl p-3.5 shadow-xs transition-all hover:shadow-md hover:border-slate-300 relative group"
+                          onClick={() => onCallLead && onCallLead(card.rawLead || card)}
+                          className="bg-white border border-slate-200/90 rounded-2xl p-3.5 shadow-xs transition-all hover:shadow-md hover:border-teal-400 relative group cursor-pointer"
                         >
                           {/* Top Header */}
                           <div className="flex items-start justify-between gap-1">
@@ -880,20 +882,19 @@ export default function HrPipelineView({
                               <div className="grid grid-cols-2 gap-1.5">
                                 <button
                                   type="button"
-                                  onClick={() => {
+                                  onClick={(e) => {
+                                    e.stopPropagation();
                                     if (onCallLead) {
                                       onCallLead(card.rawLead || card);
-                                    } else if (card.phone) {
-                                      window.location.href = `tel:${card.phone}`;
                                     } else {
                                       triggerAction(`No phone number for ${card.name}`);
                                     }
                                   }}
                                   className="bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-[11px] py-1.5 px-2 rounded-lg flex items-center justify-center gap-1 shadow-xs transition-all active:scale-95 cursor-pointer"
-                                  title={`Call ${card.name} (${card.phone})`}
+                                  title={`Student details & upload call recording (${card.phone})`}
                                 >
-                                  <Phone className="w-3 h-3" />
-                                  <span>Call</span>
+                                  <FileText className="w-3 h-3" />
+                                  <span>Student Form</span>
                                 </button>
                                 <button
                                   type="button"
@@ -960,7 +961,8 @@ export default function HrPipelineView({
               return (
                 <div
                   key={card.id}
-                  className={`bg-white border rounded-2xl p-4 shadow-xs transition-all hover:shadow-md hover:border-slate-300 flex flex-col justify-between border-l-4 ${card.borderColor} ${
+                  onClick={() => onCallLead && onCallLead(card.rawLead || card)}
+                  className={`bg-white border rounded-2xl p-4 shadow-xs transition-all hover:shadow-md hover:border-teal-400 cursor-pointer flex flex-col justify-between border-l-4 ${card.borderColor} ${
                     card.stage === 'admitted' || card.isDone ? 'opacity-85 bg-slate-50/50' : ''
                   }`}
                 >
@@ -1038,20 +1040,19 @@ export default function HrPipelineView({
                       <div className="grid grid-cols-2 gap-1.5">
                         <button
                           type="button"
-                          onClick={() => {
+                          onClick={(e) => {
+                            e.stopPropagation();
                             if (onCallLead) {
                               onCallLead(card.rawLead || card);
-                            } else if (card.phone) {
-                              window.location.href = `tel:${card.phone}`;
                             } else {
                               triggerAction(`No phone number for ${card.name}`);
                             }
                           }}
                           className="bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-[11px] py-1.5 px-2 rounded-lg flex items-center justify-center gap-1.5 shadow-xs transition-all active:scale-95 cursor-pointer"
-                          title={`Call ${card.name} (${card.phone})`}
+                          title={`Student details & upload phone recording (${card.phone})`}
                         >
-                          <Phone className="w-3 h-3" />
-                          <span>Call</span>
+                          <FileText className="w-3 h-3" />
+                          <span>Student Form</span>
                         </button>
 
                         <button
@@ -1322,12 +1323,11 @@ export default function HrPipelineView({
                               type="button"
                               onClick={() => {
                                 if (onCallLead) onCallLead(lead);
-                                else if (lead.phone) window.location.href = `tel:${lead.phone}`;
                               }}
                               className="p-1 rounded-md bg-[#00897b]/10 hover:bg-[#00897b] text-[#00897b] hover:text-white transition-colors cursor-pointer"
-                              title={`Call ${lead.fullName || lead.name}`}
+                              title={`Fill student details & upload call recording for ${lead.fullName || lead.name}`}
                             >
-                              <Phone className="w-2.5 h-2.5" />
+                              <FileText className="w-2.5 h-2.5" />
                             </button>
                             <button
                               type="button"

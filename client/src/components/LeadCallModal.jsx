@@ -15,18 +15,18 @@ import {
   X,
   HelpCircle,
   FileText,
-  Mic,
-  MicOff,
   Volume2,
   Download,
   Trash2,
   Link,
   ChevronDown,
-  Circle
+  Circle,
+  Smartphone,
+  Copy
 } from 'lucide-react';
 
 import BookNewDemoModal from './BookNewDemoModal';
-import { createDemo, getRecordings, saveRecording, recordingUrl, dialCall, getCallStatus } from '../services/api';
+import { createDemo, getRecordings, saveRecording, recordingUrl } from '../services/api';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 import { copyToClipboard } from '../utils/clipboard';
 import { COURSE_CATEGORIES } from '../constants/courses';
@@ -38,27 +38,15 @@ const OUTCOME_STAGE = {
   'Demo Booked': 'demo_booked',
   'Follow-up Needed': 'contacted',
   'Call Back Later': 'contacted',
-  // 'Not Reachable' has no fixed mapping here — handled specially below,
-  // since it should only ever move a lead FORWARD out of 'new', never
-  // demote one that's already further along the pipeline.
   'Not Reachable': null,
   'Not Interested': 'closed'
 };
 
 const NEEDS_FOLLOW_UP_DATE = ['Follow-up Needed', 'Call Back Later'];
 
-const STATUS_LABEL = {
-  idle: 'READY',
-  dialing: 'DIALING…',
-  'in-progress': 'ON CALL',
-  completed: 'CALL ENDED'
-};
-
 export default function LeadCallModal({ isOpen, onClose, leadData, onSave, currentUser }) {
   useFileToken(); // keeps file links (downloads / audio) signed with a fresh short-lived token
-  // Call state (Direct device / Phone Link call)
-  const [callStatus, setCallStatus] = useState('idle');
-  const [callSeconds, setCallSeconds] = useState(0);
+
   const [selectedOutcome, setSelectedOutcome] = useState('');
   const [followUpDate, setFollowUpDate] = useState('');
   const [followUpTime, setFollowUpTime] = useState('');
@@ -67,8 +55,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
   const [saving, setSaving] = useState(false);
   const [isEditingContext, setIsEditingContext] = useState(false);
 
-  // Audio Recording States
-  const [isRecording, setIsRecording] = useState(false);
+  // Audio Recording Upload States (Recordings done on HR's mobile phone)
   const [recordedAudioBlob, setRecordedAudioBlob] = useState(null);
   const [recordedAudioUrl, setRecordedAudioUrl] = useState(null);
   const [uploadedFileName, setUploadedFileName] = useState('');
@@ -76,15 +63,9 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
   const [leadRecordings, setLeadRecordings] = useState([]);
   const [loadingRecordings, setLoadingRecordings] = useState(false);
 
-  const mediaRecorderRef = useRef(null);
-    const streamRef = useRef(null);
   const fileInputRef = useRef(null);
-  const timerRef = useRef(null);
-  const hasBeenAnsweredRef = useRef(false);
-  const pollRef = useRef(null);
-  const providerCallSidRef = useRef(null);
 
-  // Lead Form State - starts completely blank with no fake defaults
+  // Lead Form State
   const [leadForm, setLeadForm] = useState({
     name: '',
     phone: '',
@@ -114,7 +95,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
     return getAvailableTimingSlots({ course: leadForm.course, branch: leadForm.branch });
   }, [leadForm.course, leadForm.branch]);
 
-  // Call Talking Points Checklist - all unchecked by default
+  // Checklist of questions & talking points asked to candidate
   const [checklist, setChecklist] = useState([
     { id: 1, text: 'Introduce ThoughtFlows Academy & purpose of the call', checked: false },
     { id: 2, text: 'Understand candidate background, qualification & aspirations', checked: false },
@@ -127,18 +108,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
   ]);
 
   const toggleChecklistItem = (id) => {
-    setChecklist(prev => prev.map(item => item.id === id ? { ...item, checked: !item.checked } : item));
-  };
-
-  const clearTimers = () => {
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
+    setChecklist((prev) => prev.map((item) => (item.id === id ? { ...item, checked: !item.checked } : item)));
   };
 
   // Fetch recordings for this lead
@@ -148,119 +118,28 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
     try {
       setLoadingRecordings(true);
       const res = await getRecordings({ leadPhone: targetPhone });
-      setLeadRecordings(Array.isArray(res) ? res : []);
+      setLeadRecordings(Array.isArray(res) ? res : (res?.recordings || []));
     } catch (e) {
-      console.warn('Error fetching recordings for lead:', e);
+      console.warn('Failed to load recordings for lead:', e);
     } finally {
       setLoadingRecordings(false);
     }
   };
-
-  // ── Call recorder ───────────────────────────────────────────────
-  // Starts on dial so a call is never lost. Tapping CONNECTED restarts it,
-  // dropping the ringing part. HANG UP / End Call & Save stops it.
-  const getMicStream = async () => {
-    if (streamRef.current && streamRef.current.getAudioTracks().some((t) => t.readyState === 'live')) {
-      return streamRef.current;
-    }
-    // Echo cancellation OFF: with Phone Link the student's voice plays through the
-    // laptop speakers — echo cancellation would strip it out of the recording.
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true }
-    });
-    streamRef.current = stream;
-    return stream;
-  };
-
-  const releaseMic = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
-    }
-  };
-
-  const startAudioRecording = async () => {
-    let stream;
-    try {
-      stream = await getMicStream();
-    } catch (err) {
-      console.warn('Microphone permission not granted or audio constraint error:', err);
-      setIsRecording(false);
-      showToast('⚠ Microphone blocked — call will NOT be recorded. Allow mic access for this site.');
-      return;
-    }
-
-    // Restart: throw away whatever was recorded so far (ringing)
-    const prev = mediaRecorderRef.current;
-    if (prev && prev.state !== 'inactive') {
-      prev._discard = true;
-      try { prev.stop(); } catch { /* ignore */ }
-    }
-
-    let rec;
-    try {
-      rec = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus', audioBitsPerSecond: 32000 });
-    } catch {
-      rec = new MediaRecorder(stream);
-    }
-    const chunks = [];
-    rec.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
-    rec.onstop = () => {
-      if (rec._discard) return;
-      let blob = null;
-      if (chunks.length > 0) {
-        blob = new Blob(chunks, { type: 'audio/webm' });
-        setRecordedAudioBlob(blob);
-        setRecordedAudioUrl(URL.createObjectURL(blob));
-        setUploadedFileName('mic_voice_recording.webm');
-      }
-      if (mediaRecorderRef.current === rec) mediaRecorderRef.current = null;
-      releaseMic();
-      setIsRecording(false);
-      if (rec._resolve) rec._resolve(blob);
-    };
-    mediaRecorderRef.current = rec;
-    rec.start(250);
-    setIsRecording(true);
-  };
-
-  // Resolves with the final audio Blob once MediaRecorder has flushed its data
-  const stopAudioRecording = () => new Promise((resolve) => {
-    const rec = mediaRecorderRef.current;
-    if (rec && rec.state !== 'inactive') {
-      rec._resolve = resolve;
-      try {
-        rec.stop();
-      } catch (e) {
-        console.warn('Error stopping mediaRecorder:', e);
-        releaseMic();
-        resolve(null);
-      }
-    } else {
-      releaseMic();
-      resolve(null);
-    }
-    setIsRecording(false);
-  });
 
   const handleClearRecording = () => {
     setRecordedAudioBlob(null);
     setRecordedAudioUrl(null);
     setUploadedFileName('');
     setUploadedDuration(0);
-    showToast('Recorded audio removed');
+    showToast('Uploaded recording removed');
   };
 
   // Reset & load form state when leadData changes
   useEffect(() => {
-    setCallStatus('idle');
-    setCallSeconds(0);
     setRecordedAudioBlob(null);
     setRecordedAudioUrl(null);
     setUploadedFileName('');
     setUploadedDuration(0);
-    hasBeenAnsweredRef.current = false;
-    clearTimers();
 
     if (leadData) {
       const p = leadData.phone || '';
@@ -319,186 +198,76 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
       setChecklist((prev) => prev.map((item) => ({ ...item, checked: false })));
       fetchLeadRecordings(p);
     }
-
-    return () => {
-      clearTimers();
-      stopAudioRecording();
-    };
   }, [leadData?._id, leadData?.id]);
-
-  const formatTimer = (sec) => {
-    const mins = Math.floor(sec / 60);
-    const s = sec % 60;
-    return `${String(mins).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-  };
 
   const showToast = (msg) => {
     setToastMsg(msg);
     setTimeout(() => setToastMsg(null), 3500);
   };
 
-  const startTimer = () => {
-    if (timerRef.current) return;
-    timerRef.current = setInterval(() => {
-      setCallSeconds((s) => s + 1);
-    }, 1000);
-  };
-
-  // Click-to-call via Edesy Number Masking: bridges the counsellor's own phone to the
-  // student through a masked number. Edesy records and stores the call itself, so no
-  // browser mic capture is needed for this path. Falls back to the legacy tel: +
-  // browser-mic flow if the provider isn't configured or the dial request fails.
-  const pollProviderCallStatus = (callSid) => {
-    if (pollRef.current) clearInterval(pollRef.current);
-    pollRef.current = setInterval(async () => {
-      try {
-        const status = await getCallStatus(callSid);
-        const s = status?.status;
-        if (s === 'in-progress' && callStatus !== 'in-progress') {
-          setCallStatus('in-progress');
-          hasBeenAnsweredRef.current = true;
-          startTimer();
-          showToast('🔴 Call connected — Edesy is recording on their end.');
-        } else if (['completed', 'failed', 'busy', 'no-answer', 'canceled'].includes(s)) {
-          clearInterval(pollRef.current);
-          pollRef.current = null;
-          clearTimers();
-          providerCallSidRef.current = null;
-          setCallStatus('completed');
-          if (s === 'completed') {
-            showToast('✓ Call ended. Recording will appear below shortly.');
-            setTimeout(() => fetchLeadRecordings(leadForm.phone), 2500);
-          } else {
-            showToast(`Call ${s === 'no-answer' ? 'not answered' : s}.`);
-          }
-        }
-      } catch (e) {
-        console.warn('Call status poll failed:', e);
-      }
-    }, 3000);
-  };
-
-  const handleCall = async () => {
-    if (!leadForm.phone) {
-      showToast('This student has no phone number on file.');
-      return;
-    }
-
-    if (callStatus !== 'in-progress') setCallStatus('dialing');
-    showToast(`Calling ${leadForm.phone} via Edesy… your phone will ring first.`);
-
-    try {
-      const result = await dialCall({
-        leadPhone: leadForm.phone,
-        agentPhone: currentUser?.phone || currentUser?.mobile || '',
-        leadId: leadData?._id || leadData?.id,
-        leadName: leadForm.name
-      });
-      if (!result?.callSid) throw new Error(result?.error || 'No callSid returned');
-      providerCallSidRef.current = result.callSid;
-      pollProviderCallStatus(result.callSid);
-    } catch (err) {
-      const errMsg = err?.response?.data?.error || err?.message || 'Call failed';
-      console.warn('Edesy dial failed, falling back to tel: dialer:', errMsg);
-      const cleanPhone = leadForm.phone.replace(/[^\d+]/g, '');
-      window.open(`tel:${cleanPhone}`, '_self');
-      // A tel: call gives the browser no connect/disconnect events, so the timer
-      // waits until the counsellor marks the call as connected.
-      if (!mediaRecorderRef.current) startAudioRecording();
-      showToast(`Edesy call error: ${errMsg}. Switched to Phone Link dialer.`);
-    }
-  };
-
-  const handleCallConnected = () => {
-    setCallStatus('in-progress');
-    hasBeenAnsweredRef.current = true;
-    startTimer();
-    startAudioRecording();
-    showToast('🔴 Call connected — recording started. Tap HANG UP when the call ends.');
-  };
-
-  const handleEndCall = async () => {
-    const wasConnected = callStatus === 'in-progress';
-    clearTimers();
-    if (providerCallSidRef.current) {
-      // Edesy ends the bridged call from the handset — this just resets the UI.
-      providerCallSidRef.current = null;
-      setCallStatus('completed');
-      showToast('Call ended. Hang up on your phone if it is still connected.');
-      return null;
-    }
-    const blob = await stopAudioRecording();
-    setCallStatus('completed');
-    showToast(blob ? '✓ Call ended. Audio recording ready.' : (wasConnected ? 'Call ended — no audio captured.' : 'Call ended before it connected.'));
-    return blob;
-  };
-
-  // Handle local file upload
+  // Handle local audio file upload from phone
   const handleFileUpload = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > 50 * 1024 * 1024) {
-      showToast('File size exceeds 50 MB limit.');
+    if (file.size > 75 * 1024 * 1024) {
+      showToast('File size exceeds 75 MB limit.');
       return;
     }
     setUploadedFileName(file.name);
     setRecordedAudioBlob(file);
     const url = URL.createObjectURL(file);
     setRecordedAudioUrl(url);
-    // Use the recording's own length when no call was timed in the CRM
+
+    // Read audio length
     const probe = new Audio();
     probe.preload = 'metadata';
     probe.onloadedmetadata = () => {
-      if (Number.isFinite(probe.duration) && probe.duration > 0) setUploadedDuration(Math.round(probe.duration));
+      if (Number.isFinite(probe.duration) && probe.duration > 0) {
+        setUploadedDuration(Math.round(probe.duration));
+      }
     };
     probe.src = url;
-    showToast(`✓ Uploaded audio: ${file.name}`);
+    showToast(`✓ Call recording attached: ${file.name}`);
   };
 
+  // Save student details & uploaded recording
   const handleSaveAndClose = async () => {
-    let audioBlob = recordedAudioBlob;
-    if (['dialing', 'in-progress'].includes(callStatus) || mediaRecorderRef.current) {
-      const fresh = await handleEndCall();
-      if (fresh && !(audioBlob instanceof File)) audioBlob = fresh;
-    }
-
     if (NEEDS_FOLLOW_UP_DATE.includes(selectedOutcome) && !followUpDate) {
-      showToast('Pick a follow-up date before saving this outcome.');
+      showToast('Please schedule next follow-up date before submitting.');
       return;
     }
 
     setSaving(true);
 
-    // Convert audio blob to base64 if available
+    // Convert audio file to base64 if present
     let audioBase64 = null;
-    if (audioBlob) {
+    if (recordedAudioBlob) {
       try {
         audioBase64 = await new Promise((resolve) => {
           const reader = new FileReader();
           reader.onloadend = () => resolve(reader.result);
-          reader.readAsDataURL(audioBlob);
+          reader.readAsDataURL(recordedAudioBlob);
         });
       } catch (e) {
-        console.warn('Could not encode audio blob:', e);
+        console.warn('Could not encode audio file:', e);
       }
     }
 
     let recordingFailed = false;
     if (audioBase64) {
-      const isPhoneUpload = audioBlob instanceof File;
       try {
         await saveRecording({
           leadId: leadData?._id || leadData?.id,
-          leadName: leadForm.name || 'Unnamed Student',
+          leadName: leadForm.name || 'Student',
           leadPhone: leadForm.phone,
-          counselorName: currentUser?.name || '',
+          counselorName: currentUser?.name || 'HR Counselor',
           counselorPhone: currentUser?.phone || '',
-          durationSeconds: isPhoneUpload ? (uploadedDuration || callSeconds) : callSeconds,
-          outcome: selectedOutcome,
+          durationSeconds: uploadedDuration || 60,
+          outcome: selectedOutcome || 'Follow-up Needed',
           notes: leadForm.notes,
           audioBase64,
-          fileName: isPhoneUpload ? uploadedFileName : 'mic_voice_recording.webm',
-          source: isPhoneUpload ? 'phone_upload' : 'browser_mic'
+          fileName: uploadedFileName || 'phone_call_recording.m4a',
+          source: 'phone_upload'
         });
         await fetchLeadRecordings(leadForm.phone);
       } catch (err) {
@@ -508,10 +277,6 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
       }
     }
 
-    // A logged call attempt — even an unanswered one — is no longer an
-    // untouched "new" enquiry. "Not Reachable" only promotes a lead OUT of
-    // 'new' into 'contacted'; it never demotes a lead that's already
-    // further along the pipeline (e.g. demo_booked).
     const nextStage = selectedOutcome === 'Not Reachable'
       ? ((leadData?.stage || 'new') === 'new' ? 'contacted' : undefined)
       : (selectedOutcome ? OUTCOME_STAGE[selectedOutcome] : undefined);
@@ -520,8 +285,8 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
       outcome: selectedOutcome || undefined,
       stage: nextStage,
       notes: leadForm.notes,
-      durationSeconds: callSeconds,
-      wasAnswered: hasBeenAnsweredRef.current,
+      durationSeconds: uploadedDuration || 0,
+      wasAnswered: Boolean(selectedOutcome && selectedOutcome !== 'Not Reachable'),
       followUpDate: NEEDS_FOLLOW_UP_DATE.includes(selectedOutcome) ? followUpDate : (leadData?.followUpDate || ''),
       followUpTime: NEEDS_FOLLOW_UP_DATE.includes(selectedOutcome) ? followUpTime : (leadData?.followUpTime || ''),
       leadForm: { ...leadForm }
@@ -530,10 +295,9 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
     try {
       if (onSave) await onSave(payload);
       if (recordingFailed) {
-        // Keep the window open so the error is visible and the audio can be re-saved
-        setTimeout(() => showToast('⚠ Call log saved but the RECORDING upload failed — press Save again to retry.'), 3600);
+        setTimeout(() => showToast('⚠ Details saved, but recording upload failed — click Submit again to retry.'), 3500);
       } else {
-        showToast(audioBase64 ? '✓ Call log & recording saved!' : '✓ Call log saved (no recording).');
+        showToast(audioBase64 ? '✓ Student details & call recording saved!' : '✓ Student details updated successfully!');
         setTimeout(() => onClose(), 600);
       }
     } catch (e) {
@@ -563,9 +327,6 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
     { title: 'Not Interested', sub: 'Close lead' }
   ];
 
-  const isCallActive = ['dialing', 'in-progress'].includes(callStatus);
-  const statusLabel = STATUS_LABEL[callStatus] || callStatus.toUpperCase();
-
   if (!isOpen) return null;
 
   return (
@@ -581,80 +342,77 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
       {/* Main Modal Card */}
       <div className="bg-white rounded-3xl w-full max-w-6xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[95vh] text-left">
         
-        {/* ── TOP HEADER BANNER ────────────────────────────────────────── */}
+        {/* ── TOP HEADER (Direct Mobile Phone Contact Workflow) ────────── */}
         <header className="bg-[#0b1b2b] text-white px-5 py-3.5 flex items-center justify-between gap-4 flex-wrap border-b border-slate-800">
-          {/* Caller Identity */}
+          {/* Student Identity */}
           <div className="flex items-center gap-3.5">
-            <div className="w-11 h-11 rounded-2xl bg-[#00b894] text-white font-black text-xl flex items-center justify-center shadow-xs">
-              {(leadForm.name || 'L')[0]}
+            <div className="w-11 h-11 rounded-2xl bg-[#00897b] text-white font-black text-xl flex items-center justify-center shadow-xs">
+              {(leadForm.name || 'S')[0]}
             </div>
             <div>
-              <h2 className="text-base sm:text-lg font-black text-white tracking-tight leading-tight">
-                {leadForm.name || 'Enquiry Lead'}
-              </h2>
-              <div className="text-xs text-teal-300 font-mono tracking-wider mt-0.5">
-                {leadForm.phone || '—'}
+              <div className="flex items-center gap-2">
+                <h2 className="text-base sm:text-lg font-black text-white tracking-tight leading-tight">
+                  {leadForm.name || 'Student Details'}
+                </h2>
+                <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-teal-500/20 text-teal-300 border border-teal-500/30">
+                  Discussion &amp; Details
+                </span>
+              </div>
+              <div className="flex items-center gap-2 mt-1">
+                <div className="text-xs text-teal-300 font-mono tracking-wider flex items-center gap-1.5">
+                  <Smartphone className="w-3.5 h-3.5 text-teal-400" />
+                  <span>{leadForm.phone || 'No phone'}</span>
+                </div>
+                {leadForm.phone && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await copyToClipboard(leadForm.phone);
+                      showToast(`✓ Phone number copied: ${leadForm.phone}`);
+                    }}
+                    className="text-[10.5px] font-bold px-2 py-0.5 rounded-md bg-white/10 hover:bg-white/20 text-slate-300 hover:text-white transition-colors cursor-pointer flex items-center gap-1"
+                    title="Copy phone to dial on your mobile phone"
+                  >
+                    <Copy className="w-3 h-3" />
+                    <span>Copy</span>
+                  </button>
+                )}
               </div>
             </div>
           </div>
 
-          {/* Right Action Buttons */}
-          <div className="flex items-center gap-2 flex-wrap">
-            {/* Direct Device Call - Windows Phone Link / Mobile native dialer */}
-            <button
-              type="button"
-              onClick={handleCall}
-              disabled={!leadForm.phone}
-              className="bg-[#00897b] hover:bg-[#00796b] disabled:opacity-50 disabled:cursor-not-allowed text-white font-extrabold text-xs px-4 py-2 rounded-full flex items-center gap-1.5 shadow-sm active:scale-95 transition-all cursor-pointer"
-              title="Call directly via Phone or Windows Phone Link"
-            >
-              <Phone className="w-3.5 h-3.5" />
-              <span>{isCallActive ? 'RE-DIAL' : 'CALL VIA PHONE'}</span>
-            </button>
-
-            {callStatus === 'dialing' && (
-              <button
-                type="button"
-                onClick={handleCallConnected}
-                className="bg-emerald-500 hover:bg-emerald-600 text-white font-extrabold text-xs px-4 py-2 rounded-full flex items-center gap-1.5 shadow-sm active:scale-95 transition-all cursor-pointer"
-                title="Start the timer once the student picks up"
-              >
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                <span>CONNECTED</span>
-              </button>
-            )}
-
-            {isCallActive && (
-              <button
-                type="button"
-                onClick={handleEndCall}
-                className="bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs px-4 py-2 rounded-full flex items-center gap-1.5 shadow-sm active:scale-95 transition-all cursor-pointer"
-                title="Stop the timer when the call disconnects"
-              >
-                <X className="w-3.5 h-3.5" />
-                <span>HANG UP</span>
-              </button>
-            )}
-
-            <div className="bg-white/10 border border-white/15 px-3 py-1.5 rounded-full text-xs font-bold text-white flex items-center gap-2">
-              <span className={`w-2 h-2 rounded-full ${callStatus === 'in-progress' ? 'bg-rose-500 animate-ping' : isCallActive ? 'bg-amber-400 animate-pulse' : 'bg-slate-400'}`} />
-              <span>{callStatus === 'in-progress' ? 'ON CALL' : statusLabel}</span>
-            </div>
-
-            {/* Digital Timer */}
-            <div className="bg-[#0b3c5d] border border-cyan-400/40 text-cyan-300 font-mono font-black text-sm px-3.5 py-1.5 rounded-xl shadow-inner tracking-wider">
-              {formatTimer(callSeconds)}
+          {/* Right Header Controls */}
+          <div className="flex items-center gap-3">
+            <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/10 border border-white/15 text-xs text-slate-300">
+              <Smartphone className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Contact student on your phone</span>
             </div>
 
             <button
               type="button"
-              onClick={handleSaveAndClose}
-              className="bg-[#e74c3c] hover:bg-[#c0392b] text-white font-bold text-xs px-4 py-2 rounded-xl flex items-center gap-1.5 shadow-xs transition-all active:scale-95 cursor-pointer"
+              onClick={onClose}
+              className="p-1.5 rounded-full text-slate-400 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
+              title="Close modal"
             >
-              <span>✕ End Call & Save</span>
+              <X className="w-5 h-5" />
             </button>
           </div>
         </header>
+
+        {/* Informational Guidance Strip */}
+        <div className="bg-teal-50/90 border-b border-teal-200/80 px-5 py-2 flex items-center justify-between gap-2 text-xs text-teal-950 flex-wrap">
+          <div className="flex items-center gap-2 font-medium">
+            <span className="text-base">📱</span>
+            <span>
+              <strong>Direct Phone Contact:</strong> Call candidate directly on your phone. Ask and record details below, then attach the phone call recording to submit.
+            </span>
+          </div>
+          {leadForm.phone && (
+            <span className="text-[11px] font-mono text-teal-800 bg-teal-100/70 px-2 py-0.5 rounded font-bold">
+              Dial: {leadForm.phone}
+            </span>
+          )}
+        </div>
 
         {/* ── SCROLLABLE MODAL BODY ────────────────────────────────────── */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 text-xs text-slate-800">
@@ -827,12 +585,12 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
               </div>
             </div>
 
-            {/* ── COLUMN 2: CAPTURE WHILE YOU TALK (approx 5.5 cols) ───── */}
+            {/* ── COLUMN 2: DETAILS ASKED FROM STUDENTS (approx 5.5 cols) ─ */}
             <div className="lg:col-span-5 space-y-3 bg-white p-4 rounded-2xl border border-slate-200/90 shadow-xs">
               <div className="flex items-center gap-2 pb-1 border-b border-slate-100">
                 <span className="w-2 h-2 rounded-full bg-teal-500" />
                 <span className="text-[11px] font-black uppercase tracking-wider text-slate-500 font-mono">
-                  CAPTURE WHILE YOU TALK
+                  STUDENT DETAILS &amp; INTERVIEW NOTES
                 </span>
               </div>
 
@@ -886,7 +644,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
               {/* Education */}
               <div>
                 <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
-                  EDUCATION
+                  EDUCATION / DEGREE
                 </label>
                 <select
                   value={leadForm.education}
@@ -894,25 +652,6 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 outline-none focus:border-[#0e6977] focus:bg-white"
                 >
                   <option value="">— Select Education —</option>
-                  {leadForm.education && ![
-                    'BSc Nursing',
-                    'GNM / ANM Nursing',
-                    'B.Pharm / D.Pharm',
-                    'M.Pharm / Pharm.D',
-                    'BSc Biotechnology',
-                    'BSc Microbiology',
-                    'BSc Biochemistry',
-                    'BSc Zoology / Botany / Life Science',
-                    'BPT (Physiotherapy)',
-                    'BSc MLT (Medical Lab Technology)',
-                    'BSc Radiology / Allied Health',
-                    'B.Tech / BE',
-                    'Arts & Science Graduate',
-                    'Diploma',
-                    'Other'
-                  ].includes(leadForm.education) && (
-                    <option value={leadForm.education}>{leadForm.education}</option>
-                  )}
                   <option value="BSc Nursing">BSc Nursing</option>
                   <option value="GNM / ANM Nursing">GNM / ANM Nursing</option>
                   <option value="B.Pharm / D.Pharm">B.Pharm / D.Pharm</option>
@@ -937,35 +676,13 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                   <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
                     CURRENT ROLE
                   </label>
-                  <select
+                  <input
+                    type="text"
                     value={leadForm.currentRole}
                     onChange={(e) => setLeadForm({ ...leadForm, currentRole: e.target.value })}
+                    placeholder="e.g. Fresher / Nurse"
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 outline-none focus:border-[#0e6977] focus:bg-white"
-                  >
-                    <option value="">— Select Role / Background —</option>
-                    {leadForm.currentRole && ![
-                      'Fresher / Job Seeker',
-                      'Final Year Student',
-                      'BPO / Call Center',
-                      'Hospital Staff / Nurse',
-                      'Medical Coding Trainee',
-                      'Data Entry / IT Support',
-                      'Career Gap',
-                      'Homemaker',
-                      'Other'
-                    ].includes(leadForm.currentRole) && (
-                      <option value={leadForm.currentRole}>{leadForm.currentRole}</option>
-                    )}
-                    <option value="Fresher / Job Seeker">Fresher / Job Seeker</option>
-                    <option value="Final Year Student">Final Year Student</option>
-                    <option value="BPO / Call Center">BPO / Call Center</option>
-                    <option value="Hospital Staff / Nurse">Hospital Staff / Nurse</option>
-                    <option value="Medical Coding Trainee">Medical Coding Trainee</option>
-                    <option value="Data Entry / IT Support">Data Entry / IT Support</option>
-                    <option value="Career Gap">Career Gap</option>
-                    <option value="Homemaker">Homemaker</option>
-                    <option value="Other">Other</option>
-                  </select>
+                  />
                 </div>
                 <div>
                   <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
@@ -975,80 +692,65 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                     type="text"
                     value={leadForm.experienceYrs}
                     onChange={(e) => setLeadForm({ ...leadForm, experienceYrs: e.target.value })}
-                    placeholder="e.g. 0, 1.5, 2..."
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 outline-none focus:border-[#0e6977] focus:bg-white"
+                    placeholder="e.g. 0 or 2"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 outline-none focus:border-[#0e6977] focus:bg-white"
                   />
                 </div>
               </div>
 
-              {/* Location */}
-              <div>
-                <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
-                  LOCATION
-                </label>
-                <input
-                  type="text"
-                  value={leadForm.location}
-                  onChange={(e) => setLeadForm({ ...leadForm, location: e.target.value })}
-                  placeholder="Candidate city / location..."
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 outline-none focus:border-[#0e6977] focus:bg-white"
-                />
-              </div>
-
-              {/* Row 6: Interested Course + Budget */}
-              <div className="grid grid-cols-12 gap-2.5">
-                <div className="col-span-8">
+              {/* Location & Budget */}
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
                   <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
-                    INTERESTED COURSE
+                    LOCATION / CITY
                   </label>
-                  <select
-                    value={leadForm.course}
-                    onChange={(e) => setLeadForm({ ...leadForm, course: e.target.value })}
+                  <input
+                    type="text"
+                    value={leadForm.location}
+                    onChange={(e) => setLeadForm({ ...leadForm, location: e.target.value })}
+                    placeholder="e.g. Coimbatore / Kochi"
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 outline-none focus:border-[#0e6977] focus:bg-white"
-                  >
-                    <option value="">— Select Course —</option>
-                    {leadForm.course && !COURSE_CATEGORIES.some((cat) => cat.courses?.some((c) => (c.code === c.name ? c.name : `${c.code} - ${c.name}`) === leadForm.course)) && (
-                      <option value={leadForm.course}>{leadForm.course}</option>
-                    )}
-                    {COURSE_CATEGORIES.map((cat) => (
-                      <optgroup key={cat.category} label={cat.title}>
-                        {cat.courses?.map((c) => {
-                          const val = c.code === c.name ? c.name : `${c.code} - ${c.name}`;
-                          return (
-                            <option key={c.code} value={val}>
-                              {val}
-                            </option>
-                          );
-                        })}
-                      </optgroup>
-                    ))}
-                  </select>
+                  />
                 </div>
-                <div className="col-span-4">
+                <div>
                   <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
-                    BUDGET
+                    BUDGET / PAYMENT
                   </label>
-                  <select
+                  <input
+                    type="text"
                     value={leadForm.budget}
                     onChange={(e) => setLeadForm({ ...leadForm, budget: e.target.value })}
+                    placeholder="e.g. Full / 2 Installments"
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 outline-none focus:border-[#0e6977] focus:bg-white"
-                  >
-                    <option value="">— Select Budget —</option>
-                    {leadForm.budget && !['₹15K-20K', '₹20K-30K', '₹30K-40K', '₹40K+'].includes(leadForm.budget) && (
-                      <option value={leadForm.budget}>{leadForm.budget}</option>
-                    )}
-                    <option value="₹15K-20K">₹15K-20K</option>
-                    <option value="₹20K-30K">₹20K-30K</option>
-                    <option value="₹30K-40K">₹30K-40K</option>
-                    <option value="₹40K+">₹40K+</option>
-                  </select>
+                  />
                 </div>
+              </div>
+
+              {/* Interested Course */}
+              <div>
+                <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
+                  INTERESTED COURSE
+                </label>
+                <select
+                  value={leadForm.course}
+                  onChange={(e) => setLeadForm({ ...leadForm, course: e.target.value })}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 outline-none focus:border-[#0e6977] focus:bg-white"
+                >
+                  <option value="">— Select Course —</option>
+                  <option value="CPC - Certified Professional Coder">CPC - Certified Professional Coder</option>
+                  <option value="AMCT - Advanced Medical Coding Training">AMCT - Advanced Medical Coding Training</option>
+                  <option value="CIC - Certified Inpatient Coder">CIC - Certified Inpatient Coder</option>
+                  <option value="CPB - Certified Professional Biller">CPB - Certified Professional Biller</option>
+                  <option value="CPMA - Certified Professional Medical Auditor">CPMA - Certified Professional Medical Auditor</option>
+                  <option value="CRC - Certified Risk Adjustment Coder">CRC - Certified Risk Adjustment Coder</option>
+                  <option value="IP-DRG - Inpatient Diagnosis Related Groups">IP-DRG - Inpatient Diagnosis Related Groups</option>
+                </select>
               </div>
 
               {/* Batch Timing */}
               <div>
                 <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
-                  BATCH TIMING
+                  PREFERRED BATCH TIMING
                 </label>
                 <select
                   value={leadForm.batchTiming}
@@ -1056,23 +758,16 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 outline-none focus:border-[#0e6977] focus:bg-white cursor-pointer"
                 >
                   <option value="">— Select timing slot —</option>
-                  {leadForm.batchTiming && !availableSlots.some(s => s.label === leadForm.batchTiming || s.value === leadForm.batchTiming || s.timing === leadForm.batchTiming) && (
-                    <option value={leadForm.batchTiming}>Current: {leadForm.batchTiming}</option>
-                  )}
-                  <optgroup label={`🎯 Available for ${leadForm.course || 'Selected Course'} (${availableSlots.length} Slots)`}>
-                    {availableSlots.map((s, idx) => (
-                      <option key={`call-avail-${idx}`} value={s.label}>
-                        {s.label}
-                      </option>
-                    ))}
-                  </optgroup>
-                  <optgroup label="📋 All Other Schedule Slots">
-                    {BATCH_SCHEDULE.filter(s => !availableSlots.some(a => a.label === s.label)).map((s, idx) => (
-                      <option key={`call-other-${idx}`} value={s.label}>
-                        {s.label}
-                      </option>
-                    ))}
-                  </optgroup>
+                  {availableSlots.map((s, idx) => (
+                    <option key={`slot-${idx}`} value={s.label}>
+                      {s.label}
+                    </option>
+                  ))}
+                  {BATCH_SCHEDULE.filter((s) => !availableSlots.some((a) => a.label === s.label)).map((s, idx) => (
+                    <option key={`other-${idx}`} value={s.label}>
+                      {s.label}
+                    </option>
+                  ))}
                 </select>
               </div>
 
@@ -1085,29 +780,29 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                   type="text"
                   value={leadForm.decisionStatus}
                   onChange={(e) => setLeadForm({ ...leadForm, decisionStatus: e.target.value })}
-                  placeholder="e.g. Ready to join, Discussing with family, Needs demo..."
+                  placeholder="e.g. Ready to join, Discussing with parents, Needs demo..."
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 outline-none focus:border-[#0e6977] focus:bg-white"
                 />
               </div>
 
-              {/* Live Notes */}
+              {/* Discussion Notes */}
               <div>
                 <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
-                  LIVE NOTES
+                  PHONE DISCUSSION NOTES
                 </label>
                 <textarea
                   rows="3"
                   value={leadForm.notes}
                   onChange={(e) => setLeadForm({ ...leadForm, notes: e.target.value })}
-                  placeholder="What did the candidate say? Notes, preferences, objections..."
+                  placeholder="What did the candidate say during your phone conversation? Preferences, doubts, fee commitment..."
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs leading-relaxed text-slate-900 outline-none focus:border-[#0e6977] focus:bg-white transition-all font-sans"
                 />
               </div>
 
-              {/* Call Outcome 6 Cards */}
+              {/* Call Outcome Options */}
               <div className="pt-1">
                 <div className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-2">
-                  CALL OUTCOME
+                  CONVERSATION OUTCOME
                 </div>
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                   {OUTCOMES.map((oc) => {
@@ -1162,6 +857,10 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
 
             {/* ── COLUMN 3: TALKING POINTS & SCRIPT CHECKLIST (approx 3.5 cols) ── */}
             <div className="lg:col-span-4 space-y-2.5">
+              <div className="text-[11px] font-black uppercase tracking-wider text-slate-500 font-mono pb-1 border-b border-slate-100 flex items-center justify-between">
+                <span>TALKING POINTS CHECKLIST</span>
+                <span className="text-[10px] text-teal-700 font-bold">Ask on phone</span>
+              </div>
               <div className="space-y-2">
                 {checklist.map((item) => (
                   <div
@@ -1183,25 +882,30 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                 ))}
               </div>
 
-              {/* Bottom yellow conversion stats */}
+              {/* Information Card */}
               <div className="bg-[#fffbeb] border border-amber-300/80 rounded-2xl p-3 text-center text-xs font-bold text-amber-900 font-mono">
-                💡 Avg CPL: ₹147 · Conv rate: 38%
+                💡 Avg CPL: ₹147 · Placement Success: 94%
               </div>
             </div>
 
           </div>
 
-          {/* ── UPLOAD CALL RECORDING SECTION ──────────────────────────── */}
+          {/* ── UPLOAD PHONE CALL RECORDING SECTION ─────────────────────── */}
           <div className="pt-2">
-            <div className="text-[10px] font-black uppercase tracking-wider text-slate-400 font-mono mb-2 flex items-center gap-1.5">
-              <span>🎙</span>
-              <span>CALL RECORDING — UPLOAD FROM YOUR PHONE</span>
+            <div className="text-[10.5px] font-black uppercase tracking-wider text-slate-500 font-mono mb-2 flex items-center justify-between">
+              <span className="flex items-center gap-1.5">
+                <span>🎙️</span>
+                <span>UPLOAD PHONE CALL RECORDING</span>
+              </span>
+              <span className="text-[10px] text-teal-700 font-bold bg-teal-50 px-2 py-0.5 rounded border border-teal-200">
+                Audio recorded on your phone
+              </span>
             </div>
 
             {/* Cyan dashed upload box */}
             <div
               onClick={() => fileInputRef.current?.click()}
-              className="border-2 border-dashed border-cyan-200 hover:border-cyan-400 bg-cyan-50/30 hover:bg-cyan-50/60 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-4 transition-all cursor-pointer"
+              className="border-2 border-dashed border-teal-300 hover:border-teal-500 bg-teal-50/30 hover:bg-teal-50/60 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-4 transition-all cursor-pointer"
             >
               <div className="flex items-center gap-3.5">
                 <div className="w-12 h-12 rounded-2xl bg-[#00897b] text-white flex items-center justify-center shrink-0 shadow-xs">
@@ -1209,10 +913,10 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                 </div>
                 <div>
                   <div className="text-xs font-bold text-slate-900">
-                    {uploadedFileName || 'Click to upload call recording'}
+                    {uploadedFileName || 'Click to select and upload call recording from your phone'}
                   </div>
-                  <div className="text-[10px] text-slate-400 font-mono mt-0.5">
-                    M4A · MP3 · WAV · AAC · OPUS · max 50 MB
+                  <div className="text-[10px] text-slate-500 font-mono mt-0.5">
+                    Supports M4A, MP3, WAV, AAC, OPUS, WEBM · up to 75 MB
                   </div>
                 </div>
               </div>
@@ -1223,21 +927,21 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                   e.stopPropagation();
                   fileInputRef.current?.click();
                 }}
-                className="bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs px-4 py-2 rounded-xl shadow-xs transition-all cursor-pointer"
+                className="bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs px-4 py-2 rounded-xl shadow-xs transition-all cursor-pointer shrink-0"
               >
-                Browse Files
+                Browse Audio File
               </button>
 
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="audio/*,.m4a,.mp3,.wav,.aac,.opus,.webm"
+                accept="audio/*,.m4a,.mp3,.wav,.aac,.opus,.webm,.ogg"
                 onChange={handleFileUpload}
                 className="hidden"
               />
             </div>
 
-            {/* Audio Preview if audio recorded or uploaded */}
+            {/* Audio Preview if audio attached */}
             {recordedAudioUrl && (
               <div className="mt-3 p-3 bg-emerald-50 border border-emerald-200 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-3 text-xs shadow-xs">
                 <div className="flex items-center gap-2.5">
@@ -1245,14 +949,16 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                     <Volume2 className="w-4 h-4" />
                   </div>
                   <div>
-                    <div className="font-extrabold text-emerald-950">
-                      {uploadedFileName ? `Audio: ${uploadedFileName}` : `Mic Audio (${formatTimer(callSeconds)})`}
+                    <div className="font-extrabold text-emerald-950 truncate max-w-sm">
+                      {uploadedFileName || 'Attached Phone Audio'}
                     </div>
-                    <div className="text-[10.5px] text-emerald-700">Ready to save with call record</div>
+                    <div className="text-[10.5px] text-emerald-700">
+                      Duration: {uploadedDuration ? `${Math.floor(uploadedDuration / 60)}m ${uploadedDuration % 60}s` : 'Ready to save'} · Ready to submit
+                    </div>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 w-full sm:w-auto">
-                  <RecordingAudio src={recordedAudioUrl} className="h-8 max-w-xs w-full accent-[#0e6977]" />
+                  <RecordingAudio src={recordedAudioUrl} className="h-8 max-w-xs w-full accent-[#00897b]" />
                   <button
                     type="button"
                     onClick={handleClearRecording}
@@ -1270,7 +976,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
           <div className="bg-white rounded-2xl border border-slate-200 p-4 space-y-3 shadow-xs">
             <div className="flex items-center justify-between border-b border-slate-100 pb-2">
               <div className="flex items-center gap-2">
-                <Volume2 className="w-4 h-4 text-[#0e6977]" />
+                <Volume2 className="w-4 h-4 text-[#00897b]" />
                 <span className="font-extrabold text-xs text-slate-900 uppercase tracking-wide">
                   Recorded Calls for {leadForm.name || 'Student'}
                 </span>
@@ -1287,14 +993,14 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
               <div className="py-3 text-center text-xs text-slate-400">Loading audio records…</div>
             ) : leadRecordings.length === 0 ? (
               <div className="py-3 text-center text-xs text-slate-400 font-medium">
-                No past recordings on file. Calls dialed above or uploaded will appear here.
+                No past recordings on file. Upload phone call recordings above to archive here.
               </div>
             ) : (
               <div className="overflow-x-auto no-scrollbar">
                 <table className="w-full text-left text-xs border-collapse">
                   <thead>
                     <tr className="bg-slate-50 text-slate-500 font-extrabold uppercase text-[9.5px] tracking-wider border-b border-slate-200">
-                      <th className="py-2.5 px-3">DATE & TIME</th>
+                      <th className="py-2.5 px-3">DATE &amp; TIME</th>
                       <th className="py-2.5 px-3">COUNSELLOR</th>
                       <th className="py-2.5 px-3">DURATION</th>
                       <th className="py-2.5 px-3">OUTCOME</th>
@@ -1326,7 +1032,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                         </td>
                         <td className="py-2.5 px-3">
                           {rec.audioUrl ? (
-                            <RecordingAudio src={recordingUrl(rec.audioUrl)} className="h-7 w-56 max-w-full accent-[#0e6977]" />
+                            <RecordingAudio src={recordingUrl(rec.audioUrl)} className="h-7 w-56 max-w-full accent-[#00897b]" />
                           ) : (
                             <span className="text-slate-400 italic text-[10.5px]">No audio file</span>
                           )}
@@ -1355,7 +1061,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
 
         </div>
 
-        {/* ── BOTTOM FOOTER ACTION BAR (matching screenshot) ──────────── */}
+        {/* ── BOTTOM FOOTER ACTION BAR ─────────────────────────────────── */}
         <footer className="p-3.5 bg-slate-50 border-t border-slate-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
           <div className="flex items-center gap-2 flex-wrap">
             {/* Send Registration Link Button */}
@@ -1389,15 +1095,24 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
             </button>
           </div>
 
-          {/* Save & Close Button */}
-          <button
-            type="button"
-            onClick={handleSaveAndClose}
-            disabled={saving}
-            className="bg-[#c29d59] hover:bg-[#af8b47] disabled:opacity-60 text-white font-black text-xs px-6 py-2.5 rounded-xl shadow-sm transition-all active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer"
-          >
-            <span>{saving ? 'Saving…' : '✓ Save & Close'}</span>
-          </button>
+          {/* Action Buttons */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2.5 rounded-xl border border-slate-200 text-slate-600 hover:text-slate-800 hover:bg-slate-100 text-xs font-bold transition-all cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleSaveAndClose}
+              disabled={saving}
+              className="bg-[#00897b] hover:bg-[#00796b] disabled:opacity-60 text-white font-black text-xs px-6 py-2.5 rounded-xl shadow-sm transition-all active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer"
+            >
+              <span>{saving ? 'Submitting…' : '✓ Submit Details & Recording'}</span>
+            </button>
+          </div>
         </footer>
 
       </div>

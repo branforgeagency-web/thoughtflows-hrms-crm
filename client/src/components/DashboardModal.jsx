@@ -28,6 +28,7 @@ import HrDepartmentDashboard from './HrDepartmentDashboard';
 import StudentPortalDashboard from './StudentPortalDashboard';
 import AdminManagementDashboard from './AdminManagementDashboard';
 import TrainingDepartmentDashboard from './TrainingDepartmentDashboard';
+import TrainersDepartmentHub from './TrainersDepartmentHub';
 import CccpDashboard from './CccpDashboard';
 import MarketingDepartmentDashboard from './MarketingDepartmentDashboard';
 import LeadershipHubDashboard from './LeadershipHubDashboard';
@@ -81,7 +82,7 @@ export default function DashboardModal({
 
   if (deptId === 'training') {
     return (
-      <TrainingDepartmentDashboard
+      <TrainersDepartmentHub
         onClose={onClose}
         currentUser={currentUser}
         onLogout={handleSignOutAction}

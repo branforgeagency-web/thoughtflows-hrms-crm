@@ -52,7 +52,7 @@ export default function App() {
   // Department card reference
   const DEPT_CARDS = [
     { id: 'hr', title: 'HR Department', status: 'LIVE', description: 'Academic counsellors who turn enquiries into futures · lead capture, calls, follow-ups & admissions' },
-    { id: 'training', title: 'Training Department', status: '3 LIVE', description: 'Trainers across 12 branches running batches, attendance, assessments & mastery tracking' },
+    { id: 'training', title: 'Trainers Department', status: '4 ROLES', description: 'Trainers across 12 branches · Trainer Head, Manager, TL & Faculty desks' },
     { id: 'cccp', title: 'CCCP Dashboard', status: '8 TODAY', description: 'Placement Cell · Examination Cell · College & Company Cell — three cells, one career path' },
     { id: 'marketing', title: 'Marketing Department', status: 'ACTIVE', description: 'Digital, outdoor & campaigns driving 100+ lead sources every month across all branches' },
     { id: 'leadership', title: 'Leadership Hub', status: '4 ROLES', description: 'All the heads in one place — Operational, Department, Regional & Branch. Open to pick your role.' },
@@ -136,6 +136,10 @@ export default function App() {
     sessionStorage.setItem('thoughtflows_dashboard', JSON.stringify(card));
     // If user is already authenticated in this session, grant immediate access
     if (currentUser) {
+      setIsDashboardOpen(true);
+    } else if (card.id === 'training') {
+      // Training Department needs no login — open straight into the dashboard.
+      // It asks the trainer to pick their name from the roster instead of a password.
       setIsDashboardOpen(true);
     } else {
       // Require department-specific login

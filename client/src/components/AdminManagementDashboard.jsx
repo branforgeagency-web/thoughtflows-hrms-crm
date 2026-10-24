@@ -148,6 +148,22 @@ const dashboardOfUser = (u) => {
 };
 const initialsOf = (name) => String(name || '?').trim().split(/\s+/).map((p) => p[0]).join('').slice(0, 2).toUpperCase();
 
+// Training & Faculty role tiers — Head of Trainer > Trainer Manager > Trainer
+// TL > Trainers. Checked in this order so a Head of Trainer / Manager isn't
+// also counted as a plain Trainer; anything unmatched falls back to 'trainer'
+// so the four tiers always add up to the department's full headcount.
+const TRAINER_TIER_CARDS = [
+  { key: 'head', label: 'Head of Trainer', icon: '\ud83e\udded', match: /head of trainer|training head|head of training|chief trainer|chief faculty|faculty lead/i },
+  { key: 'manager', label: 'Trainer Manager', icon: '\ud83e\uddd1\u200d\ud83d\udcbc', match: /training team manager|trainer manager|\bteam manager\b/i },
+  { key: 'tl', label: 'Trainer TL', icon: '\ud83c\udfaf', match: /training tl|trainer tl|\bteam lead\b|\btl\b/i },
+  { key: 'trainer', label: 'Trainers', icon: '\ud83e\uddd1\u200d\ud83c\udfeb', match: null } // catch-all
+];
+const trainerTierOf = (role) => {
+  const r = String(role || '');
+  const hit = TRAINER_TIER_CARDS.find((t) => t.match && t.match.test(r));
+  return hit ? hit.key : 'trainer';
+};
+
 export default function AdminManagementDashboard({ 
   onClose, 
   currentUser, 
@@ -318,6 +334,8 @@ export default function AdminManagementDashboard({
   // Selected Department Filter for Employee Directory
   const [selectedDeptFilter, setSelectedDeptFilter] = useState('All');
   const [directorySearchQuery, setDirectorySearchQuery] = useState('');
+  const [expandedDirectoryGroup, setExpandedDirectoryGroup] = useState(null); // which department card is opened (e.g. 'training')
+  const [expandedTrainerTier, setExpandedTrainerTier] = useState(null); // which of the 4 role-tier cards is opened
 
   // User Accounts Search, Role Filter & Pagination (10 datas per page)
   const [userSearchQuery, setUserSearchQuery] = useState('');
@@ -1726,12 +1744,13 @@ export default function AdminManagementDashboard({
           const staffUsers = users.filter((u) => dashboardOfUser(u) !== 'student');
           const filteredGroups = DIRECTORY_GROUPS.map((group) => ({
             department: group.label,
+            key: group.key,
             borderAccent: group.borderAccent,
             avatarBg: group.avatarBg,
             members: staffUsers
               .filter((u) => dashboardOfUser(u) === group.key)
               .filter((u) => !query || [u.name, u.role, u.branch, u.email].some((v) => String(v || '').toLowerCase().includes(query)))
-              .map((u) => ({ name: u.name, role: u.role, empId: [u.branch, u.email].filter(Boolean).join(' · '), initials: initialsOf(u.name), inactive: /inactive|disabled|suspended/i.test(u.status || '') }))
+              .map((u) => ({ id: u.id || u._id, email: u.email, password: u.password, name: u.name, role: u.role, empId: [u.branch, u.email].filter(Boolean).join(' · '), initials: initialsOf(u.name), inactive: /inactive|disabled|suspended/i.test(u.status || '') }))
           })).filter((group) => group.members.length > 0);
 
           return (
@@ -1785,44 +1804,182 @@ export default function AdminManagementDashboard({
                 <div className="space-y-6">
                   {filteredGroups.map((group) => (
                     <div key={group.department} className="space-y-3">
-                      {/* Department Header Strip */}
+                      {/* Department Header Strip — clickable for Training & Faculty */}
                       <div
-                        className={`flex items-center justify-between px-3.5 py-2.5 bg-[#f8fafc] rounded-xl border border-slate-100 ${group.borderAccent}`}
+                        onClick={() => group.key === 'training' && setExpandedDirectoryGroup((p) => (p === 'training' ? null : 'training'))}
+                        className={`flex items-center justify-between px-3.5 py-2.5 bg-[#f8fafc] rounded-xl border border-slate-100 ${group.borderAccent} ${group.key === 'training' ? 'cursor-pointer hover:bg-slate-100 transition-colors' : ''}`}
                       >
                         <span className="font-bold text-xs sm:text-sm text-slate-900 tracking-tight">
                           {group.department}
                         </span>
-                        <span className="w-6 h-6 rounded-full bg-slate-200/80 text-slate-600 text-[11px] font-bold flex items-center justify-center">
-                          {group.members.length}
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className="w-6 h-6 rounded-full bg-slate-200/80 text-slate-600 text-[11px] font-bold flex items-center justify-center">
+                            {group.members.length}
+                          </span>
+                          {group.key === 'training' && (
+                            <ChevronRight className={`w-4 h-4 text-slate-400 transition-transform ${expandedDirectoryGroup === 'training' ? 'rotate-90' : ''}`} />
+                          )}
+                        </div>
                       </div>
 
-                      {/* 2-Column Cards Grid */}
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                        {group.members.map((emp, idx) => (
-                          <div
-                            key={idx}
-                            className="bg-white border border-slate-200/85 hover:border-slate-300 rounded-2xl p-3.5 sm:p-4 flex items-center gap-3.5 transition-shadow shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
-                          >
+                      {group.key === 'training' ? (
+                        expandedDirectoryGroup === 'training' && (() => {
+                          const tiers = TRAINER_TIER_CARDS.map((t) => ({ ...t, members: group.members.filter((m) => trainerTierOf(m.role) === t.key) }));
+                          const activeTier = tiers.find((t) => t.key === expandedTrainerTier);
+                          return (
+                            <div className="space-y-3.5">
+                              {/* 4 Role-Tier Cards: Head of Trainer / Trainer Manager / Trainer TL / Trainers */}
+                              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
+                                {tiers.map((t) => (
+                                  <div
+                                    key={t.key}
+                                    onClick={() => setExpandedTrainerTier((p) => (p === t.key ? null : t.key))}
+                                    className={`bg-white border rounded-2xl p-3.5 sm:p-4 cursor-pointer transition-all shadow-[0_1px_3px_rgba(0,0,0,0.02)] ${expandedTrainerTier === t.key ? 'border-blue-400 ring-2 ring-blue-100' : 'border-slate-200/85 hover:border-slate-300'}`}
+                                  >
+                                    <div className="text-xl mb-2">{t.icon}</div>
+                                    <h4 className="font-bold text-slate-900 text-xs sm:text-sm leading-snug">{t.label}</h4>
+                                    <p className="text-[11px] text-slate-500 font-medium mt-1">{t.members.length} {t.members.length === 1 ? 'person' : 'people'}</p>
+                                  </div>
+                                ))}
+                              </div>
+
+                              {/* Members of the opened tier — login details right here, no need to open User Accounts separately */}
+                              {activeTier && (
+                                <div className="space-y-2">
+                                  <div className="flex items-center justify-between px-1">
+                                    <span className="text-[10.5px] font-bold text-slate-500 uppercase tracking-wider">{activeTier.label} · Login details</span>
+                                    {activeTier.members.length > 0 && (
+                                      <button
+                                        type="button"
+                                        onClick={() => setShowAllPasswords(!showAllPasswords)}
+                                        className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1 cursor-pointer bg-white px-2 py-0.5 rounded-md border border-slate-200/80 shadow-2xs hover:bg-indigo-50 transition-colors"
+                                        title={showAllPasswords ? 'Mask all passwords' : 'Show all passwords'}
+                                      >
+                                        {showAllPasswords ? (<><EyeOff className="w-3 h-3" /> Hide All</>) : (<><Eye className="w-3 h-3" /> Show All</>)}
+                                      </button>
+                                    )}
+                                  </div>
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 pl-1">
+                                    {activeTier.members.length === 0 ? (
+                                      <p className="text-xs text-slate-400 font-medium py-2">No one in {activeTier.label} yet.</p>
+                                    ) : activeTier.members.map((emp, idx) => {
+                                      const isVisible = showAllPasswords || Boolean(visiblePasswords[emp.id]);
+                                      // Older logins were saved as bcrypt hashes, which can't be shown — reset to get a visible password
+                                      const isHashedPwd = /^\$2[aby]\$\d{2}\$/.test(emp.password || '');
+                                      const pwd = isHashedPwd ? '' : (emp.password || '');
+                                      return (
+                                        <div
+                                          key={idx}
+                                          className="bg-white border border-slate-200/85 hover:border-slate-300 rounded-2xl p-3.5 sm:p-4 transition-shadow shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+                                        >
+                                          <div className="flex items-center gap-3.5">
+                                            <div
+                                              className={`w-11 h-11 rounded-xl ${group.avatarBg} text-white font-bold text-xs sm:text-sm flex items-center justify-center shrink-0 tracking-wide select-none`}
+                                            >
+                                              {emp.initials}
+                                            </div>
+                                            <div className="min-w-0 flex-1">
+                                              <h4 className="font-bold text-slate-900 text-xs sm:text-sm truncate leading-snug">
+                                                {emp.name}
+                                              </h4>
+                                              <p className="text-[11px] text-slate-500 font-medium truncate mt-0.5">
+                                                {emp.role}
+                                              </p>
+                                              <p className="text-[10px] text-slate-400 font-mono truncate mt-0.5">
+                                                {emp.email || '—'}
+                                              </p>
+                                            </div>
+                                          </div>
+
+                                          {emp.id && (
+                                            <div className="mt-3 pt-3 border-t border-slate-100 flex items-center gap-1.5">
+                                              <div className="px-2.5 py-1 rounded-lg bg-slate-50 border border-slate-100 font-mono text-[11px] text-slate-800 flex-1 min-w-0 text-center truncate">
+                                                {isVisible && isHashedPwd ? (
+                                                  <span className="font-sans font-semibold text-amber-700 text-[10px]" title="Encrypted password — use the key button to set a new one">
+                                                    Encrypted · reset to view
+                                                  </span>
+                                                ) : isVisible ? (
+                                                  <span className="font-bold text-indigo-950 select-all">
+                                                    {pwd || '—'}
+                                                  </span>
+                                                ) : (
+                                                  <span className="text-slate-400 font-black tracking-widest text-sm select-none">
+                                                    ••••••••
+                                                  </span>
+                                                )}
+                                              </div>
+                                              <button
+                                                type="button"
+                                                onClick={() => togglePasswordVisibility(emp.id)}
+                                                className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+                                                  isVisible
+                                                    ? 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200'
+                                                    : 'bg-white hover:bg-slate-100 text-slate-500 hover:text-slate-800 border border-slate-100'
+                                                }`}
+                                                title={isVisible ? 'Hide password' : 'View password'}
+                                              >
+                                                {isVisible ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                                              </button>
+                                              <button
+                                                type="button"
+                                                onClick={() => {
+                                                  if (pwd && navigator.clipboard) {
+                                                    navigator.clipboard.writeText(pwd);
+                                                    showToast(`✓ Copied password for ${emp.name}`);
+                                                  }
+                                                }}
+                                                className="p-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-400 hover:text-slate-700 border border-slate-100 transition-colors cursor-pointer"
+                                                title="Copy password to clipboard"
+                                              >
+                                                <Copy className="w-3.5 h-3.5" />
+                                              </button>
+                                              <button
+                                                type="button"
+                                                onClick={() => handleEditPassword(emp.id, emp.name, pwd, emp.email)}
+                                                className="p-1.5 rounded-lg bg-white hover:bg-amber-50 text-slate-400 hover:text-amber-600 border border-slate-100 transition-colors cursor-pointer"
+                                                title="Edit / Reset password"
+                                              >
+                                                <Key className="w-3.5 h-3.5" />
+                                              </button>
+                                            </div>
+                                          )}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()
+                      ) : (
+                        /* 2-Column Cards Grid */
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                          {group.members.map((emp, idx) => (
                             <div
-                              className={`w-11 h-11 rounded-xl ${group.avatarBg} text-white font-bold text-xs sm:text-sm flex items-center justify-center shrink-0 tracking-wide select-none`}
+                              key={idx}
+                              className="bg-white border border-slate-200/85 hover:border-slate-300 rounded-2xl p-3.5 sm:p-4 flex items-center gap-3.5 transition-shadow shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
                             >
-                              {emp.initials}
+                              <div
+                                className={`w-11 h-11 rounded-xl ${group.avatarBg} text-white font-bold text-xs sm:text-sm flex items-center justify-center shrink-0 tracking-wide select-none`}
+                              >
+                                {emp.initials}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <h4 className="font-bold text-slate-900 text-xs sm:text-sm truncate leading-snug">
+                                  {emp.name}
+                                </h4>
+                                <p className="text-[11px] text-slate-500 font-medium truncate mt-0.5">
+                                  {emp.role}
+                                </p>
+                                <p className="text-[10px] text-slate-400 font-mono mt-0.5">
+                                  {emp.empId || '—'}
+                                </p>
+                              </div>
                             </div>
-                            <div className="min-w-0 flex-1">
-                              <h4 className="font-bold text-slate-900 text-xs sm:text-sm truncate leading-snug">
-                                {emp.name}
-                              </h4>
-                              <p className="text-[11px] text-slate-500 font-medium truncate mt-0.5">
-                                {emp.role}
-                              </p>
-                              <p className="text-[10px] text-slate-400 font-mono mt-0.5">
-                                {emp.empId || '—'}
-                              </p>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>

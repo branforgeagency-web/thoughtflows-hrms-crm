@@ -47,7 +47,8 @@ import {
   Menu,
   UserPlus,
   Check,
-  Building2
+  Building2,
+  ArrowLeft
 } from 'lucide-react';
 import TrainerBatchDesk from './TrainerBatchDesk';
 import OnlineTestBuilder from './OnlineTestBuilder';
@@ -99,25 +100,32 @@ import {
 } from '../services/api';
 import { TRAINER_COURSES } from '../constants/courses';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
+import { ALL_HIERARCHY_TRAINERS } from '../constants/trainerHierarchy';
 
 export default function TrainingDepartmentDashboard({
   onClose,
   currentUser,
   onLogout,
   onSwitchDepartment,
-  theme = 'classic'
+  theme = 'classic',
+  onBackToRoles
 }) {
 
   // ---- Trainer identity: the Trainer roster record (admin-managed) is the source of truth ----
   const [trainerProfile, setTrainerProfile] = useState(null);
   const [profileError, setProfileError] = useState('');
   const [trainerRoster, setTrainerRoster] = useState([]);
-  const trainerName = trainerProfile?.trainerName || currentUser?.userName || currentUser?.name || '';
-  const trainerRole = trainerProfile?.role || trainerProfile?.specialization || currentUser?.role || '';
-  const trainerBranch = trainerProfile?.branchName || currentUser?.branch || '';
-  const trainerId = trainerProfile?.trainerId || currentUser?.trainerId || currentUser?.id || '';
-  const trainerShift = trainerProfile?.shift || currentUser?.shift || '';
-  const trainerCourseKey = String(trainerProfile?.courseKey || currentUser?.courseKey || '').toUpperCase();
+  // No login required to open the Training department — if nobody signed in
+  // (currentUser is empty), the trainer just picks their name from the roster
+  // below instead of typing a password.
+  const [pickedIdentity, setPickedIdentity] = useState(null);
+  const hasSignedInUser = Boolean(currentUser?.trainerId || currentUser?.name || currentUser?.userName || currentUser?.email);
+  const trainerName = trainerProfile?.trainerName || currentUser?.userName || currentUser?.name || pickedIdentity?.trainerName || '';
+  const trainerRole = trainerProfile?.role || trainerProfile?.specialization || currentUser?.role || pickedIdentity?.role || '';
+  const trainerBranch = trainerProfile?.branchName || currentUser?.branch || pickedIdentity?.branchName || '';
+  const trainerId = trainerProfile?.trainerId || currentUser?.trainerId || currentUser?.id || pickedIdentity?.trainerId || '';
+  const trainerShift = trainerProfile?.shift || currentUser?.shift || pickedIdentity?.shift || '';
+  const trainerCourseKey = String(trainerProfile?.courseKey || currentUser?.courseKey || pickedIdentity?.courseKey || '').toUpperCase();
   // Head of Trainer (or Academic Leadership, Admin, or Branch Trainer/Faculty) has the authority to allocate/reassign students to trainers
   const isHeadOfTrainer = Boolean(
     currentUser?.role === 'Head of Trainer' ||
@@ -254,18 +262,18 @@ export default function TrainingDepartmentDashboard({
     }
   }, [trainerBranch]);
 
-  // Resolve the trainer's roster record once per login
+  // Resolve the trainer's roster record once per login — or once a name is picked, for a no-login session
   useEffect(() => {
     let alive = true;
     const email = currentUser?.email;
-    const tid = currentUser?.trainerId || '';
-    const name = currentUser?.userName || currentUser?.name;
+    const tid = currentUser?.trainerId || pickedIdentity?.trainerId || '';
+    const name = currentUser?.userName || currentUser?.name || pickedIdentity?.trainerName;
     if (!email && !tid && !name) { setProfileError('No signed-in trainer'); return undefined; }
     getTrainerProfile({ trainerId: tid || undefined, email, name })
       .then(p => { if (alive) { setTrainerProfile(p); setProfileError(''); } })
       .catch(err => { if (alive) setProfileError(err?.response?.data?.error || 'Trainer roster record not found'); });
     return () => { alive = false; };
-  }, [currentUser?.email, currentUser?.trainerId, currentUser?.name, currentUser?.userName]);
+  }, [currentUser?.email, currentUser?.trainerId, currentUser?.name, currentUser?.userName, pickedIdentity?.trainerId]);
 
   // Fetch all real data from backend API
   const loadRealData = async () => {
@@ -292,7 +300,13 @@ export default function TrainingDepartmentDashboard({
       setDemos(Array.isArray(dmRes) ? dmRes : []);
       setLeads(Array.isArray(ldRes?.leads) ? ldRes.leads : (Array.isArray(ldRes) ? ldRes : []));
       setDoubts(Array.isArray(dbtRes) ? dbtRes : []);
-      setTrainerRoster(Array.isArray(rosterRes) ? rosterRes : []);
+      const mergedRoster = [...(Array.isArray(rosterRes) ? rosterRes : [])];
+      ALL_HIERARCHY_TRAINERS.forEach((ht) => {
+        if (!mergedRoster.some((m) => String(m.trainerName || m.name || '').toLowerCase() === ht.name.toLowerCase() || m.trainerId === ht.id)) {
+          mergedRoster.push(ht);
+        }
+      });
+      setTrainerRoster(mergedRoster);
       setMaterials(Array.isArray(matRes) ? matRes : []);
       setAttendanceSessions(Array.isArray(attRes) ? attRes : []);
 
@@ -1368,17 +1382,61 @@ export default function TrainingDepartmentDashboard({
             </div>
           </div>
 
-          {/* User Profile Badge */}
-          <div className="px-4 py-2">
-            <div className="bg-[#162734] border border-[#213a4d] rounded-2xl p-3 flex items-center gap-3">
-              <div className="w-10 h-10 rounded-full bg-[#0284c7] text-white flex items-center justify-center font-bold text-base shadow-sm">
-                {trainerName.charAt(0)}
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="text-white text-sm font-bold truncate">{trainerName}</div>
-                <div className="text-[#649297] text-[11px] font-medium truncate">{trainerId} · {trainerBranch}</div>
-              </div>
+          {onBackToRoles && (
+            <div className="px-4 pb-1">
+              <button
+                type="button"
+                onClick={onBackToRoles}
+                className="w-full flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white border border-white/10 text-xs font-semibold transition-all cursor-pointer"
+                title="Back to all Trainer Department roles"
+              >
+                <ArrowLeft className="w-3.5 h-3.5 text-sky-400" />
+                <span>All Trainer Roles</span>
+              </button>
             </div>
+          )}
+
+          {/* User Profile Badge — or, with no login, a quick "who's this" picker */}
+          <div className="px-4 py-2">
+            {!hasSignedInUser && !trainerId ? (
+              <div className="bg-[#162734] border border-[#213a4d] rounded-2xl p-3">
+                <div className="text-white text-[11.5px] font-bold mb-1.5">Who's this?</div>
+                <div className="text-[#649297] text-[10.5px] font-medium mb-2 leading-snug">No login needed — just pick your name to see your students, doubts & schedule.</div>
+                <select
+                  defaultValue=""
+                  onChange={(e) => {
+                    const t = trainerRoster.find((r) => r.trainerId === e.target.value);
+                    if (t) setPickedIdentity({ trainerId: t.trainerId, trainerName: t.trainerName, role: t.role, branchName: t.branchName, shift: t.shift, courseKey: t.courseKey });
+                  }}
+                  className="w-full bg-[#0c1921] border border-[#213a4d] text-white text-xs font-semibold rounded-xl px-3 py-2 outline-none focus:border-[#00897b] cursor-pointer"
+                >
+                  <option value="" disabled>{trainerRoster.length ? 'Select your name…' : 'Loading trainers…'}</option>
+                  {trainerRoster.filter((t) => t.active !== false).map((t) => (
+                    <option key={t.trainerId} value={t.trainerId}>{t.trainerName}{t.branchName ? ` · ${t.branchName}` : ''}</option>
+                  ))}
+                </select>
+              </div>
+            ) : (
+              <div className="bg-[#162734] border border-[#213a4d] rounded-2xl p-3 flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-[#0284c7] text-white flex items-center justify-center font-bold text-base shadow-sm">
+                  {trainerName.charAt(0)}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-white text-sm font-bold truncate">{trainerName}</div>
+                  <div className="text-[#649297] text-[11px] font-medium truncate">{trainerId} · {trainerBranch}</div>
+                </div>
+                {!hasSignedInUser && pickedIdentity && (
+                  <button
+                    type="button"
+                    onClick={() => setPickedIdentity(null)}
+                    title="Not you? Pick a different name"
+                    className="text-[#649297] hover:text-white text-[10px] font-bold shrink-0 cursor-pointer"
+                  >
+                    Switch
+                  </button>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Navigation Items */}
@@ -1745,6 +1803,18 @@ export default function TrainingDepartmentDashboard({
                 </div>
               )}
             </div>
+
+            {onBackToRoles && (
+              <button
+                type="button"
+                onClick={onBackToRoles}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 border border-slate-200 shadow-xs transition-all active:scale-95 cursor-pointer"
+                title="Back to all Trainer Department roles"
+              >
+                <ArrowLeft className="w-3.5 h-3.5 text-blue-600" />
+                <span className="hidden sm:inline">Trainer Roles</span>
+              </button>
+            )}
 
             <button
               onClick={() => (onLogout ? onLogout() : onClose ? onClose() : null)}

@@ -729,7 +729,6 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       { name: 'Pipeline & Follow-ups', badge: pipelineCount, icon: Filter, iconBg: 'bg-[#7c3aed]', badgeBg: 'bg-rose-500', color: 'purple' },
       { name: 'Demo Desk', badge: scopedDemos.length > 0 ? scopedDemos.length.toString() : null, icon: Monitor, iconBg: 'bg-cyan-600', color: 'cyan' },
       { name: 'Admitted Students', badge: admittedCount, icon: GraduationCap, iconBg: 'bg-emerald-600', badgeBg: 'bg-emerald-500', color: 'emerald' },
-      { name: 'Call Recordings', badge: null, icon: PhoneCall, iconBg: 'bg-[#0e6977]', color: 'teal' },
       { name: 'My Targets', badge: null, icon: Target, iconBg: 'bg-rose-500', color: 'pink' },
       { name: 'My Schedule', badge: null, icon: Calendar, iconBg: 'bg-blue-500', color: 'blue' },
       { name: 'LMS', badge: 'Learn', isPillBadge: true, icon: BookOpen, iconBg: 'bg-yellow-700', color: 'green' },
@@ -788,8 +787,8 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       .slice(0, 6)
       .map(({ lead, rank }, idx) => {
         const stage = lead.stage || 'new';
-        let actionText = 'CALL NOW';
-        let actionStyle = 'bg-white border-2 border-slate-900 text-slate-900 hover:bg-slate-900 hover:text-white font-extrabold';
+        let actionText = 'STUDENT FORM';
+        let actionStyle = 'bg-white border-2 border-[#00897b] text-[#00897b] hover:bg-[#00897b] hover:text-white font-extrabold';
         if (stage === 'demo_booked') {
           actionText = 'VIEW DEMO';
           actionStyle = 'bg-purple-50 text-purple-700 border border-purple-200 font-bold';
