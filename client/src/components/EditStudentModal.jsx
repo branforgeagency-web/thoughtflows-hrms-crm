@@ -8,6 +8,7 @@ import { getAvailableTimingSlots, BATCH_SCHEDULE, CANONICAL_TIMING_OPTIONS } fro
 import SearchableSelect from './SearchableSelect';
 
 export const BRANCH_OPTIONS = [
+  'Not Mentioned',
   'Saravanampatti (CBE)',
   'Hopes (CBE)',
   'Gandhipuram (CBE)',
@@ -21,8 +22,7 @@ export const BRANCH_OPTIONS = [
   'Vizag (Andhra Pradesh)',
   'Pune (Maharashtra)',
   'Kollapur (Maharashtra)',
-  'Theni (Tamil Nadu)',
-  'Not Mentioned'
+  'Theni (Tamil Nadu)'
 ];
 
 export const TIMING_OPTIONS = CANONICAL_TIMING_OPTIONS;
@@ -443,8 +443,8 @@ export default function EditStudentModal({ isOpen, onClose, student, onSuccess, 
                   {batchTiming && batchTiming !== 'Not Mentioned' && !availableSlots.some(s => s.label === batchTiming || s.value === batchTiming || s.timing === batchTiming) && (
                     <option value={batchTiming}>Current: {batchTiming}</option>
                   )}
-                  <optgroup label={`🎯 Available for Selected Course & Branch (${availableSlots.length} Slots)`}>
-                    {availableSlots.map((s, idx) => (
+                  <optgroup label={`🎯 Available for Selected Course & Branch (${availableSlots.filter(s => s.label !== 'Not Mentioned').length} Slots)`}>
+                    {availableSlots.filter(s => s.label !== 'Not Mentioned').map((s, idx) => (
                       <option key={`avail-${idx}`} value={s.label}>
                         {s.label}
                       </option>

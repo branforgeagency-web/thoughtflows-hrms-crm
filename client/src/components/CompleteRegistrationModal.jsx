@@ -657,15 +657,15 @@ export default function CompleteRegistrationModal({
                   {batchTiming && !availableSlots.some(s => s.label === batchTiming || s.value === batchTiming || s.timing === batchTiming) && (
                     <option value={batchTiming}>Current: {batchTiming}</option>
                   )}
-                  <optgroup label={`🎯 Available for Selected Course & Branch (${availableSlots.length} Slots)`}>
-                    {availableSlots.map((s, idx) => (
+                  <optgroup label={`🎯 Available for Selected Course & Branch (${availableSlots.filter(s => s.label !== 'Not Mentioned').length} Slots)`}>
+                    {availableSlots.filter(s => s.label !== 'Not Mentioned').map((s, idx) => (
                       <option key={`avail-${idx}`} value={s.label}>
                         {s.label}
                       </option>
                     ))}
                   </optgroup>
                   <optgroup label="📋 All Other Schedule Slots">
-                    {BATCH_SCHEDULE.filter(s => !availableSlots.some(a => a.label === s.label)).map((s, idx) => (
+                    {BATCH_SCHEDULE.filter(s => s.label !== 'Not Mentioned' && !availableSlots.some(a => a.label === s.label)).map((s, idx) => (
                       <option key={`other-${idx}`} value={s.label}>
                         {s.label}
                       </option>

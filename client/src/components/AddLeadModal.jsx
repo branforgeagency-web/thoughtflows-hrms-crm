@@ -690,6 +690,7 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead, onBulkImporte
                     onChange={(e) => setPreferredBranch(e.target.value)}
                     className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#0e6977] transition-all font-sans cursor-pointer"
                   >
+                    <option value="Not Mentioned">Not Mentioned</option>
                     <option value="Ameerpet (Hyderabad)">Ameerpet (Hyderabad)</option>
                     <option value="Dilsukhnagar (Hyderabad)">Dilsukhnagar (Hyderabad)</option>
                     <option value="Gandhipuram (Coimbatore)">Gandhipuram (Coimbatore)</option>
@@ -705,7 +706,6 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead, onBulkImporte
                     <option value="Kollapur (Maharashtra)">Kollapur (Maharashtra)</option>
                     <option value="Theni (Tamil Nadu)">Theni (Tamil Nadu)</option>
                     <option value="Online Live (Virtual)">Online Live (Virtual)</option>
-                    <option value="Not Mentioned">Not Mentioned</option>
                   </select>
                 </div>
               </div>

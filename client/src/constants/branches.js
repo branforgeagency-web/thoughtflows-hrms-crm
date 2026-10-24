@@ -3,6 +3,7 @@
  */
 
 export const ALL_BRANCH_OPTIONS = [
+  { value: 'Not Mentioned', label: 'Not Mentioned', city: 'Not Mentioned', short: 'Not Mentioned' },
   { value: 'Ameerpet (Hyderabad)', label: 'Ameerpet (Hyderabad)', city: 'Hyderabad', short: 'Ameerpet' },
   { value: 'Dilsukhnagar (Hyderabad)', label: 'Dilsukhnagar (Hyderabad)', city: 'Hyderabad', short: 'Dilsukhnagar' },
   { value: 'Gandhipuram (CBE)', label: 'Gandhipuram (Coimbatore)', city: 'Coimbatore', short: 'Gandhipuram' },
@@ -21,8 +22,7 @@ export const ALL_BRANCH_OPTIONS = [
   { value: 'OMR (Chennai)', label: 'OMR (Chennai)', city: 'Chennai', short: 'OMR' },
   { value: 'Tambaram (Chennai)', label: 'Tambaram (Chennai)', city: 'Chennai', short: 'Tambaram' },
   { value: 'Madurai', label: 'Madurai', city: 'Madurai', short: 'Madurai' },
-  { value: 'Bangalore', label: 'Bangalore', city: 'Bangalore', short: 'Bangalore' },
-  { value: 'Not Mentioned', label: 'Not Mentioned', city: 'Not Mentioned', short: 'Not Mentioned' }
+  { value: 'Bangalore', label: 'Bangalore', city: 'Bangalore', short: 'Bangalore' }
 ];
 
 /**

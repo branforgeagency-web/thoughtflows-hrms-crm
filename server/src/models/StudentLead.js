@@ -101,7 +101,8 @@ const studentLeadSchema = new mongoose.Schema({
       'fee_followup',
       'admitted',
       'closed',
-      'not_mentioned'
+      'not_mentioned',
+      'Not Mentioned'
     ],
     default: 'new'
   },

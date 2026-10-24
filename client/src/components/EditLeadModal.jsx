@@ -9,14 +9,14 @@ import SearchableSelect from './SearchableSelect';
 import { BRANCH_OPTIONS, TIMING_OPTIONS } from './EditStudentModal';
 
 const STAGE_OPTIONS = [
+  { value: 'not_mentioned', label: 'Not Mentioned' },
   { value: 'new', label: 'New Enquiry' },
   { value: 'contacted', label: 'Contacted' },
   { value: 'demo_booked', label: 'Demo Booked' },
   { value: 'demo_attended', label: 'Demo Attended' },
   { value: 'fee_followup', label: 'Fee Follow-up' },
   { value: 'admitted', label: 'Admitted' },
-  { value: 'closed', label: 'Closed / Lost' },
-  { value: 'not_mentioned', label: 'Not Mentioned' }
+  { value: 'closed', label: 'Closed / Lost' }
 ];
 
 export default function EditLeadModal({ isOpen, onClose, lead, onSuccess, onDelete }) {
@@ -353,7 +353,8 @@ export default function EditLeadModal({ isOpen, onClose, lead, onSuccess, onDele
                   onChange={(e) => setBranch(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-200 focus:bg-white rounded-xl px-3.5 py-2 text-xs text-slate-900 font-semibold outline-none focus:border-[#00897b] transition-all cursor-pointer"
                 >
-                  {BRANCH_OPTIONS.map((b) => (
+                  <option value="Not Mentioned">Not Mentioned</option>
+                  {BRANCH_OPTIONS.filter((b) => b !== 'Not Mentioned').map((b) => (
                     <option key={b} value={b}>{b}</option>
                   ))}
                 </select>
@@ -364,7 +365,7 @@ export default function EditLeadModal({ isOpen, onClose, lead, onSuccess, onDele
                   Pipeline Stage
                 </label>
                 <select
-                  value={stage}
+                  value={stage === 'Not Mentioned' ? 'not_mentioned' : stage}
                   onChange={(e) => setStage(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-200 focus:bg-white rounded-xl px-3.5 py-2 text-xs text-slate-900 font-semibold outline-none focus:border-[#00897b] transition-all cursor-pointer"
                 >
@@ -388,15 +389,15 @@ export default function EditLeadModal({ isOpen, onClose, lead, onSuccess, onDele
                   {batchTiming && batchTiming !== 'Not Mentioned' && !availableSlots.some(s => s.label === batchTiming || s.value === batchTiming || s.timing === batchTiming) && (
                     <option value={batchTiming}>Current: {batchTiming}</option>
                   )}
-                  <optgroup label={`🎯 Available for Selected Course & Branch (${availableSlots.length} Slots)`}>
-                    {availableSlots.map((s, idx) => (
+                  <optgroup label={`🎯 Available for Selected Course & Branch (${availableSlots.filter(s => s.label !== 'Not Mentioned').length} Slots)`}>
+                    {availableSlots.filter(s => s.label !== 'Not Mentioned').map((s, idx) => (
                       <option key={`avail-${idx}`} value={s.label}>
                         {s.label}
                       </option>
                     ))}
                   </optgroup>
                   <optgroup label="📋 All Other Schedule Slots">
-                    {BATCH_SCHEDULE.filter(s => !availableSlots.some(a => a.label === s.label)).map((s, idx) => (
+                    {BATCH_SCHEDULE.filter(s => s.label !== 'Not Mentioned' && !availableSlots.some(a => a.label === s.label)).map((s, idx) => (
                       <option key={`other-${idx}`} value={s.label}>
                         {s.label}
                       </option>
@@ -413,7 +414,7 @@ export default function EditLeadModal({ isOpen, onClose, lead, onSuccess, onDele
                   value={sourceName}
                   onChange={setSourceName}
                   placeholder="— Select enquiry source —"
-                  searchPlaceholder="Search 32 sources (Google, Referral, WhatsApp...)"
+                  searchPlaceholder="Search sources (Not Mentioned, Google, Referral...)"
                   groups={LEAD_SOURCE_GROUPS}
                   allowCustom={true}
                 />

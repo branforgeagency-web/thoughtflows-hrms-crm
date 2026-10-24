@@ -56,6 +56,11 @@ export const ALL_LEAD_SOURCE_NAMES = ALL_LEAD_SOURCES.map((s) => s.name);
 // Grouped for SearchableSelect & optgroups
 export const LEAD_SOURCE_GROUPS = [
   {
+    group: 'quick_selection',
+    title: '⭐ Quick Selection',
+    options: ['Not Mentioned']
+  },
+  {
     group: 'tier_a',
     title: 'Tier A · Top Producers (70% of leads)',
     options: TIER_A_SOURCES.map((s) => s.name)
@@ -73,7 +78,7 @@ export const LEAD_SOURCE_GROUPS = [
   {
     group: 'tier_d',
     title: 'Tier D · Long Tail & Other Channels',
-    options: TIER_D_SOURCES.map((s) => s.name)
+    options: TIER_D_SOURCES.filter((s) => s.name !== 'Not Mentioned').map((s) => s.name)
   }
 ];
 
