@@ -271,7 +271,24 @@ export default function TrainingDepartmentDashboard({
     if (!email && !tid && !name) { setProfileError('No signed-in trainer'); return undefined; }
     getTrainerProfile({ trainerId: tid || undefined, email, name })
       .then(p => { if (alive) { setTrainerProfile(p); setProfileError(''); } })
-      .catch(err => { if (alive) setProfileError(err?.response?.data?.error || 'Trainer roster record not found'); });
+      .catch(err => {
+        if (alive) {
+          const matched = ALL_HIERARCHY_TRAINERS.find(ht => ht.id === tid || ht.name.toLowerCase() === String(name || '').toLowerCase()) || pickedIdentity;
+          if (matched) {
+            setTrainerProfile({
+              trainerId: matched.id || matched.trainerId || tid,
+              trainerName: matched.name || matched.trainerName || name,
+              role: matched.role || 'Faculty',
+              branchName: matched.branch || matched.branchName || 'Coimbatore',
+              shift: matched.shift || 'General',
+              courseKey: matched.course || matched.courseKey || 'CPC'
+            });
+            setProfileError('');
+          } else {
+            setProfileError(err?.response?.data?.error || 'Trainer roster record not found');
+          }
+        }
+      });
     return () => { alive = false; };
   }, [currentUser?.email, currentUser?.trainerId, currentUser?.name, currentUser?.userName, pickedIdentity?.trainerId]);
 
@@ -307,6 +324,17 @@ export default function TrainingDepartmentDashboard({
         }
       });
       setTrainerRoster(mergedRoster);
+      if (!hasSignedInUser && !pickedIdentity && mergedRoster.length > 0) {
+        const first = mergedRoster[0];
+        setPickedIdentity({
+          trainerId: first.trainerId || first.id,
+          trainerName: first.trainerName || first.name,
+          role: first.role || 'Faculty',
+          branchName: first.branchName || first.branch || 'Coimbatore',
+          shift: first.shift || 'General',
+          courseKey: first.courseKey || first.course || 'CPC'
+        });
+      }
       setMaterials(Array.isArray(matRes) ? matRes : []);
       setAttendanceSessions(Array.isArray(attRes) ? attRes : []);
 

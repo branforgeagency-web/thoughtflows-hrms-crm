@@ -91,7 +91,7 @@ export default function App() {
       if (userSaved) {
         const u = JSON.parse(userSaved);
         let dept = u.department;
-        if (isHeadOfTrainerUser(u)) dept = 'leadership';
+        if (isHeadOfTrainerUser(u)) dept = 'training';
         else if (!dept || dept === 'Medical Coding Faculty') dept = 'training';
         const matched = DEPT_CARDS.find(c => c.id === dept);
         if (matched) return matched;
@@ -160,7 +160,7 @@ export default function App() {
 
     // Open dashboard corresponding to the authenticated department
     let targetDept = user.department;
-    if (isHeadOfTrainerUser(user)) targetDept = 'leadership';
+    if (isHeadOfTrainerUser(user)) targetDept = 'training';
     else if (!targetDept || targetDept === 'Medical Coding Faculty') targetDept = 'training';
     const matchedCard = DEPT_CARDS.find(c => c.id === targetDept) || DEPT_CARDS[0];
     setSelectedDashboard(matchedCard);

@@ -758,6 +758,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 outline-none focus:border-[#0e6977] focus:bg-white cursor-pointer"
                 >
                   <option value="">— Select timing slot —</option>
+                  <option value="Not Mentioned">Not Mentioned</option>
                   {availableSlots.map((s, idx) => (
                     <option key={`slot-${idx}`} value={s.label}>
                       {s.label}

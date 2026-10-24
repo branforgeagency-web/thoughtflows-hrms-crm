@@ -16,7 +16,8 @@ export const BRANCH_MAP = {
   'Z': 'Vizag',
   'P': 'Pune',
   'L': 'Kollapur',
-  'N': 'Theni'
+  'N': 'Theni',
+  'NM': 'Not Mentioned'
 };
 
 export const COURSE_MAP = {

@@ -25,7 +25,11 @@ export function signToken(user) {
     department: user.department || '',
     branch: user.branch || '',
     studentId: user.studentId || undefined,
-    trainerId: user.trainerId || undefined
+    trainerId: user.trainerId || undefined,
+    trainerRole: user.trainerRole || undefined,
+    leaderId: user.leaderId || undefined,
+    branches: user.branches || undefined,
+    supervisedTrainers: user.supervisedTrainers || undefined
   };
   return jwt.sign(payload, secret(), { expiresIn: TOKEN_TTL });
 }
@@ -66,6 +70,7 @@ const PUBLIC_ROUTES = [
   ['GET', /^\/health$/],
   ['POST', /^\/auth\/login$/],
   ['GET', /^\/auth\/departments$/],
+  ['GET', /^\/auth\/trainer-credentials$/],
   ['GET', /^\/departments$/],
   ['POST', /^\/calls\/knowlarity\/webhook$/],
   ['GET', /^\/calls\/knowlarity\/webhook$/],

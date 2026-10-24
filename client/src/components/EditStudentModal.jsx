@@ -21,7 +21,8 @@ export const BRANCH_OPTIONS = [
   'Vizag (Andhra Pradesh)',
   'Pune (Maharashtra)',
   'Kollapur (Maharashtra)',
-  'Theni (Tamil Nadu)'
+  'Theni (Tamil Nadu)',
+  'Not Mentioned'
 ];
 
 export const TIMING_OPTIONS = CANONICAL_TIMING_OPTIONS;
@@ -437,8 +438,9 @@ export default function EditStudentModal({ isOpen, onClose, student, onSuccess, 
                   onChange={(e) => setBatchTiming(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-200 focus:bg-white rounded-xl px-3.5 py-2 text-xs text-slate-900 font-semibold outline-none focus:border-[#00897b] transition-all cursor-pointer"
                 >
+                  <option value="Not Mentioned">Not Mentioned</option>
                   {/* Preserve existing custom/legacy value if not matched */}
-                  {batchTiming && !availableSlots.some(s => s.label === batchTiming || s.value === batchTiming || s.timing === batchTiming) && (
+                  {batchTiming && batchTiming !== 'Not Mentioned' && !availableSlots.some(s => s.label === batchTiming || s.value === batchTiming || s.timing === batchTiming) && (
                     <option value={batchTiming}>Current: {batchTiming}</option>
                   )}
                   <optgroup label={`🎯 Available for Selected Course & Branch (${availableSlots.length} Slots)`}>

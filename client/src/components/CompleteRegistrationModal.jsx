@@ -616,6 +616,7 @@ export default function CompleteRegistrationModal({
                   className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer"
                 >
                   <option value="">— Select branch —</option>
+                  <option value="Not Mentioned">Not Mentioned</option>
                   {Object.entries(BRANCH_MAP).map(([bCode, bName]) => (
                     <option key={bCode} value={bName}>
                       {bName} ({bCode})
@@ -651,6 +652,7 @@ export default function CompleteRegistrationModal({
                   className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer"
                 >
                   <option value="">— Select timing slot —</option>
+                  <option value="Not Mentioned">Not Mentioned</option>
                   {/* Preserve existing custom/legacy value if not matched */}
                   {batchTiming && !availableSlots.some(s => s.label === batchTiming || s.value === batchTiming || s.timing === batchTiming) && (
                     <option value={batchTiming}>Current: {batchTiming}</option>

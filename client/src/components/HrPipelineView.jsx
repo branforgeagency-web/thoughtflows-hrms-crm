@@ -30,7 +30,7 @@ import { getLeads, updateLead, deleteLead, createEscalation } from '../services/
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 import EditLeadModal from './EditLeadModal';
 
-const STAGE_ORDER = ['new', 'contacted', 'demo_booked', 'demo_attended', 'fee_followup', 'admitted'];
+const STAGE_ORDER = ['new', 'contacted', 'demo_booked', 'demo_attended', 'fee_followup', 'admitted', 'not_mentioned'];
 
 const STAGE_LABELS = {
   new: 'New Lead',
@@ -38,7 +38,8 @@ const STAGE_LABELS = {
   demo_booked: 'Demo Booked',
   demo_attended: 'Demo Attended',
   fee_followup: 'Fee Follow-up',
-  admitted: 'Admitted & Enrolled'
+  admitted: 'Admitted & Enrolled',
+  not_mentioned: 'Not Mentioned'
 };
 
 const NEXT_STAGE_LABELS = {
@@ -46,7 +47,8 @@ const NEXT_STAGE_LABELS = {
   contacted: 'Demo Booked',
   demo_booked: 'Demo Attended',
   demo_attended: 'Fee Follow-up',
-  fee_followup: 'Admit Student'
+  fee_followup: 'Admit Student',
+  not_mentioned: 'Contacted'
 };
 
 // Classifies a lead's follow-up against real dates instead of guessing.
@@ -384,7 +386,8 @@ export default function HrPipelineView({
       { id: 'contacted', title: 'CONTACTED', dotColor: 'bg-blue-600', stageMatches: ['contacted'] },
       { id: 'pitched', title: 'DEMO / PITCH', dotColor: 'bg-purple-600', stageMatches: ['demo_booked', 'demo_attended'] },
       { id: 'fees', title: 'FEES TALK', dotColor: 'bg-amber-600', stageMatches: ['fee_followup'] },
-      { id: 'admitted', title: 'ADMITTED', dotColor: 'bg-emerald-600', stageMatches: ['admitted'] }
+      { id: 'admitted', title: 'ADMITTED', dotColor: 'bg-emerald-600', stageMatches: ['admitted'] },
+      { id: 'not_mentioned', title: 'NOT MENTIONED', dotColor: 'bg-slate-500', stageMatches: ['not_mentioned', 'not mentioned'] }
     ];
 
     return cols.map(c => {

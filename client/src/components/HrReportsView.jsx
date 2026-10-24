@@ -20,7 +20,8 @@ const STAGES = [
   { key: 'demo_attended', label: 'Demo Attended', color: '#059669' },
   { key: 'fee_followup', label: 'Fee Discussion', color: '#ea580c' },
   { key: 'admitted', label: 'Admitted & Enrolled', color: '#10b981' },
-  { key: 'closed', label: 'Closed / Lost', color: '#94a3b8' }
+  { key: 'closed', label: 'Closed / Lost', color: '#94a3b8' },
+  { key: 'not_mentioned', label: 'Not Mentioned', color: '#64748b' }
 ];
 
 function daysAgo(dateStr) {

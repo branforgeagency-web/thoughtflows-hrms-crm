@@ -14,12 +14,18 @@ import {
   CheckCircle2,
   Award,
   Network,
-  LayoutGrid
+  LayoutGrid,
+  Lock,
+  KeyRound,
+  ShieldCheck,
+  UserCheck
 } from 'lucide-react';
 import DashboardNavSwitcher from './DashboardNavSwitcher';
 import TrainingDepartmentDashboard from './TrainingDepartmentDashboard';
 import TrainerRoleDashboard from './TrainerRoleDashboard';
+import TrainerHeadDashboard from './TrainerHeadDashboard';
 import TrainerOrgHierarchyChart from './TrainerOrgHierarchyChart';
+import TrainerRoleLoginModal from './TrainerRoleLoginModal';
 import {
   TRAINER_HIERARCHY,
   ALL_HIERARCHY_TRAINERS
@@ -42,7 +48,8 @@ const TRAINER_ROLES = [
     icon: Crown,
     gradient: 'linear-gradient(135deg, #005a9c, #0284c7)',
     accentText: 'text-blue-700',
-    ring: 'hover:border-blue-400'
+    ring: 'hover:border-blue-400',
+    accountHint: 'Manoj · Pan-India'
   },
   {
     key: 'manager',
@@ -53,7 +60,8 @@ const TRAINER_ROLES = [
     icon: Briefcase,
     gradient: 'linear-gradient(135deg, #00828a, #0d9488)',
     accentText: 'text-teal-700',
-    ring: 'hover:border-teal-400'
+    ring: 'hover:border-teal-400',
+    accountHint: 'Keerthi (TN/KL) & Pavithra (AP/TS)'
   },
   {
     key: 'tl',
@@ -64,18 +72,20 @@ const TRAINER_ROLES = [
     icon: Users,
     gradient: 'linear-gradient(135deg, #2e7d32, #16a34a)',
     accentText: 'text-emerald-700',
-    ring: 'hover:border-emerald-400'
+    ring: 'hover:border-emerald-400',
+    accountHint: 'Ram Balaji, Vaishna & Mounika'
   },
   {
     key: 'trainer',
     tier: 'FACULTY DESK',
-    name: 'Trainer',
+    name: 'Trainers',
     desc: 'Run daily batches, live class rooms, attendance, demos, doubt resolutions & test builder.',
     scope: '25 FACULTY DESKS · 12 BRANCHES',
     icon: GraduationCap,
     gradient: 'linear-gradient(135deg, #38BDF8, #2563EB)',
     accentText: 'text-sky-700',
-    ring: 'hover:border-sky-400'
+    ring: 'hover:border-sky-400',
+    accountHint: 'Srithar S & 25 Faculty Desks'
   }
 ];
 
@@ -90,6 +100,17 @@ export default function TrainersDepartmentHub({
   const [selectedLeaderId, setSelectedLeaderId] = useState(null);
   const [selectedTrainerUser, setSelectedTrainerUser] = useState(null);
   const [hubTab, setHubTab] = useState('roles'); // 'roles' | 'org'
+  const [loginModalRole, setLoginModalRole] = useState(null);
+
+  // Authenticated Trainer Department User
+  const [activeTrainerUser, setActiveTrainerUser] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem('thoughtflows_trainer_user');
+      if (saved) return JSON.parse(saved);
+      if (currentUser?.trainerRole || currentUser?.trainerId) return currentUser;
+    } catch (_) {}
+    return null;
+  });
 
   const [trainers, setTrainers] = useState([]);
   const [batches, setBatches] = useState([]);
@@ -145,29 +166,63 @@ export default function TrainersDepartmentHub({
     return demos.filter((d) => ['booked', 'confirmed'].includes(String(d.status || '').toLowerCase())).length;
   }, [demos]);
 
+  // Handle clicking a role card
+  const handleRoleCardClick = (roleKey) => {
+    // If user is already authenticated in this session for this role, enter directly
+    if (activeTrainerUser && (activeTrainerUser.trainerRole === roleKey || (roleKey === 'trainer' && activeTrainerUser.trainerId))) {
+      setSelectedLeaderId(activeTrainerUser.leaderId || null);
+      if (roleKey === 'trainer') {
+        setSelectedTrainerUser(activeTrainerUser);
+      }
+      setSelectedRole(roleKey);
+      return;
+    }
+
+    // Otherwise, trigger the separate login modal for this specific role
+    setLoginModalRole(roleKey);
+  };
+
+  // Handle successful login from modal
+  const handleLoginSuccess = (user) => {
+    setActiveTrainerUser(user);
+    const targetRole = user.trainerRole || loginModalRole || 'head';
+    setSelectedLeaderId(user.leaderId || null);
+
+    if (targetRole === 'trainer' || user.trainerId) {
+      setSelectedTrainerUser(user);
+      setSelectedRole('trainer');
+    } else {
+      setSelectedRole(targetRole);
+    }
+    setLoginModalRole(null);
+  };
+
+  // Logout trainer session
+  const handleTrainerLogout = () => {
+    try {
+      sessionStorage.removeItem('thoughtflows_trainer_user');
+      const currentRaw = sessionStorage.getItem('thoughtflows_user');
+      if (currentRaw) {
+        const u = JSON.parse(currentRaw);
+        if (u?.trainerRole || u?.trainerId || u?.department === 'training') {
+          sessionStorage.removeItem('thoughtflows_user');
+        }
+      }
+    } catch (_) {}
+    setActiveTrainerUser(null);
+    setSelectedRole(null);
+    setSelectedLeaderId(null);
+    setSelectedTrainerUser(null);
+  };
+
   // Handle clicking a node directly from the interactive Organization Chart
   const handleSelectHierarchyNode = (node) => {
-    if (node.roleType === 'head') {
-      setSelectedLeaderId('manoj');
-      setSelectedRole('head');
-    } else if (node.roleType === 'manager') {
+    const roleKey = node.roleType;
+    if (activeTrainerUser && activeTrainerUser.trainerRole === roleKey) {
       setSelectedLeaderId(node.id);
-      setSelectedRole('manager');
-    } else if (node.roleType === 'tl') {
-      setSelectedLeaderId(node.id);
-      setSelectedRole('tl');
-    } else if (node.roleType === 'trainer') {
-      const found = ALL_HIERARCHY_TRAINERS.find((t) => t.id === node.id || t.name === node.name);
-      setSelectedTrainerUser({
-        trainerId: found?.id || node.id,
-        trainerName: found?.name || node.name,
-        name: found?.name || node.name,
-        userName: found?.name || node.name,
-        role: 'Faculty',
-        branch: found?.branch || 'Coimbatore',
-        courseKey: found?.course || 'CPC'
-      });
-      setSelectedRole('trainer');
+      setSelectedRole(roleKey);
+    } else {
+      setLoginModalRole(roleKey);
     }
   };
 
@@ -176,8 +231,8 @@ export default function TrainersDepartmentHub({
     return (
       <TrainingDepartmentDashboard
         onClose={onClose}
-        currentUser={selectedTrainerUser || currentUser}
-        onLogout={onLogout}
+        currentUser={selectedTrainerUser || activeTrainerUser || currentUser}
+        onLogout={handleTrainerLogout}
         onSwitchDepartment={onSwitchDepartment}
         theme={theme}
         onBackToRoles={() => {
@@ -188,18 +243,18 @@ export default function TrainersDepartmentHub({
     );
   }
 
-  // Render Head, Manager, or Team Lead Dashboard
+  // Render Head, Manager, or Team Lead Dashboard (All using the identical 8-point dashboard architecture)
   if (selectedRole === 'head' || selectedRole === 'manager' || selectedRole === 'tl') {
     return (
-      <TrainerRoleDashboard
+      <TrainerHeadDashboard
         roleType={selectedRole}
-        initialLeaderId={selectedLeaderId}
+        initialLeaderId={selectedLeaderId || activeTrainerUser?.leaderId}
         onBack={() => {
           setSelectedRole(null);
           setSelectedLeaderId(null);
         }}
-        currentUser={currentUser}
-        onLogout={onLogout}
+        currentUser={activeTrainerUser || currentUser}
+        onLogout={handleTrainerLogout}
         onSwitchDepartment={onSwitchDepartment}
         onClose={onClose}
       />
@@ -209,6 +264,14 @@ export default function TrainersDepartmentHub({
   // Main Hub Landing View
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-[#F8FAFC] font-sans text-slate-800 animate-fadeIn">
+      {/* Role-Specific Login Modal */}
+      <TrainerRoleLoginModal
+        isOpen={Boolean(loginModalRole)}
+        roleKey={loginModalRole || 'head'}
+        onClose={() => setLoginModalRole(null)}
+        onLoginSuccess={handleLoginSuccess}
+      />
+
       {/* Top Navbar */}
       <header
         className="sticky top-0 z-30 px-4 sm:px-6 lg:px-8 py-3 flex items-center justify-between gap-3 flex-wrap shadow-md"
@@ -240,23 +303,47 @@ export default function TrainersDepartmentHub({
             />
           )}
 
-          <div className="flex items-center gap-2 bg-white/10 rounded-full pl-2 pr-4 py-1.5">
-            <span className="w-8 h-8 rounded-full grid place-items-center text-xs font-bold text-white bg-gradient-to-br from-sky-400 to-blue-600 shadow-xs">
-              {(currentUser?.name || 'T')[0]}
-            </span>
-            <div>
-              <div className="text-xs font-bold text-white leading-tight">
-                {currentUser?.name || 'Trainers Department'}
+          {activeTrainerUser ? (
+            <div className="flex items-center gap-2 bg-emerald-500/20 border border-emerald-400/40 rounded-full pl-2 pr-3 py-1">
+              <span className="w-7 h-7 rounded-full grid place-items-center text-xs font-bold text-white bg-emerald-600 shadow-xs">
+                {(activeTrainerUser.name || 'U')[0]}
+              </span>
+              <div className="text-left">
+                <div className="text-xs font-bold text-white leading-tight">
+                  {activeTrainerUser.name}
+                </div>
+                <div className="text-[9px] font-bold tracking-wider text-emerald-200 uppercase">
+                  {activeTrainerUser.role || activeTrainerUser.trainerRole}
+                </div>
               </div>
-              <div className="text-[9px] font-bold tracking-[0.15em] text-slate-300 uppercase">
-                {hubTab === 'roles' ? '4 Role Desks' : 'Org Hierarchy'}
+              <button
+                type="button"
+                onClick={handleTrainerLogout}
+                className="ml-1 text-[10px] text-emerald-200 hover:text-white underline cursor-pointer"
+                title="Sign out of current account"
+              >
+                Sign out
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 bg-white/10 rounded-full pl-2 pr-4 py-1.5">
+              <span className="w-8 h-8 rounded-full grid place-items-center text-xs font-bold text-white bg-gradient-to-br from-sky-400 to-blue-600 shadow-xs">
+                {(currentUser?.name || 'T')[0]}
+              </span>
+              <div>
+                <div className="text-xs font-bold text-white leading-tight">
+                  {currentUser?.name || 'Trainers Department'}
+                </div>
+                <div className="text-[9px] font-bold tracking-[0.15em] text-slate-300 uppercase">
+                  {hubTab === 'roles' ? '4 Role Desks' : 'Org Hierarchy'}
+                </div>
               </div>
             </div>
-          </div>
+          )}
 
           {(onLogout || onClose) && (
             <button
-              onClick={onLogout || onClose}
+              onClick={activeTrainerUser ? handleTrainerLogout : (onLogout || onClose)}
               className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 hover:text-white border border-rose-400/30 text-xs font-bold transition-all cursor-pointer"
               title="Logout"
             >
@@ -280,16 +367,16 @@ export default function TrainersDepartmentHub({
           />
           <div className="relative z-10">
             <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 text-[11px] font-bold tracking-[0.2em] text-sky-300 uppercase mb-3">
-              <Sparkles className="w-3.5 h-3.5 text-sky-300" />
-              NO:1 Medical Coding Academy · Training Hub
+              <ShieldCheck className="w-3.5 h-3.5 text-sky-300" />
+              Role-Based Authentication · Trainers Department
             </div>
             <h2 className="text-3xl sm:text-4xl font-extrabold text-white leading-[1.1] tracking-tight">
               Trainers Department
               <br />
-              <span className="text-sky-300">Executive &amp; Faculty Hierarchy</span>
+              <span className="text-sky-300">Executive &amp; Faculty Portals</span>
             </h2>
             <p className="text-slate-300 text-sm mt-4 max-w-lg leading-relaxed">
-              Manoj (Head of Training) · Keerthi &amp; Pavithra (Managers) · Ram Balaji, Vaishna &amp; Mounika (Team Leads) · 25 Specialized Faculty Desks.
+              Each role desk has a dedicated login flow. Authenticate as Trainer Head, Trainer Manager, Trainer TL, or Trainer to view your assigned branch &amp; faculty data.
             </p>
 
             {/* View Switcher Tabs */}
@@ -345,28 +432,39 @@ export default function TrainersDepartmentHub({
           <div>
             <div className="flex items-center justify-between mb-4">
               <div>
-                <h3 className="text-lg font-extrabold text-slate-900 tracking-tight">Select Your Role</h3>
+                <h3 className="text-lg font-extrabold text-slate-900 tracking-tight">Select Your Role Desk</h3>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Choose a role card below to access its specialized dashboard, data, and permissions.
+                  Click a role card below to log in with individual credentials and view your authorized dashboard.
                 </p>
               </div>
-              <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">
-                4 Roles Configured
+              <span className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                <Lock className="w-3.5 h-3.5 text-slate-400" />
+                Individual Credentials Required
               </span>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
               {TRAINER_ROLES.map((role) => {
                 const Icon = role.icon;
+                const isCurrentActive = activeTrainerUser && (activeTrainerUser.trainerRole === role.key || (role.key === 'trainer' && activeTrainerUser.trainerId));
                 return (
                   <button
+                    type="button"
                     key={role.key}
-                    onClick={() => {
-                      setSelectedLeaderId(null);
-                      setSelectedRole(role.key);
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      handleRoleCardClick(role.key);
                     }}
-                    className={`text-left bg-white border-2 border-slate-200 ${role.ring} rounded-[22px] p-6 min-h-[230px] flex flex-col justify-between transition-all duration-200 hover:-translate-y-1 hover:shadow-xl group cursor-pointer`}
+                    className={`text-left bg-white border-2 border-slate-200 ${role.ring} rounded-[22px] p-6 min-h-[250px] flex flex-col justify-between transition-all duration-200 hover:-translate-y-1 hover:shadow-xl group cursor-pointer relative overflow-hidden`}
                   >
+                    {isCurrentActive && (
+                      <div className="absolute top-0 right-0 bg-emerald-500 text-white text-[9px] font-black uppercase tracking-wider px-3 py-1 rounded-bl-xl shadow-xs flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3" />
+                        Active Session
+                      </div>
+                    )}
+
                     <div>
                       <div className="flex items-center justify-between mb-4">
                         <span
@@ -388,13 +486,18 @@ export default function TrainersDepartmentHub({
                       </p>
                     </div>
 
-                    <div className="flex items-center justify-between mt-5 pt-3.5 border-t border-slate-100">
-                      <span className={`text-[10px] font-bold tracking-wide uppercase ${role.accentText}`}>
-                        {role.scope}
-                      </span>
-                      <span className="inline-flex items-center gap-1 text-[13px] font-extrabold text-slate-400 group-hover:text-blue-600 group-hover:translate-x-1 transition-all">
-                        Open →
-                      </span>
+                    <div className="mt-5 pt-3.5 border-t border-slate-100">
+                      <div className="text-[10.5px] font-semibold text-slate-400 mb-2 truncate">
+                        👤 {role.accountHint}
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className={`text-[10px] font-bold tracking-wide uppercase ${role.accentText}`}>
+                          {role.scope}
+                        </span>
+                        <span className="inline-flex items-center gap-1 text-[13px] font-extrabold text-slate-600 group-hover:text-blue-600 group-hover:translate-x-1 transition-all">
+                          {isCurrentActive ? 'Enter Dashboard →' : 'Sign In →'}
+                        </span>
+                      </div>
                     </div>
                   </button>
                 );

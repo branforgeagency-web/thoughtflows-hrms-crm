@@ -1214,6 +1214,45 @@ const branchShort = (v) => String(v || '').replace(/\s*(branch|\(.*\)|hq)\b/gi, 
 const isScopedBranchManager = (req) => (req.user?.role === 'Branch Manager' || /branch manager/i.test(req.user?.role || '')) && Boolean(req.user?.branch);
 const getBranchManagerBranch = (req) => branchShort(req.user?.branch || '');
 
+// Trainer Role Scoping Helpers
+const isTrainerHeadUser = (req) => {
+  const u = req.user;
+  if (!u) return false;
+  return (
+    u.trainerRole === 'head' ||
+    u.role === 'Head of Training Department' ||
+    u.role === 'Head of Trainer' ||
+    u.leaderId === 'manoj' ||
+    u.email === 'manoj.head@thoughtflows.in' ||
+    u.email === 'manoj@thoughtflows.in' ||
+    (u.department === 'training' && !u.trainerRole && !u.trainerId)
+  );
+};
+
+const isTrainerManagerUser = (req) => {
+  const u = req.user;
+  if (!u) return false;
+  return u.trainerRole === 'manager' || /training manager|trainer manager/i.test(u.role || '');
+};
+
+const isTrainerTLUser = (req) => {
+  const u = req.user;
+  if (!u) return false;
+  return u.trainerRole === 'tl' || /team lead|trainer tl/i.test(u.role || '');
+};
+
+const isIndividualTrainerUser = (req) => {
+  const u = req.user;
+  if (!u) return false;
+  return (
+    (u.trainerRole === 'trainer' || u.role === 'Trainer' || u.role === 'Faculty') &&
+    Boolean(u.trainerId) &&
+    !isTrainerHeadUser(req) &&
+    !isTrainerManagerUser(req) &&
+    !isTrainerTLUser(req)
+  );
+};
+
 async function departmentList() {
   await seedOnce('seed_department_master', async () => {
     const have = new Set((await Department.find().select('code').lean()).map((d) => d.code));
@@ -2126,6 +2165,23 @@ router.get('/students', async (req, res) => {
     if (handoverStatus) andConditions.push({ handoverStatus });
     if (statusGroup && statusGroup !== 'all') {
       andConditions.push({ statusGroup });
+    }
+
+    // Role-based scoping for Trainer Department roles
+    if (isIndividualTrainerUser(req)) {
+      andConditions.push({
+        $or: [
+          { trainerId: req.user.trainerId },
+          { trainer: new RegExp(`^${escapeRegex(req.user.name || '')}$`, 'i') }
+        ]
+      });
+    } else if (isTrainerTLUser(req) || isTrainerManagerUser(req)) {
+      const allowedTrainers = req.user.supervisedTrainers || [];
+      const allowedBranches = (req.user.branches || []).map((b) => new RegExp(escapeRegex(b), 'i'));
+      const scopeConds = [];
+      if (allowedTrainers.length) scopeConds.push({ trainerId: { $in: allowedTrainers } });
+      if (allowedBranches.length) scopeConds.push({ branch: { $in: allowedBranches } });
+      if (scopeConds.length) andConditions.push({ $or: scopeConds });
     }
 
     if (isBM && userBranch) {
@@ -3081,7 +3137,8 @@ router.get('/leads', async (req, res) => {
       { key: 'demo_booked', label: '3. Demo Booked', count: 0, color: '#7c3aed' },
       { key: 'demo_attended', label: '4. Demo Attended', count: 0, color: '#059669' },
       { key: 'fee_followup', label: '5. Fee Discussion', count: 0, color: '#ea580c' },
-      { key: 'admitted', label: '6. Admitted & Enrolled', count: 0, color: '#10b981' }
+      { key: 'admitted', label: '6. Admitted & Enrolled', count: 0, color: '#10b981' },
+      { key: 'not_mentioned', label: '7. Not Mentioned', count: 0, color: '#64748b' }
     ];
 
     leads.forEach(l => {
@@ -3830,7 +3887,15 @@ router.get('/trainer/heads', async (req, res) => {
 // Trainer Settings Endpoints — the admin-editable demo trainer roster
 router.get('/trainer/settings', async (req, res) => {
   try {
-    const trainers = await Trainer.find().sort({ trainerName: 1 });
+    let trainers = await Trainer.find().sort({ trainerName: 1 });
+    if (isIndividualTrainerUser(req)) {
+      trainers = trainers.filter((t) => t.trainerId === req.user.trainerId || (req.user.email && t.email === req.user.email));
+    } else if (isTrainerTLUser(req) || isTrainerManagerUser(req)) {
+      const allowed = req.user.supervisedTrainers || [];
+      if (allowed.length) {
+        trainers = trainers.filter((t) => allowed.includes(t.trainerId));
+      }
+    }
     res.json(trainers);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -3954,6 +4019,17 @@ router.get('/demos', async (req, res) => {
     const andConditions = [];
     if (status && status !== 'all') {
       andConditions.push({ status });
+    }
+
+    if (isIndividualTrainerUser(req)) {
+      andConditions.push({ trainerId: req.user.trainerId });
+    } else if (isTrainerTLUser(req) || isTrainerManagerUser(req)) {
+      const allowedTrainers = req.user.supervisedTrainers || [];
+      const allowedBranches = (req.user.branches || []).map((b) => new RegExp(escapeRegex(b), 'i'));
+      const scopeConds = [];
+      if (allowedTrainers.length) scopeConds.push({ trainerId: { $in: allowedTrainers } });
+      if (allowedBranches.length) scopeConds.push({ branch: { $in: allowedBranches } }, { location: { $in: allowedBranches } });
+      if (scopeConds.length) andConditions.push({ $or: scopeConds });
     }
 
     if (isBM && targetBranch) {
@@ -4642,6 +4718,178 @@ const DEPARTMENT_PORTALS = {
 };
 
 // Registered Academy Trainer Account (Srithar S)
+// Master Organization Accounts for Trainer Department Roles
+const TRAINER_ROLE_ACCOUNTS = {
+  'manoj.head@thoughtflows.in': {
+    id: 'usr_head_manoj',
+    leaderId: 'manoj',
+    name: 'Manoj',
+    userName: 'Manoj',
+    email: 'manoj.head@thoughtflows.in',
+    aliases: ['manoj@thoughtflows.in', 'manoj', 'head'],
+    role: 'Head of Training Department',
+    trainerRole: 'head',
+    department: 'training',
+    departmentCode: 'ACAD',
+    departmentName: 'Training Department',
+    branch: 'All Branches (HQ)',
+    defaultPass: 'Head@123',
+    fallbackPasses: ['Manoj@123', 'Head@123'],
+    envKey: 'TRAINER_HEAD_PASSWORD',
+    color: '#005a9c',
+    branches: [
+      'Saravanampatti', 'Gandhipuram', 'Hopes', 'Salem', 'Trichy', 'Theni', 'Coimbatore',
+      'Kochi', 'Trivandrum', 'Ameerpet', 'Dilsukhnagar', 'Tirupati', 'Vizag'
+    ],
+    supervisedTrainers: [
+      'TR-TN-01', 'TR-TN-02', 'TR-TN-03', 'TR-TN-04', 'TR-TN-05', 'TR-TN-06', 'TR-TN-07', 'TR-TN-08', 'TR-TN-09', 'TR-TN-10',
+      'TR-KL-01', 'TR-KL-02', 'TR-KL-03', 'TR-KL-04', 'TR-KL-05', 'TR-KL-06', 'TR-KL-07',
+      'TR-AP-01', 'TR-AP-02', 'TR-AP-03', 'TR-AP-04', 'TR-AP-05', 'TR-AP-06', 'TR-AP-07', 'TR-AP-08',
+      'TR-CBG-001'
+    ]
+  },
+  'keerthi.manager@thoughtflows.in': {
+    id: 'usr_mgr_keerthi',
+    leaderId: 'keerthi',
+    name: 'Keerthi',
+    userName: 'Keerthi',
+    email: 'keerthi.manager@thoughtflows.in',
+    aliases: ['keerthi@thoughtflows.in', 'keerthi'],
+    role: 'Training Manager',
+    trainerRole: 'manager',
+    department: 'training',
+    departmentCode: 'ACAD',
+    departmentName: 'Training Department · TN & KL',
+    zone: 'TN / KL',
+    branch: 'Saravanampatti',
+    defaultPass: 'Keerthi@123',
+    envKey: 'TRAINER_MGR_KEERTHI_PASSWORD',
+    color: '#0d9488',
+    branches: ['Saravanampatti', 'Gandhipuram', 'Hopes', 'Salem', 'Trichy', 'Theni', 'Coimbatore', 'Kochi', 'Trivandrum'],
+    supervisedTrainers: [
+      'TR-TN-01', 'TR-TN-02', 'TR-TN-03', 'TR-TN-04', 'TR-TN-05', 'TR-TN-06', 'TR-TN-07', 'TR-TN-08', 'TR-TN-09', 'TR-TN-10',
+      'TR-KL-01', 'TR-KL-02', 'TR-KL-03', 'TR-KL-04', 'TR-KL-05', 'TR-KL-06', 'TR-KL-07'
+    ]
+  },
+  'pavithra.manager@thoughtflows.in': {
+    id: 'usr_mgr_pavithra',
+    leaderId: 'pavithra',
+    name: 'Pavithra',
+    userName: 'Pavithra',
+    email: 'pavithra.manager@thoughtflows.in',
+    aliases: ['pavithra@thoughtflows.in', 'pavithra'],
+    role: 'Training Manager',
+    trainerRole: 'manager',
+    department: 'training',
+    departmentCode: 'ACAD',
+    departmentName: 'Training Department · AP & TS',
+    zone: 'AP / TS',
+    branch: 'Ameerpet',
+    defaultPass: 'Pavithra@123',
+    envKey: 'TRAINER_MGR_PAVITHRA_PASSWORD',
+    color: '#7c3aed',
+    branches: ['Ameerpet', 'Dilsukhnagar', 'Tirupati', 'Vizag', 'Gandhipuram'],
+    supervisedTrainers: [
+      'TR-AP-01', 'TR-AP-02', 'TR-AP-03', 'TR-AP-04', 'TR-AP-05', 'TR-AP-06', 'TR-AP-07', 'TR-AP-08'
+    ]
+  },
+  'rambalaji.tl@thoughtflows.in': {
+    id: 'usr_tl_ram_balaji',
+    leaderId: 'ram_balaji',
+    name: 'Ram Balaji',
+    userName: 'Ram Balaji',
+    email: 'rambalaji.tl@thoughtflows.in',
+    aliases: ['rambalaji@thoughtflows.in', 'rambalaji', 'ram_balaji'],
+    role: 'Trainer Team Lead',
+    trainerRole: 'tl',
+    department: 'training',
+    departmentCode: 'ACAD',
+    departmentName: 'Training Department · Tamil Nadu Pod',
+    zone: 'TN',
+    branch: 'Saravanampatti',
+    defaultPass: 'RamBalaji@123',
+    envKey: 'TRAINER_TL_RAMBALAJI_PASSWORD',
+    color: '#16a34a',
+    branches: ['Saravanampatti', 'Gandhipuram', 'Hopes', 'Salem', 'Trichy', 'Theni', 'Coimbatore'],
+    supervisedTrainers: [
+      'TR-TN-01', 'TR-TN-02', 'TR-TN-03', 'TR-TN-04', 'TR-TN-05', 'TR-TN-06', 'TR-TN-07', 'TR-TN-08', 'TR-TN-09', 'TR-TN-10'
+    ]
+  },
+  'vaishna.tl@thoughtflows.in': {
+    id: 'usr_tl_vaishna',
+    leaderId: 'vaishna',
+    name: 'Vaishna',
+    userName: 'Vaishna',
+    email: 'vaishna.tl@thoughtflows.in',
+    aliases: ['vaishna@thoughtflows.in', 'vaishna'],
+    role: 'Trainer Team Lead',
+    trainerRole: 'tl',
+    department: 'training',
+    departmentCode: 'ACAD',
+    departmentName: 'Training Department · Kerala Pod',
+    zone: 'KL',
+    branch: 'Kochi',
+    defaultPass: 'Vaishna@123',
+    envKey: 'TRAINER_TL_VAISHNA_PASSWORD',
+    color: '#0284c7',
+    branches: ['Kochi', 'Trivandrum'],
+    supervisedTrainers: [
+      'TR-KL-01', 'TR-KL-02', 'TR-KL-03', 'TR-KL-04', 'TR-KL-05', 'TR-KL-06', 'TR-KL-07'
+    ]
+  },
+  'mounika.tl@thoughtflows.in': {
+    id: 'usr_tl_mounika',
+    leaderId: 'mounika',
+    name: 'Mounika',
+    userName: 'Mounika',
+    email: 'mounika.tl@thoughtflows.in',
+    aliases: ['mounika@thoughtflows.in', 'mounika'],
+    role: 'Trainer Team Lead',
+    trainerRole: 'tl',
+    department: 'training',
+    departmentCode: 'ACAD',
+    departmentName: 'Training Department · AP/TS Pod',
+    zone: 'AP / TS',
+    branch: 'Ameerpet',
+    defaultPass: 'Mounika@123',
+    envKey: 'TRAINER_TL_MOUNIKA_PASSWORD',
+    color: '#db2777',
+    branches: ['Ameerpet', 'Dilsukhnagar', 'Tirupati', 'Vizag', 'Gandhipuram'],
+    supervisedTrainers: [
+      'TR-AP-01', 'TR-AP-02', 'TR-AP-03', 'TR-AP-04', 'TR-AP-05', 'TR-AP-06', 'TR-AP-07', 'TR-AP-08'
+    ]
+  }
+};
+
+const MASTER_FACULTY_ROSTER = [
+  { id: 'TR-CBG-001', name: 'Srithar S', email: 'srithar.brandforge@gmail.com', branch: 'Gandhipuram', course: 'CPC', pass: 'Srithar@123' },
+  { id: 'TR-TN-01', name: 'Tharani shri', email: 'tharanishri.trainer@thoughtflows.in', branch: 'Saravanampatti', course: 'CPC', pass: 'Trainer@123' },
+  { id: 'TR-TN-02', name: 'Jennifer preethi', email: 'jennifer.trainer@thoughtflows.in', branch: 'Gandhipuram', course: 'CPC', pass: 'Trainer@123' },
+  { id: 'TR-TN-03', name: 'Karkuzhali', email: 'karkuzhali.trainer@thoughtflows.in', branch: 'Hopes', course: 'CIC', pass: 'Trainer@123' },
+  { id: 'TR-TN-04', name: 'Sowmiya', email: 'sowmiya.trainer@thoughtflows.in', branch: 'Salem', course: 'CPB', pass: 'Trainer@123' },
+  { id: 'TR-TN-05', name: 'Darsana', email: 'darsana.trainer@thoughtflows.in', branch: 'Trichy', course: 'CPC', pass: 'Trainer@123' },
+  { id: 'TR-TN-06', name: 'Sharon', email: 'sharon.trainer@thoughtflows.in', branch: 'Theni', course: 'CPMA', pass: 'Trainer@123' },
+  { id: 'TR-TN-07', name: 'Kaviya', email: 'kaviya.trainer@thoughtflows.in', branch: 'Saravanampatti', course: 'CPC', pass: 'Trainer@123' },
+  { id: 'TR-TN-08', name: 'Priya', email: 'priya.trainer@thoughtflows.in', branch: 'Gandhipuram', course: 'CRC', pass: 'Trainer@123' },
+  { id: 'TR-TN-09', name: 'Sumaiya', email: 'sumaiya.trainer@thoughtflows.in', branch: 'Hopes', course: 'CPC', pass: 'Trainer@123' },
+  { id: 'TR-TN-10', name: 'Sophiga', email: 'sophiga.trainer@thoughtflows.in', branch: 'Coimbatore', course: 'CIC', pass: 'Trainer@123' },
+  { id: 'TR-KL-01', name: 'Aleena', email: 'aleena.trainer@thoughtflows.in', branch: 'Kochi', course: 'CPC', pass: 'Trainer@123' },
+  { id: 'TR-KL-02', name: 'Aswini', email: 'aswini.trainer@thoughtflows.in', branch: 'Trivandrum', course: 'CIC', pass: 'Trainer@123' },
+  { id: 'TR-KL-03', name: 'Shilpa', email: 'shilpa.trainer@thoughtflows.in', branch: 'Kochi', course: 'CPB', pass: 'Trainer@123' },
+  { id: 'TR-KL-04', name: 'Varamani', email: 'varamani.trainer@thoughtflows.in', branch: 'Trivandrum', course: 'CPC', pass: 'Trainer@123' },
+  { id: 'TR-KL-05', name: 'Shiny', email: 'shiny.trainer@thoughtflows.in', branch: 'Kochi', course: 'CPMA', pass: 'Trainer@123' },
+  { id: 'TR-KL-06', name: 'Shiva kumar', email: 'shivakumar.trainer@thoughtflows.in', branch: 'Trivandrum', course: 'CRC', pass: 'Trainer@123' },
+  { id: 'TR-KL-07', name: 'Abarna', email: 'abarna.trainer@thoughtflows.in', branch: 'Kochi', course: 'CPC', pass: 'Trainer@123' },
+  { id: 'TR-AP-01', name: 'Pooja', email: 'pooja.trainer@thoughtflows.in', branch: 'Ameerpet', course: 'CPC', pass: 'Trainer@123' },
+  { id: 'TR-AP-02', name: 'Varsha', email: 'varsha.trainer@thoughtflows.in', branch: 'Dilsukhnagar', course: 'CIC', pass: 'Trainer@123' },
+  { id: 'TR-AP-03', name: 'Charishma', email: 'charishma.trainer@thoughtflows.in', branch: 'Tirupati', course: 'CPB', pass: 'Trainer@123' },
+  { id: 'TR-AP-04', name: 'Prasanna', email: 'prasanna.trainer@thoughtflows.in', branch: 'Vizag', course: 'CPC', pass: 'Trainer@123' },
+  { id: 'TR-AP-05', name: 'Aashifa', email: 'aashifa.trainer@thoughtflows.in', branch: 'Ameerpet', course: 'CPMA', pass: 'Trainer@123' },
+  { id: 'TR-AP-06', name: 'Santhiya', email: 'santhiya.trainer@thoughtflows.in', branch: 'Dilsukhnagar', course: 'CPC', pass: 'Trainer@123' },
+  { id: 'TR-AP-07', name: 'Kavitha', email: 'kavitha.trainer@thoughtflows.in', branch: 'Tirupati', course: 'CRC', pass: 'Trainer@123' },
+  { id: 'TR-AP-08', name: 'Santhosh', email: 'santhosh.trainer@thoughtflows.in', branch: 'Gandhipuram', course: 'IP-DRG', pass: 'Trainer@123' }
+];
+
 const TRAINER_ACCOUNTS = {
   'srithar.brandforge@gmail.com': {
     id: 'TR-CBG-001',
@@ -4704,6 +4952,15 @@ router.get('/auth/departments', (req, res) => {
 
 router.get('/auth/trainers', (req, res) => {
   res.json(Object.values(TRAINER_ACCOUNTS));
+});
+
+router.get('/auth/trainer-credentials', (req, res) => {
+  res.json({
+    head: Object.values(TRAINER_ROLE_ACCOUNTS).filter((a) => a.trainerRole === 'head'),
+    managers: Object.values(TRAINER_ROLE_ACCOUNTS).filter((a) => a.trainerRole === 'manager'),
+    teamLeads: Object.values(TRAINER_ROLE_ACCOUNTS).filter((a) => a.trainerRole === 'tl'),
+    faculty: MASTER_FACULTY_ROSTER
+  });
 });
 
 const mapRoleOrDeptToDashboard = (role = '', department = '') => {
@@ -4810,6 +5067,87 @@ router.post('/auth/login', async (req, res) => {
   const dropUndefined = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined));
 
   try {
+    // 0a. Organization Accounts for Trainer Department Roles (Head, Manager, TL)
+    let roleTrainerAcc = TRAINER_ROLE_ACCOUNTS[normalizedEmail];
+    if (!roleTrainerAcc) {
+      roleTrainerAcc = Object.values(TRAINER_ROLE_ACCOUNTS).find((acc) =>
+        acc.email.toLowerCase() === normalizedEmail ||
+        (acc.aliases || []).some((a) => a.toLowerCase() === normalizedEmail)
+      );
+    }
+    if (roleTrainerAcc) {
+      const expectedPass = process.env[roleTrainerAcc.envKey] || roleTrainerAcc.defaultPass;
+      const fallbacks = roleTrainerAcc.fallbackPasses || [];
+      let ok = (await checkPassword(password, expectedPass)).ok;
+      if (!ok) {
+        for (const fb of fallbacks) {
+          if ((await checkPassword(password, fb)).ok) {
+            ok = true;
+            break;
+          }
+        }
+      }
+      if (!ok) return deny(`Invalid password for ${roleTrainerAcc.name} (${roleTrainerAcc.role}).`);
+
+      return grant({
+        id: roleTrainerAcc.id,
+        name: roleTrainerAcc.name,
+        userName: roleTrainerAcc.name,
+        email: roleTrainerAcc.email,
+        role: roleTrainerAcc.role,
+        trainerRole: roleTrainerAcc.trainerRole,
+        leaderId: roleTrainerAcc.leaderId,
+        department: 'training',
+        departmentCode: roleTrainerAcc.departmentCode || 'ACAD',
+        departmentName: roleTrainerAcc.departmentName,
+        branch: roleTrainerAcc.branch,
+        branches: roleTrainerAcc.branches,
+        supervisedTrainers: roleTrainerAcc.supervisedTrainers,
+        color: roleTrainerAcc.color
+      }, `Welcome ${roleTrainerAcc.name} (${roleTrainerAcc.role})`);
+    }
+
+    // 0b. Faculty & Trainer Individual Accounts (25 Faculty Members + Srithar)
+    const matchedFaculty = MASTER_FACULTY_ROSTER.find((fac) => {
+      const cleanInput = normalizedEmail.replace(/[^a-z0-9]/g, '');
+      const cleanEmail = fac.email.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const cleanId = fac.id.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const cleanName = fac.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+      return (
+        fac.email.toLowerCase() === normalizedEmail ||
+        fac.id.toLowerCase() === normalizedEmail ||
+        cleanInput === cleanId ||
+        cleanInput === cleanEmail ||
+        cleanInput === cleanName
+      );
+    });
+    if (matchedFaculty) {
+      const envKey = `TRAINER_${matchedFaculty.id.replace(/\W/g, '_').toUpperCase()}_PASSWORD`;
+      const expectedPass = process.env[envKey] || matchedFaculty.pass || 'Trainer@123';
+      const { ok } = await checkPassword(password, expectedPass);
+      if (!ok) return deny(`Invalid password for faculty ${matchedFaculty.name}.`);
+      const roster = dropUndefined(await trainerRosterFields(matchedFaculty.email, matchedFaculty.name, matchedFaculty.id));
+      return grant({
+        id: matchedFaculty.id,
+        trainerId: matchedFaculty.id,
+        name: matchedFaculty.name,
+        userName: matchedFaculty.name,
+        email: matchedFaculty.email,
+        role: 'Trainer',
+        trainerRole: 'trainer',
+        department: 'training',
+        departmentCode: 'ACAD',
+        departmentName: 'Training & Faculty Department',
+        branch: matchedFaculty.branch,
+        courseKey: matchedFaculty.course,
+        course: matchedFaculty.course,
+        expertCourse: matchedFaculty.course,
+        specialization: `${matchedFaculty.course} Faculty`,
+        color: '#00897b',
+        ...roster
+      }, `Welcome Faculty ${matchedFaculty.name}`);
+    }
+
     // 0. Built-in trainer accounts — password comes from the server environment
     const trainerUser = TRAINER_ACCOUNTS[normalizedEmail];
     const trainerEnvKey = trainerUser ? `TRAINER_${String(trainerUser.trainerId).replace(/\W/g, '_').toUpperCase()}_PASSWORD` : '';
@@ -5392,7 +5730,16 @@ router.get('/trainer/doubts', async (req, res) => {
   try {
     const { trainerId, studentId } = req.query;
     const query = {};
-    if (trainerId) query.trainerId = trainerId;
+    if (isIndividualTrainerUser(req)) {
+      query.trainerId = req.user.trainerId;
+    } else if (isTrainerTLUser(req) || isTrainerManagerUser(req)) {
+      const allowedTrainers = req.user.supervisedTrainers || [];
+      if (allowedTrainers.length) {
+        query.trainerId = { $in: allowedTrainers };
+      }
+    } else if (trainerId) {
+      query.trainerId = trainerId;
+    }
     if (studentId) query.studentId = studentId;
     const doubts = await TrainerDoubt.find(query).sort({ createdAt: -1 });
     res.json(doubts.map(formatDoubt));
@@ -5632,7 +5979,16 @@ router.get('/trainer/attendance', async (req, res) => {
   try {
     const { trainerId, batch, date, from } = req.query;
     const query = {};
-    if (trainerId) query.trainerId = trainerId;
+    if (isIndividualTrainerUser(req)) {
+      query.trainerId = req.user.trainerId;
+    } else if (isTrainerTLUser(req) || isTrainerManagerUser(req)) {
+      const allowedTrainers = req.user.supervisedTrainers || [];
+      if (allowedTrainers.length) {
+        query.trainerId = { $in: allowedTrainers };
+      }
+    } else if (trainerId) {
+      query.trainerId = trainerId;
+    }
     if (batch) query.batch = batch;
     if (date) query.date = date;
     if (from) query.date = { $gte: from };
@@ -5774,7 +6130,16 @@ async function canonicalBatchName(name, trainerId) {
 router.get('/batches', async (req, res) => {
   try {
     const match = { batchName: { $nin: ['', null] } };
-    if (req.query.trainerId) match.trainerId = String(req.query.trainerId);
+    if (isIndividualTrainerUser(req)) {
+      match.trainerId = String(req.user.trainerId);
+    } else if (isTrainerTLUser(req) || isTrainerManagerUser(req)) {
+      const allowedTrainers = req.user.supervisedTrainers || [];
+      if (allowedTrainers.length) {
+        match.trainerId = { $in: allowedTrainers.map(String) };
+      }
+    } else if (req.query.trainerId) {
+      match.trainerId = String(req.query.trainerId);
+    }
     const rows = await Student.aggregate([
       { $match: match },
       { $group: { _id: { batch: '$batchName', trainerId: '$trainerId' }, trainerName: { $first: '$trainerName' }, course: { $first: '$course' }, students: { $sum: 1 } } },

@@ -442,6 +442,15 @@ export const BATCH_SCHEDULE = [
     trainer: 'Varsha',
     value: '2:30 PM – 4:30 PM · Trainer: Varsha (Ameerpet)',
     label: '2:30 PM – 4:30 PM · Trainer: Varsha (Ameerpet · CPC)'
+  },
+  {
+    course: 'All Courses',
+    mode: 'All Modes',
+    branch: 'All Branches',
+    timing: 'Not Mentioned',
+    trainer: 'Not Mentioned',
+    value: 'Not Mentioned',
+    label: 'Not Mentioned'
   }
 ];
 
@@ -476,6 +485,16 @@ export function matchCourse(courseStr = '', entryCourse = '') {
 
 // Dynamic timing slots filtered strictly by course, mode, and branch
 export function getAvailableTimingSlots({ course = '', mode = '', branch = '' } = {}) {
+  const notMentionedItem = {
+    course: 'All Courses',
+    mode: 'All Modes',
+    branch: 'All Branches',
+    timing: 'Not Mentioned',
+    trainer: 'Not Mentioned',
+    value: 'Not Mentioned',
+    label: 'Not Mentioned'
+  };
+
   const isClassroom = String(mode).toLowerCase().includes('class') || 
                       String(mode).toLowerCase().includes('offline') ||
                       (!mode && String(course).toLowerCase().includes('class'));
@@ -492,9 +511,9 @@ export function getAvailableTimingSlots({ course = '', mode = '', branch = '' } 
     if (branchBatches.length > 0) {
       if (course) {
         const courseFiltered = branchBatches.filter(item => matchCourse(course, item.course));
-        if (courseFiltered.length > 0) return courseFiltered;
+        if (courseFiltered.length > 0) return [notMentionedItem, ...courseFiltered];
       }
-      return branchBatches;
+      return [notMentionedItem, ...branchBatches];
     }
   }
 
@@ -503,13 +522,13 @@ export function getAvailableTimingSlots({ course = '', mode = '', branch = '' } 
     const onlineBatches = BATCH_SCHEDULE.filter(item => item.mode === 'Online');
     if (course) {
       const courseFiltered = onlineBatches.filter(item => matchCourse(course, item.course));
-      if (courseFiltered.length > 0) return courseFiltered;
+      if (courseFiltered.length > 0) return [notMentionedItem, ...courseFiltered];
     }
-    return onlineBatches;
+    return [notMentionedItem, ...onlineBatches];
   }
 
   // Fallback: full schedule
-  return BATCH_SCHEDULE;
+  return [notMentionedItem, ...BATCH_SCHEDULE.filter(i => i.label !== 'Not Mentioned')];
 }
 
 // Grouped categories for complete view across Online & Offline branches
@@ -557,7 +576,7 @@ export const BATCH_TIMING_GROUPS = [
 ];
 
 // Flat canonical list of timing labels with trainers for dropdown options
-export const CANONICAL_TIMING_OPTIONS = BATCH_SCHEDULE.map(item => item.label);
+export const CANONICAL_TIMING_OPTIONS = ['Not Mentioned', ...BATCH_SCHEDULE.filter(item => item.label !== 'Not Mentioned').map(item => item.label)];
 
 // Export alias for backward compatibility
 export const TIMING_OPTIONS = CANONICAL_TIMING_OPTIONS;

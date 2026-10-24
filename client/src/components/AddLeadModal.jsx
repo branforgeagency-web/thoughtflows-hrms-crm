@@ -705,6 +705,7 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead, onBulkImporte
                     <option value="Kollapur (Maharashtra)">Kollapur (Maharashtra)</option>
                     <option value="Theni (Tamil Nadu)">Theni (Tamil Nadu)</option>
                     <option value="Online Live (Virtual)">Online Live (Virtual)</option>
+                    <option value="Not Mentioned">Not Mentioned</option>
                   </select>
                 </div>
               </div>
