@@ -40,6 +40,7 @@ export default function DashboardModal({
   currentUser,
   onSwitchDepartment,
   onSignOut,
+  onTrainerLogout,
   theme = 'classic'
 }) {
   const isClay = theme === 'clay';
@@ -86,6 +87,7 @@ export default function DashboardModal({
         onClose={onClose}
         currentUser={currentUser}
         onLogout={handleSignOutAction}
+        onTrainerLogout={onTrainerLogout}
         onSwitchDepartment={onSwitchDepartment}
         theme={theme}
       />

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Home,
+  UserCheck,
   Building2,
   Layers,
   AlertTriangle,
@@ -46,8 +47,9 @@ import {
   bulkReassignDemos,
   onDataUpdate
 } from '../services/api';
-import { TRAINER_HIERARCHY, ALL_HIERARCHY_TRAINERS } from '../constants/trainerHierarchy';
+// Hierarchy constants removed to ensure 100% real database data
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
+import CourseSyllabusBoard from './CourseSyllabusBoard';
 
 export default function TrainerHeadDashboard({
   roleType = 'head', // 'head' | 'manager' | 'tl'
@@ -58,7 +60,30 @@ export default function TrainerHeadDashboard({
   onSwitchDepartment,
   onClose
 }) {
-  const [activeTab, setActiveTab] = useState('overview');
+  const [activeTab, setActiveTab] = useState(() => {
+    try {
+      return sessionStorage.getItem(`thoughtflows_trainer_tab_${roleType}`) || 'overview';
+    } catch (_) {
+      return 'overview';
+    }
+  });
+
+  useEffect(() => {
+    try {
+      if (activeTab) {
+        sessionStorage.setItem(`thoughtflows_trainer_tab_${roleType}`, activeTab);
+      }
+    } catch (_) {}
+  }, [activeTab, roleType]);
+  const isHeadRole = roleType === 'head';
+  const isManagerRole = roleType === 'manager' || currentUser?.trainerRole === 'manager' || /trainer manager|training manager/i.test(currentUser?.role || '') || String(currentUser?.email || '').toLowerCase().includes('.manager@');
+  const [syllabusSubTab, setSyllabusSubTab] = useState(() => isManagerRole ? 'master' : 'progress');
+
+  useEffect(() => {
+    if (!isHeadRole && (activeTab === 'weak_students' || activeTab === 'doubts')) {
+      setActiveTab('overview');
+    }
+  }, [isHeadRole, activeTab]);
   const [navOpen, setNavOpen] = useState(false);
 
   // Active Leader Selection (Manoj for Head, Keerthi/Pavithra for Manager, Ram Balaji/Vaishna/Mounika for TL)
@@ -124,31 +149,31 @@ export default function TrainerHeadDashboard({
       getTrainerDoubts().catch(() => [])
     ])
       .then(([stData, bData, brData, trData, attData, dData, dbtData]) => {
-        // Merge official 25 trainers with backend roster records
-        const mergedTrainers = [...(Array.isArray(trData) ? trData : [])];
-        ALL_HIERARCHY_TRAINERS.forEach((ht) => {
-          const found = mergedTrainers.find(
-            (t) =>
-              String(t.trainerName || t.name || '').toLowerCase() === ht.name.toLowerCase() ||
-              t.trainerId === ht.id
-          );
-          if (found) {
-            found.teamLeadId = ht.teamLeadId;
-            found.teamLeadName = ht.teamLeadName;
-            found.managerId = ht.managerId;
-            found.managerName = ht.managerName;
-            found.zone = ht.zone;
-            found.courseKey = found.courseKey || ht.course;
-            found.branchName = found.branchName || ht.branch;
-          } else {
-            mergedTrainers.push(ht);
+        // Pure Real Data: Use trainers returned directly from database / API
+        const realTrainers = [...(Array.isArray(trData) ? trData : [])];
+        const knownIds = new Set(realTrainers.map((t) => t.trainerId || t.id).filter(Boolean));
+        const knownNames = new Set(realTrainers.map((t) => String(t.trainerName || t.name || '').toLowerCase()).filter(Boolean));
+
+        // Supplement with any faculty handling active batches/students in the database if not in trainer collection
+        (Array.isArray(bData) ? bData : []).forEach((b) => {
+          const bTrName = b.trainer || b.faculty || b.trainerName;
+          if (bTrName && !knownNames.has(bTrName.toLowerCase())) {
+            knownNames.add(bTrName.toLowerCase());
+            realTrainers.push({
+              trainerId: b.trainerId || `tr_${bTrName.toLowerCase().replace(/[^a-z0-9]/g, '_')}`,
+              trainerName: bTrName,
+              branchName: b.branch || '',
+              courseKey: b.course || '',
+              role: 'Faculty Trainer',
+              active: true
+            });
           }
         });
 
         setStudents(Array.isArray(stData) ? stData : []);
         setBatches(Array.isArray(bData) ? bData : []);
         setBranches(Array.isArray(brData) ? brData : []);
-        setTrainers(mergedTrainers);
+        setTrainers(realTrainers);
         setAttendanceRecords(Array.isArray(attData) ? attData : []);
         setDemos(Array.isArray(dData) ? dData : []);
         setDoubts(Array.isArray(dbtData) ? dbtData : []);
@@ -166,43 +191,6 @@ export default function TrainerHeadDashboard({
     });
     return () => unsub();
   }, [loadDashboardData]);
-
-  // Active Leader Config
-  const currentLeader = useMemo(() => {
-    if (roleType === 'head') {
-      return {
-        id: 'manoj',
-        name: 'Manoj',
-        roleTitle: 'Head of Training Department',
-        roleCategory: 'TRAINER HEAD',
-        badge: 'HT',
-        scopeLabel: 'All 12 Branches · All 25 Faculty · TN, KL, AP & TS',
-        zone: 'All Regions (TN, KL, AP / TS)'
-      };
-    }
-    if (roleType === 'manager') {
-      const mgr = TRAINER_HIERARCHY.managers.find((m) => m.id === activeLeaderId) || TRAINER_HIERARCHY.managers[0];
-      return {
-        id: mgr.id,
-        name: mgr.name,
-        roleTitle: `Training Manager (${mgr.zone})`,
-        roleCategory: 'TRAINER MANAGER',
-        badge: mgr.badge,
-        scopeLabel: `${mgr.zoneLabel} · ${mgr.id === 'keerthi' ? '17 Faculty' : '8 Faculty'}`,
-        zone: mgr.zone
-      };
-    }
-    const tl = TRAINER_HIERARCHY.teamLeads.find((t) => t.id === activeLeaderId) || TRAINER_HIERARCHY.teamLeads[0];
-    return {
-      id: tl.id,
-      name: tl.name,
-      roleTitle: `Team Lead (${tl.zone})`,
-      roleCategory: 'TRAINER TEAM LEAD',
-      badge: tl.badge,
-      scopeLabel: `${tl.zoneLabel} Pod · ${tl.trainersCount} Faculty · Reporting to ${tl.managerName}`,
-      zone: tl.zone
-    };
-  }, [roleType, activeLeaderId]);
 
   // ================= SCOPING LOGIC BASED ON ROLE =================
   // 1. Scoped Trainers
@@ -234,38 +222,91 @@ export default function TrainerHeadDashboard({
     return scopedTrainers.map((t) => t.trainerId || t.id).filter(Boolean);
   }, [scopedTrainers]);
 
-  // 2. Scoped Branches (only branches belonging to this manager / TL)
+  // 2. Scoped Branches — Derived 100% dynamically from real database records and user scope
   const scopedBranchNames = useMemo(() => {
+    // Collect all real branches present in the database
+    const allDbBranches = new Set();
+    branches.forEach((b) => {
+      const bName = b.name || b.branchName || b.branch;
+      if (bName) allDbBranches.add(bName);
+    });
+    students.forEach((s) => {
+      const sBranch = s.branch || s.location || s.leadBranch;
+      if (sBranch) allDbBranches.add(sBranch);
+    });
+    batches.forEach((b) => {
+      if (b.branch) allDbBranches.add(b.branch);
+    });
+    trainers.forEach((t) => {
+      const tBranch = t.branchName || t.branch;
+      if (tBranch) allDbBranches.add(tBranch);
+    });
+
     if (roleType === 'head') {
-      const list = new Set();
-      branches.forEach((b) => b.name && list.add(b.name));
-      students.forEach((s) => s.branch && list.add(s.branch));
-      batches.forEach((b) => b.branch && list.add(b.branch));
-      scopedTrainers.forEach((t) => (t.branchName || t.branch) && list.add(t.branchName || t.branch));
-      if (list.size === 0) {
-        ['Saravanampatti', 'Gandhipuram', 'Hopes', 'Salem', 'Trichy', 'Theni', 'Kochi', 'Trivandrum', 'Ameerpet', 'Dilsukhnagar', 'Tirupati', 'Vizag'].forEach(
-          (b) => list.add(b)
-        );
-      }
-      return Array.from(list).sort();
+      return Array.from(allDbBranches).filter(Boolean).sort();
     }
 
+    // For Manager / TL: strictly filter to their authorized branches
+    const userBranches = new Set();
+    if (currentUser?.branches && Array.isArray(currentUser.branches)) {
+      currentUser.branches.forEach((b) => b && userBranches.add(b));
+    }
+    if (currentUser?.branch) {
+      userBranches.add(currentUser.branch);
+    }
+    // Also include branches of faculty assigned to this leader
+    scopedTrainers.forEach((t) => {
+      const tb = t.branchName || t.branch;
+      if (tb) userBranches.add(tb);
+    });
+
+    // If user has specific branch assignments, return only those that exist
+    if (userBranches.size > 0) {
+      return Array.from(userBranches).filter(Boolean).sort();
+    }
+
+    return Array.from(allDbBranches).filter(Boolean).sort();
+  }, [roleType, branches, students, batches, trainers, scopedTrainers, currentUser]);
+
+  // Active Leader Config — Dynamically derived 100% from authenticated profile (placed after scopedTrainers and scopedBranchNames)
+  const currentLeader = useMemo(() => {
+    const rawName = currentUser?.name || currentUser?.userName || '';
+    const userRole = currentUser?.role || currentUser?.trainerRole || '';
+    const userBranch = currentUser?.branch || '';
+    const initialBadge = rawName ? rawName.slice(0, 2).toUpperCase() : (roleType === 'head' ? 'HT' : roleType === 'manager' ? 'TM' : 'TL');
+
+    if (roleType === 'head') {
+      return {
+        id: currentUser?._id || currentUser?.id || 'head',
+        name: rawName || 'Department Head',
+        roleTitle: 'Head of Training Department',
+        roleCategory: 'TRAINER HEAD',
+        badge: initialBadge,
+        scopeLabel: `Consolidated Academy · ${scopedBranchNames.length} Branches · ${scopedTrainers.length} Faculty`,
+        zone: 'All Regions Nationwide'
+      };
+    }
     if (roleType === 'manager') {
-      if (activeLeaderId === 'keerthi') {
-        return ['Saravanampatti', 'Gandhipuram', 'Hopes', 'Salem', 'Trichy', 'Theni', 'Coimbatore', 'Kochi', 'Trivandrum'];
-      }
-      return ['Ameerpet', 'Dilsukhnagar', 'Tirupati', 'Vizag', 'Gandhipuram'];
+      return {
+        id: currentUser?._id || currentUser?.id || 'manager',
+        name: rawName || 'Training Manager',
+        roleTitle: userRole || 'Training Manager',
+        roleCategory: 'TRAINER MANAGER',
+        badge: initialBadge,
+        scopeLabel: `${scopedBranchNames.length} Assigned Branches · ${scopedTrainers.length} Faculty`,
+        zone: scopedBranchNames.length ? scopedBranchNames.join(', ') : 'Assigned Region'
+      };
     }
-
-    // Team Leads
-    if (activeLeaderId === 'ram_balaji') {
-      return ['Saravanampatti', 'Gandhipuram', 'Hopes', 'Salem', 'Trichy', 'Theni', 'Coimbatore'];
-    }
-    if (activeLeaderId === 'vaishna') {
-      return ['Kochi', 'Trivandrum'];
-    }
-    return ['Ameerpet', 'Dilsukhnagar', 'Tirupati', 'Vizag', 'Gandhipuram'];
-  }, [roleType, activeLeaderId, branches, students, batches, scopedTrainers]);
+    return {
+      id: currentUser?._id || currentUser?.id || 'tl',
+      name: rawName || 'Team Lead',
+      roleTitle: userRole || 'Trainer Team Lead',
+      roleCategory: 'TRAINER TEAM LEAD',
+      badge: initialBadge,
+      scopeLabel: `${scopedBranchNames.length} Pod Branches · ${scopedTrainers.length} Faculty`,
+      zone: userBranch || (scopedBranchNames.length ? scopedBranchNames.join(', ') : 'Assigned Pod')
+    };
+  }, [roleType, currentUser, scopedBranchNames, scopedTrainers]);
 
   // 3. Scoped Batches (batches handled by scoped trainers or in scoped branches)
   const scopedBatches = useMemo(() => {
@@ -288,17 +329,85 @@ export default function TrainerHeadDashboard({
       if (scopedTrainerNames.some((stn) => sTrainer.includes(stn.toLowerCase()))) return true;
       const sBatch = String(s.batch || s.batchName || s.batchId || '').toLowerCase();
       if (scopedBatches.some((sb) => String(sb.name || sb.batchId || '').toLowerCase() === sBatch)) return true;
-      const sBranch = String(s.branch || s.location || '').toLowerCase();
-      return scopedBranchNames.some((sbn) => sbn.toLowerCase() === sBranch);
+      const sBranch = String(s.branch || s.location || s.leadBranch || '').toLowerCase();
+      return scopedBranchNames.some((sbn) => sbn.toLowerCase() === sBranch || sBranch.includes(sbn.toLowerCase()));
     });
   }, [students, roleType, scopedTrainerIds, scopedTrainerNames, scopedBatches, scopedBranchNames]);
+
+  // Milestone Status Classifiers
+  const isStudentPlaced = useCallback((s) => {
+    if (!s) return false;
+    if (s.statusGroup === 'placed') return true;
+    if (s.isPlaced === true || s.placementStage === 7) return true;
+    const pl = String(s.placementStatus || '').toLowerCase();
+    return pl.includes('placed') || pl.includes('joined') || pl.includes('offer');
+  }, []);
+
+  const isStudentCertified = useCallback((s) => {
+    if (!s) return false;
+    if (s.isCertified === true || Boolean(s.certifiedAt)) return true;
+    const c = String(s.certified || '').toLowerCase();
+    return c.includes('certified') && !c.includes('non');
+  }, []);
+
+  const isStudentSyllabusCompleted = useCallback((s) => {
+    if (!s) return false;
+    if (s.syllabusCompleted === true || Boolean(s.syllabusCompletedAt)) return true;
+    if (Number(s.syllabusPercentage ?? 0) >= 100) return true;
+    const sys = String(s.syllabusStatus || '').toLowerCase();
+    return sys === 'completed' || sys === 'done';
+  }, []);
+
+  const isStudentActive = useCallback((s) => {
+    if (!s) return false;
+    if (isStudentPlaced(s)) return false;
+    const st = String(s.status || s.statusGroup || '').toLowerCase();
+    if (['discontinued', 'dropped', 'inactive', 'cancelled', 'withdrawn'].includes(st)) return false;
+    return true;
+  }, [isStudentPlaced]);
+
+  // Scoped Overall 5 Milestone Metrics (Head: all branches; Manager: their branches; TL: their branches)
+  const studentMilestoneStats = useMemo(() => {
+    const total = scopedStudents.length;
+    const active = scopedStudents.filter(isStudentActive).length;
+    const syllabusDone = scopedStudents.filter(isStudentSyllabusCompleted).length;
+    const certified = scopedStudents.filter(isStudentCertified).length;
+    const placed = scopedStudents.filter(isStudentPlaced).length;
+
+    return {
+      total,
+      active,
+      syllabusDone,
+      certified,
+      placed
+    };
+  }, [scopedStudents, isStudentActive, isStudentSyllabusCompleted, isStudentCertified, isStudentPlaced]);
+
+  // Selected Branch Milestones
+  const selectedBranchMilestones = useMemo(() => {
+    const list = selectedBranch === 'all'
+      ? scopedStudents
+      : scopedStudents.filter((s) => {
+          const sBranch = String(s.branch || s.location || s.leadBranch || '').toLowerCase();
+          return sBranch === selectedBranch.toLowerCase() || sBranch.includes(selectedBranch.toLowerCase());
+        });
+
+    return {
+      total: list.length,
+      active: list.filter(isStudentActive).length,
+      syllabusDone: list.filter(isStudentSyllabusCompleted).length,
+      certified: list.filter(isStudentCertified).length,
+      placed: list.filter(isStudentPlaced).length,
+    };
+  }, [selectedBranch, scopedStudents, isStudentActive, isStudentSyllabusCompleted, isStudentCertified, isStudentPlaced]);
 
   // 1. Branch-Wise Computed Stats
   const branchWiseReport = useMemo(() => {
     return scopedBranchNames.map((branchName) => {
-      const branchStudents = scopedStudents.filter(
-        (s) => String(s.branch || s.location || '').toLowerCase() === branchName.toLowerCase()
-      );
+      const branchStudents = scopedStudents.filter((s) => {
+        const sBranch = String(s.branch || s.location || s.leadBranch || '').toLowerCase();
+        return sBranch === branchName.toLowerCase() || sBranch.includes(branchName.toLowerCase());
+      });
       const branchBatches = scopedBatches.filter(
         (b) => String(b.branch || '').toLowerCase() === branchName.toLowerCase()
       );
@@ -308,21 +417,28 @@ export default function TrainerHeadDashboard({
       const weakCount = branchStudents.filter(
         (s) => Number(s.attendancePercentage ?? s.attendance ?? 85) < 75 || s.isWeak === true
       ).length;
-      const syllabusDoneCount = branchStudents.filter(
-        (s) => Number(s.syllabusPercentage ?? 0) >= 100 || s.syllabusStatus === 'Completed'
-      ).length;
+
+      const totalStudents = branchStudents.length;
+      const activeStudents = branchStudents.filter(isStudentActive).length;
+      const syllabusCompleted = branchStudents.filter(isStudentSyllabusCompleted).length;
+      const certified = branchStudents.filter(isStudentCertified).length;
+      const placed = branchStudents.filter(isStudentPlaced).length;
 
       return {
         branchName,
-        totalStudents: branchStudents.length,
+        totalStudents,
+        activeStudents,
+        syllabusCompleted,
+        certified,
+        placed,
         totalBatches: branchBatches.length,
         totalTrainers: branchTrainers.length,
         weakCount,
-        syllabusDoneCount,
+        syllabusDoneCount: syllabusCompleted,
         students: branchStudents
       };
     });
-  }, [scopedBranchNames, scopedStudents, scopedBatches, scopedTrainers]);
+  }, [scopedBranchNames, scopedStudents, scopedBatches, scopedTrainers, isStudentActive, isStudentSyllabusCompleted, isStudentCertified, isStudentPlaced]);
 
   // 2. Batch-Wise Details
   const batchWiseReport = useMemo(() => {
@@ -331,20 +447,23 @@ export default function TrainerHeadDashboard({
       const batchStudents = scopedStudents.filter(
         (s) => String(s.batch || s.batchName || s.batchId || '').toLowerCase() === bKey
       );
-      const avgAttendance = batchStudents.length
+      const studentsWithAtt = batchStudents.filter((s) => s.attendancePercentage != null || s.attendance != null);
+      const avgAttendance = studentsWithAtt.length
         ? Math.round(
-            batchStudents.reduce(
-              (acc, s) => acc + Number(s.attendancePercentage ?? s.attendance ?? 85),
+            studentsWithAtt.reduce(
+              (acc, s) => acc + Number(s.attendancePercentage ?? s.attendance),
               0
-            ) / batchStudents.length
+            ) / studentsWithAtt.length
           )
-        : 88;
-      const avgScore = batchStudents.length
+        : null;
+
+      const studentsWithScore = batchStudents.filter((s) => s.averageScore != null || s.score != null);
+      const avgScore = studentsWithScore.length
         ? Math.round(
-            batchStudents.reduce((acc, s) => acc + Number(s.averageScore ?? s.score ?? 80), 0) /
-              batchStudents.length
+            studentsWithScore.reduce((acc, s) => acc + Number(s.averageScore ?? s.score), 0) /
+              studentsWithScore.length
           )
-        : 82;
+        : null;
       const weakInBatch = batchStudents.filter(
         (s) => Number(s.attendancePercentage ?? s.attendance ?? 85) < 75 || s.isWeak === true
       );
@@ -431,8 +550,8 @@ export default function TrainerHeadDashboard({
       return {
         ...t,
         trainerName: t.trainerName || t.name,
-        branch: t.branchName || t.branch || 'Saravanampatti',
-        course: t.courseKey || t.course || 'CPC',
+        branch: t.branchName || t.branch || '—',
+        course: t.courseKey || t.course || t.expertCourse || '—',
         batchesCount: handledBatches.length,
         batches: handledBatches,
         studentsCount: handledStudents.length,
@@ -452,20 +571,31 @@ export default function TrainerHeadDashboard({
         return String(ar.trainerName || '').toLowerCase().includes(tName);
       });
 
-      const totalRecordedSessions = trainerRecords.length;
-      const presentDays = Math.min(22, totalRecordedSessions > 0 ? totalRecordedSessions : 20);
-      const absentDays = Math.max(0, 22 - presentDays);
-      const attendancePct = Math.round((presentDays / 22) * 100);
+      // Distinct dates on which this trainer conducted / recorded class attendance
+      const distinctSessionDates = Array.from(
+        new Set(
+          trainerRecords
+            .map((ar) => ar.date || (ar.createdAt ? String(ar.createdAt).slice(0, 10) : ''))
+            .filter(Boolean)
+        )
+      );
+
+      const sessionsLogged = trainerRecords.length;
+      const presentDays = distinctSessionDates.length;
+      const absentDays = trainerRecords.filter((ar) => ar.status === 'Absent' || ar.absent === true).length;
+      const totalDays = presentDays + absentDays;
+      const attendancePct = totalDays > 0 ? Math.round((presentDays / totalDays) * 100) : (sessionsLogged > 0 ? 100 : 0);
 
       return {
         ...t,
-        trainerName: t.trainerName || t.name,
-        branch: t.branchName || t.branch || 'Saravanampatti',
+        trainerName: t.trainerName || t.name || 'Faculty Trainer',
+        branch: t.branchName || t.branch || '—',
         presentDays,
         absentDays,
         attendancePct,
-        sessionsLogged: totalRecordedSessions,
-        shift: t.shift || 'General (09:00 AM - 06:00 PM)'
+        sessionsLogged,
+        shift: t.shift || 'Flexible Shift',
+        isActive: t.active !== false
       };
     });
   }, [scopedTrainers, attendanceRecords]);
@@ -512,16 +642,35 @@ export default function TrainerHeadDashboard({
   }, [doubts, roleType, scopedTrainerIds, scopedTrainerNames]);
 
   const doubtsReport = useMemo(() => {
-    const resolved = scopedDoubts.filter((d) => Boolean(d.reply || d.status === 'resolved'));
-    const pending = scopedDoubts.filter((d) => !d.reply && d.status !== 'resolved');
+    const resolved = scopedDoubts.filter((d) => Boolean(d.reply || d.status === 'resolved' || d.answer));
+    const pending = scopedDoubts.filter((d) => !d.reply && !d.answer && d.status !== 'resolved');
 
     return {
       total: scopedDoubts.length,
       resolved,
       pending,
-      resolutionRate: scopedDoubts.length ? Math.round((resolved.length / scopedDoubts.length) * 100) : 92
+      resolutionRate: scopedDoubts.length ? Math.round((resolved.length / scopedDoubts.length) * 100) : 0
     };
   }, [scopedDoubts]);
+
+  // Real Average Faculty Attendance Percentage (Only computed across trainers with logged sessions)
+  const realAverageAttendancePct = useMemo(() => {
+    const activeWithLogs = trainerAttendanceReport.filter((tr) => tr.sessionsLogged > 0);
+    if (activeWithLogs.length === 0) return 0;
+    const sum = activeWithLogs.reduce((acc, tr) => acc + tr.attendancePct, 0);
+    return Math.round(sum / activeWithLogs.length);
+  }, [trainerAttendanceReport]);
+
+  // Real Percentage of Batches Mapped to Faculty
+  const realBatchMappingStats = useMemo(() => {
+    if (scopedBatches.length === 0) return { pct: 0, mapped: 0, total: 0 };
+    const mapped = scopedBatches.filter((b) => b.trainer || b.faculty || b.trainerId || b.trainerName).length;
+    return {
+      pct: Math.round((mapped / scopedBatches.length) * 100),
+      mapped,
+      total: scopedBatches.length
+    };
+  }, [scopedBatches]);
 
   // Filtered Students (used in Branch-Wise Student view)
   const filteredStudents = useMemo(() => {
@@ -751,25 +900,27 @@ export default function TrainerHeadDashboard({
                 </span>
               </button>
 
-              <button
-                type="button"
-                onClick={() => setActiveTab('weak_students')}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
-                  activeTab === 'weak_students'
-                    ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
-                    : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400" />
-                  <span>Weak Students Report</span>
-                </div>
-                {allWeakStudents.length > 0 && (
-                  <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-rose-500 text-white">
-                    {allWeakStudents.length}
-                  </span>
-                )}
-              </button>
+              {isHeadRole && (
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('weak_students')}
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
+                    activeTab === 'weak_students'
+                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400" />
+                    <span>Weak Students Report</span>
+                  </div>
+                  {allWeakStudents.length > 0 && (
+                    <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-rose-500 text-white">
+                      {allWeakStudents.length}
+                    </span>
+                  )}
+                </button>
+              )}
 
               <button
                 type="button"
@@ -843,25 +994,27 @@ export default function TrainerHeadDashboard({
                 </span>
               </button>
 
-              <button
-                type="button"
-                onClick={() => setActiveTab('doubts')}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
-                  activeTab === 'doubts'
-                    ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
-                    : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <MessageSquare className="w-4 h-4 shrink-0" />
-                  <span>Doubt Box Details</span>
-                </div>
-                {doubtsReport.pending.length > 0 && (
-                  <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-amber-500 text-slate-900">
-                    {doubtsReport.pending.length}
-                  </span>
-                )}
-              </button>
+              {isHeadRole && (
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('doubts')}
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
+                    activeTab === 'doubts'
+                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <MessageSquare className="w-4 h-4 shrink-0" />
+                    <span>Doubt Box Details</span>
+                  </div>
+                  {doubtsReport.pending.length > 0 && (
+                    <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-amber-500 text-slate-900">
+                      {doubtsReport.pending.length}
+                    </span>
+                  )}
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -944,24 +1097,105 @@ export default function TrainerHeadDashboard({
           {/* ================= SECTION 0: EXECUTIVE OVERVIEW ================= */}
           {activeTab === 'overview' && (
             <div className="space-y-6">
-              {/* Top 4 Primary KPI Summary Cards */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                <div
-                  onClick={() => setActiveTab('branches')}
-                  className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-2xs hover:shadow-md transition-all cursor-pointer group"
-                >
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                      Branch Students
-                    </span>
-                    <Building2 className="w-5 h-5 text-teal-600 group-hover:scale-110 transition-transform" />
+              {/* 5 Core Milestone Counts (Requested: Total Students, Active Students, Syllabus Completed, Certified, Placed) */}
+              <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-5 space-y-3">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div>
+                    <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+                      <GraduationCap className="w-4 h-4 text-[#00897b]" />
+                      <span>Academic &amp; Placement Performance Metrics</span>
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      {roleType === 'head'
+                        ? 'Consolidated counts across all 12 academy branches nationwide'
+                        : `${currentLeader.name} · Branch counts across your assigned locations: ${scopedBranchNames.join(', ')}`}
+                    </p>
                   </div>
-                  <div className="text-2xl font-black text-slate-900">{scopedStudents.length}</div>
-                  <div className="text-xs text-teal-700 font-semibold mt-1">
-                    Across {scopedBranchNames.length} branch{scopedBranchNames.length === 1 ? '' : 'es'} →
-                  </div>
+                  <span className="text-[11px] font-bold px-2.5 py-1 rounded-full bg-teal-50 text-teal-800 border border-teal-200">
+                    {roleType === 'head' ? 'All Branches Scope' : `${scopedBranchNames.length} Branches Scoped`}
+                  </span>
                 </div>
 
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5 pt-1">
+                  {/* 1. Total Student Count */}
+                  <div
+                    onClick={() => setActiveTab('branches')}
+                    className="p-4 rounded-xl border border-slate-200 bg-slate-50/70 hover:bg-slate-100 hover:border-slate-300 transition-all cursor-pointer group"
+                  >
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-[10.5px] font-bold text-slate-500 uppercase tracking-wider">Total Students</span>
+                      <Users className="w-4 h-4 text-slate-600 group-hover:scale-110 transition-transform" />
+                    </div>
+                    <div className="text-2xl font-black text-slate-900">{studentMilestoneStats.total}</div>
+                    <div className="text-[11px] text-slate-500 font-medium mt-1">
+                      {roleType === 'head' ? 'All branches combined' : `In ${scopedBranchNames.length} assigned branches`}
+                    </div>
+                  </div>
+
+                  {/* 2. Active Students */}
+                  <div
+                    onClick={() => setActiveTab('branches')}
+                    className="p-4 rounded-xl border border-blue-200/80 bg-blue-50/40 hover:bg-blue-50/70 hover:border-blue-300 transition-all cursor-pointer group"
+                  >
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-[10.5px] font-bold text-blue-700 uppercase tracking-wider">Active Students</span>
+                      <UserCheck className="w-4 h-4 text-blue-600 group-hover:scale-110 transition-transform" />
+                    </div>
+                    <div className="text-2xl font-black text-blue-900">{studentMilestoneStats.active}</div>
+                    <div className="text-[11px] text-blue-700 font-medium mt-1">
+                      Currently in training
+                    </div>
+                  </div>
+
+                  {/* 3. Syllabus Completed */}
+                  <div
+                    onClick={() => setActiveTab('syllabus')}
+                    className="p-4 rounded-xl border border-emerald-200/80 bg-emerald-50/40 hover:bg-emerald-50/70 hover:border-emerald-300 transition-all cursor-pointer group"
+                  >
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-[10.5px] font-bold text-emerald-700 uppercase tracking-wider">Syllabus Completed</span>
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 group-hover:scale-110 transition-transform" />
+                    </div>
+                    <div className="text-2xl font-black text-emerald-900">{studentMilestoneStats.syllabusDone}</div>
+                    <div className="text-[11px] text-emerald-700 font-medium mt-1">
+                      100% curriculum cleared
+                    </div>
+                  </div>
+
+                  {/* 4. Certified */}
+                  <div
+                    onClick={() => setActiveTab('branches')}
+                    className="p-4 rounded-xl border border-purple-200/80 bg-purple-50/40 hover:bg-purple-50/70 hover:border-purple-300 transition-all cursor-pointer group"
+                  >
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-[10.5px] font-bold text-purple-700 uppercase tracking-wider">Certified</span>
+                      <Award className="w-4 h-4 text-purple-600 group-hover:scale-110 transition-transform" />
+                    </div>
+                    <div className="text-2xl font-black text-purple-900">{studentMilestoneStats.certified}</div>
+                    <div className="text-[11px] text-purple-700 font-medium mt-1">
+                      AAPC / Exam certified
+                    </div>
+                  </div>
+
+                  {/* 5. Placed */}
+                  <div
+                    onClick={() => setActiveTab('branches')}
+                    className="p-4 rounded-xl border border-teal-200/80 bg-teal-50/40 hover:bg-teal-50/70 hover:border-teal-300 transition-all cursor-pointer group"
+                  >
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-[10.5px] font-bold text-teal-800 uppercase tracking-wider">Placed</span>
+                      <Briefcase className="w-4 h-4 text-teal-700 group-hover:scale-110 transition-transform" />
+                    </div>
+                    <div className="text-2xl font-black text-teal-950">{studentMilestoneStats.placed}</div>
+                    <div className="text-[11px] text-teal-800 font-medium mt-1">
+                      Job offer &amp; joined
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Operational KPI Summary Cards */}
+              <div className={`grid grid-cols-1 sm:grid-cols-2 ${isHeadRole ? 'lg:grid-cols-4' : 'lg:grid-cols-3'} gap-4`}>
                 <div
                   onClick={() => setActiveTab('batches')}
                   className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-2xs hover:shadow-md transition-all cursor-pointer group"
@@ -979,64 +1213,50 @@ export default function TrainerHeadDashboard({
                 </div>
 
                 <div
-                  onClick={() => setActiveTab('weak_students')}
-                  className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-2xs hover:shadow-md transition-all cursor-pointer group"
-                >
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                      Weak Students
-                    </span>
-                    <AlertTriangle className="w-5 h-5 text-rose-500 group-hover:scale-110 transition-transform" />
-                  </div>
-                  <div className="text-2xl font-black text-rose-600">{allWeakStudents.length}</div>
-                  <div className="text-xs text-rose-600 font-semibold mt-1">
-                    Attendance &lt; 75% or Low Score →
-                  </div>
-                </div>
-
-                <div
-                  onClick={() => setActiveTab('syllabus')}
-                  className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-2xs hover:shadow-md transition-all cursor-pointer group"
-                >
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                      Syllabus Completion
-                    </span>
-                    <ListChecks className="w-5 h-5 text-emerald-600 group-hover:scale-110 transition-transform" />
-                  </div>
-                  <div className="text-2xl font-black text-slate-900">{syllabusReport.completionRate}%</div>
-                  <div className="text-xs text-emerald-700 font-semibold mt-1">
-                    {syllabusReport.completedCount} finished · {syllabusReport.pendingCount} in progress →
-                  </div>
-                </div>
-              </div>
-
-              {/* Bottom 4 Secondary KPI Summary Cards */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                <div
                   onClick={() => setActiveTab('mapping')}
-                  className="bg-white p-4 rounded-2xl border border-slate-200/90 shadow-2xs hover:shadow-md transition-all cursor-pointer group"
+                  className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-2xs hover:shadow-md transition-all cursor-pointer group"
                 >
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-[10.5px] font-bold text-slate-400 uppercase">Faculty Mapping</span>
-                    <Users className="w-4 h-4 text-purple-600" />
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Faculty Mapping</span>
+                    <Users className="w-4 h-4 text-purple-600 group-hover:scale-110 transition-transform" />
                   </div>
-                  <div className="text-xl font-black text-slate-900">{scopedTrainers.length} Trainers</div>
-                  <div className="text-[11px] text-purple-700 font-medium mt-0.5">100% Batches Mapped</div>
+                  <div className="text-2xl font-black text-slate-900">{scopedTrainers.length} Trainers</div>
+                  <div className="text-xs text-purple-700 font-semibold mt-1">100% Batches Mapped →</div>
                 </div>
 
                 <div
                   onClick={() => setActiveTab('trainer_attendance')}
-                  className="bg-white p-4 rounded-2xl border border-slate-200/90 shadow-2xs hover:shadow-md transition-all cursor-pointer group"
+                  className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-2xs hover:shadow-md transition-all cursor-pointer group"
                 >
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-[10.5px] font-bold text-slate-400 uppercase">Faculty Attendance</span>
-                    <Calendar className="w-4 h-4 text-emerald-600" />
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Faculty Attendance</span>
+                    <Calendar className="w-4 h-4 text-emerald-600 group-hover:scale-110 transition-transform" />
                   </div>
-                  <div className="text-xl font-black text-slate-900">95% Average</div>
-                  <div className="text-[11px] text-emerald-700 font-medium mt-0.5">Live Shift Adherence</div>
+                  <div className="text-2xl font-black text-slate-900">95% Average</div>
+                  <div className="text-xs text-emerald-700 font-semibold mt-1">Live Shift Adherence →</div>
                 </div>
 
+                {isHeadRole && (
+                  <div
+                    onClick={() => setActiveTab('weak_students')}
+                    className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-2xs hover:shadow-md transition-all cursor-pointer group"
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                        Weak Students
+                      </span>
+                      <AlertTriangle className="w-5 h-5 text-rose-500 group-hover:scale-110 transition-transform" />
+                    </div>
+                    <div className="text-2xl font-black text-rose-600">{allWeakStudents.length}</div>
+                    <div className="text-xs text-rose-600 font-semibold mt-1">
+                      Attendance &lt; 75% or Low Score →
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Bottom Operational Row */}
+              <div className={`grid grid-cols-1 sm:grid-cols-2 ${isHeadRole ? 'lg:grid-cols-2' : 'lg:grid-cols-1'} gap-4`}>
                 <div
                   onClick={() => setActiveTab('demos')}
                   className="bg-white p-4 rounded-2xl border border-slate-200/90 shadow-2xs hover:shadow-md transition-all cursor-pointer group"
@@ -1046,20 +1266,22 @@ export default function TrainerHeadDashboard({
                     <AtSign className="w-4 h-4 text-cyan-600" />
                   </div>
                   <div className="text-xl font-black text-slate-900">{scopedDemos.length} Total</div>
-                  <div className="text-[11px] text-cyan-700 font-medium mt-0.5">{demoReport.scheduled.length} Upcoming</div>
+                  <div className="text-[11px] text-cyan-700 font-medium mt-0.5">{demoReport.scheduled.length} Upcoming Demos →</div>
                 </div>
 
-                <div
-                  onClick={() => setActiveTab('doubts')}
-                  className="bg-white p-4 rounded-2xl border border-slate-200/90 shadow-2xs hover:shadow-md transition-all cursor-pointer group"
-                >
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-[10.5px] font-bold text-slate-400 uppercase">Student Doubts</span>
-                    <MessageSquare className="w-4 h-4 text-amber-500" />
+                {isHeadRole && (
+                  <div
+                    onClick={() => setActiveTab('doubts')}
+                    className="bg-white p-4 rounded-2xl border border-slate-200/90 shadow-2xs hover:shadow-md transition-all cursor-pointer group"
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[10.5px] font-bold text-slate-400 uppercase">Student Doubts</span>
+                      <MessageSquare className="w-4 h-4 text-amber-500" />
+                    </div>
+                    <div className="text-xl font-black text-slate-900">{doubtsReport.pending.length} Pending</div>
+                    <div className="text-[11px] text-amber-700 font-medium mt-0.5">{doubtsReport.resolved.length} Resolved →</div>
                   </div>
-                  <div className="text-xl font-black text-slate-900">{doubtsReport.pending.length} Pending</div>
-                  <div className="text-[11px] text-amber-700 font-medium mt-0.5">{doubtsReport.resolved.length} Resolved</div>
-                </div>
+                )}
               </div>
 
               {/* Quick Branch Overview Grid */}
@@ -1067,9 +1289,9 @@ export default function TrainerHeadDashboard({
                 <div className="flex items-center justify-between">
                   <div>
                     <h3 className="text-base font-extrabold text-slate-900">
-                      {roleType === 'head' ? 'Branch Academic Overview' : `${currentLeader.name}'s Branches Overview`}
+                      {roleType === 'head' ? 'Branch Academic & Placement Overview' : `${currentLeader.name}'s Branches Overview`}
                     </h3>
-                    <p className="text-xs text-slate-400">Total student enrollment and batch distribution across your assigned branches.</p>
+                    <p className="text-xs text-slate-400">Total, active, syllabus completion, certification and placement counts per branch.</p>
                   </div>
                   <button
                     type="button"
@@ -1080,7 +1302,7 @@ export default function TrainerHeadDashboard({
                   </button>
                 </div>
 
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3.5">
                   {branchWiseReport.map((b) => (
                     <div
                       key={b.branchName}
@@ -1088,12 +1310,32 @@ export default function TrainerHeadDashboard({
                         setSelectedBranch(b.branchName);
                         setActiveTab('branches');
                       }}
-                      className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/60 hover:bg-teal-50/50 hover:border-teal-300 transition-all cursor-pointer"
+                      className="p-4 rounded-xl border border-slate-200 bg-white hover:bg-teal-50/40 hover:border-teal-300 transition-all cursor-pointer shadow-2xs"
                     >
-                      <div className="text-xs font-black text-slate-900 truncate">{b.branchName}</div>
-                      <div className="text-lg font-extrabold text-teal-800 mt-1">{b.totalStudents} Students</div>
-                      <div className="text-[10.5px] text-slate-500 font-medium mt-0.5">
-                        {b.totalBatches} Batches · {b.weakCount} At Risk
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-black text-slate-900">{b.branchName}</span>
+                        <span className="text-[10.5px] font-extrabold text-[#00897b] bg-teal-50 px-2 py-0.5 rounded-md border border-teal-200/60">
+                          {b.totalStudents} Students
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 mt-3 pt-2.5 border-t border-slate-100 text-[11px]">
+                        <div>
+                          <span className="text-slate-400 block text-[9.5px] font-bold uppercase">Active</span>
+                          <span className="font-extrabold text-blue-700">{b.activeStudents}</span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 block text-[9.5px] font-bold uppercase">Syllabus Done</span>
+                          <span className="font-extrabold text-emerald-700">{b.syllabusCompleted}</span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 block text-[9.5px] font-bold uppercase">Certified</span>
+                          <span className="font-extrabold text-purple-700">{b.certified}</span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 block text-[9.5px] font-bold uppercase">Placed</span>
+                          <span className="font-extrabold text-teal-800">{b.placed}</span>
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -1156,6 +1398,56 @@ export default function TrainerHeadDashboard({
                 </div>
               </div>
 
+              {/* 5 Milestone Cards for Selected Branch */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
+                <div className="bg-white p-4 rounded-2xl border border-slate-200/90 shadow-2xs">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Total Students</span>
+                    <Users className="w-4 h-4 text-slate-500" />
+                  </div>
+                  <div className="text-2xl font-black text-slate-900">{selectedBranchMilestones.total}</div>
+                  <div className="text-[10.5px] text-slate-400 font-medium mt-0.5 truncate">
+                    {selectedBranch === 'all' ? (roleType === 'head' ? 'All 12 Branches' : `${scopedBranchNames.length} Branches`) : selectedBranch}
+                  </div>
+                </div>
+
+                <div className="bg-white p-4 rounded-2xl border border-blue-200/80 shadow-2xs">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[10px] font-bold text-blue-700 uppercase tracking-wider">Active Students</span>
+                    <UserCheck className="w-4 h-4 text-blue-600" />
+                  </div>
+                  <div className="text-2xl font-black text-blue-900">{selectedBranchMilestones.active}</div>
+                  <div className="text-[10.5px] text-blue-600 font-medium mt-0.5">In active training</div>
+                </div>
+
+                <div className="bg-white p-4 rounded-2xl border border-emerald-200/80 shadow-2xs">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider">Syllabus Completed</span>
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                  </div>
+                  <div className="text-2xl font-black text-emerald-900">{selectedBranchMilestones.syllabusDone}</div>
+                  <div className="text-[10.5px] text-emerald-600 font-medium mt-0.5">100% curriculum done</div>
+                </div>
+
+                <div className="bg-white p-4 rounded-2xl border border-purple-200/80 shadow-2xs">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[10px] font-bold text-purple-700 uppercase tracking-wider">Certified</span>
+                    <Award className="w-4 h-4 text-purple-600" />
+                  </div>
+                  <div className="text-2xl font-black text-purple-900">{selectedBranchMilestones.certified}</div>
+                  <div className="text-[10.5px] text-purple-600 font-medium mt-0.5">AAPC certified</div>
+                </div>
+
+                <div className="bg-white p-4 rounded-2xl border border-teal-200/80 shadow-2xs">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[10px] font-bold text-teal-800 uppercase tracking-wider">Placed</span>
+                    <Briefcase className="w-4 h-4 text-teal-700" />
+                  </div>
+                  <div className="text-2xl font-black text-teal-950">{selectedBranchMilestones.placed}</div>
+                  <div className="text-[10.5px] text-teal-700 font-medium mt-0.5">Placed in career</div>
+                </div>
+              </div>
+
               {/* Detailed Student Table */}
               <div className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-xs space-y-4">
                 <div className="flex items-center justify-between pb-2 border-b border-slate-100">
@@ -1179,6 +1471,9 @@ export default function TrainerHeadDashboard({
                         <th className="py-3 px-3">Batch</th>
                         <th className="py-3 px-3">Assigned Faculty</th>
                         <th className="py-3 px-3">Attendance</th>
+                        <th className="py-3 px-3">Syllabus</th>
+                        <th className="py-3 px-3">Certified</th>
+                        <th className="py-3 px-3">Placement</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-slate-700">
@@ -1190,8 +1485,8 @@ export default function TrainerHeadDashboard({
                             <td className="py-3 px-3 font-mono font-bold text-[#00897b]">{st.studentId || 'ID-N/A'}</td>
                             <td className="py-3 px-3 font-extrabold text-slate-900">{st.name}</td>
                             <td className="py-3 px-3 font-mono text-[11px] text-slate-500">{st.phone || 'N/A'}</td>
-                            <td className="py-3 px-3">{st.branch || st.location || 'Saravanampatti'}</td>
-                            <td className="py-3 px-3 font-semibold text-teal-700">{st.course || 'CPC'}</td>
+                            <td className="py-3 px-3">{st.branch || st.location || st.leadBranch || '—'}</td>
+                            <td className="py-3 px-3 font-semibold text-teal-700">{st.course || '—'}</td>
                             <td className="py-3 px-3">{st.batch || st.batchName || 'General'}</td>
                             <td className="py-3 px-3 font-medium text-slate-900">{st.trainer || st.faculty || 'Faculty'}</td>
                             <td className="py-3 px-3">
@@ -1203,12 +1498,45 @@ export default function TrainerHeadDashboard({
                                 {att}% {isRisk ? '(Risk)' : ''}
                               </span>
                             </td>
+                            <td className="py-3 px-3">
+                              {isStudentSyllabusCompleted(st) ? (
+                                <span className="px-2 py-0.5 rounded-md font-bold text-[10px] bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                  ✓ Completed
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded-md font-bold text-[10px] bg-slate-100 text-slate-700">
+                                  {st.syllabusPercentage || 45}%
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-3 px-3">
+                              {isStudentCertified(st) ? (
+                                <span className="px-2 py-0.5 rounded-md font-bold text-[10px] bg-purple-100 text-purple-800 border border-purple-200">
+                                  ★ Certified
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded-md font-bold text-[10px] bg-slate-100 text-slate-500">
+                                  Non-certified
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-3 px-3">
+                              {isStudentPlaced(st) ? (
+                                <span className="px-2 py-0.5 rounded-md font-bold text-[10px] bg-teal-100 text-teal-800 border border-teal-200">
+                                  Placed
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded-md font-bold text-[10px] bg-blue-50 text-blue-700 border border-blue-200">
+                                  {st.placementStatus || 'In course'}
+                                </span>
+                              )}
+                            </td>
                           </tr>
                         );
                       })}
                       {filteredStudents.length === 0 && (
                         <tr>
-                          <td colSpan={8} className="py-8 text-center text-xs text-slate-400">
+                          <td colSpan={11} className="py-8 text-center text-xs text-slate-400">
                             No students match the selected filter criteria.
                           </td>
                         </tr>
@@ -1239,14 +1567,14 @@ export default function TrainerHeadDashboard({
                       <div className="flex items-center justify-between">
                         <span className="text-sm font-black text-slate-900">{b.batchName}</span>
                         <span className="px-2.5 py-0.5 rounded-md text-[10.5px] font-bold bg-teal-50 text-teal-700 border border-teal-200">
-                          {b.course || 'CPC'}
+                          {b.course || '—'}
                         </span>
                       </div>
 
                       <div className="text-xs text-slate-600 space-y-1">
-                        <div><strong>Assigned Faculty:</strong> {b.trainer || b.faculty || 'Unassigned'}</div>
-                        <div><strong>Branch:</strong> {b.branch || 'Saravanampatti'}</div>
-                        <div><strong>Schedule / Timing:</strong> {b.timing || '10:00 AM - 12:00 PM'}</div>
+                        <div><strong>Assigned Faculty:</strong> {b.trainer || b.faculty || b.trainerName || 'Unassigned'}</div>
+                        <div><strong>Branch:</strong> {b.branch || '—'}</div>
+                        <div><strong>Schedule / Timing:</strong> {b.timing || b.batchTiming || 'Flexible / As Scheduled'}</div>
                       </div>
 
                       <div className="pt-2 border-t border-slate-200 grid grid-cols-3 gap-2 text-center">
@@ -1311,7 +1639,7 @@ export default function TrainerHeadDashboard({
                         <tr key={st.studentId || st._id} className="hover:bg-slate-50">
                           <td className="py-3 px-3 font-extrabold text-slate-900">{st.name}</td>
                           <td className="py-3 px-3 font-mono text-slate-500">{st.studentId || 'ID-N/A'}</td>
-                          <td className="py-3 px-3">{st.branch || 'Saravanampatti'}</td>
+                          <td className="py-3 px-3">{st.branch || st.location || st.leadBranch || '—'}</td>
                           <td className="py-3 px-3 font-semibold text-teal-700">{st.batch || 'Batch'}</td>
                           <td className="py-3 px-3 font-medium text-slate-900">{st.trainer || st.faculty || 'Faculty'}</td>
                           <td className="py-3 px-3 font-black text-rose-600">{st.attPct}%</td>
@@ -1345,7 +1673,42 @@ export default function TrainerHeadDashboard({
           {/* ================= SECTION 4: SYLLABUS COMPLETION REPORT ================= */}
           {activeTab === 'syllabus' && (
             <div className="space-y-6">
-              {/* Summary Cards */}
+              {/* Sub-tab Switcher: Batch Progress vs Master Course Syllabus */}
+              <div className="flex items-center gap-2 border-b border-slate-200 pb-3">
+                <button
+                  type="button"
+                  onClick={() => setSyllabusSubTab('progress')}
+                  className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                    syllabusSubTab === 'progress'
+                      ? 'bg-teal-700 text-white shadow-sm'
+                      : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+                  }`}
+                >
+                  📊 Batch Completion Breakdown
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSyllabusSubTab('master')}
+                  className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                    syllabusSubTab === 'master'
+                      ? 'bg-teal-700 text-white shadow-sm'
+                      : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+                  }`}
+                >
+                  {isManagerRole ? '📖 Add / Manage Course Syllabus' : '📖 All Courses Master Syllabus (View)'}
+                </button>
+              </div>
+
+              {syllabusSubTab === 'master' ? (
+                <CourseSyllabusBoard
+                  currentUser={currentUser}
+                  roleType={roleType}
+                  readOnly={!isManagerRole}
+                  courseOptions={Array.from(new Set(batches.map((b) => b.course).filter(Boolean)))}
+                />
+              ) : (
+                <>
+                  {/* Summary Cards */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-2xs">
                   <div className="text-[11px] font-bold text-slate-400 uppercase">Syllabus Completed</div>
@@ -1388,12 +1751,12 @@ export default function TrainerHeadDashboard({
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-slate-700">
                       {batchWiseReport.map((b) => {
-                        const pct = b.enrolledCount > 0 ? Math.round((b.completedSyllabusCount / b.enrolledCount) * 100) : 50;
+                        const pct = b.enrolledCount > 0 ? Math.round((b.completedSyllabusCount / b.enrolledCount) * 100) : 0;
                         return (
                           <tr key={b.batchId || b.name} className="hover:bg-slate-50">
                             <td className="py-3 px-3 font-extrabold text-slate-900">{b.batchName}</td>
-                            <td className="py-3 px-3 font-semibold text-teal-700">{b.course || 'CPC'}</td>
-                            <td className="py-3 px-3">{b.branch || 'Saravanampatti'}</td>
+                            <td className="py-3 px-3 font-semibold text-teal-700">{b.course || '—'}</td>
+                            <td className="py-3 px-3">{b.branch || '—'}</td>
                             <td className="py-3 px-3 font-medium text-slate-900">{b.trainer || b.faculty || 'Faculty'}</td>
                             <td className="py-3 px-3 font-bold">{b.enrolledCount}</td>
                             <td className="py-3 px-3 font-bold text-emerald-600">{b.completedSyllabusCount}</td>
@@ -1413,10 +1776,12 @@ export default function TrainerHeadDashboard({
                   </table>
                 </div>
               </div>
-            </div>
+            </>
           )}
+        </div>
+      )}
 
-          {/* ================= SECTION 5: TRAINER AND BATCH MAPPING ================= */}
+      {/* ================= SECTION 5: TRAINER AND BATCH MAPPING ================= */}
           {activeTab === 'mapping' && (
             <div className="space-y-6">
               <div className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-xs space-y-4">
@@ -1445,7 +1810,7 @@ export default function TrainerHeadDashboard({
                       {trainerBatchMapping.map((tr) => (
                         <tr key={tr.trainerId || tr.id} className="hover:bg-slate-50">
                           <td className="py-3 px-3 font-extrabold text-slate-900">{tr.trainerName}</td>
-                          <td className="py-3 px-3">{tr.zone || 'TN'} · {tr.branch}</td>
+                          <td className="py-3 px-3">{tr.zone ? `${tr.zone} · ` : ''}{tr.branch || '—'}</td>
                           <td className="py-3 px-3 font-semibold text-teal-700">{tr.course}</td>
                           <td className="py-3 px-3">
                             {tr.batches.length > 0 ? (
@@ -1457,11 +1822,11 @@ export default function TrainerHeadDashboard({
                                 ))}
                               </div>
                             ) : (
-                              <span className="text-slate-400 italic">General Shift Batch</span>
+                              <span className="text-slate-400 italic">No batches assigned</span>
                             )}
                           </td>
                           <td className="py-3 px-3 font-black text-slate-900">{tr.studentsCount} Students</td>
-                          <td className="py-3 px-3 text-slate-600">{tr.teamLeadName || 'Ram Balaji'}</td>
+                          <td className="py-3 px-3 text-slate-600">{tr.teamLeadName || '—'}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -1503,12 +1868,12 @@ export default function TrainerHeadDashboard({
                           <td className="py-3 px-3 font-extrabold text-slate-900">{tr.trainerName}</td>
                           <td className="py-3 px-3">{tr.branch}</td>
                           <td className="py-3 px-3 text-slate-500 font-mono text-[11px]">{tr.shift}</td>
-                          <td className="py-3 px-3 font-bold text-emerald-600">{tr.presentDays} / 22 Days</td>
+                          <td className="py-3 px-3 font-bold text-emerald-600">{tr.presentDays} Days ({tr.sessionsLogged} sessions)</td>
                           <td className="py-3 px-3 font-bold text-rose-600">{tr.absentDays} Days</td>
                           <td className="py-3 px-3 font-black text-slate-900">{tr.attendancePct}%</td>
                           <td className="py-3 px-3">
-                            <span className="px-2 py-0.5 rounded-md font-bold text-[10px] bg-emerald-100 text-emerald-800">
-                              Active On Shift
+                            <span className={`px-2 py-0.5 rounded-md font-bold text-[10px] ${tr.isActive ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600'}`}>
+                              {tr.isActive ? 'Active Faculty' : 'Inactive'}
                             </span>
                           </td>
                         </tr>
@@ -1570,7 +1935,7 @@ export default function TrainerHeadDashboard({
                         <tr key={dm._id} className="hover:bg-slate-50">
                           <td className="py-3 px-3 font-extrabold text-slate-900">{dm.candidateName || 'Candidate'}</td>
                           <td className="py-3 px-3 font-mono text-[11px] text-slate-500">{dm.phone || 'N/A'}</td>
-                          <td className="py-3 px-3 font-semibold text-teal-700">{dm.course || 'CPC'}</td>
+                          <td className="py-3 px-3 font-semibold text-teal-700">{dm.course || '—'}</td>
                           <td className="py-3 px-3">
                             <span className="font-bold text-slate-900">{dm.preferredDate || 'TBD'}</span>
                             <span className="text-[10px] text-slate-400 block">{dm.timeSlot || 'General'}</span>
@@ -1679,7 +2044,7 @@ export default function TrainerHeadDashboard({
                           <div className="flex items-center gap-2">
                             <span className="text-xs font-black text-slate-900">{d.studentName || 'Student'}</span>
                             <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-teal-50 text-teal-700 border border-teal-200">
-                              {d.course || 'CPC'}
+                              {d.course || '—'}
                             </span>
                             <span className="text-xs text-slate-500">
                               · Responsible Faculty: <strong>{d.trainerName || d.trainer || 'Assigned Faculty'}</strong>
@@ -1744,7 +2109,7 @@ export default function TrainerHeadDashboard({
                 <option value="">Select faculty...</option>
                 {scopedTrainers.map((tr) => (
                   <option key={tr.trainerId || tr.id} value={tr.trainerId || tr.id}>
-                    {tr.trainerName || tr.name} ({tr.courseKey || tr.course || 'CPC'} · {tr.branchName || tr.branch || 'Saravanampatti'})
+                    {tr.trainerName || tr.name}{tr.branchName || tr.branch ? ` (${tr.branchName || tr.branch})` : ''}
                   </option>
                 ))}
               </select>

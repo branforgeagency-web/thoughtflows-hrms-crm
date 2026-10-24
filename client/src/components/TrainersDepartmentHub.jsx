@@ -20,7 +20,6 @@ import {
   ShieldCheck,
   UserCheck
 } from 'lucide-react';
-import DashboardNavSwitcher from './DashboardNavSwitcher';
 import TrainingDepartmentDashboard from './TrainingDepartmentDashboard';
 import TrainerRoleDashboard from './TrainerRoleDashboard';
 import TrainerHeadDashboard from './TrainerHeadDashboard';
@@ -35,6 +34,7 @@ import {
   getBatches,
   getStudents,
   getDemos,
+  getBranches,
   onDataUpdate
 } from '../services/api';
 
@@ -80,12 +80,12 @@ const TRAINER_ROLES = [
     tier: 'FACULTY DESK',
     name: 'Trainers',
     desc: 'Run daily batches, live class rooms, attendance, demos, doubt resolutions & test builder.',
-    scope: '25 FACULTY DESKS · 12 BRANCHES',
+    scope: 'ACTIVE FACULTY · ALL BRANCHES',
     icon: GraduationCap,
     gradient: 'linear-gradient(135deg, #38BDF8, #2563EB)',
     accentText: 'text-sky-700',
     ring: 'hover:border-sky-400',
-    accountHint: 'Srithar S & 25 Faculty Desks'
+    accountHint: 'Individual Trainer Credentials'
   }
 ];
 
@@ -93,29 +93,157 @@ export default function TrainersDepartmentHub({
   onClose,
   currentUser,
   onLogout,
+  onTrainerLogout,
   onSwitchDepartment,
   theme = 'classic'
 }) {
-  const [selectedRole, setSelectedRole] = useState(null);
-  const [selectedLeaderId, setSelectedLeaderId] = useState(null);
-  const [selectedTrainerUser, setSelectedTrainerUser] = useState(null);
-  const [hubTab, setHubTab] = useState('roles'); // 'roles' | 'org'
-  const [loginModalRole, setLoginModalRole] = useState(null);
-
   // Authenticated Trainer Department User
   const [activeTrainerUser, setActiveTrainerUser] = useState(() => {
     try {
       const saved = sessionStorage.getItem('thoughtflows_trainer_user');
       if (saved) return JSON.parse(saved);
-      if (currentUser?.trainerRole || currentUser?.trainerId) return currentUser;
+      if (currentUser?.trainerRole || currentUser?.trainerId || currentUser?.department === 'training') return currentUser;
     } catch (_) {}
     return null;
   });
+
+  const [selectedRole, setSelectedRole] = useState(() => {
+    try {
+      const savedRole = sessionStorage.getItem('thoughtflows_trainer_role');
+      if (savedRole) return savedRole;
+      const trainerUser = JSON.parse(sessionStorage.getItem('thoughtflows_trainer_user') || 'null') || (
+        currentUser?.trainerRole || currentUser?.trainerId || currentUser?.department === 'training' ? currentUser : null
+      );
+      if (trainerUser?.trainerRole) return trainerUser.trainerRole;
+      if (trainerUser?.trainerId) return 'trainer';
+      const roleStr = String(trainerUser?.role || '').toLowerCase();
+      if (/head of trainer|chief trainer|chief faculty|training head/i.test(roleStr)) return 'head';
+      if (/manager/i.test(roleStr)) return 'manager';
+      if (/team lead|\btl\b/i.test(roleStr)) return 'tl';
+      if (/trainer|faculty/i.test(roleStr)) return 'trainer';
+    } catch (_) {}
+    return null;
+  });
+
+  const [selectedLeaderId, setSelectedLeaderId] = useState(() => {
+    try {
+      const savedLeader = sessionStorage.getItem('thoughtflows_trainer_leader_id');
+      if (savedLeader) return savedLeader;
+      const trainerUser = JSON.parse(sessionStorage.getItem('thoughtflows_trainer_user') || 'null') || (
+        currentUser?.trainerRole || currentUser?.trainerId || currentUser?.department === 'training' ? currentUser : null
+      );
+      if (trainerUser?.leaderId) return trainerUser.leaderId;
+    } catch (_) {}
+    return null;
+  });
+
+  const [selectedTrainerUser, setSelectedTrainerUser] = useState(() => {
+    try {
+      const savedSelected = sessionStorage.getItem('thoughtflows_trainer_selected_user');
+      if (savedSelected) return JSON.parse(savedSelected);
+      const trainerUser = JSON.parse(sessionStorage.getItem('thoughtflows_trainer_user') || 'null') || (
+        currentUser?.trainerRole || currentUser?.trainerId || currentUser?.department === 'training' ? currentUser : null
+      );
+      if (trainerUser?.trainerId || trainerUser?.trainerRole === 'trainer') return trainerUser;
+    } catch (_) {}
+    return null;
+  });
+
+  const [hubTab, setHubTab] = useState('roles'); // 'roles' | 'org'
+  const [loginModalRole, setLoginModalRole] = useState(null);
+
+  // Sync state changes with sessionStorage across browser reloads
+  useEffect(() => {
+    try {
+      if (selectedRole) {
+        sessionStorage.setItem('thoughtflows_trainer_role', selectedRole);
+      } else {
+        sessionStorage.removeItem('thoughtflows_trainer_role');
+      }
+    } catch (_) {}
+  }, [selectedRole]);
+
+  useEffect(() => {
+    try {
+      if (selectedLeaderId) {
+        sessionStorage.setItem('thoughtflows_trainer_leader_id', selectedLeaderId);
+      } else {
+        sessionStorage.removeItem('thoughtflows_trainer_leader_id');
+      }
+    } catch (_) {}
+  }, [selectedLeaderId]);
+
+  useEffect(() => {
+    try {
+      if (selectedTrainerUser) {
+        sessionStorage.setItem('thoughtflows_trainer_selected_user', JSON.stringify(selectedTrainerUser));
+      } else {
+        sessionStorage.removeItem('thoughtflows_trainer_selected_user');
+      }
+    } catch (_) {}
+  }, [selectedTrainerUser]);
+
+  useEffect(() => {
+    try {
+      if (activeTrainerUser) {
+        sessionStorage.setItem('thoughtflows_trainer_user', JSON.stringify(activeTrainerUser));
+      } else {
+        sessionStorage.removeItem('thoughtflows_trainer_user');
+      }
+    } catch (_) {}
+  }, [activeTrainerUser]);
+
+  // Sync with incoming currentUser prop if activeTrainerUser is not yet set
+  useEffect(() => {
+    if (currentUser?.trainerRole || currentUser?.trainerId || currentUser?.department === 'training') {
+      setActiveTrainerUser(prev => prev || currentUser);
+      try {
+        sessionStorage.setItem('thoughtflows_trainer_user', JSON.stringify(currentUser));
+      } catch (_) {}
+
+      setSelectedRole(prevRole => {
+        if (prevRole) return prevRole;
+        const targetRole = currentUser.trainerRole || (currentUser.trainerId ? 'trainer' : null);
+        if (targetRole) {
+          try { sessionStorage.setItem('thoughtflows_trainer_role', targetRole); } catch (_) {}
+          return targetRole;
+        }
+        const roleStr = String(currentUser.role || '').toLowerCase();
+        let inferred = null;
+        if (/head of trainer|chief trainer|chief faculty|training head/i.test(roleStr)) inferred = 'head';
+        else if (/manager/i.test(roleStr)) inferred = 'manager';
+        else if (/team lead|\btl\b/i.test(roleStr)) inferred = 'tl';
+        else if (/trainer|faculty/i.test(roleStr)) inferred = 'trainer';
+        if (inferred) {
+          try { sessionStorage.setItem('thoughtflows_trainer_role', inferred); } catch (_) {}
+          return inferred;
+        }
+        return prevRole;
+      });
+
+      if (currentUser.leaderId) {
+        setSelectedLeaderId(prevLeader => {
+          if (prevLeader) return prevLeader;
+          try { sessionStorage.setItem('thoughtflows_trainer_leader_id', currentUser.leaderId); } catch (_) {}
+          return currentUser.leaderId;
+        });
+      }
+
+      if (currentUser.trainerId || currentUser.trainerRole === 'trainer') {
+        setSelectedTrainerUser(prevUser => {
+          if (prevUser) return prevUser;
+          try { sessionStorage.setItem('thoughtflows_trainer_selected_user', JSON.stringify(currentUser)); } catch (_) {}
+          return currentUser;
+        });
+      }
+    }
+  }, [currentUser]);
 
   const [trainers, setTrainers] = useState([]);
   const [batches, setBatches] = useState([]);
   const [students, setStudents] = useState([]);
   const [demos, setDemos] = useState([]);
+  const [branches, setBranches] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const loadHubStats = useCallback(() => {
@@ -123,19 +251,15 @@ export default function TrainersDepartmentHub({
       getTrainerSettings().catch(() => []),
       getBatches().catch(() => []),
       getStudents().catch(() => []),
-      getDemos().catch(() => [])
+      getDemos().catch(() => []),
+      getBranches().catch(() => [])
     ])
-      .then(([tData, bData, sData, dData]) => {
-        const merged = [...(Array.isArray(tData) ? tData : [])];
-        ALL_HIERARCHY_TRAINERS.forEach((ht) => {
-          if (!merged.some((m) => (m.trainerName || m.name || '').toLowerCase() === ht.name.toLowerCase() || m.trainerId === ht.id)) {
-            merged.push(ht);
-          }
-        });
-        setTrainers(merged);
+      .then(([tData, bData, sData, dData, brData]) => {
+        setTrainers(Array.isArray(tData) ? tData : []);
         setBatches(Array.isArray(bData) ? bData : []);
         setStudents(Array.isArray(sData) ? sData : []);
         setDemos(Array.isArray(dData) ? dData : []);
+        setBranches(Array.isArray(brData) ? brData : []);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -144,7 +268,7 @@ export default function TrainersDepartmentHub({
   useEffect(() => {
     loadHubStats();
     const unsub = onDataUpdate((entity) => {
-      if (['trainers', 'batches', 'students', 'demos'].includes(entity)) {
+      if (['trainers', 'batches', 'students', 'demos', 'branches'].includes(entity)) {
         loadHubStats();
       }
     });
@@ -185,11 +309,24 @@ export default function TrainersDepartmentHub({
   // Handle successful login from modal
   const handleLoginSuccess = (user) => {
     setActiveTrainerUser(user);
+    try {
+      sessionStorage.setItem('thoughtflows_user', JSON.stringify(user));
+      sessionStorage.setItem('thoughtflows_trainer_user', JSON.stringify(user));
+    } catch (_) {}
+
     const targetRole = user.trainerRole || loginModalRole || 'head';
-    setSelectedLeaderId(user.leaderId || null);
+    const leaderId = user.leaderId || null;
+    setSelectedLeaderId(leaderId);
+    try {
+      if (leaderId) sessionStorage.setItem('thoughtflows_trainer_leader_id', leaderId);
+      sessionStorage.setItem('thoughtflows_trainer_role', targetRole);
+    } catch (_) {}
 
     if (targetRole === 'trainer' || user.trainerId) {
       setSelectedTrainerUser(user);
+      try {
+        sessionStorage.setItem('thoughtflows_trainer_selected_user', JSON.stringify(user));
+      } catch (_) {}
       setSelectedRole('trainer');
     } else {
       setSelectedRole(targetRole);
@@ -201,6 +338,14 @@ export default function TrainersDepartmentHub({
   const handleTrainerLogout = () => {
     try {
       sessionStorage.removeItem('thoughtflows_trainer_user');
+      sessionStorage.removeItem('thoughtflows_trainer_role');
+      sessionStorage.removeItem('thoughtflows_trainer_leader_id');
+      sessionStorage.removeItem('thoughtflows_trainer_selected_user');
+      sessionStorage.removeItem('thoughtflows_trainer_faculty_nav');
+      sessionStorage.removeItem('thoughtflows_trainer_tab_head');
+      sessionStorage.removeItem('thoughtflows_trainer_tab_manager');
+      sessionStorage.removeItem('thoughtflows_trainer_tab_tl');
+      sessionStorage.removeItem('tf_picked_trainer_identity');
       const currentRaw = sessionStorage.getItem('thoughtflows_user');
       if (currentRaw) {
         const u = JSON.parse(currentRaw);
@@ -213,6 +358,9 @@ export default function TrainersDepartmentHub({
     setSelectedRole(null);
     setSelectedLeaderId(null);
     setSelectedTrainerUser(null);
+    if (onTrainerLogout) {
+      onTrainerLogout();
+    }
   };
 
   // Handle clicking a node directly from the interactive Organization Chart
@@ -227,6 +375,7 @@ export default function TrainersDepartmentHub({
   };
 
   // Render individual Trainer Dashboard (reusing existing component)
+  // When logged in, no back button without logout (user stays on dashboard across refresh)
   if (selectedRole === 'trainer') {
     return (
       <TrainingDepartmentDashboard
@@ -235,24 +384,19 @@ export default function TrainersDepartmentHub({
         onLogout={handleTrainerLogout}
         onSwitchDepartment={onSwitchDepartment}
         theme={theme}
-        onBackToRoles={() => {
-          setSelectedRole(null);
-          setSelectedTrainerUser(null);
-        }}
+        onBackToRoles={null}
       />
     );
   }
 
   // Render Head, Manager, or Team Lead Dashboard (All using the identical 8-point dashboard architecture)
+  // When logged in, no back button without logout (user stays on dashboard across refresh)
   if (selectedRole === 'head' || selectedRole === 'manager' || selectedRole === 'tl') {
     return (
       <TrainerHeadDashboard
         roleType={selectedRole}
         initialLeaderId={selectedLeaderId || activeTrainerUser?.leaderId}
-        onBack={() => {
-          setSelectedRole(null);
-          setSelectedLeaderId(null);
-        }}
+        onBack={null}
         currentUser={activeTrainerUser || currentUser}
         onLogout={handleTrainerLogout}
         onSwitchDepartment={onSwitchDepartment}
@@ -296,13 +440,6 @@ export default function TrainersDepartmentHub({
         </div>
 
         <div className="flex items-center gap-2">
-          {onSwitchDepartment && (
-            <DashboardNavSwitcher
-              currentDepartment="training"
-              onSwitchDepartment={onSwitchDepartment}
-            />
-          )}
-
           {activeTrainerUser ? (
             <div className="flex items-center gap-2 bg-emerald-500/20 border border-emerald-400/40 rounded-full pl-2 pr-3 py-1">
               <span className="w-7 h-7 rounded-full grid place-items-center text-xs font-bold text-white bg-emerald-600 shadow-xs">
@@ -521,7 +658,9 @@ export default function TrainersDepartmentHub({
               <div className="text-sm font-extrabold text-slate-900">
                 {loading ? '…' : `${activeTrainersCount} Faculty Active`}
               </div>
-              <div className="text-[11px] text-slate-500">Across 12 branches nationwide</div>
+              <div className="text-[11px] text-slate-500">
+                {branches.length ? `Across ${branches.length} branches nationwide` : 'Across branches nationwide'}
+              </div>
             </div>
           </div>
 
@@ -534,7 +673,9 @@ export default function TrainersDepartmentHub({
               <div className="text-sm font-extrabold text-slate-900">
                 {loading ? '…' : `${batches.length} Live Batches`}
               </div>
-              <div className="text-[11px] text-slate-500">CPC, CIC, CPB, CPMA, CRC</div>
+              <div className="text-[11px] text-slate-500">
+                {Array.from(new Set(batches.map((b) => b.course).filter(Boolean))).slice(0, 5).join(', ') || 'Active courses in session'}
+              </div>
             </div>
           </div>
 

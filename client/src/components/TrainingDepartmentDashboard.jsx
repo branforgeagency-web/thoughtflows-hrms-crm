@@ -118,7 +118,24 @@ export default function TrainingDepartmentDashboard({
   // No login required to open the Training department — if nobody signed in
   // (currentUser is empty), the trainer just picks their name from the roster
   // below instead of typing a password.
-  const [pickedIdentity, setPickedIdentity] = useState(null);
+  const [pickedIdentity, setPickedIdentity] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem('tf_picked_trainer_identity');
+      return saved ? JSON.parse(saved) : null;
+    } catch (_) {
+      return null;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      if (pickedIdentity) {
+        sessionStorage.setItem('tf_picked_trainer_identity', JSON.stringify(pickedIdentity));
+      } else {
+        sessionStorage.removeItem('tf_picked_trainer_identity');
+      }
+    } catch (_) {}
+  }, [pickedIdentity]);
   const hasSignedInUser = Boolean(currentUser?.trainerId || currentUser?.name || currentUser?.userName || currentUser?.email);
   const trainerName = trainerProfile?.trainerName || currentUser?.userName || currentUser?.name || pickedIdentity?.trainerName || '';
   const trainerRole = trainerProfile?.role || trainerProfile?.specialization || currentUser?.role || pickedIdentity?.role || '';
@@ -159,7 +176,21 @@ export default function TrainingDepartmentDashboard({
   const studentKeyOf = (s) => String(s?.studentId || s?._id || '');
   const lc = (v) => String(v || '').toLowerCase();
 
-  const [activeNav, setActiveNav] = useState('home');
+  const [activeNav, setActiveNav] = useState(() => {
+    try {
+      return sessionStorage.getItem('thoughtflows_trainer_faculty_nav') || 'home';
+    } catch (_) {
+      return 'home';
+    }
+  });
+
+  useEffect(() => {
+    try {
+      if (activeNav) {
+        sessionStorage.setItem('thoughtflows_trainer_faculty_nav', activeNav);
+      }
+    } catch (_) {}
+  }, [activeNav]);
   const [navOpen, setNavOpen] = useState(false); // mobile sidebar
   const [onlineTestFor, setOnlineTestFor] = useState(null); // test opened in the online-test builder
   useEffect(() => { setNavOpen(false); }, [activeNav]);

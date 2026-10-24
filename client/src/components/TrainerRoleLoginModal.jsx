@@ -185,6 +185,14 @@ export default function TrainerRoleLoginModal({
         try {
           sessionStorage.setItem('thoughtflows_user', JSON.stringify(authedUser));
           sessionStorage.setItem('thoughtflows_trainer_user', JSON.stringify(authedUser));
+          const targetRole = authedUser.trainerRole || roleKey || 'head';
+          sessionStorage.setItem('thoughtflows_trainer_role', targetRole);
+          if (authedUser.leaderId) {
+            sessionStorage.setItem('thoughtflows_trainer_leader_id', authedUser.leaderId);
+          }
+          if (targetRole === 'trainer' || authedUser.trainerId) {
+            sessionStorage.setItem('thoughtflows_trainer_selected_user', JSON.stringify(authedUser));
+          }
         } catch (_) {}
 
         setLoading(false);

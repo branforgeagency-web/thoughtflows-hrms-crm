@@ -96,6 +96,12 @@ export default function App() {
         const matched = DEPT_CARDS.find(c => c.id === dept);
         if (matched) return matched;
       }
+      const trainerSaved = sessionStorage.getItem('thoughtflows_trainer_user');
+      const trainerRoleSaved = sessionStorage.getItem('thoughtflows_trainer_role');
+      if (trainerSaved || trainerRoleSaved) {
+        const matched = DEPT_CARDS.find(c => c.id === 'training');
+        if (matched) return matched;
+      }
       const saved = sessionStorage.getItem('thoughtflows_dashboard');
       if (saved) return JSON.parse(saved);
       return null;
@@ -107,8 +113,10 @@ export default function App() {
   const [isDashboardOpen, setIsDashboardOpen] = useState(() => {
     try {
       const userSaved = sessionStorage.getItem('thoughtflows_user');
+      const trainerSaved = sessionStorage.getItem('thoughtflows_trainer_user');
+      const trainerRoleSaved = sessionStorage.getItem('thoughtflows_trainer_role');
       // If user is actively logged in within this tab session, remain open across refreshes
-      return !!userSaved;
+      return !!(userSaved || trainerSaved || trainerRoleSaved);
     } catch {
       return false;
     }
@@ -152,6 +160,11 @@ export default function App() {
   const handleLoginSuccess = (user) => {
     setCurrentUser(user);
     sessionStorage.setItem('thoughtflows_user', JSON.stringify(user));
+    if (user?.trainerRole || user?.trainerId || user?.department === 'training') {
+      sessionStorage.setItem('thoughtflows_trainer_user', JSON.stringify(user));
+      if (user?.trainerRole) sessionStorage.setItem('thoughtflows_trainer_role', user.trainerRole);
+      if (user?.leaderId) sessionStorage.setItem('thoughtflows_trainer_leader_id', user.leaderId);
+    }
     try {
       localStorage.removeItem('thoughtflows_user');
       localStorage.removeItem('thoughtflows_dashboard');
@@ -171,6 +184,15 @@ export default function App() {
   const handleSignOut = () => {
     sessionStorage.removeItem('thoughtflows_user');
     sessionStorage.removeItem('thoughtflows_dashboard');
+    sessionStorage.removeItem('thoughtflows_trainer_user');
+    sessionStorage.removeItem('thoughtflows_trainer_role');
+    sessionStorage.removeItem('thoughtflows_trainer_leader_id');
+    sessionStorage.removeItem('thoughtflows_trainer_selected_user');
+    sessionStorage.removeItem('thoughtflows_trainer_faculty_nav');
+    sessionStorage.removeItem('thoughtflows_trainer_tab_head');
+    sessionStorage.removeItem('thoughtflows_trainer_tab_manager');
+    sessionStorage.removeItem('thoughtflows_trainer_tab_tl');
+    sessionStorage.removeItem('tf_picked_trainer_identity');
     try {
       localStorage.removeItem('thoughtflows_user');
       localStorage.removeItem('thoughtflows_dashboard');
@@ -340,6 +362,7 @@ export default function App() {
         currentUser={currentUser}
         onSwitchDepartment={handleSwitchDepartment}
         onSignOut={handleSignOut}
+        onTrainerLogout={() => setCurrentUser(null)}
         theme={theme}
       />
 

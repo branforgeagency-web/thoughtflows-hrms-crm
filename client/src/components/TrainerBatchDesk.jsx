@@ -9,6 +9,7 @@ import {
   getLiveClassHistory,
   saveLiveClassRecording
 } from '../services/api';
+import CourseSyllabusBoard from './CourseSyllabusBoard';
 
 // Trainer's per-batch desk:
 //   • Syllabus tracker — tick modules as they are covered; students see the progress
@@ -17,10 +18,11 @@ import {
 const errOf = (e, fb) => e?.response?.data?.error || e?.message || fb;
 const fmtDate = (d) => (d ? new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '');
 const fmtDateTime = (d) => (d ? new Date(d).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '');
-const inputCls = 'w-full px-3 py-2 rounded-xl border border-slate-200 text-xs focus:outline-none focus:border-teal-500 bg-white';
+const inputCls = 'w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs text-slate-900 font-semibold placeholder:text-slate-400 focus:outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600/20 bg-white';
 const card = 'bg-white rounded-2xl border border-slate-200/90 p-5 sm:p-6 shadow-sm';
 
 export default function TrainerBatchDesk({ batches = [] }) {
+  const [deskView, setDeskView] = useState('batch'); // 'batch' | 'master_syllabus'
   const [batchId, setBatchId] = useState('');
   const batch = batches.find((b) => b.id === batchId) || batches[0] || null;
   const [toast, setToast] = useState('');
@@ -138,7 +140,37 @@ export default function TrainerBatchDesk({ batches = [] }) {
     <div className="space-y-5 max-w-[1280px]">
       {toast && <div className="p-3 rounded-xl bg-slate-900 text-white text-xs font-semibold">{toast}</div>}
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      {/* View Switcher: My Batch vs All Courses Master Syllabus */}
+      <div className="flex items-center gap-2 border-b border-slate-200 pb-3">
+        <button
+          type="button"
+          onClick={() => setDeskView('batch')}
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            deskView === 'batch'
+              ? 'bg-teal-700 text-white shadow-sm'
+              : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+          }`}
+        >
+          🎯 My Batch Syllabus & Announcements
+        </button>
+        <button
+          type="button"
+          onClick={() => setDeskView('master_syllabus')}
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            deskView === 'master_syllabus'
+              ? 'bg-teal-700 text-white shadow-sm'
+              : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+          }`}
+        >
+          📖 All Courses Master Syllabus (View)
+        </button>
+      </div>
+
+      {deskView === 'master_syllabus' ? (
+        <CourseSyllabusBoard readOnly={true} roleType="trainer" />
+      ) : (
+        <>
+          <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
           <h2 className="text-base font-bold text-slate-900 truncate">{batch.name}</h2>
           <p className="text-xs text-slate-500">{[batch.course, `${batch.students.length} students`, batch.mode, batch.timing].filter(Boolean).join(' · ')}</p>
@@ -250,6 +282,8 @@ export default function TrainerBatchDesk({ batches = [] }) {
           </div>
         )}
       </div>
-    </div>
+    </>
+  )}
+</div>
   );
 }

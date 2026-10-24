@@ -75,6 +75,13 @@ export default function TrainerRoleDashboard({
   onClose
 }) {
   const [activeNav, setActiveNav] = useState('home');
+  const isHeadRole = roleType === 'head';
+
+  useEffect(() => {
+    if (!isHeadRole && (activeNav === 'weak_students' || activeNav === 'doubts')) {
+      setActiveNav('home');
+    }
+  }, [isHeadRole, activeNav]);
   const [navOpen, setNavOpen] = useState(false);
   const [trainersList, setTrainersList] = useState([]);
   const [batchesList, setBatchesList] = useState([]);
@@ -143,25 +150,25 @@ export default function TrainerRoleDashboard({
       getDemos().catch(() => []),
       getTrainerDoubts().catch(() => [])
     ]).then(([tData, bData, brData, sData, dData, dbtData]) => {
-      // Merge backend trainers with official hierarchy trainers so all 25 trainers exist
-      const mergedTrainers = [...(Array.isArray(tData) ? tData : [])];
-      ALL_HIERARCHY_TRAINERS.forEach((ht) => {
-        const found = mergedTrainers.find((t) =>
-          String(t.trainerName || t.name || '').toLowerCase() === ht.name.toLowerCase() ||
-          t.trainerId === ht.id
-        );
-        if (found) {
-          found.teamLeadId = ht.teamLeadId;
-          found.teamLeadName = ht.teamLeadName;
-          found.managerId = ht.managerId;
-          found.managerName = ht.managerName;
-          found.zone = ht.zone;
-        } else {
-          mergedTrainers.push(ht);
+      // Pure Real Data: Use trainers returned directly from database / API
+      const realTrainers = [...(Array.isArray(tData) ? tData : [])];
+      const knownNames = new Set(realTrainers.map((t) => String(t.trainerName || t.name || '').toLowerCase()).filter(Boolean));
+      (Array.isArray(bData) ? bData : []).forEach((b) => {
+        const bTrName = b.trainer || b.faculty || b.trainerName;
+        if (bTrName && !knownNames.has(bTrName.toLowerCase())) {
+          knownNames.add(bTrName.toLowerCase());
+          realTrainers.push({
+            trainerId: b.trainerId || `tr_${bTrName.toLowerCase().replace(/[^a-z0-9]/g, '_')}`,
+            trainerName: bTrName,
+            branchName: b.branch || '',
+            courseKey: b.course || '',
+            role: 'Faculty Trainer',
+            active: true
+          });
         }
       });
 
-      setTrainersList(mergedTrainers);
+      setTrainersList(realTrainers);
       setBatchesList(Array.isArray(bData) ? bData : []);
       setBranchesList(Array.isArray(brData) ? brData : []);
       setStudentsList(Array.isArray(sData) ? sData : []);
@@ -183,74 +190,73 @@ export default function TrainerRoleDashboard({
     return () => unsub();
   }, [loadData]);
 
-  // Current Role & Active Leader Configuration
+  // Current Role & Active Leader Configuration — Dynamically derived 100% from authenticated profile
   const currentLeader = useMemo(() => {
+    const rawName = currentUser?.name || currentUser?.userName || '';
+    const userRole = currentUser?.role || currentUser?.trainerRole || '';
+    const initialBadge = rawName ? rawName.slice(0, 2).toUpperCase() : (roleType === 'head' ? 'HT' : roleType === 'manager' ? 'TM' : 'TL');
+
     if (roleType === 'head') {
       return {
-        id: 'manoj',
-        name: 'Manoj',
+        id: currentUser?._id || currentUser?.id || 'head',
+        name: rawName || 'Department Head',
         roleTitle: 'Head of Training Department',
-        badge: 'HT',
-        scopeLabel: 'Tamil Nadu, Kerala, Andhra Pradesh & Telangana · All 25 Faculty',
-        zone: 'All Regions (TN, KL, AP / TS)',
+        badge: initialBadge,
+        scopeLabel: `Consolidated Academy · ${trainersList.length} Faculty`,
+        zone: 'All Regions (Nationwide)',
         topBarGrad: 'linear-gradient(135deg, #005a9c, #0284c7)',
         managerLabel: 'Head of Trainer'
       };
     }
     if (roleType === 'manager') {
-      const mgr = TRAINER_HIERARCHY.managers.find((m) => m.id === activeLeaderId) || TRAINER_HIERARCHY.managers[0];
       return {
-        id: mgr.id,
-        name: mgr.name,
-        roleTitle: `Training Manager (${mgr.zone})`,
-        badge: mgr.badge,
-        scopeLabel: `${mgr.zoneLabel} · DEP-TR-MGR-${mgr.id.toUpperCase()}`,
-        zone: mgr.zone,
-        topBarGrad: mgr.id === 'keerthi'
-          ? 'linear-gradient(135deg, #00828a, #0d9488)'
-          : 'linear-gradient(135deg, #6d28d9, #8b5cf6)',
+        id: currentUser?._id || currentUser?.id || 'manager',
+        name: rawName || 'Training Manager',
+        roleTitle: userRole || 'Training Manager',
+        badge: initialBadge,
+        scopeLabel: `Assigned Department · ${trainersList.length} Faculty`,
+        zone: currentUser?.zone || currentUser?.branch || 'Assigned Region',
+        topBarGrad: 'linear-gradient(135deg, #00828a, #0d9488)',
         managerLabel: 'Training Manager'
       };
     }
     // Team Lead
-    const tl = TRAINER_HIERARCHY.teamLeads.find((t) => t.id === activeLeaderId) || TRAINER_HIERARCHY.teamLeads[0];
     return {
-      id: tl.id,
-      name: tl.name,
-      roleTitle: `Team Lead (${tl.zone})`,
-      badge: tl.badge,
-      scopeLabel: `${tl.zoneLabel} · Reporting to ${tl.managerName} · DEP-TR-TL-${tl.id.toUpperCase()}`,
-      zone: tl.zone,
-      topBarGrad: tl.id === 'ram_balaji'
-        ? 'linear-gradient(135deg, #2e7d32, #16a34a)'
-        : tl.id === 'vaishna'
-        ? 'linear-gradient(135deg, #0284c7, #38bdf8)'
-        : 'linear-gradient(135deg, #be185d, #ec4899)',
+      id: currentUser?._id || currentUser?.id || 'tl',
+      name: rawName || 'Team Lead',
+      roleTitle: userRole || 'Trainer Team Lead',
+      badge: initialBadge,
+      scopeLabel: `Assigned Pod · ${trainersList.length} Faculty`,
+      zone: currentUser?.zone || currentUser?.branch || 'Assigned Pod',
+      topBarGrad: 'linear-gradient(135deg, #2e7d32, #16a34a)',
       managerLabel: 'Trainer Team Lead'
     };
-  }, [roleType, activeLeaderId]);
+  }, [roleType, currentUser, trainersList]);
 
-  // Scoped Trainers based on Active Leader
+  // Scoped Trainers based on real database associations and user permissions
   const scopedTrainers = useMemo(() => {
     let list = trainersList;
-    if (roleType === 'manager') {
+
+    if (roleType === 'head') {
+      // Head sees all trainers
+    } else if (currentUser?.supervisedTrainers && Array.isArray(currentUser.supervisedTrainers) && currentUser.supervisedTrainers.length > 0) {
+      list = list.filter((t) => currentUser.supervisedTrainers.includes(t.trainerId || t.id));
+    } else if (currentUser?.branches && Array.isArray(currentUser.branches) && currentUser.branches.length > 0) {
+      const lowerB = currentUser.branches.map((b) => b.toLowerCase());
+      list = list.filter((t) => lowerB.includes(String(t.branchName || t.branch || '').toLowerCase()));
+    } else if (roleType === 'manager') {
       if (activeLeaderId === 'keerthi') {
-        // TN & KL (Ram Balaji & Vaishna - 17 trainers)
         list = list.filter((t) => t.managerId === 'keerthi' || ['TN', 'KL'].includes(t.zone) || /tamil|kerala|coimbatore|kochi|trivandrum|salem|trichy/i.test(`${t.branchName || ''} ${t.branch || ''}`));
       } else if (activeLeaderId === 'pavithra') {
-        // AP & TS (Mounika - 8 trainers)
         list = list.filter((t) => t.managerId === 'pavithra' || ['AP / TS', 'AP', 'TS'].includes(t.zone) || /telangana|andhra|hyderabad|ameerpet|dilsukhnagar|tirupati|vizag/i.test(`${t.branchName || ''} ${t.branch || ''}`));
       }
     } else if (roleType === 'tl') {
       if (activeLeaderId === 'ram_balaji') {
-        // 10 TN Trainers
-        list = list.filter((t) => t.teamLeadId === 'ram_balaji' || t.zone === 'TN' || /tharani|jennifer|karkuzhali|sowmiya|darsana|sharon|kaviya|priya|sumaiya|sophiga/i.test(t.trainerName || t.name || ''));
+        list = list.filter((t) => t.teamLeadId === 'ram_balaji' || t.zone === 'TN');
       } else if (activeLeaderId === 'vaishna') {
-        // 7 KL Trainers
-        list = list.filter((t) => t.teamLeadId === 'vaishna' || t.zone === 'KL' || /aleena|aswini|shilpa|varamani|shiny|shiva|abarna/i.test(t.trainerName || t.name || ''));
+        list = list.filter((t) => t.teamLeadId === 'vaishna' || t.zone === 'KL');
       } else if (activeLeaderId === 'mounika') {
-        // 8 AP/TS Trainers
-        list = list.filter((t) => t.teamLeadId === 'mounika' || t.zone === 'AP / TS' || /pooja|varsha|charishma|prasanna|aashifa|santhiya|kavitha|santhosh/i.test(t.trainerName || t.name || ''));
+        list = list.filter((t) => t.teamLeadId === 'mounika' || t.zone === 'AP / TS');
       }
     }
 
@@ -258,7 +264,7 @@ export default function TrainerRoleDashboard({
       list = list.filter((t) => String(t.branchName || t.branch || '').toLowerCase().includes(selectedBranchFilter.toLowerCase()));
     }
     return list;
-  }, [trainersList, roleType, activeLeaderId, selectedBranchFilter]);
+  }, [trainersList, roleType, currentUser, activeLeaderId, selectedBranchFilter]);
 
   const scopedTrainerNames = useMemo(() => {
     return scopedTrainers.map((t) => t.trainerName || t.name).filter(Boolean);
@@ -668,8 +674,8 @@ export default function TrainerRoleDashboard({
                     : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
                 }`}
               >
-                <ListChecks className="w-4 h-4 shrink-0" />
-                <span>Syllabus & Announcements</span>
+                <BookOpen className="w-4 h-4 shrink-0" />
+                <span>{roleType === 'manager' ? 'Add / Manage Course Syllabus' : 'Course Syllabus (View)'}</span>
               </button>
 
               <button
@@ -708,24 +714,26 @@ export default function TrainerRoleDashboard({
                 )}
               </button>
 
-              <button
-                onClick={() => setActiveNav('doubts')}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all ${
-                  activeNav === 'doubts'
-                    ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
-                    : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <MessageSquare className="w-4 h-4 shrink-0" />
-                  <span>Doubt Box</span>
-                </div>
-                {scopedDoubts.length > 0 && (
-                  <span className="px-1.5 py-0.5 rounded-full text-[10px] font-black bg-amber-500/20 text-amber-300">
-                    {scopedDoubts.length}
-                  </span>
-                )}
-              </button>
+              {isHeadRole && (
+                <button
+                  onClick={() => setActiveNav('doubts')}
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all ${
+                    activeNav === 'doubts'
+                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <MessageSquare className="w-4 h-4 shrink-0" />
+                    <span>Doubt Box</span>
+                  </div>
+                  {scopedDoubts.length > 0 && (
+                    <span className="px-1.5 py-0.5 rounded-full text-[10px] font-black bg-amber-500/20 text-amber-300">
+                      {scopedDoubts.length}
+                    </span>
+                  )}
+                </button>
+              )}
             </div>
           </div>
 
@@ -798,24 +806,26 @@ export default function TrainerRoleDashboard({
                 <span>My Students</span>
               </button>
 
-              <button
-                onClick={() => setActiveNav('weak_students')}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all ${
-                  activeNav === 'weak_students'
-                    ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
-                    : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <AlertTriangle className="w-4 h-4 shrink-0" />
-                  <span>Weak Students</span>
-                </div>
-                {weakStudents.length > 0 && (
-                  <span className="px-1.5 py-0.5 rounded-full text-[10px] font-black bg-rose-500 text-white">
-                    {weakStudents.length}
-                  </span>
-                )}
-              </button>
+              {isHeadRole && (
+                <button
+                  onClick={() => setActiveNav('weak_students')}
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all ${
+                    activeNav === 'weak_students'
+                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <AlertTriangle className="w-4 h-4 shrink-0" />
+                    <span>Weak Students</span>
+                  </div>
+                  {weakStudents.length > 0 && (
+                    <span className="px-1.5 py-0.5 rounded-full text-[10px] font-black bg-rose-500 text-white">
+                      {weakStudents.length}
+                    </span>
+                  )}
+                </button>
+              )}
 
               <button
                 onClick={() => setActiveNav('roster')}
@@ -1174,15 +1184,17 @@ export default function TrainerRoleDashboard({
                   </div>
                 </div>
 
-                <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-2xs">
-                  <div className="text-[10px] font-bold text-slate-400 tracking-wider uppercase mb-1">
-                    Weak / At Risk
+                {isHeadRole && (
+                  <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-2xs">
+                    <div className="text-[10px] font-bold text-slate-400 tracking-wider uppercase mb-1">
+                      Weak / At Risk
+                    </div>
+                    <div className="text-2xl font-black text-rose-600">{weakStudents.length}</div>
+                    <div className="text-[10.5px] font-semibold text-rose-500 mt-1">
+                      Attendance &lt; 75%
+                    </div>
                   </div>
-                  <div className="text-2xl font-black text-rose-600">{weakStudents.length}</div>
-                  <div className="text-[10.5px] font-semibold text-rose-500 mt-1">
-                    Attendance &lt; 75%
-                  </div>
-                </div>
+                )}
               </div>
 
               {/* Demos Reassignment Quick Desk */}
@@ -1436,18 +1448,19 @@ export default function TrainerRoleDashboard({
             </div>
           )}
 
-          {/* ================= VIEW: SYLLABUS & ANNOUNCEMENTS ================= */}
+          {/* ================= VIEW: COURSE SYLLABUS ================= */}
           {activeNav === 'batch_desk' && (
             <div className="space-y-6">
               <CourseSyllabusBoard
                 currentUser={currentUser}
-                trainerCourseKey={currentLeader.id === 'manoj' ? 'ALL' : 'CPC'}
+                roleType={roleType}
+                courseOptions={['CPC', 'AMCT Beginner', 'AMCT Intermediate', 'AMCT Advanced', 'CIC', 'CPMA', 'CRC', 'Surgery', 'Anatomy', 'ED', 'EM']}
               />
             </div>
           )}
 
           {/* ================= VIEW: DOUBTS ================= */}
-          {activeNav === 'doubts' && (
+          {activeNav === 'doubts' && isHeadRole && (
             <div className="space-y-6">
               <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs p-6 space-y-4">
                 <div className="flex items-center justify-between pb-2 border-b border-slate-100">
@@ -1494,21 +1507,30 @@ export default function TrainerRoleDashboard({
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {scopedTrainers.map((tr) => (
-                    <div key={tr.trainerId || tr.id} className="p-4 rounded-xl border border-slate-200 bg-slate-50/50 space-y-3">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-black text-slate-900">{tr.trainerName || tr.name}</span>
-                        <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                          ★ 4.8 / 5.0
-                        </span>
+                  {scopedTrainers.map((tr) => {
+                    const tName = String(tr.trainerName || tr.name || '').toLowerCase();
+                    const trBatches = batchesList.filter((b) => (b.trainerId && b.trainerId === tr.trainerId) || (b.trainer && String(b.trainer).toLowerCase() === tName));
+                    const trDemos = demosList.filter((d) => (d.trainerId && d.trainerId === tr.trainerId) || (d.trainer && String(d.trainer).toLowerCase() === tName));
+                    const convertedDemos = trDemos.filter((d) => ['completed', 'converted', 'admitted'].includes(String(d.status || '').toLowerCase())).length;
+                    const convRate = trDemos.length ? Math.round((convertedDemos / trDemos.length) * 100) : 0;
+                    const trStudents = studentsList.filter((s) => (s.trainerId && s.trainerId === tr.trainerId) || (s.trainer && String(s.trainer).toLowerCase() === tName)).length;
+
+                    return (
+                      <div key={tr.trainerId || tr.id} className="p-4 rounded-xl border border-slate-200 bg-slate-50/50 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-black text-slate-900">{tr.trainerName || tr.name}</span>
+                          <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-teal-50 text-teal-700 border border-teal-200">
+                            {trStudents} Students
+                          </span>
+                        </div>
+                        <div className="text-xs text-slate-600 space-y-1">
+                          <div><strong>Branch:</strong> {tr.branchName || tr.branch || '—'}</div>
+                          <div><strong>Batches Running:</strong> {trBatches.length} active</div>
+                          <div><strong>Demo Success Rate:</strong> {trDemos.length ? `${convRate}% (${convertedDemos}/${trDemos.length})` : 'No demos tracked'}</div>
+                        </div>
                       </div>
-                      <div className="text-xs text-slate-600 space-y-1">
-                        <div><strong>Zone:</strong> {tr.zone || 'TN'} · {tr.branchName || tr.branch || 'Coimbatore'}</div>
-                        <div><strong>Demo Conversion:</strong> 82%</div>
-                        <div><strong>Batches Completed:</strong> 14</div>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             </div>
@@ -1666,7 +1688,7 @@ export default function TrainerRoleDashboard({
           )}
 
           {/* ================= VIEW: WEAK STUDENTS ================= */}
-          {activeNav === 'weak_students' && (
+          {activeNav === 'weak_students' && isHeadRole && (
             <div className="space-y-6">
               <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs p-6 space-y-4">
                 <div className="flex items-center justify-between pb-2 border-b border-slate-100">
