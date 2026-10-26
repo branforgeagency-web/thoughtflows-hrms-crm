@@ -5,6 +5,15 @@ const callRecordingSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'StudentLead'
   },
+  studentId: {
+    type: String,
+    default: '',
+    index: true
+  },
+  studentMongoId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Student'
+  },
   leadName: {
     type: String,
     required: true
@@ -48,7 +57,7 @@ const callRecordingSchema = new mongoose.Schema({
   },
   source: {
     type: String,
-    enum: ['knowlarity', 'exotel', 'edesy', 'browser_mic', 'uploaded', 'phone_upload', 'phone_sync'],
+    enum: ['knowlarity', 'exotel', 'edesy', 'browser_mic', 'uploaded', 'phone_upload', 'phone_sync', 'manual_upload'],
     default: 'browser_mic'
   },
   // Phone-sync: original file name on the counsellor's phone (used to skip duplicates)

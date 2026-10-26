@@ -729,6 +729,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       { name: 'Pipeline & Follow-ups', badge: pipelineCount, icon: Filter, iconBg: 'bg-[#7c3aed]', badgeBg: 'bg-rose-500', color: 'purple' },
       { name: 'Demo Desk', badge: scopedDemos.length > 0 ? scopedDemos.length.toString() : null, icon: Monitor, iconBg: 'bg-cyan-600', color: 'cyan' },
       { name: 'Admitted Students', badge: admittedCount, icon: GraduationCap, iconBg: 'bg-emerald-600', badgeBg: 'bg-emerald-500', color: 'emerald' },
+      { name: 'Call Recordings', badge: callRecordings.length > 0 ? String(callRecordings.length) : null, icon: PhoneCall, iconBg: 'bg-sky-600', badgeBg: 'bg-sky-500', color: 'sky' },
       { name: 'My Targets', badge: null, icon: Target, iconBg: 'bg-rose-500', color: 'pink' },
       { name: 'My Schedule', badge: null, icon: Calendar, iconBg: 'bg-blue-500', color: 'blue' },
       { name: 'LMS', badge: 'Learn', isPillBadge: true, icon: BookOpen, iconBg: 'bg-yellow-700', color: 'green' },
@@ -736,7 +737,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       { name: 'Handover', badge: handoverCount, icon: Repeat, iconBg: 'bg-orange-600', badgeBg: 'bg-orange-500', color: 'orange' },
       { name: 'Student Requests', badge: studentInboxCount > 0 ? String(studentInboxCount) : null, icon: InboxIcon, iconBg: 'bg-indigo-600', badgeBg: 'bg-rose-500', color: 'indigo' },
     ];
-  }, [scopedLeads, scopedStudents, scopedDemos, studentInboxCount, pendingFeesStats.count]);
+  }, [scopedLeads, scopedStudents, scopedDemos, studentInboxCount, pendingFeesStats.count, callRecordings.length]);
 
   // Today's Priority Queue: overdue follow-ups first, then today's, then
   // fee-due admitted students, then fee-stage leads, then brand-new leads.
@@ -1378,7 +1379,12 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             onCallStudent={(st) => openCallFor(st, true)}
           />
         ) : activeTab === 'Call Recordings' ? (
-          <HrCallRecordingsTable currentUser={currentUser} />
+          <HrCallRecordingsTable
+            currentUser={currentUser}
+            students={scopedStudents}
+            allStudents={students}
+            leads={scopedLeads}
+          />
         ) : activeTab === 'Demo Desk' ? (
           <HrDemoDesk 
             demos={scopedDemos} 

@@ -68,6 +68,8 @@ const ACADEMY_ROLES = [
   'BUSINESS LEAD',
   'DEPARTMENT HEAD',
   'OPERATIONAL HEAD',
+  'TRAINER HEAD',
+  'HEAD OF TRAINER',
   'TRAINER',
   'TRAINING TL',
   'TRAINING TEAM MANAGER',
@@ -89,6 +91,10 @@ const ROLE_TO_DEPARTMENT = {
   'BUSINESS LEAD': 'Growth & Marketing',
   'DEPARTMENT HEAD': 'Leadership & Operations',
   'OPERATIONAL HEAD': 'Leadership & Operations',
+  'TRAINER HEAD': 'Medical Coding Faculty',
+  'HEAD OF TRAINER': 'Medical Coding Faculty',
+  'Trainer Head': 'Medical Coding Faculty',
+  'Head of Trainer': 'Medical Coding Faculty',
   'TRAINER': 'Medical Coding Faculty',
   'TRAINING TL': 'Medical Coding Faculty',
   'TRAINING TEAM MANAGER': 'Medical Coding Faculty',
@@ -153,7 +159,7 @@ const initialsOf = (name) => String(name || '?').trim().split(/\s+/).map((p) => 
 // also counted as a plain Trainer; anything unmatched falls back to 'trainer'
 // so the four tiers always add up to the department's full headcount.
 const TRAINER_TIER_CARDS = [
-  { key: 'head', label: 'Head of Trainer', icon: '\ud83e\udded', match: /head of trainer|training head|head of training|chief trainer|chief faculty|faculty lead/i },
+  { key: 'head', label: 'Head of Trainer', icon: '\ud83e\udded', match: /head of trainer|trainer head|training head|head of training|chief trainer|chief faculty|faculty lead/i },
   { key: 'manager', label: 'Trainer Manager', icon: '\ud83e\uddd1\u200d\ud83d\udcbc', match: /training team manager|trainer manager|\bteam manager\b/i },
   { key: 'tl', label: 'Trainer TL', icon: '\ud83c\udfaf', match: /training tl|trainer tl|\bteam lead\b|\btl\b/i },
   { key: 'trainer', label: 'Trainers', icon: '\ud83e\uddd1\u200d\ud83c\udfeb', match: null } // catch-all

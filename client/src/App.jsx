@@ -82,7 +82,7 @@ export default function App() {
     if (!u) return false;
     const name = String(u.name || u.userName || '').toLowerCase();
     const role = String(u.role || '').toLowerCase();
-    return /head of trainer/i.test(role) || /manoj|keerthika|vaishna|pavithra/i.test(name);
+    return /head of trainer|trainer head/i.test(role) || /manoj|keerthika|vaishna|pavithra/i.test(name);
   };
 
   const [selectedDashboard, setSelectedDashboard] = useState(() => {

@@ -63,6 +63,22 @@ Demo.collection?.dropIndex('trainerId_1_preferredDate_1_timeSlot_1').catch(() =>
 // Every API call needs a valid login token (see middleware/auth.js for the few public routes)
 router.use(requireAuth);
 
+// Fail fast when MongoDB isn't connected, instead of letting every query sit
+// in Mongoose's buffer for 10s and then surface a generic 500 (e.g. the Atlas
+// cluster is paused, the current IP isn't in Atlas Network Access, or the
+// machine has no internet/DNS right now). /health stays exempt so it can
+// always report the real status.
+router.use((req, res, next) => {
+  if (req.path === '/health') return next();
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({
+      success: false,
+      message: 'Database is not connected right now. Please retry in a few seconds.'
+    });
+  }
+  next();
+});
+
 // Health Check
 router.get('/health', (req, res) => {
   const isMongoConnected = mongoose.connection.readyState === 1;
@@ -764,7 +780,7 @@ router.post('/calls/:callSid/hangup', async (req, res) => {
 
 router.get('/recordings', async (req, res) => {
   try {
-    const { leadPhone, leadId, search } = req.query;
+    const { leadPhone, leadId, studentId, search } = req.query;
     // Counsellors only hear their own calls; managers may filter by name
     const counselorName = isScopedHr(req) ? req.user?.name : (req.query.counselorName || req.query.counselor);
     let query = { isDeleted: { $ne: true } };
@@ -775,6 +791,12 @@ router.get('/recordings', async (req, res) => {
     if (leadId && mongoose.isValidObjectId(leadId)) {
       query.leadId = leadId;
     }
+    if (studentId) {
+      query.$or = [
+        { studentId: studentId },
+        ...(mongoose.isValidObjectId(studentId) ? [{ studentMongoId: studentId }] : [])
+      ];
+    }
     if (counselorName && counselorName !== 'all') query.counselorName = exactNameRx(counselorName);
     if (search) {
       query.$or = [
@@ -782,7 +804,8 @@ router.get('/recordings', async (req, res) => {
         { leadPhone: { $regex: search, $options: 'i' } },
         { counselorName: { $regex: search, $options: 'i' } },
         { outcome: { $regex: search, $options: 'i' } },
-        { notes: { $regex: search, $options: 'i' } }
+        { notes: { $regex: search, $options: 'i' } },
+        { studentId: { $regex: search, $options: 'i' } }
       ];
     }
     const recordings = await CallRecording.find(query).sort({ createdAt: -1 });
@@ -796,6 +819,8 @@ router.post('/recordings', async (req, res) => {
   try {
     const {
       leadId,
+      studentId,
+      studentMongoId,
       leadName,
       leadPhone,
       counselorName,
@@ -807,7 +832,8 @@ router.post('/recordings', async (req, res) => {
       audioBase64,
       audioUrl: directAudioUrl,
       fileName,
-      source
+      source,
+      recordedAt
     } = req.body;
 
     if (!leadName || !leadPhone) {
@@ -850,8 +876,45 @@ router.post('/recordings', async (req, res) => {
       if (merged) return res.status(201).json(merged);
     }
 
+    let resolvedStudentId = studentId || '';
+    let resolvedStudentMongoId = studentMongoId && mongoose.isValidObjectId(studentMongoId) ? studentMongoId : undefined;
+    let resolvedLeadId = leadId && mongoose.isValidObjectId(leadId) ? leadId : undefined;
+
+    // Resolve Student if studentId or studentMongoId passed
+    if (!resolvedStudentMongoId && resolvedStudentId) {
+      const st = await Student.findOne({
+        $or: [
+          { studentId: resolvedStudentId },
+          ...(mongoose.isValidObjectId(resolvedStudentId) ? [{ _id: resolvedStudentId }] : [])
+        ]
+      });
+      if (st) {
+        resolvedStudentMongoId = st._id;
+        resolvedStudentId = st.studentId || st._id.toString();
+      }
+    } else if (resolvedStudentMongoId) {
+      const st = await Student.findById(resolvedStudentMongoId);
+      if (st && !resolvedStudentId) {
+        resolvedStudentId = st.studentId || st._id.toString();
+      }
+    }
+
+    // Attempt to match a StudentLead by phone if no leadId provided
+    if (!resolvedLeadId && leadPhone) {
+      const phoneDigits = leadPhone.replace(/\D/g, '').slice(-10);
+      if (phoneDigits) {
+        const rx = new RegExp(phoneDigits + '$');
+        const matchedLead = await StudentLead.findOne({
+          $or: [{ phone: rx }, { whatsappNumber: rx }, { alternatePhone: rx }]
+        }).sort({ updatedAt: -1 });
+        if (matchedLead) resolvedLeadId = matchedLead._id;
+      }
+    }
+
     const recording = new CallRecording({
-      leadId: leadId && mongoose.isValidObjectId(leadId) ? leadId : undefined,
+      leadId: resolvedLeadId,
+      studentId: resolvedStudentId,
+      studentMongoId: resolvedStudentMongoId,
       leadName,
       leadPhone,
       counselorName: counselorName || req.user?.name || '',
@@ -861,16 +924,18 @@ router.post('/recordings', async (req, res) => {
       outcome: outcome || 'Follow-up Needed',
       notes: notes || '',
       audioUrl,
-      source: source || (directAudioUrl ? 'knowlarity' : 'browser_mic')
+      source: source || (directAudioUrl ? 'knowlarity' : (audioBase64 && fileName ? 'uploaded' : 'browser_mic')),
+      originalFileName: fileName || '',
+      recordedAt: recordedAt ? new Date(recordedAt) : new Date()
     });
 
     await recording.save();
 
     // If leadId is valid, increment lead's call count and lastCallTime
-    if (leadId && mongoose.isValidObjectId(leadId)) {
-      await StudentLead.findByIdAndUpdate(leadId, {
+    if (resolvedLeadId) {
+      await StudentLead.findByIdAndUpdate(resolvedLeadId, {
         $inc: { callCount: 1 },
-        lastCallTime: new Date()
+        lastCallTime: recordedAt ? new Date(recordedAt) : new Date()
       });
     }
 
@@ -5213,7 +5278,17 @@ router.post('/auth/login', async (req, res) => {
     }
 
     // 1. Accounts created by Admin / at admission (User collection)
-    const dbUser = await User.findOne({ email: normalizedEmail });
+    let dbUser = await User.findOne({ email: normalizedEmail });
+    if (!dbUser) {
+      const rawInput = String(email).trim();
+      const tr = await Trainer.findOne({ trainerId: new RegExp(`^${escapeRegex(rawInput)}$`, 'i') });
+      if (tr && (tr.zoomEmail || tr.email)) {
+        dbUser = await User.findOne({ email: String(tr.zoomEmail || tr.email).toLowerCase() });
+      }
+      if (!dbUser) {
+        dbUser = await User.findOne({ phone: normalizedEmail });
+      }
+    }
     if (dbUser) {
       if (dbUser.status && /inactive|disabled|suspended/i.test(dbUser.status)) return deny('This account is disabled. Contact your admin.');
       const { ok } = await checkPassword(password, dbUser.password);
@@ -5222,12 +5297,22 @@ router.post('/auth/login', async (req, res) => {
         await dbUser.save().catch(() => {});
 
         const mapping = mapRoleOrDeptToDashboard(dbUser.role, dbUser.department);
-        const rosterFields = mapping.department === 'training' ? dropUndefined(await trainerRosterFields(normalizedEmail, dbUser.name)) : {};
+        const rosterFields = mapping.department === 'training' ? dropUndefined(await trainerRosterFields(dbUser.email || normalizedEmail, dbUser.name)) : {};
         let studentId;
         if (mapping.department === 'student') {
-          const st = await Student.findOne({ email: new RegExp(`^${escapeRegex(normalizedEmail)}$`, 'i') }).select('studentId');
+          const st = await Student.findOne({ email: new RegExp(`^${escapeRegex(dbUser.email || normalizedEmail)}$`, 'i') }).select('studentId');
           studentId = st?.studentId;
         }
+
+        let trainerRole = dbUser.trainerRole;
+        if (!trainerRole && mapping.department === 'training') {
+          const r = (dbUser.role || '').toLowerCase();
+          if (r.includes('head')) trainerRole = 'head';
+          else if (r.includes('manager')) trainerRole = 'manager';
+          else if (r.includes('tl') || r.includes('lead')) trainerRole = 'tl';
+          else trainerRole = 'trainer';
+        }
+
         return grant({
           id: dbUser._id.toString(),
           name: dbUser.name,
@@ -5235,6 +5320,7 @@ router.post('/auth/login', async (req, res) => {
           email: dbUser.email,
           phone: dbUser.phone || '',
           role: dbUser.role,
+          trainerRole: trainerRole || undefined,
           branch: dbUser.branch || '',
           status: dbUser.status || 'Active',
           department: mapping.department,
@@ -6241,6 +6327,7 @@ export const isHeadOfTrainerUser = async (req) => {
   const role = String(u.role || '').toLowerCase();
   if (
     role.includes('head of trainer') ||
+    role.includes('trainer head') ||
     role.includes('head of training') ||
     role.includes('training head') ||
     role.includes('faculty lead') ||

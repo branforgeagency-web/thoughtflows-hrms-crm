@@ -15,19 +15,23 @@ import {
   RefreshCw,
   Volume2,
   AlertCircle,
-  Smartphone
+  Smartphone,
+  UploadCloud
 } from 'lucide-react';
-import { getRecordings, deleteRecording, onDataUpdate, recordingUrl, syncEdesyRecordings } from '../services/api';
+import { getRecordings, deleteRecording, onDataUpdate, recordingUrl, syncEdesyRecordings, getStudents, getLeads } from '../services/api';
 import RecordingAudio from './RecordingAudio';
 import PhoneRecordingSync from './PhoneRecordingSync';
+import UploadStudentRecordingModal from './UploadStudentRecordingModal';
 
-export default function HrCallRecordingsTable({ currentUser }) {
+export default function HrCallRecordingsTable({ currentUser, students = [], allStudents = [], leads = [] }) {
   useFileToken(); // keeps file links (downloads / audio) signed with a fresh short-lived token
   const [recordings, setRecordings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedOutcomeFilter, setSelectedOutcomeFilter] = useState('ALL');
   const [toastMsg, setToastMsg] = useState(null);
+  const [internalStudents, setInternalStudents] = useState([]);
+  const [internalLeads, setInternalLeads] = useState([]);
 
   const showToast = (msg) => {
     setToastMsg(msg);
@@ -35,6 +39,20 @@ export default function HrCallRecordingsTable({ currentUser }) {
   };
 
   const [showPhoneSync, setShowPhoneSync] = useState(false);
+  const [showUploadModal, setShowUploadModal] = useState(false);
+
+  // Load students & leads if not provided via props
+  useEffect(() => {
+    if (!students || students.length === 0) {
+      getStudents().then((data) => setInternalStudents(Array.isArray(data) ? data : [])).catch(() => {});
+    }
+    if (!leads || leads.length === 0) {
+      getLeads().then((data) => setInternalLeads(Array.isArray(data) ? data : [])).catch(() => {});
+    }
+  }, [students, leads]);
+
+  const activeStudents = (students && students.length > 0) ? students : (allStudents && allStudents.length > 0 ? allStudents : internalStudents);
+  const activeLeads = (leads && leads.length > 0) ? leads : internalLeads;
 
   const loadRecordings = async () => {
     try {
@@ -85,6 +103,7 @@ export default function HrCallRecordingsTable({ currentUser }) {
       const matchesSearch = !q ||
         (rec.leadName || '').toLowerCase().includes(q) ||
         (rec.leadPhone || '').includes(q) ||
+        (rec.studentId || '').toLowerCase().includes(q) ||
         (rec.counselorName || '').toLowerCase().includes(q) ||
         (rec.outcome || '').toLowerCase().includes(q) ||
         (rec.notes || '').toLowerCase().includes(q);
@@ -180,8 +199,17 @@ export default function HrCallRecordingsTable({ currentUser }) {
           </p>
         </div>
 
-        <div className="flex items-center gap-2 self-start sm:self-auto">
+        <div className="flex items-center gap-2 self-start sm:self-auto flex-wrap">
           <button
+            type="button"
+            onClick={() => setShowUploadModal(true)}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-3.5 py-2 rounded-xl shadow-xs transition-all flex items-center gap-1.5 cursor-pointer"
+          >
+            <UploadCloud className="w-3.5 h-3.5" />
+            <span>Upload Call Recording</span>
+          </button>
+          <button
+            type="button"
             onClick={() => setShowPhoneSync(true)}
             className="bg-[#0e6977] hover:bg-[#0b5560] text-white font-bold text-xs px-3.5 py-2 rounded-xl shadow-xs transition-all flex items-center gap-1.5 cursor-pointer"
           >
@@ -189,6 +217,7 @@ export default function HrCallRecordingsTable({ currentUser }) {
             <span>Sync Phone Recordings</span>
           </button>
           <button
+            type="button"
             onClick={loadRecordings}
             className="bg-white hover:bg-slate-50 text-slate-700 font-bold text-xs px-3.5 py-2 rounded-xl shadow-xs border border-slate-200 transition-all flex items-center gap-1.5 cursor-pointer"
           >
@@ -196,6 +225,17 @@ export default function HrCallRecordingsTable({ currentUser }) {
             <span>Refresh Audio Logs</span>
           </button>
         </div>
+        <UploadStudentRecordingModal
+          isOpen={showUploadModal}
+          onClose={() => setShowUploadModal(false)}
+          onUploaded={(rec, sName) => {
+            loadRecordings();
+            showToast(`✓ Call recording uploaded for ${sName || 'student'}`);
+          }}
+          currentUser={currentUser}
+          students={activeStudents}
+          leads={activeLeads}
+        />
         <PhoneRecordingSync isOpen={showPhoneSync} onClose={() => setShowPhoneSync(false)} onDone={loadRecordings} />
       </div>
 
@@ -292,8 +332,18 @@ export default function HrCallRecordingsTable({ currentUser }) {
             </div>
             <div className="text-slate-800 font-extrabold text-sm">No call recordings found</div>
             <p className="text-slate-500 text-xs max-w-sm mx-auto">
-              When you click <strong>Call Now</strong> or <strong>Dial</strong> on any lead, the call will record from start to end and appear here automatically.
+              You can upload call recordings for any student, sync phone recordings, or record calls automatically when dialling from the CRM.
             </p>
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={() => setShowUploadModal(true)}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs transition-all shadow-xs cursor-pointer"
+              >
+                <UploadCloud className="w-3.5 h-3.5" />
+                <span>Upload Call Recording</span>
+              </button>
+            </div>
           </div>
         ) : (
           <div className="overflow-x-auto no-scrollbar">
@@ -315,7 +365,14 @@ export default function HrCallRecordingsTable({ currentUser }) {
                   <tr key={rec._id} className="hover:bg-slate-50/80 transition-colors">
                     {/* Student / Lead Name */}
                     <td className="py-3.5 px-4">
-                      <div className="font-extrabold text-slate-900">{rec.leadName}</div>
+                      <div className="font-extrabold text-slate-900 flex items-center gap-1.5 flex-wrap">
+                        <span>{rec.leadName}</span>
+                        {rec.studentId && (
+                          <span className="px-1.5 py-0.5 rounded bg-teal-50 text-[#0e6977] border border-teal-200 text-[10px] font-mono font-bold" title={`Student ID: ${rec.studentId}`}>
+                            {rec.studentId}
+                          </span>
+                        )}
+                      </div>
                       {rec.notes && (
                         <div className="text-[10.5px] text-slate-400 truncate max-w-[180px] font-normal" title={rec.notes}>
                           {rec.notes}
@@ -340,6 +397,8 @@ export default function HrCallRecordingsTable({ currentUser }) {
                           ? '📞 Exotel Bridge (legacy)'
                           : rec.source === 'phone_sync'
                             ? '📱 Phone Call (synced)'
+                          : rec.source === 'manual_upload'
+                            ? '📤 Uploaded Call'
                           : (rec.source === 'phone_upload' || rec.source === 'uploaded')
                             ? '📤 Uploaded from Phone'
                             : '🎙️ Mic Audio'}

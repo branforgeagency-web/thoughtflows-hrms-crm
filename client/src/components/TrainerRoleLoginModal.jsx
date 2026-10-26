@@ -11,10 +11,7 @@ import {
   Mail,
   ShieldCheck,
   X,
-  ArrowRight,
-  CheckCircle2,
-  Sparkles,
-  Info
+  ArrowRight
 } from 'lucide-react';
 
 const ROLE_META = {
@@ -22,43 +19,21 @@ const ROLE_META = {
     key: 'head',
     tier: 'EXECUTIVE LEADERSHIP',
     title: 'Trainer Head Sign In',
-    subtitle: 'Manoj · All 12 Branches · Pan-India Training Command',
+    subtitle: 'Pan-India Training Command · All 12 Branches',
     icon: Crown,
     gradient: 'linear-gradient(135deg, #005a9c, #0284c7)',
     badgeBg: 'bg-blue-50 text-blue-700 border-blue-200',
-    color: '#005a9c',
-    accounts: [
-      {
-        label: 'Manoj (Head of Training)',
-        email: 'manoj.head@thoughtflows.in',
-        pass: 'Head@123',
-        scope: 'All 12 Branches · 25 Faculty'
-      }
-    ]
+    color: '#005a9c'
   },
   manager: {
     key: 'manager',
     tier: 'OPERATIONS MANAGEMENT',
     title: 'Trainer Manager Sign In',
-    subtitle: 'Regional Training Managers · TN / KL & AP / TS',
+    subtitle: 'Regional Training Operations · TN, KL, AP & TS',
     icon: Briefcase,
     gradient: 'linear-gradient(135deg, #00828a, #0d9488)',
     badgeBg: 'bg-teal-50 text-teal-700 border-teal-200',
-    color: '#0d9488',
-    accounts: [
-      {
-        label: 'Keerthi (TN & KL Region)',
-        email: 'keerthi.manager@thoughtflows.in',
-        pass: 'Keerthi@123',
-        scope: '9 Branches · 17 Faculty (TN & KL)'
-      },
-      {
-        label: 'Pavithra (AP & TS Region)',
-        email: 'pavithra.manager@thoughtflows.in',
-        pass: 'Pavithra@123',
-        scope: '5 Branches · 8 Faculty (AP & TS)'
-      }
-    ]
+    color: '#0d9488'
   },
   tl: {
     key: 'tl',
@@ -68,63 +43,17 @@ const ROLE_META = {
     icon: Users,
     gradient: 'linear-gradient(135deg, #2e7d32, #16a34a)',
     badgeBg: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-    color: '#16a34a',
-    accounts: [
-      {
-        label: 'Ram Balaji (TN Pod)',
-        email: 'rambalaji.tl@thoughtflows.in',
-        pass: 'RamBalaji@123',
-        scope: '7 TN Branches · 10 Faculty'
-      },
-      {
-        label: 'Vaishna (Kerala Pod)',
-        email: 'vaishna.tl@thoughtflows.in',
-        pass: 'Vaishna@123',
-        scope: '2 KL Branches · 7 Faculty'
-      },
-      {
-        label: 'Mounika (AP / TS Pod)',
-        email: 'mounika.tl@thoughtflows.in',
-        pass: 'Mounika@123',
-        scope: '5 AP/TS Branches · 8 Faculty'
-      }
-    ]
+    color: '#16a34a'
   },
   trainer: {
     key: 'trainer',
     tier: 'FACULTY DESK',
     title: 'Trainer & Faculty Sign In',
-    subtitle: '25 Specialized Medical Coding Faculty Desks Across 12 Branches',
+    subtitle: 'Medical Coding Faculty Desks Across 12 Branches',
     icon: GraduationCap,
     gradient: 'linear-gradient(135deg, #38BDF8, #2563EB)',
     badgeBg: 'bg-sky-50 text-sky-700 border-sky-200',
-    color: '#0284c7',
-    accounts: [
-      {
-        label: 'Srithar S (TR-CBG-001 · CPC)',
-        email: 'srithar.brandforge@gmail.com',
-        pass: 'Srithar@123',
-        scope: 'Gandhipuram · CPC Lead Faculty'
-      },
-      {
-        label: 'Tharani shri (TR-TN-01 · CPC)',
-        email: 'tharanishri.trainer@thoughtflows.in',
-        pass: 'Trainer@123',
-        scope: 'Saravanampatti · CPC Faculty'
-      },
-      {
-        label: 'Aleena (TR-KL-01 · CPC)',
-        email: 'aleena.trainer@thoughtflows.in',
-        pass: 'Trainer@123',
-        scope: 'Kochi · Kerala Faculty'
-      },
-      {
-        label: 'Pooja (TR-AP-01 · CPC)',
-        email: 'pooja.trainer@thoughtflows.in',
-        pass: 'Trainer@123',
-        scope: 'Ameerpet · Hyderabad Faculty'
-      }
-    ]
+    color: '#0284c7'
   }
 };
 
@@ -143,23 +72,17 @@ export default function TrainerRoleLoginModal({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  // When opened or roleKey changes, pre-fill with the first account for that role
+  // When opened or roleKey changes, reset inputs to empty so user enters their Admin-created credentials
   useEffect(() => {
-    if (isOpen && meta.accounts?.[0]) {
-      setEmail(meta.accounts[0].email);
-      setPassword(meta.accounts[0].pass);
+    if (isOpen) {
+      setEmail('');
+      setPassword('');
       setError('');
       setShowPassword(false);
     }
   }, [isOpen, roleKey]);
 
   if (!isOpen) return null;
-
-  const handleSelectAccount = (acc) => {
-    setEmail(acc.email);
-    setPassword(acc.pass);
-    setError('');
-  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -242,50 +165,13 @@ export default function TrainerRoleLoginModal({
           </div>
         </div>
 
-        {/* 1-Click Fast Credentials Selector for Testing & Evaluation */}
-        <div className="mb-5 bg-slate-50 border border-slate-200/80 rounded-2xl p-3.5">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-600 flex items-center gap-1.5">
-              <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-              1-Click Account Switcher
-            </span>
-            <span className="text-[10px] text-slate-400 font-semibold">
-              {meta.accounts.length} {meta.accounts.length === 1 ? 'Account' : 'Accounts'}
-            </span>
+        {/* Admin Account Requirement Notice */}
+        <div className="mb-5 bg-slate-50 border border-slate-200/80 rounded-2xl p-3.5 flex items-start gap-2.5">
+          <ShieldCheck className="w-4 h-4 text-teal-600 shrink-0 mt-0.5" />
+          <div className="text-xs text-slate-600">
+            <span className="font-bold text-slate-800 block mb-0.5">Admin-Created Account Required</span>
+            Please sign in using the email address and password created for you in Admin. If you do not have an account yet, please contact your administrator.
           </div>
-
-          <div className="space-y-1.5">
-            {meta.accounts.map((acc, idx) => {
-              const isSelected = email.toLowerCase() === acc.email.toLowerCase();
-              return (
-                <button
-                  type="button"
-                  key={idx}
-                  onClick={() => handleSelectAccount(acc)}
-                  className={`w-full text-left px-3 py-2 rounded-xl text-xs font-semibold flex items-center justify-between transition-all cursor-pointer border ${
-                    isSelected
-                      ? 'bg-white border-teal-500 text-slate-900 shadow-xs ring-1 ring-teal-500/30'
-                      : 'bg-white/70 hover:bg-white border-slate-200 text-slate-700 hover:border-slate-300'
-                  }`}
-                >
-                  <div className="min-w-0 pr-2">
-                    <div className="font-bold truncate">{acc.label}</div>
-                    <div className="text-[10.5px] text-slate-500 font-mono truncate">{acc.email}</div>
-                  </div>
-                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md shrink-0 ${isSelected ? 'bg-teal-100 text-teal-800' : 'bg-slate-100 text-slate-600'}`}>
-                    {isSelected ? 'Selected' : 'Use →'}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-
-          {roleKey === 'trainer' && (
-            <p className="text-[10.5px] text-slate-500 mt-2 flex items-center gap-1">
-              <Info className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-              You can also type any faculty ID (e.g. <code className="font-mono bg-slate-200/80 px-1 rounded">TR-TN-02</code>) or email with password <code className="font-mono bg-slate-200/80 px-1 rounded">Trainer@123</code>.
-            </p>
-          )}
         </div>
 
         {/* Error Alert */}
@@ -301,15 +187,16 @@ export default function TrainerRoleLoginModal({
           <div>
             <label className="block text-[11px] font-extrabold uppercase tracking-wider text-slate-700 mb-1.5 flex items-center gap-1.5">
               <Mail className="w-3.5 h-3.5 text-slate-400" />
-              {roleKey === 'trainer' ? 'Email or Faculty ID' : 'Account Email'}
+              {roleKey === 'trainer' ? 'Email Address or Trainer ID' : 'Account Email'}
             </label>
             <input
               type="text"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder={roleKey === 'trainer' ? 'e.g. TR-TN-01 or tharanishri.trainer@thoughtflows.in' : 'Enter email'}
+              placeholder={roleKey === 'trainer' ? 'Enter email address or Trainer ID' : 'Enter email address'}
               required
               autoFocus
+              autoComplete="username"
               className="w-full px-3.5 py-2.5 text-xs text-slate-900 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 font-medium outline-none transition-all"
             />
           </div>
@@ -326,6 +213,7 @@ export default function TrainerRoleLoginModal({
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="Enter password"
                 required
+                autoComplete="current-password"
                 className="w-full px-3.5 py-2.5 pr-10 text-xs text-slate-900 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 font-medium outline-none transition-all"
               />
               <button
@@ -363,3 +251,4 @@ export default function TrainerRoleLoginModal({
     </div>
   );
 }
+

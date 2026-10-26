@@ -49,7 +49,7 @@ const TRAINER_ROLES = [
     gradient: 'linear-gradient(135deg, #005a9c, #0284c7)',
     accentText: 'text-blue-700',
     ring: 'hover:border-blue-400',
-    accountHint: 'Manoj · Pan-India'
+    accountHint: 'Admin-Created Staff Credentials'
   },
   {
     key: 'manager',
@@ -61,7 +61,7 @@ const TRAINER_ROLES = [
     gradient: 'linear-gradient(135deg, #00828a, #0d9488)',
     accentText: 'text-teal-700',
     ring: 'hover:border-teal-400',
-    accountHint: 'Keerthi (TN/KL) & Pavithra (AP/TS)'
+    accountHint: 'Admin-Created Staff Credentials'
   },
   {
     key: 'tl',
@@ -73,7 +73,7 @@ const TRAINER_ROLES = [
     gradient: 'linear-gradient(135deg, #2e7d32, #16a34a)',
     accentText: 'text-emerald-700',
     ring: 'hover:border-emerald-400',
-    accountHint: 'Ram Balaji, Vaishna & Mounika'
+    accountHint: 'Admin-Created Staff Credentials'
   },
   {
     key: 'trainer',
@@ -85,7 +85,7 @@ const TRAINER_ROLES = [
     gradient: 'linear-gradient(135deg, #38BDF8, #2563EB)',
     accentText: 'text-sky-700',
     ring: 'hover:border-sky-400',
-    accountHint: 'Individual Trainer Credentials'
+    accountHint: 'Admin-Created Faculty Credentials'
   }
 ];
 
@@ -624,8 +624,9 @@ export default function TrainersDepartmentHub({
                     </div>
 
                     <div className="mt-5 pt-3.5 border-t border-slate-100">
-                      <div className="text-[10.5px] font-semibold text-slate-400 mb-2 truncate">
-                        👤 {role.accountHint}
+                      <div className="text-[10.5px] font-semibold text-slate-400 mb-2 truncate flex items-center gap-1.5">
+                        <Lock className="w-3 h-3 text-slate-400 shrink-0" />
+                        <span>{role.accountHint}</span>
                       </div>
                       <div className="flex items-center justify-between">
                         <span className={`text-[10px] font-bold tracking-wide uppercase ${role.accentText}`}>
