@@ -14,13 +14,9 @@ export const storage = defineStorage({
       allow.guest.to(['read']),
     ],
     // Work sent by students to trainers (assignments, test submissions, recordings)
-    'student-submissions/{entity_id}/*': [
-      allow.entity('identity').to(['read', 'write', 'delete']),
-      allow.authenticated.to(['read', 'write', 'delete']),
-    ],
-    // General student submissions path
     'student-submissions/*': [
       allow.authenticated.to(['read', 'write', 'delete']),
+      allow.guest.to(['read']),
     ],
     // Student resumes and placement preparation materials
     'resumes/*': [
