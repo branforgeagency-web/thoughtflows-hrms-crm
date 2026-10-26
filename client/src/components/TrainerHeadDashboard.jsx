@@ -33,7 +33,17 @@ import {
   Menu,
   RefreshCw,
   Crown,
-  Briefcase
+  Briefcase,
+  Network,
+  MapPin,
+  BadgePercent,
+  CheckCircle,
+  ChevronUp,
+  Play,
+  Video,
+  CalendarCheck,
+  PhoneCall,
+  UserPlus
 } from 'lucide-react';
 import {
   getStudents,
@@ -43,13 +53,21 @@ import {
   getTrainerAttendance,
   getDemos,
   getTrainerDoubts,
+  getTrainerCredentials,
   reassignDemo,
   bulkReassignDemos,
-  onDataUpdate
+  onDataUpdate,
+  getTrainingMaterials,
+  updateDemo,
+  createDemoMeeting,
+  setDemoMeetingLink,
+  rescheduleDemo,
+  acknowledgeDemo
 } from '../services/api';
-// Hierarchy constants removed to ensure 100% real database data
+import TrainerOrgHierarchyChart from './TrainerOrgHierarchyChart';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 import CourseSyllabusBoard from './CourseSyllabusBoard';
+import ClassSessionRoom from './ClassSessionRoom';
 
 export default function TrainerHeadDashboard({
   roleType = 'head', // 'head' | 'manager' | 'tl'
@@ -86,22 +104,10 @@ export default function TrainerHeadDashboard({
   }, [isHeadRole, activeTab]);
   const [navOpen, setNavOpen] = useState(false);
 
-  // Active Leader Selection (Manoj for Head, Keerthi/Pavithra for Manager, Ram Balaji/Vaishna/Mounika for TL)
+  // Active Leader Selection
   const [activeLeaderId, setActiveLeaderId] = useState(() => {
     if (initialLeaderId) return initialLeaderId;
-    if (roleType === 'head') return 'manoj';
-    if (roleType === 'manager') {
-      const name = String(currentUser?.name || currentUser?.userName || '').toLowerCase();
-      if (name.includes('pavithra')) return 'pavithra';
-      return 'keerthi';
-    }
-    if (roleType === 'tl') {
-      const name = String(currentUser?.name || currentUser?.userName || '').toLowerCase();
-      if (name.includes('vaishna')) return 'vaishna';
-      if (name.includes('mounika')) return 'mounika';
-      return 'ram_balaji';
-    }
-    return 'manoj';
+    return currentUser?._id || currentUser?.id || currentUser?.leaderId || '';
   });
 
   // Live Connected Data State
@@ -112,6 +118,7 @@ export default function TrainerHeadDashboard({
   const [attendanceRecords, setAttendanceRecords] = useState([]);
   const [demos, setDemos] = useState([]);
   const [doubts, setDoubts] = useState([]);
+  const [trainerCredentials, setTrainerCredentials] = useState(null);
   const [loading, setLoading] = useState(true);
 
   // Global & Local Filters
@@ -120,10 +127,18 @@ export default function TrainerHeadDashboard({
   const [selectedTrainer, setSelectedTrainer] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [doubtStatusFilter, setDoubtStatusFilter] = useState('all'); // 'all' | 'pending' | 'resolved'
+  const [leadershipViewMode, setLeadershipViewMode] = useState('cards'); // 'cards' | 'chart'
+  const [mappingManagerFilter, setMappingManagerFilter] = useState('all');
+  const [mappingTLFilter, setMappingTLFilter] = useState('all');
 
   // Reassignment Modal State
   const [reassignDemoTarget, setReassignDemoTarget] = useState(null);
   const [reassignForm, setReassignForm] = useState({ toTrainerId: '', reason: '' });
+  const [materials, setMaterials] = useState([]);
+  const [demoFilterTab, setDemoFilterTab] = useState('all'); // 'all' | 'mine' | 'scheduled' | 'completed'
+  const [demoOutcomeTarget, setDemoOutcomeTarget] = useState(null);
+  const [demoOutcomeForm, setDemoOutcomeForm] = useState({ status: 'attended', notes: '' });
+  const [savingDemoOutcome, setSavingDemoOutcome] = useState(false);
   const [reassigning, setReassigning] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
   const flashToast = (msg, ms = 4000) => {
@@ -146,9 +161,11 @@ export default function TrainerHeadDashboard({
       getTrainerSettings().catch(() => []),
       getTrainerAttendance().catch(() => []),
       getDemos().catch(() => []),
-      getTrainerDoubts().catch(() => [])
+      getTrainerDoubts().catch(() => []),
+      getTrainerCredentials().catch(() => null),
+      getTrainingMaterials().catch(() => [])
     ])
-      .then(([stData, bData, brData, trData, attData, dData, dbtData]) => {
+      .then(([stData, bData, brData, trData, attData, dData, dbtData, credData, matData]) => {
         // Pure Real Data: Use trainers returned directly from database / API
         const realTrainers = [...(Array.isArray(trData) ? trData : [])];
         const knownIds = new Set(realTrainers.map((t) => t.trainerId || t.id).filter(Boolean));
@@ -177,6 +194,8 @@ export default function TrainerHeadDashboard({
         setAttendanceRecords(Array.isArray(attData) ? attData : []);
         setDemos(Array.isArray(dData) ? dData : []);
         setDoubts(Array.isArray(dbtData) ? dbtData : []);
+        if (credData) setTrainerCredentials(credData);
+        if (Array.isArray(matData)) setMaterials(matData);
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -196,23 +215,36 @@ export default function TrainerHeadDashboard({
   // 1. Scoped Trainers
   const scopedTrainers = useMemo(() => {
     let list = trainers;
+    const userBranches = (currentUser?.branches || (currentUser?.branch ? [currentUser.branch] : [])).map((b) => String(b).toLowerCase().trim()).filter(Boolean);
+    const targetLeaderId = activeLeaderId || currentUser?._id || currentUser?.id;
+
     if (roleType === 'manager') {
-      if (activeLeaderId === 'keerthi') {
-        list = list.filter((t) => t.managerId === 'keerthi' || ['TN', 'KL'].includes(t.zone) || /tamil|kerala|coimbatore|kochi|trivandrum|salem|trichy/i.test(`${t.branchName || ''} ${t.branch || ''}`));
-      } else if (activeLeaderId === 'pavithra') {
-        list = list.filter((t) => t.managerId === 'pavithra' || ['AP / TS', 'AP', 'TS'].includes(t.zone) || /telangana|andhra|hyderabad|ameerpet|dilsukhnagar|tirupati|vizag/i.test(`${t.branchName || ''} ${t.branch || ''}`));
+      if (targetLeaderId || userBranches.length > 0) {
+        const filtered = list.filter((t) => {
+          if (targetLeaderId && (t.managerId === targetLeaderId || t.reportingManagerId === targetLeaderId)) return true;
+          if (userBranches.length > 0) {
+            const tb = String(t.branchName || t.branch || '').toLowerCase();
+            return userBranches.some((b) => tb.includes(b));
+          }
+          return false;
+        });
+        if (filtered.length > 0) list = filtered;
       }
     } else if (roleType === 'tl') {
-      if (activeLeaderId === 'ram_balaji') {
-        list = list.filter((t) => t.teamLeadId === 'ram_balaji' || t.zone === 'TN' || /tharani|jennifer|karkuzhali|sowmiya|darsana|sharon|kaviya|priya|sumaiya|sophiga/i.test(t.trainerName || t.name || ''));
-      } else if (activeLeaderId === 'vaishna') {
-        list = list.filter((t) => t.teamLeadId === 'vaishna' || t.zone === 'KL' || /aleena|aswini|shilpa|varamani|shiny|shiva|abarna/i.test(t.trainerName || t.name || ''));
-      } else if (activeLeaderId === 'mounika') {
-        list = list.filter((t) => t.teamLeadId === 'mounika' || t.zone === 'AP / TS' || /pooja|varsha|charishma|prasanna|aashifa|santhiya|kavitha|santhosh/i.test(t.trainerName || t.name || ''));
+      if (targetLeaderId || userBranches.length > 0) {
+        const filtered = list.filter((t) => {
+          if (targetLeaderId && (t.teamLeadId === targetLeaderId || t.reportingTLId === targetLeaderId)) return true;
+          if (userBranches.length > 0) {
+            const tb = String(t.branchName || t.branch || '').toLowerCase();
+            return userBranches.some((b) => tb.includes(b));
+          }
+          return false;
+        });
+        if (filtered.length > 0) list = filtered;
       }
     }
     return list;
-  }, [trainers, roleType, activeLeaderId]);
+  }, [trainers, roleType, activeLeaderId, currentUser]);
 
   const scopedTrainerNames = useMemo(() => {
     return scopedTrainers.map((t) => t.trainerName || t.name).filter(Boolean);
@@ -527,38 +559,169 @@ export default function TrainerHeadDashboard({
     };
   }, [scopedStudents]);
 
-  // 5. Trainer and Batch Mapping
-  const trainerBatchMapping = useMemo(() => {
-    return scopedTrainers.map((t) => {
-      const tName = String(t.trainerName || t.name || '').toLowerCase();
-      const tId = t.trainerId || t.id;
+  // Detailed Trainer Managers list (derived strictly from Admin-created user credentials in DB)
+  const trainerManagersList = useMemo(() => {
+    const managers = (trainerCredentials?.managers || []).map((m) => {
+      const mBranches = (m.branches?.length ? m.branches : (m.branch ? [m.branch] : [])).map((b) => String(b).toLowerCase().trim());
+      const mId = m.id || m.leaderId;
 
-      const handledBatches = scopedBatches.filter((b) => {
-        const bTrainer = String(b.trainer || b.faculty || '').toLowerCase();
-        return bTrainer.includes(tName) || (tId && b.trainerId === tId);
+      const reportingTLs = (trainerCredentials?.teamLeads || []).filter((tl) => {
+        if (tl.managerId && (tl.managerId === mId || tl.managerId === m.name)) return true;
+        if (mBranches.length > 0 && tl.branches) {
+          const tlBranches = tl.branches.map((b) => String(b).toLowerCase().trim());
+          return tlBranches.some((tb) => mBranches.includes(tb));
+        }
+        return false;
       });
 
-      const handledStudents = scopedStudents.filter((s) => {
-        if (s.trainerId && s.trainerId === tId) return true;
-        const sTrainer = String(s.trainer || s.faculty || '').toLowerCase();
-        if (sTrainer && sTrainer.includes(tName)) return true;
-        return handledBatches.some(
-          (hb) => String(s.batch || s.batchName || '').toLowerCase() === String(hb.name || hb.batchId || '').toLowerCase()
-        );
+      const supervisedTrainers = trainers.filter((t) => {
+        if (t.managerId && (t.managerId === mId || t.managerId === m.name)) return true;
+        if (mBranches.length > 0) {
+          const tb = String(t.branchName || t.branch || '').toLowerCase();
+          if (mBranches.some((mb) => tb.includes(mb))) return true;
+        }
+        return reportingTLs.some((tl) => {
+          const tlId = tl.id || tl.leaderId;
+          return t.teamLeadId && (t.teamLeadId === tlId || t.teamLeadId === tl.name);
+        });
+      });
+
+      const managerBatches = batches.filter((b) => {
+        const bBranch = String(b.branch || '').toLowerCase();
+        if (mBranches.length > 0 && mBranches.some((mb) => bBranch.includes(mb))) return true;
+        const bTr = String(b.trainer || b.faculty || '').toLowerCase();
+        return supervisedTrainers.some((st) => String(st.trainerName || st.name || '').toLowerCase().includes(bTr));
+      });
+
+      const managerStudents = students.filter((s) => {
+        const sBranch = String(s.branch || s.location || s.leadBranch || '').toLowerCase();
+        if (mBranches.length > 0 && mBranches.some((mb) => sBranch.includes(mb))) return true;
+        const sTr = String(s.trainer || s.faculty || '').toLowerCase();
+        return supervisedTrainers.some((st) => String(st.trainerName || st.name || '').toLowerCase().includes(sTr));
       });
 
       return {
-        ...t,
-        trainerName: t.trainerName || t.name,
-        branch: t.branchName || t.branch || '—',
-        course: t.courseKey || t.course || t.expertCourse || '—',
-        batchesCount: handledBatches.length,
-        batches: handledBatches,
-        studentsCount: handledStudents.length,
-        students: handledStudents
+        id: mId,
+        name: m.name,
+        role: m.role || 'Trainer Manager',
+        zone: m.zone || m.branch || 'Assigned Zone',
+        zoneLabel: m.zoneLabel || (m.branch ? `${m.branch} Operations` : 'Regional Operations'),
+        color: m.color || '#0d9488',
+        badge: 'TM',
+        email: m.email || '—',
+        phone: m.phone || '—',
+        branches: m.branches?.length ? m.branches : (m.branch ? [m.branch] : []),
+        teamLeads: reportingTLs,
+        trainers: supervisedTrainers,
+        trainersCount: supervisedTrainers.length,
+        batchesCount: managerBatches.length,
+        studentsCount: managerStudents.length,
+        status: m.status || 'Active · On Duty'
       };
     });
-  }, [scopedTrainers, scopedBatches, scopedStudents]);
+
+    return managers;
+  }, [trainers, batches, students, trainerCredentials]);
+
+  // Detailed Trainer Team Leads (TLs) list (derived strictly from Admin-created user credentials in DB)
+  const trainerTLsList = useMemo(() => {
+    const tls = (trainerCredentials?.teamLeads || []).map((tl) => {
+      const tlId = tl.id || tl.leaderId;
+      const tlBranches = (tl.branches?.length ? tl.branches : (tl.branch ? [tl.branch] : [])).map((b) => String(b).toLowerCase().trim());
+
+      const squadTrainers = trainers.filter((t) => {
+        if (t.teamLeadId && (t.teamLeadId === tlId || t.teamLeadId === tl.name)) return true;
+        if (tlBranches.length > 0) {
+          const tb = String(t.branchName || t.branch || '').toLowerCase();
+          return tlBranches.some((b) => tb.includes(b));
+        }
+        return false;
+      });
+
+      const squadBatches = batches.filter((b) => {
+        const bTr = String(b.trainer || b.faculty || '').toLowerCase();
+        return squadTrainers.some((st) => String(st.trainerName || st.name || '').toLowerCase().includes(bTr));
+      });
+
+      const squadStudents = students.filter((s) => {
+        const sTr = String(s.trainer || s.faculty || '').toLowerCase();
+        return squadTrainers.some((st) => String(st.trainerName || st.name || '').toLowerCase().includes(sTr));
+      });
+
+      const allBranches = Array.from(new Set(
+        (tl.branches || []).concat(squadTrainers.map((t) => t.branchName || t.branch).filter(Boolean))
+      ));
+
+      return {
+        id: tlId,
+        name: tl.name,
+        role: tl.role || 'Trainer Team Lead',
+        zone: tl.zone || tl.branch || 'Assigned Pod',
+        zoneLabel: tl.zoneLabel || (tl.branch ? `${tl.branch} Pod` : 'Regional Pod'),
+        managerId: tl.managerId || '',
+        managerName: tl.managerName || '',
+        color: tl.color || '#16a34a',
+        badge: 'TL',
+        email: tl.email || '—',
+        phone: tl.phone || '—',
+        branches: allBranches.length ? allBranches : (tl.branch ? [tl.branch] : []),
+        trainers: squadTrainers,
+        trainersCount: squadTrainers.length,
+        batchesCount: squadBatches.length,
+        studentsCount: squadStudents.length,
+        status: tl.status || 'Active · On Duty'
+      };
+    });
+
+    return tls;
+  }, [trainers, batches, students, trainerCredentials]);
+
+  // 5. Trainer and Batch Mapping
+  const trainerBatchMapping = useMemo(() => {
+    return scopedTrainers
+      .filter((t) => {
+        const mName = t.managerName || (trainerManagersList.find((m) => m.id === t.managerId || (m.branches && m.branches.includes(t.branchName || t.branch)))?.name) || '';
+        const tlName = t.teamLeadName || (trainerTLsList.find((tl) => tl.id === t.teamLeadId || (tl.branches && tl.branches.includes(t.branchName || t.branch)))?.name) || '';
+        if (mappingManagerFilter !== 'all' && !mName.toLowerCase().includes(mappingManagerFilter.toLowerCase())) return false;
+        if (mappingTLFilter !== 'all' && !tlName.toLowerCase().includes(mappingTLFilter.toLowerCase())) return false;
+        return true;
+      })
+      .map((t) => {
+        const tName = String(t.trainerName || t.name || '').toLowerCase();
+        const tId = t.trainerId || t.id;
+
+        const handledBatches = scopedBatches.filter((b) => {
+          const bTrainer = String(b.trainer || b.faculty || '').toLowerCase();
+          return bTrainer.includes(tName) || (tId && b.trainerId === tId);
+        });
+
+        const handledStudents = scopedStudents.filter((s) => {
+          if (s.trainerId && s.trainerId === tId) return true;
+          const sTrainer = String(s.trainer || s.faculty || '').toLowerCase();
+          if (sTrainer && sTrainer.includes(tName)) return true;
+          return handledBatches.some(
+            (hb) => String(s.batch || s.batchName || '').toLowerCase() === String(hb.name || hb.batchId || '').toLowerCase()
+          );
+        });
+
+        const matchedManager = trainerManagersList.find((m) => m.id === t.managerId || (m.branches && m.branches.includes(t.branchName || t.branch)));
+        const matchedTL = trainerTLsList.find((tl) => tl.id === t.teamLeadId || (tl.branches && tl.branches.includes(t.branchName || t.branch)));
+
+        return {
+          ...t,
+          trainerName: t.trainerName || t.name,
+          teamLeadName: t.teamLeadName || matchedTL?.name || '—',
+          managerName: t.managerName || matchedManager?.name || '—',
+          zone: t.zone || matchedTL?.zone || matchedManager?.zone || t.branchName || t.branch || '—',
+          branch: t.branchName || t.branch || '—',
+          course: t.courseKey || t.course || t.expertCourse || '—',
+          batchesCount: handledBatches.length,
+          batches: handledBatches,
+          studentsCount: handledStudents.length,
+          students: handledStudents
+        };
+      });
+  }, [scopedTrainers, scopedBatches, scopedStudents, mappingManagerFilter, mappingTLFilter]);
 
   // 6. Trainer Attendance Details
   const trainerAttendanceReport = useMemo(() => {
@@ -652,6 +815,137 @@ export default function TrainerHeadDashboard({
       resolutionRate: scopedDoubts.length ? Math.round((resolved.length / scopedDoubts.length) * 100) : 0
     };
   }, [scopedDoubts]);
+
+  // Leader Identity & Live Session Room Helpers
+  const currentLeaderTrainerId = useMemo(() => {
+    return currentUser?.trainerId || currentUser?._id || currentUser?.id || activeLeaderId || 'LEADER';
+  }, [currentUser, activeLeaderId]);
+
+  const currentLeaderTrainerName = useMemo(() => {
+    return currentUser?.userName || currentUser?.name || (roleType === 'head' ? 'Trainer Head' : roleType === 'manager' ? 'Trainer Manager' : 'Trainer Team Lead');
+  }, [currentUser, roleType]);
+
+  const formattedBatchesForSessionRoom = useMemo(() => {
+    const map = {};
+
+    scopedBatches.forEach((b) => {
+      const bName = b.name || b.batchId || b.batchName || 'Active Batch';
+      map[bName] = {
+        id: b._id || b.id || bName.toLowerCase().replace(/[^a-z0-9]/g, '-'),
+        name: bName,
+        course: b.course || b.courseName || '',
+        timing: b.timing || b.batchTiming || 'General',
+        mode: b.mode || b.courseType || 'Online',
+        branch: b.branch || '',
+        module: b.module || b.currentModule || 'Orientation',
+        students: []
+      };
+    });
+
+    scopedStudents.forEach((st) => {
+      const key = st.batchName || st.batch || st.course;
+      if (!key) return;
+      if (!map[key]) {
+        map[key] = {
+          id: key.toLowerCase().replace(/[^a-z0-9]/g, '-'),
+          name: key,
+          course: st.course || '',
+          timing: st.batchTiming || 'General',
+          mode: st.mode || 'Online',
+          branch: st.branch || '',
+          module: st.syllabusModule || 'Orientation',
+          students: []
+        };
+      }
+      map[key].students.push(st);
+    });
+
+    return Object.values(map);
+  }, [scopedBatches, scopedStudents]);
+
+  const myAssignedDemos = useMemo(() => {
+    const leaderName = currentLeaderTrainerName.toLowerCase();
+    const leaderId = String(currentLeaderTrainerId);
+    return scopedDemos.filter((d) => {
+      const dTr = String(d.trainer || d.faculty || d.trainerMapping || '').toLowerCase();
+      const dTrId = String(d.trainerId || '');
+      return dTrId === leaderId || (leaderName && (dTr.includes(leaderName) || leaderName.includes(dTr)));
+    });
+  }, [scopedDemos, currentLeaderTrainerId, currentLeaderTrainerName]);
+
+  const displayedDemos = useMemo(() => {
+    if (demoFilterTab === 'mine') return myAssignedDemos;
+    if (demoFilterTab === 'scheduled') return scopedDemos.filter((d) => ['booked', 'confirmed'].includes(String(d.status || '').toLowerCase()));
+    if (demoFilterTab === 'completed') return scopedDemos.filter((d) => ['attended', 'completed', 'enrolled'].includes(String(d.status || '').toLowerCase()));
+    return scopedDemos;
+  }, [demoFilterTab, myAssignedDemos, scopedDemos]);
+
+  const handleSelfAssignDemo = async (demoId) => {
+    try {
+      await updateDemo(demoId, {
+        trainer: currentLeaderTrainerName,
+        trainerId: currentLeaderTrainerId,
+        status: 'confirmed'
+      });
+      flashToast(`✓ Demo assigned to you (${currentLeaderTrainerName})`);
+      loadDashboardData();
+    } catch (err) {
+      flashToast(`⚠ Could not self-assign: ${err.message}`);
+    }
+  };
+
+  const handleStartDemoMeeting = async (demo) => {
+    if (demo.link || demo.zoomJoinUrl || demo.meetingLink) {
+      window.open(demo.link || demo.zoomJoinUrl || demo.meetingLink, '_blank');
+      return;
+    }
+    try {
+      const updated = await createDemoMeeting(demo._id || demo.id);
+      if (updated?.link || updated?.zoomJoinUrl) {
+        window.open(updated.link || updated.zoomJoinUrl, '_blank');
+      } else {
+        flashToast('✓ Meeting room prepared');
+      }
+      loadDashboardData();
+    } catch (err) {
+      const enteredLink = window.prompt(
+        `Zoom meeting notice: ${err.message}\n\nEnter a Google Meet / Zoom link for this demo session (or click OK to open Google Meet):\n`,
+        'https://meet.google.com/new'
+      );
+      if (enteredLink !== null) {
+        const linkToUse = enteredLink.trim() || 'https://meet.google.com/new';
+        try {
+          await setDemoMeetingLink(demo._id || demo.id, linkToUse);
+          window.open(linkToUse, '_blank');
+          flashToast('✓ Demo meeting link set & opened');
+          loadDashboardData();
+        } catch (_) {
+          window.open(linkToUse, '_blank');
+        }
+      }
+    }
+  };
+
+  const handleSaveDemoOutcome = async () => {
+    if (!demoOutcomeTarget) return;
+    setSavingDemoOutcome(true);
+    try {
+      await updateDemo(demoOutcomeTarget._id || demoOutcomeTarget.id, {
+        status: demoOutcomeForm.status,
+        trainerNotes: demoOutcomeForm.notes,
+        outcomeUpdatedBy: currentLeaderTrainerName
+      });
+      flashToast(`✓ Demo status marked as "${demoOutcomeForm.status}"`);
+      setDemoOutcomeTarget(null);
+      loadDashboardData();
+    } catch (err) {
+      flashToast(`⚠ Error saving outcome: ${err.message}`);
+    } finally {
+      setSavingDemoOutcome(false);
+    }
+  };
+
+
 
   // Real Average Faculty Attendance Percentage (Only computed across trainers with logged sessions)
   const realAverageAttendancePct = useMemo(() => {
@@ -809,11 +1103,11 @@ export default function TrainerHeadDashboard({
             {roleType === 'head' ? (
               <div className="flex items-center gap-2.5 bg-[#0c1921] border border-[#213a4d] rounded-xl p-2.5">
                 <div className="w-9 h-9 rounded-full bg-blue-600 text-white font-black text-sm flex items-center justify-center shadow-xs">
-                  M
+                  {(currentUser?.name || 'H')[0].toUpperCase()}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="text-white text-xs font-bold truncate">Manoj</div>
-                  <div className="text-[#649297] text-[10px] font-medium truncate">All 12 Branches · 25 Faculty</div>
+                  <div className="text-white text-xs font-bold truncate">{currentUser?.name || 'Head of Trainer'}</div>
+                  <div className="text-[#649297] text-[10px] font-medium truncate">{currentUser?.email || 'All 12 Branches · Head of Trainer'}</div>
                 </div>
               </div>
             ) : roleType === 'manager' ? (
@@ -853,6 +1147,24 @@ export default function TrainerHeadDashboard({
             <div className="space-y-1">
               <button
                 type="button"
+                onClick={() => setActiveTab('session_room')}
+                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
+                  activeTab === 'session_room'
+                    ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                    : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <Play className="w-4 h-4 shrink-0 text-emerald-400 fill-current" />
+                  <span>Class Session Room</span>
+                </div>
+                <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300">
+                  Take Session
+                </span>
+              </button>
+
+              <button
+                type="button"
                 onClick={() => setActiveTab('overview')}
                 className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
                   activeTab === 'overview'
@@ -863,6 +1175,26 @@ export default function TrainerHeadDashboard({
                 <Home className="w-4 h-4 shrink-0" />
                 <span>Executive Overview</span>
               </button>
+
+              {isHeadRole && (
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('managers_tls')}
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
+                    activeTab === 'managers_tls'
+                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <Briefcase className="w-4 h-4 shrink-0 text-teal-400" />
+                    <span>Managers &amp; Team Leads</span>
+                  </div>
+                  <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-teal-500/20 text-teal-300">
+                    {trainerManagersList.length}M · {trainerTLsList.length}TL
+                  </span>
+                </button>
+              )}
 
               <button
                 type="button"
@@ -1094,6 +1426,38 @@ export default function TrainerHeadDashboard({
 
         {/* Content Body */}
         <div className="p-4 sm:p-6 lg:p-8 space-y-6 max-w-[1720px] w-full mx-auto">
+          {/* ================= SECTION: LIVE CLASS SESSION ROOM ================= */}
+          <div
+            className={activeTab === 'session_room' ? 'space-y-6 animate-fadeIn' : 'fixed top-0 -left-[4000px] w-[1100px] pointer-events-none'}
+            aria-hidden={activeTab !== 'session_room'}
+          >
+            <div className="bg-white rounded-2xl border border-slate-200/90 p-4 sm:p-6 shadow-xs flex items-center justify-between flex-wrap gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                  <h3 className="text-base font-extrabold text-slate-900">Live Class Session &amp; Attendance Room</h3>
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Conduct live online or offline classes, launch Zoom sessions, log student attendance, and track syllabus modules as {currentLeaderTrainerName}.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveTab('batches')}
+                className="px-3.5 py-1.5 rounded-xl border border-slate-200 text-xs font-bold text-slate-700 hover:bg-slate-50 cursor-pointer"
+              >
+                View All Batches ({scopedBatches.length})
+              </button>
+            </div>
+            <ClassSessionRoom
+              trainerId={currentLeaderTrainerId}
+              trainerName={currentLeaderTrainerName}
+              batches={formattedBatchesForSessionRoom}
+              materials={materials}
+              onAttendanceSaved={loadDashboardData}
+            />
+          </div>
+
           {/* ================= SECTION 0: EXECUTIVE OVERVIEW ================= */}
           {activeTab === 'overview' && (
             <div className="space-y-6">
@@ -1284,6 +1648,91 @@ export default function TrainerHeadDashboard({
                 )}
               </div>
 
+              {/* Training Leadership: Trainer Managers & Team Leads Quick Cards (Head Command) */}
+              {isHeadRole && (
+                <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-6 space-y-4">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div>
+                      <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
+                        <Briefcase className="w-4 h-4 text-[#00897b]" />
+                        <span>Training Operations: Managers &amp; Team Leads ({trainerManagersList.length} Managers · {trainerTLsList.length} TLs)</span>
+                      </h3>
+                      <p className="text-xs text-slate-400">
+                        Zonal managers and squad team leads overseeing faculty, batch allocation, and student curriculum nationwide.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('managers_tls')}
+                      className="text-xs font-bold text-[#00897b] hover:underline flex items-center gap-1 cursor-pointer"
+                    >
+                      <span>View All Managers &amp; TL Details →</span>
+                    </button>
+                  </div>
+
+                  {/* 2 Managers + 3 Team Leads Overview Row */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3.5">
+                    {/* Trainer Managers */}
+                    {trainerManagersList.map((m) => (
+                      <div
+                        key={m.id}
+                        onClick={() => setActiveTab('managers_tls')}
+                        className="p-4 rounded-xl border border-teal-200/80 bg-teal-50/30 hover:bg-teal-50/70 hover:border-teal-400 transition-all cursor-pointer shadow-2xs group flex flex-col justify-between"
+                      >
+                        <div>
+                          <div className="flex items-center justify-between gap-1 mb-2">
+                            <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md bg-teal-100 text-teal-900">
+                              TRAINER MANAGER
+                            </span>
+                            <span className="text-[10px] font-bold text-teal-700">{m.zone}</span>
+                          </div>
+                          <div className="text-base font-black text-slate-900 group-hover:text-teal-800 transition-colors">
+                            {m.name}
+                          </div>
+                          <div className="text-[11px] text-slate-500 font-medium mt-0.5">
+                            {m.zoneLabel}
+                          </div>
+                        </div>
+
+                        <div className="mt-3 pt-2.5 border-t border-teal-100 flex items-center justify-between text-[11px] font-semibold text-slate-600">
+                          <span>{m.teamLeads?.length || 2} Reporting TLs</span>
+                          <span className="text-teal-700 font-black">{m.trainersCount} Faculty</span>
+                        </div>
+                      </div>
+                    ))}
+
+                    {/* Team Leads */}
+                    {trainerTLsList.map((tl) => (
+                      <div
+                        key={tl.id}
+                        onClick={() => setActiveTab('managers_tls')}
+                        className="p-4 rounded-xl border border-emerald-200/80 bg-emerald-50/30 hover:bg-emerald-50/70 hover:border-emerald-400 transition-all cursor-pointer shadow-2xs group flex flex-col justify-between"
+                      >
+                        <div>
+                          <div className="flex items-center justify-between gap-1 mb-2">
+                            <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-900">
+                              TEAM LEAD (TL)
+                            </span>
+                            <span className="text-[10px] font-bold text-emerald-700">{tl.zone}</span>
+                          </div>
+                          <div className="text-base font-black text-slate-900 group-hover:text-emerald-800 transition-colors">
+                            {tl.name}
+                          </div>
+                          <div className="text-[11px] text-slate-500 font-medium mt-0.5">
+                            Reports to: {tl.managerName}
+                          </div>
+                        </div>
+
+                        <div className="mt-3 pt-2.5 border-t border-emerald-100 flex items-center justify-between text-[11px] font-semibold text-slate-600">
+                          <span>{tl.batchesCount} Batches</span>
+                          <span className="text-emerald-700 font-black">{tl.trainersCount} Squad</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Quick Branch Overview Grid */}
               <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-6 space-y-4">
                 <div className="flex items-center justify-between">
@@ -1341,6 +1790,523 @@ export default function TrainerHeadDashboard({
                   ))}
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* ================= SECTION: TRAINER MANAGERS & TEAM LEADS ================= */}
+          {activeTab === 'managers_tls' && (
+            <div className="space-y-6 animate-fadeIn">
+              {/* Top Command Banner with View Mode Switch */}
+              <div className="bg-white rounded-2xl border border-slate-200/90 p-5 sm:p-6 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-[10px] font-mono uppercase tracking-wider font-extrabold px-2.5 py-0.5 rounded-full bg-teal-50 text-teal-800 border border-teal-200">
+                      TRAINING LEADERSHIP DIRECTORY
+                    </span>
+                    <span className="text-xs text-slate-400">·</span>
+                    <span className="text-xs font-bold text-slate-500">Pan-India Operations</span>
+                  </div>
+                  <h2 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
+                    Trainer Managers &amp; Trainer Team Leads
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-0.5 max-w-2xl">
+                    Supervisory chain of command: Zonal Training Managers oversee regional pod Team Leads, who directly mentor and allocate faculty trainers across batches and branches.
+                  </p>
+                </div>
+
+                {/* View Switcher: Cards vs Chart */}
+                <div className="inline-flex items-center p-1 rounded-xl bg-slate-100 border border-slate-200 self-stretch sm:self-auto justify-center">
+                  <button
+                    type="button"
+                    onClick={() => setLeadershipViewMode('cards')}
+                    className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      leadershipViewMode === 'cards'
+                        ? 'bg-white text-slate-900 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <Briefcase className="w-3.5 h-3.5 text-teal-600" />
+                    <span>Leadership Profiles</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLeadershipViewMode('chart')}
+                    className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      leadershipViewMode === 'chart'
+                        ? 'bg-white text-slate-900 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <Network className="w-3.5 h-3.5 text-blue-600" />
+                    <span>Org Hierarchy Tree</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* View 1: Visual Hierarchy Chart */}
+              {leadershipViewMode === 'chart' ? (
+                <div className="space-y-4">
+                  <TrainerOrgHierarchyChart
+                    head={trainerCredentials?.head}
+                    managers={trainerManagersList}
+                    teamLeads={trainerTLsList}
+                    faculty={trainers}
+                    onSelectNode={(node) => {
+                      if (node?.roleType === 'manager') {
+                        flashToast(`Filtered to Trainer Manager: ${node.name}`);
+                      } else if (node?.roleType === 'tl') {
+                        flashToast(`Filtered to Trainer TL: ${node.name}`);
+                      }
+                    }}
+                  />
+                </div>
+              ) : (
+                /* View 2: Detailed Leadership Cards & Tables */
+                <div className="space-y-6">
+                  {/* Executive Metric Cards */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5">
+                    <div className="bg-white rounded-2xl p-4 border border-teal-200/90 shadow-2xs">
+                      <div className="text-[10.5px] font-extrabold uppercase tracking-wider text-teal-800 font-mono">
+                        Trainer Managers
+                      </div>
+                      <div className="text-3xl font-black text-slate-900 my-1">
+                        {trainerManagersList.length}
+                      </div>
+                      <div className="text-[11px] text-teal-700 font-medium">
+                        TN/KL &amp; AP/TS Zonal Managers
+                      </div>
+                    </div>
+
+                    <div className="bg-white rounded-2xl p-4 border border-emerald-200/90 shadow-2xs">
+                      <div className="text-[10.5px] font-extrabold uppercase tracking-wider text-emerald-800 font-mono">
+                        Trainer Team Leads
+                      </div>
+                      <div className="text-3xl font-black text-slate-900 my-1">
+                        {trainerTLsList.length}
+                      </div>
+                      <div className="text-[11px] text-emerald-700 font-medium">
+                        Regional Pod Squad Leaders
+                      </div>
+                    </div>
+
+                    <div className="bg-white rounded-2xl p-4 border border-blue-200/90 shadow-2xs">
+                      <div className="text-[10.5px] font-extrabold uppercase tracking-wider text-blue-800 font-mono">
+                        Faculty Supervised
+                      </div>
+                      <div className="text-3xl font-black text-slate-900 my-1">
+                        {scopedTrainers.length}
+                      </div>
+                      <div className="text-[11px] text-blue-700 font-medium">
+                        Active Faculty in Squads
+                      </div>
+                    </div>
+
+                    <div className="bg-white rounded-2xl p-4 border border-purple-200/90 shadow-2xs">
+                      <div className="text-[10.5px] font-extrabold uppercase tracking-wider text-purple-800 font-mono">
+                        Batches &amp; Students
+                      </div>
+                      <div className="text-3xl font-black text-slate-900 my-1">
+                        {scopedBatches.length} <span className="text-base text-slate-400 font-normal">/ {scopedStudents.length}</span>
+                      </div>
+                      <div className="text-[11px] text-purple-700 font-medium">
+                        Live Batches / Enrolled Scholars
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Section 1: TRAINER MANAGERS DETAILS */}
+                  <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-6 space-y-4">
+                    <div className="flex items-center justify-between pb-3 border-b border-slate-100 flex-wrap gap-2">
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-xl bg-teal-100 text-teal-800 flex items-center justify-center shadow-xs">
+                          <Briefcase className="w-5 h-5 text-teal-700" />
+                        </div>
+                        <div>
+                          <h3 className="text-base font-extrabold text-slate-900">
+                            Trainer Managers ({trainerManagersList.length})
+                          </h3>
+                          <p className="text-xs text-slate-500">
+                            Zonal managers reporting directly to Head of Training. Responsible for multi-branch faculty shifts, syllabus approvals &amp; TL oversight.
+                          </p>
+                        </div>
+                      </div>
+                      <span className="text-xs font-bold px-3 py-1 rounded-full bg-teal-50 text-teal-800 border border-teal-200">
+                        Level 2 Leadership Tier
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 pt-1">
+                      {trainerManagersList.length === 0 ? (
+                        <div className="col-span-full p-8 text-center bg-slate-50 border border-dashed border-slate-200 rounded-2xl">
+                          <Briefcase className="w-8 h-8 text-slate-400 mx-auto mb-2" />
+                          <p className="text-sm font-bold text-slate-700">No Trainer Managers Created Yet</p>
+                          <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
+                            User accounts created with the &quot;TRAINING TEAM MANAGER&quot; or &quot;Trainer Manager&quot; role in Admin Management will automatically populate here.
+                          </p>
+                        </div>
+                      ) : (
+                        trainerManagersList.map((m) => (
+                        <div
+                          key={m.id}
+                          className="rounded-2xl border border-teal-200/90 bg-gradient-to-br from-white via-teal-50/20 to-teal-50/40 p-5 shadow-xs hover:shadow-md transition-all space-y-4"
+                        >
+                          {/* Manager Header */}
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex items-center gap-3.5">
+                              <div
+                                className="w-12 h-12 rounded-2xl text-white font-black text-lg flex items-center justify-center shadow-md shrink-0"
+                                style={{ backgroundColor: m.color || '#0d9488' }}
+                              >
+                                {m.badge || 'TM'}
+                              </div>
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <h4 className="text-lg font-black text-slate-900 tracking-tight">{m.name}</h4>
+                                  <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-teal-100 text-teal-900 border border-teal-200">
+                                    {m.role}
+                                  </span>
+                                </div>
+                                <div className="text-xs font-bold text-teal-800 flex items-center gap-1.5 mt-0.5">
+                                  <span>{m.zone}</span>
+                                  <span>·</span>
+                                  <span className="text-slate-500 font-medium">{m.zoneLabel}</span>
+                                </div>
+                              </div>
+                            </div>
+
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-[10.5px] font-bold text-emerald-700 shrink-0">
+                              <CheckCircle className="w-3 h-3 text-emerald-600" />
+                              <span>{m.status}</span>
+                            </span>
+                          </div>
+
+                          {/* Contact Info Row */}
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs bg-white/80 p-3 rounded-xl border border-teal-100">
+                            <div className="flex items-center gap-2 text-slate-600 truncate">
+                              <Mail className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                              <a href={`mailto:${m.email}`} className="hover:text-teal-800 hover:underline truncate font-medium">
+                                {m.email}
+                              </a>
+                            </div>
+                            <div className="flex items-center gap-2 text-slate-600">
+                              <Phone className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                              <a href={`tel:${m.phone}`} className="hover:text-teal-800 font-medium">
+                                {m.phone}
+                              </a>
+                              {m.phone && m.phone !== '—' && (
+                                <button
+                                  type="button"
+                                  onClick={() => redirectToWhatsAppWeb(m.phone, `Hello ${m.name}, this is Head of Training reaching out regarding your training operations.`)}
+                                  className="ml-auto text-[10px] font-extrabold text-emerald-700 hover:underline px-1.5 py-0.5 rounded bg-emerald-50 border border-emerald-200"
+                                >
+                                  WhatsApp
+                                </button>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Reporting Team Leads under this Manager */}
+                          <div>
+                            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                              Reporting Team Leads (TLs)
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {(m.teamLeads || []).map((tl) => (
+                                <span
+                                  key={tl.id}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-bold text-emerald-800"
+                                >
+                                  <Users className="w-3 h-3 text-emerald-600" />
+                                  <span>{tl.name} ({tl.zone})</span>
+                                </span>
+                              ))}
+                              {(!m.teamLeads || m.teamLeads.length === 0) && (
+                                <span className="text-xs text-slate-400 italic">Direct Zonal Lead</span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Assigned Branches */}
+                          <div>
+                            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                              Assigned Regional Branches ({m.branches?.length || 0})
+                            </div>
+                            <div className="flex flex-wrap gap-1">
+                              {(m.branches || []).map((br) => (
+                                <span
+                                  key={br}
+                                  className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 text-[10.5px] font-semibold border border-slate-200"
+                                >
+                                  {br}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* Leadership Metrics Bar */}
+                          <div className="pt-3 border-t border-teal-100 grid grid-cols-3 gap-2 text-center bg-white/70 p-2.5 rounded-xl border border-teal-100">
+                            <div>
+                              <div className="text-[10px] text-slate-400 font-bold uppercase">Supervised Faculty</div>
+                              <div className="text-base font-black text-teal-800">{m.trainersCount} Faculty</div>
+                            </div>
+                            <div>
+                              <div className="text-[10px] text-slate-400 font-bold uppercase">Active Batches</div>
+                              <div className="text-base font-black text-blue-700">{m.batchesCount} Batches</div>
+                            </div>
+                            <div>
+                              <div className="text-[10px] text-slate-400 font-bold uppercase">Students Handled</div>
+                              <div className="text-base font-black text-slate-900">{m.studentsCount} Students</div>
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Section 2: TRAINER TEAM LEADS (TLs) DETAILS */}
+                  <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-6 space-y-4">
+                    <div className="flex items-center justify-between pb-3 border-b border-slate-100 flex-wrap gap-2">
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-xl bg-emerald-100 text-emerald-800 flex items-center justify-center shadow-xs">
+                          <Users className="w-5 h-5 text-emerald-700" />
+                        </div>
+                        <div>
+                          <h3 className="text-base font-extrabold text-slate-900">
+                            Trainer Team Leads (TLs) ({trainerTLsList.length})
+                          </h3>
+                          <p className="text-xs text-slate-500">
+                            Pod leaders overseeing daily faculty squad operations, live classroom monitoring, and doubt resolutions.
+                          </p>
+                        </div>
+                      </div>
+                      <span className="text-xs font-bold px-3 py-1 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200">
+                        Level 3 Leadership Tier
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 pt-1">
+                      {trainerTLsList.length === 0 ? (
+                        <div className="col-span-full p-8 text-center bg-slate-50 border border-dashed border-slate-200 rounded-2xl">
+                          <Users className="w-8 h-8 text-slate-400 mx-auto mb-2" />
+                          <p className="text-sm font-bold text-slate-700">No Trainer Team Leads (TLs) Created Yet</p>
+                          <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
+                            User accounts created with the &quot;TRAINING TL&quot; or &quot;Trainer TL&quot; role in Admin Management will automatically populate here.
+                          </p>
+                        </div>
+                      ) : (
+                        trainerTLsList.map((tl) => (
+                        <div
+                          key={tl.id}
+                          className="rounded-2xl border border-emerald-200/90 bg-gradient-to-br from-white via-emerald-50/20 to-emerald-50/30 p-5 shadow-xs hover:shadow-md transition-all space-y-4 flex flex-col justify-between"
+                        >
+                          <div className="space-y-3.5">
+                            {/* TL Header */}
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="flex items-center gap-3">
+                                <div
+                                  className="w-11 h-11 rounded-2xl text-white font-black text-base flex items-center justify-center shadow-md shrink-0"
+                                  style={{ backgroundColor: tl.color || '#16a34a' }}
+                                >
+                                  {tl.badge || 'TL'}
+                                </div>
+                                <div>
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <h4 className="text-base font-black text-slate-900 tracking-tight">{tl.name}</h4>
+                                    <span className="text-[9.5px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-900 border border-emerald-200">
+                                      {tl.badge}
+                                    </span>
+                                  </div>
+                                  <div className="text-[11px] font-bold text-emerald-800">
+                                    {tl.zoneLabel} ({tl.zone})
+                                  </div>
+                                </div>
+                              </div>
+
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-[10px] font-bold text-emerald-700 shrink-0">
+                                <CheckCircle className="w-2.5 h-2.5 text-emerald-600" />
+                                <span>{tl.status}</span>
+                              </span>
+                            </div>
+
+                            {/* Reporting Manager Pill */}
+                            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-teal-50 border border-teal-200 text-xs font-bold text-teal-900 w-full">
+                              <Briefcase className="w-3.5 h-3.5 text-teal-700 shrink-0" />
+                              <span>Reports to: <strong>{tl.managerName}</strong></span>
+                            </div>
+
+                            {/* Contact Info */}
+                            <div className="space-y-1.5 text-xs bg-white/80 p-3 rounded-xl border border-emerald-100">
+                              <div className="flex items-center gap-2 text-slate-600 truncate">
+                                <Mail className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                                <a href={`mailto:${tl.email}`} className="hover:text-emerald-800 hover:underline truncate font-medium">
+                                  {tl.email}
+                                </a>
+                              </div>
+                              <div className="flex items-center gap-2 text-slate-600">
+                                <Phone className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                                <a href={`tel:${tl.phone}`} className="hover:text-emerald-800 font-medium">
+                                  {tl.phone}
+                                </a>
+                                {tl.phone && tl.phone !== '—' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => redirectToWhatsAppWeb(tl.phone, `Hello ${tl.name}, this is Head of Training contacting you regarding your faculty squad.`)}
+                                    className="ml-auto text-[10px] font-extrabold text-emerald-700 hover:underline px-1.5 py-0.5 rounded bg-emerald-50 border border-emerald-200"
+                                  >
+                                    WhatsApp
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Supervised Faculty Squad */}
+                            <div>
+                              <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1.5 flex items-center justify-between">
+                                <span>Faculty Squad</span>
+                                <span className="text-emerald-700 font-black">{tl.trainersCount} Trainers</span>
+                              </div>
+                              <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto pr-1">
+                                {(tl.trainers || []).map((tr) => (
+                                  <span
+                                    key={tr.id || tr.trainerId || tr.name}
+                                    className="px-2 py-0.5 rounded-md bg-white border border-slate-200 text-[10px] font-medium text-slate-700"
+                                  >
+                                    {tr.name || tr.trainerName}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+
+                            {/* Assigned Pod Branches */}
+                            <div>
+                              <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                                Pod Branches
+                              </div>
+                              <div className="flex flex-wrap gap-1">
+                                {(tl.branches || []).map((br) => (
+                                  <span
+                                    key={br}
+                                    className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px] font-medium"
+                                  >
+                                    {br}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* TL Metrics Footer */}
+                          <div className="pt-3 border-t border-emerald-100 grid grid-cols-2 gap-2 text-center bg-white/70 p-2.5 rounded-xl border border-emerald-100">
+                            <div>
+                              <div className="text-[10px] text-slate-400 font-bold uppercase">Squad Batches</div>
+                              <div className="text-sm font-black text-blue-700">{tl.batchesCount} Batches</div>
+                            </div>
+                            <div>
+                              <div className="text-[10px] text-slate-400 font-bold uppercase">Students Handled</div>
+                              <div className="text-sm font-black text-slate-900">{tl.studentsCount} Students</div>
+                            </div>
+                          </div>
+                        </div>
+                      )))}
+                    </div>
+                  </div>
+
+                  {/* Section 3: COMPLETE LEADERSHIP MASTER MATRIX TABLE */}
+                  <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-6 space-y-4">
+                    <div className="flex items-center justify-between pb-3 border-b border-slate-100 flex-wrap gap-2">
+                      <div>
+                        <h3 className="text-base font-extrabold text-slate-900">
+                          Complete Training Leadership Matrix
+                        </h3>
+                        <p className="text-xs text-slate-500">
+                          Consolidated roster showing reporting line, zone, branch footprint, and direct faculty count for each manager and team lead.
+                        </p>
+                      </div>
+                      <span className="text-xs font-bold text-[#00897b]">
+                        {trainerManagersList.length + trainerTLsList.length} Leaders Reporting to Head
+                      </span>
+                    </div>
+
+                    <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-slate-50 text-slate-600 font-bold border-b border-slate-200">
+                          <tr>
+                            <th className="py-3 px-3">Role Tier</th>
+                            <th className="py-3 px-3">Leader Name</th>
+                            <th className="py-3 px-3">Reporting To</th>
+                            <th className="py-3 px-3">Assigned Zone</th>
+                            <th className="py-3 px-3">Branch Footprint</th>
+                            <th className="py-3 px-3">Supervised Faculty</th>
+                            <th className="py-3 px-3">Batches</th>
+                            <th className="py-3 px-3">Email Address</th>
+                            <th className="py-3 px-3">Contact Phone</th>
+                            <th className="py-3 px-3">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 text-slate-700">
+                          {trainerManagersList.length === 0 && trainerTLsList.length === 0 && (
+                            <tr>
+                              <td colSpan={10} className="py-8 text-center text-slate-400">
+                                No Trainer Managers or TLs created yet in Admin Management.
+                              </td>
+                            </tr>
+                          )}
+                          {/* Managers */}
+                          {trainerManagersList.map((m) => (
+                            <tr key={m.id} className="hover:bg-teal-50/30">
+                              <td className="py-3 px-3">
+                                <span className="px-2 py-0.5 rounded-full bg-teal-100 text-teal-900 font-black text-[10px] uppercase border border-teal-200">
+                                  Trainer Manager
+                                </span>
+                              </td>
+                              <td className="py-3 px-3 font-black text-slate-900">{m.name}</td>
+                              <td className="py-3 px-3 font-semibold text-blue-700">
+                                {trainerCredentials?.head?.[0]?.name ? `Head of Training (${trainerCredentials.head[0].name})` : 'Head of Training'}
+                              </td>
+                              <td className="py-3 px-3 font-medium text-teal-800">{m.zone} ({m.zoneLabel})</td>
+                              <td className="py-3 px-3 text-[11px] max-w-[180px] truncate">{m.branches.join(', ') || 'All Zone Branches'}</td>
+                              <td className="py-3 px-3 font-black text-slate-900">{m.trainersCount} Trainers</td>
+                              <td className="py-3 px-3 font-bold text-blue-700">{m.batchesCount} Batches</td>
+                              <td className="py-3 px-3 font-mono text-[11px] text-slate-500">{m.email}</td>
+                              <td className="py-3 px-3 font-mono text-[11px]">{m.phone}</td>
+                              <td className="py-3 px-3">
+                                <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-bold text-[10px] border border-emerald-200">
+                                  {m.status}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+
+                          {/* Team Leads */}
+                          {trainerTLsList.map((tl) => (
+                            <tr key={tl.id} className="hover:bg-emerald-50/30">
+                              <td className="py-3 px-3">
+                                <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-900 font-black text-[10px] uppercase border border-emerald-200">
+                                  Trainer Team Lead
+                                </span>
+                              </td>
+                              <td className="py-3 px-3 font-black text-slate-900">{tl.name}</td>
+                              <td className="py-3 px-3 font-semibold text-teal-700">{tl.managerName ? `${tl.managerName} (Manager)` : 'Training Manager'}</td>
+                              <td className="py-3 px-3 font-medium text-emerald-800">{tl.zone} ({tl.zoneLabel})</td>
+                              <td className="py-3 px-3 text-[11px] max-w-[180px] truncate">{tl.branches.join(', ') || 'Pod Branches'}</td>
+                              <td className="py-3 px-3 font-black text-slate-900">{tl.trainersCount} Trainers</td>
+                              <td className="py-3 px-3 font-bold text-blue-700">{tl.batchesCount} Batches</td>
+                              <td className="py-3 px-3 font-mono text-[11px] text-slate-500">{tl.email}</td>
+                              <td className="py-3 px-3 font-mono text-[11px]">{tl.phone}</td>
+                              <td className="py-3 px-3">
+                                <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-bold text-[10px] border border-emerald-200">
+                                  {tl.status}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -1591,6 +2557,17 @@ export default function TrainerHeadDashboard({
                           <div className="text-base font-black text-rose-600">{b.weakCount}</div>
                         </div>
                       </div>
+
+                      <div className="pt-2">
+                        <button
+                          type="button"
+                          onClick={() => setActiveTab('session_room')}
+                          className="w-full py-2 px-3 rounded-xl bg-gradient-to-r from-[#00897b] to-[#00796b] text-white text-xs font-bold hover:shadow-md hover:brightness-105 transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                        >
+                          <Play className="w-3.5 h-3.5 fill-current" />
+                          <span>Take / Run Live Session</span>
+                        </button>
+                      </div>
                     </div>
                   ))}
                   {batchWiseReport.length === 0 && (
@@ -1785,12 +2762,36 @@ export default function TrainerHeadDashboard({
           {activeTab === 'mapping' && (
             <div className="space-y-6">
               <div className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-xs space-y-4">
-                <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-100 flex-wrap gap-2">
                   <div>
                     <h3 className="text-base font-extrabold text-slate-900">
                       Trainer and Batch Mapping Matrix ({trainerBatchMapping.length})
                     </h3>
-                    <p className="text-xs text-slate-400">Shows which trainer is assigned to which batch and students handled by each trainer.</p>
+                    <p className="text-xs text-slate-400">Shows which trainer is assigned to which batch, reporting Team Lead, and managing Trainer Manager.</p>
+                  </div>
+
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <select
+                      value={mappingManagerFilter}
+                      onChange={(e) => setMappingManagerFilter(e.target.value)}
+                      className="text-xs bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 font-bold text-slate-700"
+                    >
+                      <option value="all">All Trainer Managers</option>
+                      {trainerManagersList.map((m) => (
+                        <option key={m.id} value={m.name}>{m.name} ({m.zone})</option>
+                      ))}
+                    </select>
+
+                    <select
+                      value={mappingTLFilter}
+                      onChange={(e) => setMappingTLFilter(e.target.value)}
+                      className="text-xs bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 font-bold text-slate-700"
+                    >
+                      <option value="all">All Team Leads (TL)</option>
+                      {trainerTLsList.map((tl) => (
+                        <option key={tl.id} value={tl.name}>{tl.name} ({tl.zone})</option>
+                      ))}
+                    </select>
                   </div>
                 </div>
 
@@ -1804,6 +2805,7 @@ export default function TrainerHeadDashboard({
                         <th className="py-3 px-3">Assigned Batch(es)</th>
                         <th className="py-3 px-3">Students Handled</th>
                         <th className="py-3 px-3">Reporting TL</th>
+                        <th className="py-3 px-3">Managing Manager</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-slate-700">
@@ -1826,7 +2828,16 @@ export default function TrainerHeadDashboard({
                             )}
                           </td>
                           <td className="py-3 px-3 font-black text-slate-900">{tr.studentsCount} Students</td>
-                          <td className="py-3 px-3 text-slate-600">{tr.teamLeadName || '—'}</td>
+                          <td className="py-3 px-3">
+                            <span className="inline-flex items-center gap-1 font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                              {tr.teamLeadName || '—'}
+                            </span>
+                          </td>
+                          <td className="py-3 px-3">
+                            <span className="inline-flex items-center gap-1 font-bold text-teal-800 bg-teal-50 px-2 py-0.5 rounded border border-teal-200">
+                              {tr.managerName || '—'}
+                            </span>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -1885,22 +2896,25 @@ export default function TrainerHeadDashboard({
             </div>
           )}
 
-          {/* ================= SECTION 7: DEMO DETAILS ================= */}
+          {/* ================= SECTION 7: DEMO DETAILS & TAKE DEMOS ================= */}
           {activeTab === 'demos' && (
             <div className="space-y-6">
               {/* Demo KPI Summary Cards */}
-              <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                 <div className="bg-white p-4 rounded-2xl border border-slate-200/90 shadow-2xs">
                   <div className="text-[10.5px] font-bold text-slate-400 uppercase">Total Demos</div>
                   <div className="text-2xl font-black text-slate-900 mt-0.5">{scopedDemos.length}</div>
                 </div>
                 <div className="bg-white p-4 rounded-2xl border border-slate-200/90 shadow-2xs">
-                  <div className="text-[10.5px] font-bold text-slate-400 uppercase">Scheduled / Upcoming</div>
-                  <div className="text-2xl font-black text-cyan-600 mt-0.5">{demoReport.scheduled.length}</div>
+                  <div className="text-[10.5px] font-bold text-emerald-600 uppercase flex items-center gap-1">
+                    <Video className="w-3 h-3" />
+                    <span>My Assigned Demos</span>
+                  </div>
+                  <div className="text-2xl font-black text-emerald-600 mt-0.5">{myAssignedDemos.length}</div>
                 </div>
                 <div className="bg-white p-4 rounded-2xl border border-slate-200/90 shadow-2xs">
-                  <div className="text-[10.5px] font-bold text-slate-400 uppercase">Completed</div>
-                  <div className="text-2xl font-black text-emerald-600 mt-0.5">{demoReport.completed.length}</div>
+                  <div className="text-[10.5px] font-bold text-slate-400 uppercase">Scheduled / Upcoming</div>
+                  <div className="text-2xl font-black text-cyan-600 mt-0.5">{demoReport.scheduled.length}</div>
                 </div>
                 <div className="bg-white p-4 rounded-2xl border border-slate-200/90 shadow-2xs">
                   <div className="text-[10.5px] font-bold text-slate-400 uppercase">Conversion Rate</div>
@@ -1908,12 +2922,68 @@ export default function TrainerHeadDashboard({
                 </div>
               </div>
 
-              {/* Demos Table with 1-Click Reassign */}
-              <div className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-xs space-y-4">
-                <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              {/* Demos Management Table & Actions */}
+              <div className="bg-white rounded-2xl border border-slate-200/90 p-4 sm:p-6 shadow-xs space-y-4">
+                <div className="flex items-center justify-between flex-wrap gap-3 pb-3 border-b border-slate-100">
                   <div>
-                    <h3 className="text-base font-extrabold text-slate-900">Trainer Demo Sessions &amp; Records</h3>
-                    <p className="text-xs text-slate-400">Scheduled demos, completed demos, and trainer reassignment.</p>
+                    <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
+                      <Video className="w-4 h-4 text-[#00897b]" />
+                      <span>Live Candidate Demos &amp; Conduction Desk</span>
+                    </h3>
+                    <p className="text-xs text-slate-400">
+                      Take sessions directly, self-assign demos to conduct, launch Zoom meeting rooms, and log candidate outcomes.
+                    </p>
+                  </div>
+
+                  {/* Filter Sub-Tabs */}
+                  <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl text-xs font-bold">
+                    <button
+                      type="button"
+                      onClick={() => setDemoFilterTab('all')}
+                      className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
+                        demoFilterTab === 'all'
+                          ? 'bg-white text-slate-900 shadow-2xs'
+                          : 'text-slate-500 hover:text-slate-800'
+                      }`}
+                    >
+                      All Demos ({scopedDemos.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDemoFilterTab('mine')}
+                      className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1 ${
+                        demoFilterTab === 'mine'
+                          ? 'bg-emerald-600 text-white shadow-2xs'
+                          : 'text-emerald-700 hover:text-emerald-900'
+                      }`}
+                    >
+                      <span>My Demos to Conduct</span>
+                      <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-white/20">
+                        {myAssignedDemos.length}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDemoFilterTab('scheduled')}
+                      className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
+                        demoFilterTab === 'scheduled'
+                          ? 'bg-white text-slate-900 shadow-2xs'
+                          : 'text-slate-500 hover:text-slate-800'
+                      }`}
+                    >
+                      Scheduled ({demoReport.scheduled.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDemoFilterTab('completed')}
+                      className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
+                        demoFilterTab === 'completed'
+                          ? 'bg-white text-slate-900 shadow-2xs'
+                          : 'text-slate-500 hover:text-slate-800'
+                      }`}
+                    >
+                      Completed ({demoReport.completed.length})
+                    </button>
                   </div>
                 </div>
 
@@ -1923,47 +2993,124 @@ export default function TrainerHeadDashboard({
                       <tr>
                         <th className="py-3 px-3">Candidate</th>
                         <th className="py-3 px-3">Phone</th>
-                        <th className="py-3 px-3">Course</th>
+                        <th className="py-3 px-3">Course &amp; Branch</th>
                         <th className="py-3 px-3">Date &amp; Slot</th>
                         <th className="py-3 px-3">Assigned Faculty</th>
                         <th className="py-3 px-3">Status</th>
-                        <th className="py-3 px-3 text-right">Actions</th>
+                        <th className="py-3 px-3 text-right">Conduct / Manage Demo</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-slate-700">
-                      {scopedDemos.map((dm) => (
-                        <tr key={dm._id} className="hover:bg-slate-50">
-                          <td className="py-3 px-3 font-extrabold text-slate-900">{dm.candidateName || 'Candidate'}</td>
-                          <td className="py-3 px-3 font-mono text-[11px] text-slate-500">{dm.phone || 'N/A'}</td>
-                          <td className="py-3 px-3 font-semibold text-teal-700">{dm.course || '—'}</td>
-                          <td className="py-3 px-3">
-                            <span className="font-bold text-slate-900">{dm.preferredDate || 'TBD'}</span>
-                            <span className="text-[10px] text-slate-400 block">{dm.timeSlot || 'General'}</span>
-                          </td>
-                          <td className="py-3 px-3 font-medium text-slate-900">{dm.trainer || dm.trainerMapping || 'Unassigned'}</td>
-                          <td className="py-3 px-3">
-                            <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-slate-100 text-slate-700 capitalize">
-                              {dm.status || 'booked'}
-                            </span>
-                          </td>
-                          <td className="py-3 px-3 text-right">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setReassignDemoTarget(dm);
-                                setReassignForm({ toTrainerId: '', reason: '' });
-                              }}
-                              className="px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 font-bold text-xs border border-blue-200 cursor-pointer"
-                            >
-                              Reassign
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                      {scopedDemos.length === 0 && (
+                      {displayedDemos.map((dm) => {
+                        const leaderName = currentLeaderTrainerName.toLowerCase();
+                        const leaderId = String(currentLeaderTrainerId);
+                        const dTr = String(dm.trainer || dm.faculty || dm.trainerMapping || '').toLowerCase();
+                        const dTrId = String(dm.trainerId || '');
+                        const isAssignedToMe = dTrId === leaderId || (leaderName && (dTr.includes(leaderName) || leaderName.includes(dTr)));
+
+                        return (
+                          <tr key={dm._id || dm.id} className={`hover:bg-slate-50 ${isAssignedToMe ? 'bg-emerald-50/30' : ''}`}>
+                            <td className="py-3 px-3 font-extrabold text-slate-900">
+                              <div className="flex items-center gap-1.5">
+                                <span>{dm.candidateName || 'Candidate'}</span>
+                                {isAssignedToMe && (
+                                  <span className="px-1.5 py-0.2 rounded text-[9.5px] font-black bg-emerald-100 text-emerald-800 border border-emerald-300">
+                                    YOU
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="py-3 px-3 font-mono text-[11px] text-slate-500">{dm.phone || 'N/A'}</td>
+                            <td className="py-3 px-3">
+                              <span className="font-semibold text-teal-700">{dm.course || '—'}</span>
+                              {dm.branch && <span className="text-[10px] text-slate-400 block">{dm.branch}</span>}
+                            </td>
+                            <td className="py-3 px-3">
+                              <span className="font-bold text-slate-900">{dm.preferredDate || 'TBD'}</span>
+                              <span className="text-[10px] text-slate-400 block">{dm.timeSlot || 'General'}</span>
+                            </td>
+                            <td className="py-3 px-3">
+                              <div className="font-medium text-slate-900">
+                                {dm.trainer || dm.trainerMapping || 'Unassigned'}
+                              </div>
+                            </td>
+                            <td className="py-3 px-3">
+                              <span
+                                className={`px-2 py-0.5 rounded-md text-[10px] font-bold capitalize ${
+                                  ['attended', 'completed', 'enrolled'].includes(String(dm.status || '').toLowerCase())
+                                    ? 'bg-emerald-100 text-emerald-800'
+                                    : ['confirmed', 'booked'].includes(String(dm.status || '').toLowerCase())
+                                    ? 'bg-cyan-100 text-cyan-800'
+                                    : 'bg-slate-100 text-slate-700'
+                                }`}
+                              >
+                                {dm.status || 'booked'}
+                              </span>
+                            </td>
+                            <td className="py-3 px-3 text-right">
+                              <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                                {/* Start Demo Zoom Meeting Button */}
+                                <button
+                                  type="button"
+                                  onClick={() => handleStartDemoMeeting(dm)}
+                                  className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1 shadow-2xs transition-all cursor-pointer"
+                                  title="Launch demo call / Zoom room"
+                                >
+                                  <Video className="w-3 h-3" />
+                                  <span>Start Demo</span>
+                                </button>
+
+                                {/* Self-assign button if not already assigned to leader */}
+                                {!isAssignedToMe && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSelfAssignDemo(dm._id || dm.id)}
+                                    className="px-2.5 py-1 rounded-lg bg-teal-50 hover:bg-teal-100 text-teal-700 font-bold text-xs border border-teal-200 transition-all cursor-pointer"
+                                    title="Take this demo session personally"
+                                  >
+                                    Take Demo
+                                  </button>
+                                )}
+
+                                {/* Mark outcome button */}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setDemoOutcomeTarget(dm);
+                                    setDemoOutcomeForm({
+                                      status: dm.status || 'attended',
+                                      notes: dm.trainerNotes || ''
+                                    });
+                                  }}
+                                  className="px-2.5 py-1 rounded-lg bg-purple-50 hover:bg-purple-100 text-purple-700 font-bold text-xs border border-purple-200 transition-all cursor-pointer"
+                                  title="Record completion status and feedback notes"
+                                >
+                                  Outcome
+                                </button>
+
+                                {/* Reassign button */}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setReassignDemoTarget(dm);
+                                    setReassignForm({ toTrainerId: '', reason: '' });
+                                  }}
+                                  className="px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 font-bold text-xs border border-blue-200 transition-all cursor-pointer"
+                                  title="Reassign to another faculty"
+                                >
+                                  Reassign
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {displayedDemos.length === 0 && (
                         <tr>
                           <td colSpan={7} className="py-8 text-center text-xs text-slate-400">
-                            No demo sessions recorded.
+                            {demoFilterTab === 'mine'
+                              ? 'No demos currently assigned to you. Click "Take Demo" on any scheduled demo to assign it to yourself!'
+                              : 'No demo sessions found for this filter.'}
                           </td>
                         </tr>
                       )}
@@ -2079,6 +3226,71 @@ export default function TrainerHeadDashboard({
           )}
         </div>
       </main>
+
+      {/* ================= MODAL: DEMO OUTCOME & FEEDBACK ================= */}
+      {demoOutcomeTarget && (
+        <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full p-6 text-slate-800 space-y-4">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <h3 className="text-sm font-extrabold text-slate-900">Record Demo Outcome &amp; Feedback</h3>
+              <button
+                type="button"
+                onClick={() => setDemoOutcomeTarget(null)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-600"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="text-xs text-slate-600 space-y-1 bg-slate-50 p-3 rounded-xl border border-slate-200">
+              <div><strong>Candidate:</strong> {demoOutcomeTarget.candidateName}</div>
+              <div><strong>Course:</strong> {demoOutcomeTarget.course}</div>
+              <div><strong>Slot:</strong> {demoOutcomeTarget.preferredDate} · {demoOutcomeTarget.timeSlot || 'General'}</div>
+              <div><strong>Conducted By:</strong> {currentLeaderTrainerName}</div>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-700">Outcome Status</label>
+              <select
+                value={demoOutcomeForm.status}
+                onChange={(e) => setDemoOutcomeForm((p) => ({ ...p, status: e.target.value }))}
+                className="w-full bg-slate-50 border border-slate-200 text-xs font-bold rounded-xl px-3 py-2 outline-none focus:border-[#00897b]"
+              >
+                <option value="attended">Attended (Candidate participated)</option>
+                <option value="completed">Completed (Full demo delivered)</option>
+                <option value="enrolled">Enrolled / Ready for Admission</option>
+                <option value="missed">Missed / No-Show</option>
+                <option value="rescheduled">Needs Rescheduling</option>
+              </select>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-700">Session Notes &amp; Candidate Feedback</label>
+              <textarea
+                rows={3}
+                value={demoOutcomeForm.notes}
+                onChange={(e) => setDemoOutcomeForm((p) => ({ ...p, notes: e.target.value }))}
+                placeholder="Candidate background, interest level, questions asked, readiness to join..."
+                className="w-full bg-slate-50 border border-slate-200 text-xs rounded-xl p-3 outline-none focus:border-[#00897b]"
+              />
+            </div>
+            <div className="pt-2 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setDemoOutcomeTarget(null)}
+                className="px-4 py-2 rounded-xl bg-slate-100 text-slate-700 text-xs font-bold hover:bg-slate-200 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={savingDemoOutcome}
+                onClick={handleSaveDemoOutcome}
+                className="px-4 py-2 rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white text-xs font-bold shadow-xs disabled:opacity-50 cursor-pointer"
+              >
+                {savingDemoOutcome ? 'Saving...' : 'Save Demo Outcome'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ================= MODAL: REASSIGN DEMO ================= */}
       {reassignDemoTarget && (

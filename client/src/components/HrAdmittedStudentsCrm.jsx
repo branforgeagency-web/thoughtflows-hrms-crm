@@ -666,11 +666,11 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
                   {/* Mock Interview */}
                   <td className="py-3 px-3 whitespace-nowrap">
                     <span className={`text-[10px] font-medium px-2 py-0.5 rounded-md ${
-                      s.mockInterview.includes('Cleared')
+                      String(s.mockInterview || '').includes('Cleared')
                         ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
                         : 'bg-slate-100 text-slate-600'
                     }`}>
-                      {s.mockInterview}
+                      {s.mockInterview || 'Not Scheduled'}
                     </span>
                   </td>
 
@@ -715,24 +715,24 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
                   {/* Certified */}
                   <td className="py-3 px-3 whitespace-nowrap">
                     <span className={`text-[10px] font-medium px-2 py-0.5 rounded-md ${
-                      s.certified.includes('Certified')
+                      String(s.certified || '').includes('Certified')
                         ? 'bg-emerald-100 text-emerald-800 font-bold'
                         : 'bg-slate-100 text-slate-500'
                     }`}>
-                      {s.certified}
+                      {s.certified || 'Non-Certified'}
                     </span>
                   </td>
 
                   {/* Placed */}
                   <td className="py-3 px-3 whitespace-nowrap">
                     <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${
-                      s.placementStatus.includes('Placed')
+                      String(s.placementStatus || '').includes('Placed')
                         ? 'bg-emerald-100 text-emerald-800'
-                        : /interview/i.test(s.placementStatus)
+                        : /interview/i.test(String(s.placementStatus || ''))
                           ? 'bg-purple-100 text-purple-800'
                           : 'bg-slate-100 text-slate-600'
                     }`}>
-                      {s.placementStatus}
+                      {s.placementStatus || 'In Progress'}
                     </span>
                   </td>
 

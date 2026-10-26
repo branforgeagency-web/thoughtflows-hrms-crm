@@ -75,7 +75,11 @@ const PUBLIC_ROUTES = [
   ['POST', /^\/calls\/knowlarity\/webhook$/],
   ['GET', /^\/calls\/knowlarity\/webhook$/],
   ['POST', /^\/calls\/edesy\/webhook$/],
-  ['GET', /^\/calls\/edesy\/webhook$/]
+  ['GET', /^\/calls\/edesy\/webhook$/],
+  // Public student registration and pre-check duplicate queries
+  ['POST', /^\/students$/],
+  ['GET', /^\/students\/check-duplicate$/],
+  ['GET', /^\/students\/next-id$/]
 ];
 
 // Staff routes limited to Admin / Leadership
@@ -100,10 +104,10 @@ const STAFF_RULES = [
   ['PUT', /^\/leads\/[^/]+$/, ['hr']],
   ['DELETE', /^\/leads\/[^/]+$/, ['hr']],
   ['POST', /^\/leads\/[^/]+\/whatsapp$/, ['hr']],
-  ['POST', /^\/students$/, ['hr']],
+  ['POST', /^\/students$/, ['hr', 'training', 'marketing', 'cccp', 'admissions']],
   ['DELETE', /^\/students\/[^/]+$/, []],
   ['POST', /^\/students\/[^/]+\/reset-login$/, ['hr']],
-  ['PUT', /^\/students\/[^/]+$/, ['hr', 'cccp']],
+  ['PUT', /^\/students\/[^/]+$/, ['hr', 'cccp', 'training']],
   ['POST', /^\/students\/[^/]+\/handover(-to-head)?$/, ['hr']],
   ['POST', /^\/students\/[^/]+\/allocate-trainer$/, ['training']],
   ['POST', /^\/students\/[^/]+\/payments$/, ['hr']],
@@ -156,16 +160,33 @@ const READ_RULES = [
   [/^\/(recordings|closures|calls)(\/|$)/, ['hr']]
 ];
 
+export function normalizeDept(dept = '', role = '') {
+  const d = String(dept || '').toLowerCase().trim();
+  const r = String(role || '').toLowerCase().trim();
+
+  if (d === 'admin' || d.includes('admin') || r.includes('admin') || r === 'super admin' || r === 'management' || r === 'mis') return 'admin';
+  if (r.includes('trainer') || r.includes('faculty') || d.includes('faculty') || d.includes('training')) return 'training';
+  if (d === 'leadership' || d.includes('leadership') || d.includes('operations') || r.includes('head') || r.includes('manager') || r.includes('director')) return 'leadership';
+  if (d === 'hr' || d.includes('hr') || d.includes('counsel') || d.includes('admission') || r.includes('hr') || r.includes('counsel') || r.includes('advisor')) return 'hr';
+  if (d === 'cccp' || d.includes('cccp') || d.includes('placement') || r.includes('placement') || r.includes('cccp')) return 'cccp';
+  if (d === 'marketing' || d.includes('market') || d.includes('growth') || r.includes('market') || r.includes('growth')) return 'marketing';
+  if (d === 'student' || d.includes('student') || d.includes('scholar') || r.includes('student') || r.includes('scholar')) return 'student';
+  return d;
+}
+
 function staffAllowed(req, user) {
-  const dept = String(user.department || '').toLowerCase();
+  const dept = normalizeDept(user.department, user.role);
   if (req.method === 'GET') {
     if (FULL_ACCESS.includes(dept)) return true;
     const rule = READ_RULES.find(([rx]) => rx.test(req.path));
-    return rule ? rule[1].includes(dept) : true;
+    return rule ? rule[1].map((d) => normalizeDept(d)).includes(dept) : true;
   }
   if (FULL_ACCESS.includes(dept)) return true;
   for (const [m, rx, depts] of STAFF_RULES) {
-    if ((m === '*' || m === req.method) && rx.test(req.path)) return depts.includes(dept);
+    if ((m === '*' || m === req.method) && rx.test(req.path)) {
+      if (depts.length === 0) return false;
+      return depts.some((d) => normalizeDept(d) === dept);
+    }
   }
   return true;
 }
@@ -175,6 +196,9 @@ const matches = (list, method, path) => list.some(([m, rx]) => (m === '*' || m =
 // Everything a student may call. Each rule can pin the request to the
 // student's own record so one student can never read or write another's data.
 const STUDENT_RULES = [
+  ['POST', /^\/students$/],
+  ['GET', /^\/students\/check-duplicate$/],
+  ['GET', /^\/students\/next-id$/],
   ['GET', /^\/student-portal\/me$/, (req, u) => { req.query.studentId = u.studentId || ''; req.query.email = u.email || ''; }],
   ['PUT', /^\/student-portal\/([^/]+)\/profile$/, 'own'],
   ['POST', /^\/student-portal\/([^/]+)\/(referrals|submissions|requests|feedback)$/, 'own'],
@@ -247,11 +271,12 @@ export function requireAuth(req, res, next) {
   if (req.query.token) delete req.query.token;
   req.user = user;
 
-  if (user.department === 'student') {
+  const normDept = normalizeDept(user.department, user.role);
+  if (normDept === 'student') {
     if (!allowStudent(req, user)) return res.status(403).json({ error: 'Not allowed for student accounts.' });
     return next();
   }
-  if (matches(ADMIN_ROUTES, req.method, req.path) && !['admin', 'leadership'].includes(user.department)) {
+  if (matches(ADMIN_ROUTES, req.method, req.path) && !['admin', 'leadership'].includes(normDept)) {
     return res.status(403).json({ error: 'Only Admin / Leadership can do this.' });
   }
   if (!staffAllowed(req, user)) {

@@ -24,7 +24,7 @@ import logoImg from '../assets/thoughtflows-logo.png';
 import { COURSE_CATEGORIES } from '../constants/courses';
 import { LEAD_SOURCE_GROUPS } from '../constants/leadSources';
 import { getAvailableTimingSlots, BATCH_SCHEDULE } from '../constants/batchTimings';
-import { createStudent, getStudents, checkDuplicateStudent } from '../services/api';
+import { createStudent, getNextStudentId, checkDuplicateStudent } from '../services/api';
 import { getCurrentMonthYear, getCurrentMonthName } from '../utils/dateUtils';
 import { copyToClipboard } from '../utils/clipboard';
 import { 
@@ -75,15 +75,25 @@ export default function StudentRegistrationPage({ onBack }) {
   const [duplicateWarning, setDuplicateWarning] = useState(null);
   const [copiedId, setCopiedId] = useState(false);
 
-  const [existingStudents, setExistingStudents] = useState([]);
+  const [serverPreviewId, setServerPreviewId] = useState('');
 
   useEffect(() => {
-    getStudents()
+    let cancelled = false;
+    getNextStudentId({
+      branch: branch || 'Saravanampatti',
+      course,
+      mode: courseType
+    })
       .then((data) => {
-        if (Array.isArray(data)) setExistingStudents(data);
+        if (!cancelled && data?.studentId) setServerPreviewId(data.studentId);
       })
-      .catch((err) => console.error('Error fetching students for registration page ID generator:', err));
-  }, []);
+      .catch(() => {
+        // Fallback to local calculation if offline
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [branch, course, courseType]);
 
   const handleCheckDuplicate = async () => {
     const cleanPhone = phone.replace(/\D/g, '').slice(-10);
@@ -103,14 +113,21 @@ export default function StudentRegistrationPage({ onBack }) {
   };
 
   const currentIdDetails = useMemo(() => {
-    return generateStudentIdDetails({
+    const local = generateStudentIdDetails({
       branch: branch || 'Saravanampatti',
       course,
       courseType,
       date: new Date(),
-      existingStudents
+      existingStudents: []
     });
-  }, [branch, course, courseType, existingStudents]);
+    if (serverPreviewId) {
+      return {
+        ...local,
+        studentId: serverPreviewId
+      };
+    }
+    return local;
+  }, [branch, course, courseType, serverPreviewId]);
 
   const WALKIN_CATEGORIES = [
     ...COURSE_CATEGORIES.map(cat => ({

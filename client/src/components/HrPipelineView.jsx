@@ -30,7 +30,7 @@ import { getLeads, updateLead, deleteLead, createEscalation } from '../services/
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 import EditLeadModal from './EditLeadModal';
 
-const STAGE_ORDER = ['new', 'contacted', 'demo_booked', 'demo_attended', 'fee_followup', 'admitted', 'not_mentioned'];
+const STAGE_ORDER = ['new', 'contacted', 'demo_booked', 'demo_attended', 'fee_followup', 'done', 'admitted', 'not_mentioned'];
 
 const STAGE_LABELS = {
   new: 'New Lead',
@@ -38,6 +38,7 @@ const STAGE_LABELS = {
   demo_booked: 'Demo Booked',
   demo_attended: 'Demo Attended',
   fee_followup: 'Fee Follow-up',
+  done: 'Flows Done',
   admitted: 'Admitted & Enrolled',
   not_mentioned: 'Not Mentioned'
 };
@@ -47,7 +48,9 @@ const NEXT_STAGE_LABELS = {
   contacted: 'Demo Booked',
   demo_booked: 'Demo Attended',
   demo_attended: 'Fee Follow-up',
-  fee_followup: 'Admit Student',
+  fee_followup: 'Mark Flows Done',
+  done: 'Admit Student',
+  admitted: 'Enrolled',
   not_mentioned: 'Contacted'
 };
 
@@ -157,10 +160,31 @@ export default function HrPipelineView({
     const nextStage = currentIdx >= 0 && currentIdx < STAGE_ORDER.length - 1 ? STAGE_ORDER[currentIdx + 1] : 'admitted';
 
     const targetLead = leads.find(l => (l._id || l.id) === leadId);
-    // Admission needs the fee & payment details, so it goes through the
-    // registration form; creating the student moves the lead to Admitted.
     if (nextStage === 'admitted') {
       if (targetLead && onAdmitLead) onAdmitLead(targetLead);
+      return;
+    }
+
+    if (nextStage === 'done') {
+      setActionLoading(prev => ({ ...prev, [leadId]: 'advance' }));
+      try {
+        const updateData = {
+          stage: 'done',
+          status: 'completed',
+          followUpStatus: 'done',
+          decisionStatus: 'Follow-up Done',
+          lastCallTime: new Date()
+        };
+        await updateLead(leadId, updateData);
+        setLeads(prev => prev.map(l => ((l._id || l.id) === leadId) ? { ...l, ...updateData } : l));
+        if (onRefreshLeads) onRefreshLeads();
+        triggerAction(`✓ Flows done for ${targetLead?.fullName || targetLead?.name}! Ready to Move to Admitted.`);
+      } catch (err) {
+        console.error('Failed to advance lead to done:', err);
+        triggerAction('Error updating lead stage');
+      } finally {
+        setActionLoading(prev => ({ ...prev, [leadId]: false }));
+      }
       return;
     }
 
@@ -386,12 +410,33 @@ export default function HrPipelineView({
       { id: 'contacted', title: 'CONTACTED', dotColor: 'bg-blue-600', stageMatches: ['contacted'] },
       { id: 'pitched', title: 'DEMO / PITCH', dotColor: 'bg-purple-600', stageMatches: ['demo_booked', 'demo_attended'] },
       { id: 'fees', title: 'FEES TALK', dotColor: 'bg-amber-600', stageMatches: ['fee_followup'] },
+      { id: 'done', title: 'DONE', dotColor: 'bg-slate-700', stageMatches: ['done'] },
       { id: 'admitted', title: 'ADMITTED', dotColor: 'bg-emerald-600', stageMatches: ['admitted'] },
       { id: 'not_mentioned', title: 'NOT MENTIONED', dotColor: 'bg-slate-500', stageMatches: ['not_mentioned', 'not mentioned'] }
     ];
 
     return cols.map(c => {
-      const matchingLeads = searchFilteredLeads.filter(l => c.stageMatches.includes(l.stage || 'new'));
+      const matchingLeads = searchFilteredLeads.filter(l => {
+        const hasStudentId = Boolean(l.admittedStudentId || l.studentId);
+        const st = String(l.stage || 'new').toLowerCase();
+        const status = String(l.status || '').toLowerCase();
+        const rawFU = String(l.followUpStatus || '').toLowerCase();
+        const dec = String(l.decisionStatus || '').toLowerCase();
+        const note = String(l.followUpNote || l.notes || '');
+
+        const isLeadFlowDone = !hasStudentId && (
+          st === 'done' || st === 'admitted' || status === 'completed' || rawFU === 'done' ||
+          rawFU === 'no_followup_needed' || rawFU === 'not_interested' ||
+          dec.includes('follow-up done') || dec.includes('no follow') || dec.includes('not interest') ||
+          note.includes('No Follow-up Needed - Done') || note.includes('Not Interested - Done') || note.includes('[Follow-up Done')
+        );
+
+        if (c.id === 'admitted') return hasStudentId;
+        if (c.id === 'done') return isLeadFlowDone;
+        if (hasStudentId || isLeadFlowDone) return false;
+        return c.stageMatches.includes(st);
+      });
+
       return {
         id: c.id,
         title: c.title,
@@ -399,17 +444,42 @@ export default function HrPipelineView({
         dotColor: c.dotColor,
         cards: matchingLeads.map(lead => {
           const followUp = classifyFollowUp(lead);
+          const hasStudentId = Boolean(lead.admittedStudentId || lead.studentId);
+          const st = String(lead.stage || 'new').toLowerCase();
+          const status = String(lead.status || '').toLowerCase();
+          const rawFU = String(lead.followUpStatus || '').toLowerCase();
+          const dec = String(lead.decisionStatus || '').toLowerCase();
+          const note = String(lead.followUpNote || lead.notes || '');
+
+          const isFlowDone = !hasStudentId && (
+            st === 'done' || st === 'admitted' || status === 'completed' || rawFU === 'done' ||
+            rawFU === 'no_followup_needed' || rawFU === 'not_interested' ||
+            dec.includes('follow-up done') || dec.includes('no follow') || dec.includes('not interest') ||
+            note.includes('No Follow-up Needed - Done') || note.includes('Not Interested - Done') || note.includes('[Follow-up Done')
+          );
+
+          const rawEdu = (lead.education || '').trim();
+          const cleanEdu = rawEdu && rawEdu !== '-' && rawEdu !== 'null' ? rawEdu : null;
+          const cleanCourse = (lead.course || '').trim() && lead.course !== '-' && lead.course !== 'null' ? lead.course : null;
+          const eduPart = cleanEdu || cleanCourse || 'Graduate';
+          const sub = [lead.phone, eduPart].filter(Boolean).join(' · ');
+
           return {
             id: lead._id || lead.id,
             name: lead.fullName || lead.name,
             isNew: lead.stage === 'new',
-            isAdmitted: lead.stage === 'admitted',
-            sub: `${lead.phone || ''} · ${lead.education || lead.course || 'Graduate'}`,
+            isAdmitted: hasStudentId,
+            isFlowDone,
+            hasStudentId,
+            sub,
+            cleanCourse,
             source: (lead.sourceName || lead.source || 'DIRECT').toUpperCase(),
-            sourceClass: lead.stage === 'admitted'
+            sourceClass: hasStudentId
               ? 'bg-white text-teal-800 border-teal-300 font-bold'
-              : 'bg-cyan-50 text-cyan-800 border-cyan-200',
-            hasActions: lead.stage !== 'admitted',
+              : isFlowDone
+                ? 'bg-slate-100 text-slate-800 border-slate-300 font-bold'
+                : 'bg-cyan-50 text-cyan-800 border-cyan-200',
+            hasActions: !hasStudentId && !isFlowDone,
             phone: lead.phone,
             whatsappNumber: lead.whatsappNumber || lead.phone,
             currentStage: lead.stage || 'new',
@@ -427,6 +497,7 @@ export default function HrPipelineView({
   const FOLLOW_UPS = useMemo(() => {
     return searchFilteredLeads.map((lead) => {
       const { timeframe, hasDate, isOverdue } = classifyFollowUp(lead);
+      const hasStudentId = Boolean(lead.admittedStudentId || lead.studentId);
 
       const isEscalated = lead.decisionStatus === 'escalated' || 
         escalatedIds.has(lead._id || lead.id) || 
@@ -436,6 +507,8 @@ export default function HrPipelineView({
       const rawFollowUpStatus = (lead.followUpStatus || '').toLowerCase();
       const rawDecision = (lead.decisionStatus || '').toLowerCase();
       const noteStr = (lead.followUpNote || lead.notes || '');
+      const st = String(lead.stage || '').toLowerCase();
+      const status = String(lead.status || '').toLowerCase();
 
       let followUpDoneStatus = null;
       if (rawFollowUpStatus === 'no_followup_needed' || rawDecision.includes('no follow') || noteStr.includes('No Follow-up Needed - Done')) {
@@ -446,16 +519,23 @@ export default function HrPipelineView({
         followUpDoneStatus = 'done';
       }
 
-      const isDone = Boolean(followUpDoneStatus);
+      const isLeadFlowDone = !hasStudentId && (
+        st === 'done' || st === 'admitted' || status === 'completed' || Boolean(followUpDoneStatus)
+      );
+      const isDone = Boolean(followUpDoneStatus) || isLeadFlowDone;
 
       let badge;
       let badgeClass = isOverdue ? 'bg-rose-100 text-rose-700 font-bold' : 'bg-slate-100 text-slate-700 font-semibold';
       let borderColor = isEscalated ? 'border-l-rose-600' : isOverdue ? 'border-l-rose-500' : timeframe === 'today' ? 'border-l-amber-500' : 'border-l-slate-300';
 
-      if (lead.stage === 'admitted') {
+      if (hasStudentId) {
         badge = 'Admitted & Enrolled';
         badgeClass = 'bg-emerald-100 text-emerald-800 font-bold';
         borderColor = 'border-l-emerald-500';
+      } else if (isLeadFlowDone) {
+        badge = 'Flows Done (Ready to Admit)';
+        badgeClass = 'bg-slate-100 text-slate-800 font-bold';
+        borderColor = 'border-l-slate-600';
       } else if (followUpDoneStatus === 'no_followup_needed') {
         badge = 'No follow-up needed (Done)';
         badgeClass = 'bg-slate-100 text-slate-700 font-bold';
@@ -497,14 +577,18 @@ export default function HrPipelineView({
         borderColor,
         timeframe,
         stage: lead.stage || 'new',
+        hasStudentId,
+        isFlowDone: isLeadFlowDone,
         isEscalated,
         followUpDoneStatus,
         isDone,
         type: lead.stage === 'fee_followup' ? 'fee' : (lead.stage && lead.stage.includes('demo')) ? 'demo' : 'general',
         tags: [
-          lead.stage === 'admitted'
+          hasStudentId
             ? { label: 'ENROLLED', class: 'bg-emerald-50 text-emerald-700 border-emerald-300 font-bold' }
-            : { label: currentStageLabel.toUpperCase(), class: 'bg-teal-50 text-teal-800 border-teal-200 font-bold' },
+            : isLeadFlowDone
+              ? { label: 'FLOW DONE', class: 'bg-slate-100 text-slate-700 border-slate-300 font-bold' }
+              : { label: currentStageLabel.toUpperCase(), class: 'bg-teal-50 text-teal-800 border-teal-200 font-bold' },
           statusTag,
           isEscalated
             ? { label: 'ESCALATED', class: 'bg-rose-100 text-rose-700 border-rose-300 font-bold' }
@@ -523,27 +607,32 @@ export default function HrPipelineView({
   // Overall metric counts
   const stageCounts = useMemo(() => {
     const followUpFlags = leads.map(classifyFollowUp);
-    const doneFollowUpsCount = leads.filter(l => {
+    const admittedLeads = leads.filter(l => Boolean(l.admittedStudentId || l.studentId));
+    const doneLeads = leads.filter(l => {
+      if (l.admittedStudentId || l.studentId) return false;
       const raw = (l.followUpStatus || '').toLowerCase();
       const dec = (l.decisionStatus || '').toLowerCase();
+      const st = (l.stage || '').toLowerCase();
+      const status = (l.status || '').toLowerCase();
       const note = (l.followUpNote || l.notes || '');
-      return raw === 'no_followup_needed' || raw === 'not_interested' || raw === 'done' ||
-        dec.includes('no follow') || dec.includes('not interest') ||
-        note.includes('No Follow-up Needed - Done') || note.includes('Not Interested - Done');
-    }).length;
+      return st === 'done' || st === 'admitted' || status === 'completed' || raw === 'done' ||
+        raw === 'no_followup_needed' || raw === 'not_interested' ||
+        dec.includes('follow-up done') || dec.includes('no follow') || dec.includes('not interest') ||
+        note.includes('No Follow-up Needed - Done') || note.includes('Not Interested - Done') || note.includes('[Follow-up Done');
+    });
 
     return {
       total: leads.length,
-      newCount: leads.filter(l => (l.stage || 'new') === 'new').length,
-      contactedCount: leads.filter(l => l.stage === 'contacted').length,
-      pitchedCount: leads.filter(l => l.stage === 'demo_booked' || l.stage === 'demo_attended').length,
-      demoCount: leads.filter(l => l.stage === 'demo_booked').length,
-      feeCount: leads.filter(l => l.stage === 'fee_followup').length,
-      convertedCount: leads.filter(l => l.stage === 'admitted').length,
+      newCount: leads.filter(l => (l.stage || 'new') === 'new' && !l.admittedStudentId).length,
+      contactedCount: leads.filter(l => l.stage === 'contacted' && !l.admittedStudentId).length,
+      pitchedCount: leads.filter(l => (l.stage === 'demo_booked' || l.stage === 'demo_attended') && !l.admittedStudentId).length,
+      demoCount: leads.filter(l => l.stage === 'demo_booked' && !l.admittedStudentId).length,
+      feeCount: leads.filter(l => l.stage === 'fee_followup' && !l.admittedStudentId).length,
+      doneCount: doneLeads.length,
+      convertedCount: admittedLeads.length,
       todayCount: followUpFlags.filter(f => f.isToday).length,
       overdueCount: followUpFlags.filter(f => f.isOverdue).length,
-      tomorrowCount: followUpFlags.filter(f => f.isTomorrow).length,
-      doneCount: doneFollowUpsCount
+      tomorrowCount: followUpFlags.filter(f => f.isTomorrow).length
     };
   }, [leads]);
 
@@ -557,8 +646,8 @@ export default function HrPipelineView({
       if (activeFilter === 'this_week') return item.timeframe === 'this_week' && !item.isDone;
       if (activeFilter === 'demo') return item.type === 'demo';
       if (activeFilter === 'fee') return item.type === 'fee';
-      if (activeFilter === 'admitted') return item.stage === 'admitted';
-      if (activeFilter === 'done') return item.isDone;
+      if (activeFilter === 'done') return item.isFlowDone;
+      if (activeFilter === 'admitted') return item.hasStudentId;
       return true;
     });
   }, [FOLLOW_UPS, activeFilter]);
@@ -567,21 +656,27 @@ export default function HrPipelineView({
   const tableLeads = useMemo(() => {
     return searchFilteredLeads.filter(lead => {
       if (activeFilter === 'all') return true;
-      if (activeFilter === 'done') {
-        const raw = (lead.followUpStatus || '').toLowerCase();
-        const dec = (lead.decisionStatus || '').toLowerCase();
-        const note = (lead.followUpNote || lead.notes || '');
-        return raw === 'no_followup_needed' || raw === 'not_interested' || raw === 'done' ||
-          dec.includes('no follow') || dec.includes('not interest') ||
-          note.includes('No Follow-up Needed - Done') || note.includes('Not Interested - Done');
-      }
+      const hasStudentId = Boolean(lead.admittedStudentId || lead.studentId);
+      const raw = (lead.followUpStatus || '').toLowerCase();
+      const dec = (lead.decisionStatus || '').toLowerCase();
+      const st = (lead.stage || '').toLowerCase();
+      const status = (lead.status || '').toLowerCase();
+      const note = (lead.followUpNote || lead.notes || '');
+      const isLeadFlowDone = !hasStudentId && (
+        st === 'done' || st === 'admitted' || status === 'completed' || raw === 'done' ||
+        raw === 'no_followup_needed' || raw === 'not_interested' ||
+        dec.includes('follow-up done') || dec.includes('no follow') || dec.includes('not interest') ||
+        note.includes('No Follow-up Needed - Done') || note.includes('Not Interested - Done') || note.includes('[Follow-up Done')
+      );
+
+      if (activeFilter === 'done') return isLeadFlowDone;
+      if (activeFilter === 'admitted') return hasStudentId;
       const flags = classifyFollowUp(lead);
       if (activeFilter === 'overdue') return flags.timeframe === 'overdue';
       if (activeFilter === 'today') return flags.timeframe === 'today';
       if (activeFilter === 'tomorrow') return flags.timeframe === 'tomorrow';
       if (activeFilter === 'demo') return (lead.stage || '').includes('demo');
       if (activeFilter === 'fee') return lead.stage === 'fee_followup';
-      if (activeFilter === 'admitted') return lead.stage === 'admitted';
       return true;
     });
   }, [searchFilteredLeads, activeFilter]);
@@ -593,8 +688,8 @@ export default function HrPipelineView({
     { key: 'tomorrow', label: '⚪ Tomorrow', count: stageCounts.tomorrowCount, activeClass: 'bg-sky-600 text-white' },
     { key: 'demo', label: '🟣 Demos', count: stageCounts.demoCount, activeClass: 'bg-purple-600 text-white' },
     { key: 'fee', label: '🟠 Fees', count: stageCounts.feeCount, activeClass: 'bg-amber-700 text-white' },
-    { key: 'admitted', label: '🟢 Admitted', count: stageCounts.convertedCount, activeClass: 'bg-emerald-600 text-white' },
-    { key: 'done', label: '✓ Done', count: stageCounts.doneCount, activeClass: 'bg-slate-700 text-white' }
+    { key: 'done', label: '✓ Done', count: stageCounts.doneCount, activeClass: 'bg-slate-800 text-white' },
+    { key: 'admitted', label: '🟢 Admitted', count: stageCounts.convertedCount, activeClass: 'bg-emerald-600 text-white' }
   ];
 
   return (
@@ -737,7 +832,8 @@ export default function HrPipelineView({
       {/* MODE 1: KANBAN STAGE PIPELINE                                            */}
       {/* ========================================================================= */}
       {viewMode === 'kanban' && (
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-3.5 pt-1">
+        <div className="overflow-x-auto pb-6 scrollbar-thin scrollbar-thumb-slate-300 -mx-1 px-1">
+          <div className="flex gap-3.5 pt-1 items-start min-w-max pb-2">
           {PIPELINE_COLUMNS.map((col) => {
             const visibleCards = col.cards.filter(c => {
               if (activeFilter === 'all') return true;
@@ -746,21 +842,22 @@ export default function HrPipelineView({
               if (activeFilter === 'tomorrow') return c.isTomorrow;
               if (activeFilter === 'demo') return c.currentStage === 'demo_booked' || c.currentStage === 'demo_attended';
               if (activeFilter === 'fee') return c.currentStage === 'fee_followup';
-              if (activeFilter === 'admitted') return c.currentStage === 'admitted';
+              if (activeFilter === 'done') return c.isFlowDone;
+              if (activeFilter === 'admitted') return c.isAdmitted;
               return true;
             });
 
             return (
-              <div key={col.id} className="flex flex-col space-y-2.5">
+              <div key={col.id} className="w-[275px] shrink-0 flex flex-col space-y-2.5">
                 {/* Column Header */}
-                <div className="flex items-center justify-between pb-1 px-1 border-b border-slate-200/90">
-                  <div className="flex items-center gap-1.5">
-                    <span className={`w-2.5 h-2.5 rounded-full ${col.dotColor}`}></span>
-                    <span className="font-extrabold text-xs text-slate-800 uppercase tracking-wider">
+                <div className="flex items-center justify-between pb-2 px-1 border-b border-slate-200/90">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${col.dotColor}`}></span>
+                    <span className="font-extrabold text-[12px] text-slate-800 uppercase tracking-wide truncate">
                       {col.title}
                     </span>
                   </div>
-                  <span className="px-2 py-0.5 rounded-full text-xs font-black bg-slate-100 text-slate-700">
+                  <span className="px-2 py-0.5 rounded-full text-xs font-black bg-slate-100 text-slate-700 shrink-0 ml-1">
                     {visibleCards.length}
                   </span>
                 </div>
@@ -768,45 +865,120 @@ export default function HrPipelineView({
                 {/* Cards in this column */}
                 <div className="space-y-2.5 min-h-[420px]">
                   {visibleCards.length === 0 ? (
-                    <div className="p-4 text-center text-[11px] text-slate-400 bg-slate-50/50 rounded-2xl border border-dashed border-slate-200">
-                      No leads in this stage
+                    <div className="p-5 text-center text-[11.5px] font-medium text-slate-400 bg-slate-50/70 rounded-2xl border border-dashed border-slate-200 min-h-[110px] flex items-center justify-center">
+                      <span>No leads in this stage</span>
                     </div>
                   ) : (
                     visibleCards.map((card) => {
                       if (card.isAdmitted) {
+                        const studentIdStr = card.rawLead?.admittedStudentId || card.rawLead?.studentId;
+
                         return (
                           <div
                             key={card.id}
-                            className="bg-[#dcfce7] border border-emerald-300 rounded-2xl p-3.5 shadow-xs transition-all hover:shadow-md hover:border-emerald-400 relative"
+                            className="bg-[#dcfce7] border border-emerald-300 rounded-2xl p-3.5 shadow-xs transition-all hover:shadow-md hover:border-emerald-400 relative flex flex-col justify-between"
                           >
-                            <div className="flex items-start justify-between">
-                              <div className="font-extrabold text-slate-900 text-[13px] flex items-center gap-1">
-                                {card.name}
+                            <div>
+                              <div className="flex items-start justify-between gap-1.5">
+                                <div className="font-extrabold text-slate-900 text-[13px] leading-snug break-words">
+                                  {card.name}
+                                </div>
+                                <span className="bg-emerald-600 text-white text-[9px] font-black uppercase px-2 py-0.5 rounded shrink-0 tracking-wide">
+                                  ENROLLED
+                                </span>
                               </div>
-                              <span className="bg-emerald-600 text-white text-[9px] font-black uppercase px-1.5 py-0.5 rounded">
-                                ENROLLED
-                              </span>
+
+                              <div className="text-[11px] text-emerald-800 font-medium mt-1">
+                                {card.sub}
+                              </div>
                             </div>
 
-                            <div className="text-[11px] text-emerald-800 font-medium mt-1">
-                              {card.sub}
+                            <div className="mt-3 pt-2.5 border-t border-emerald-200/70 space-y-2">
+                              <div className="flex items-center justify-between gap-1.5">
+                                <span className={`inline-block text-[9.5px] px-2 py-0.5 rounded-md border font-bold truncate max-w-[170px] ${card.sourceClass}`}>
+                                  {card.source}
+                                </span>
+                                {card.phone && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      redirectToWhatsAppWeb(card.phone);
+                                    }}
+                                    className="text-emerald-700 hover:text-emerald-900 text-xs font-bold flex items-center gap-1 cursor-pointer shrink-0"
+                                    title={`Open WhatsApp chat with ${card.name}`}
+                                  >
+                                    <MessageSquare className="w-3 h-3 fill-emerald-600" />
+                                    <span>Chat</span>
+                                  </button>
+                                )}
+                              </div>
+
+                              {/* Admitted Student Details Badge */}
+                              <div className="bg-emerald-100/90 border border-emerald-300 text-emerald-900 text-[11px] font-bold py-1.5 px-2.5 rounded-xl flex items-center justify-center gap-1.5 shadow-2xs">
+                                <Check className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                                <span className="font-mono text-[11px]">{studentIdStr ? `Admitted (${studentIdStr})` : 'Admitted Student'}</span>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      if (card.isFlowDone) {
+                        return (
+                          <div
+                            key={card.id}
+                            className="bg-slate-50 border border-slate-300 rounded-2xl p-3.5 shadow-xs transition-all hover:shadow-md hover:border-slate-400 relative flex flex-col justify-between"
+                          >
+                            <div>
+                              <div className="flex items-start justify-between gap-1.5">
+                                <div className="font-extrabold text-slate-900 text-[13px] leading-snug break-words">
+                                  {card.name}
+                                </div>
+                                <span className="bg-slate-800 text-white text-[9px] font-black uppercase px-2 py-0.5 rounded tracking-wide shrink-0">
+                                  FLOW DONE
+                                </span>
+                              </div>
+
+                              <div className="text-[11px] text-slate-600 font-medium mt-1">
+                                {card.sub}
+                              </div>
                             </div>
 
-                            <div className="flex items-center justify-between mt-2.5 pt-2 border-t border-emerald-200/60">
-                              <span className={`inline-block text-[10px] px-2 py-0.5 rounded-md border ${card.sourceClass}`}>
-                                {card.source}
-                              </span>
-                              {card.phone && (
-                                <button
-                                  type="button"
-                                  onClick={() => redirectToWhatsAppWeb(card.phone)}
-                                  className="text-emerald-700 hover:text-emerald-900 text-xs font-bold flex items-center gap-1 cursor-pointer"
-                                  title={`Open WhatsApp chat with ${card.name}`}
-                                >
-                                  <MessageSquare className="w-3 h-3 fill-emerald-600" />
-                                  <span>Chat</span>
-                                </button>
-                              )}
+                            <div className="mt-3 pt-2.5 border-t border-slate-200 space-y-2">
+                              <div className="flex items-center justify-between gap-1.5">
+                                <span className={`inline-block text-[9.5px] px-2 py-0.5 rounded-md border font-bold truncate max-w-[170px] ${card.sourceClass}`}>
+                                  {card.source}
+                                </span>
+                                {card.phone && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      redirectToWhatsAppWeb(card.phone);
+                                    }}
+                                    className="text-emerald-700 hover:text-emerald-900 text-xs font-bold flex items-center gap-1 cursor-pointer shrink-0"
+                                    title={`Open WhatsApp chat with ${card.name}`}
+                                  >
+                                    <MessageSquare className="w-3 h-3 fill-emerald-600" />
+                                    <span>Chat</span>
+                                  </button>
+                                )}
+                              </div>
+
+                              {/* Move to Admitted Students Action */}
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (onAdmitLead) onAdmitLead(card.rawLead || card);
+                                }}
+                                className="w-full bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-[11px] py-2 px-2.5 rounded-xl flex items-center justify-center gap-1.5 shadow-xs transition-all active:scale-95 cursor-pointer hover:shadow-md"
+                                title={`Flows completed for ${card.name} — Click to fill registration and move to Admitted Students`}
+                              >
+                                <UserPlus className="w-3.5 h-3.5 shrink-0" />
+                                <span>Move to Admitted Students</span>
+                              </button>
                             </div>
                           </div>
                         );
@@ -874,9 +1046,11 @@ export default function HrPipelineView({
                             <span className={`inline-block text-[9.5px] font-bold px-2 py-0.5 rounded-md border tracking-wider uppercase ${card.sourceClass}`}>
                               {card.source}
                             </span>
-                            <span className="inline-block text-[9.5px] font-bold px-2 py-0.5 rounded-md border bg-slate-50 text-slate-600 border-slate-200">
-                              {card.course}
-                            </span>
+                            {card.cleanCourse && (
+                              <span className="inline-block text-[9.5px] font-bold px-2 py-0.5 rounded-md border bg-slate-50 text-slate-600 border-slate-200">
+                                {card.cleanCourse}
+                              </span>
+                            )}
                           </div>
 
                           {/* Action Buttons for leads */}
@@ -945,6 +1119,7 @@ export default function HrPipelineView({
               </div>
             );
           })}
+          </div>
         </div>
       )}
 
@@ -1075,12 +1250,25 @@ export default function HrPipelineView({
                         </button>
                       </div>
 
-                      {/* Row 2: Follow-up Status or Admitted Badge */}
-                      {card.stage === 'admitted' ? (
+                      {/* Row 2: Follow-up Status or Admitted Badge / Move to Admitted */}
+                      {card.hasStudentId ? (
                         <div className="bg-emerald-50 text-emerald-800 border border-emerald-200/80 font-bold text-[11px] py-1.5 px-3 rounded-lg flex items-center justify-center gap-1.5">
                           <Check className="w-3.5 h-3.5 text-emerald-600" />
-                          <span>Student Admitted & Enrolled</span>
+                          <span>Student Admitted & Enrolled ({card.rawLead?.admittedStudentId || card.rawLead?.studentId})</span>
                         </div>
+                      ) : card.isFlowDone ? (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (onAdmitLead) onAdmitLead(card.rawLead || card);
+                          }}
+                          className="w-full bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-[11px] py-1.5 px-3 rounded-lg flex items-center justify-center gap-1.5 shadow-xs transition-all active:scale-95 cursor-pointer hover:shadow-md"
+                          title={`Flows completed for ${card.name} — Click to fill registration and move to Admitted Students`}
+                        >
+                          <UserPlus className="w-3.5 h-3.5 shrink-0" />
+                          <span>Move to Admitted Students</span>
+                        </button>
                       ) : card.followUpDoneStatus ? (
                         <div className="flex items-center gap-1.5 w-full">
                           <button
@@ -1407,7 +1595,22 @@ export default function HrPipelineView({
                               <span>Edit</span>
                             </button>
 
-                            {lead.stage !== 'admitted' && (
+                            {Boolean(lead.admittedStudentId || lead.studentId) ? (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200">
+                                <Check className="w-3 h-3 text-emerald-600" />
+                                <span>{lead.admittedStudentId || lead.studentId}</span>
+                              </span>
+                            ) : (lead.stage === 'done' || lead.stage === 'admitted' || lead.status === 'completed' || lead.followUpStatus === 'done') ? (
+                              <button
+                                type="button"
+                                onClick={() => onAdmitLead && onAdmitLead(lead)}
+                                className="inline-flex items-center gap-1 text-[10px] font-bold px-2.5 py-1 rounded-lg bg-[#00897b] hover:bg-[#00796b] text-white shadow-2xs transition-all cursor-pointer active:scale-95"
+                                title="Flows completed — Move to Admitted Students"
+                              >
+                                <UserPlus className="w-3 h-3" />
+                                <span>Move to Admitted</span>
+                              </button>
+                            ) : (
                               <button
                                 type="button"
                                 disabled={Boolean(actionLoading[leadId])}

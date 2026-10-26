@@ -2147,37 +2147,102 @@ const counselorNameRx = (name) => {
 const isScopedHr = (req) => {
   const dept = String(req.user?.department || '').toLowerCase();
   const role = String(req.user?.role || '').toLowerCase();
+  // Admins, Leadership, Managers, Team Leads and Heads are NEVER restricted as individual counsellors
+  if (/admin|leadership|head|manager|lead|director|super admin/i.test(role) || /admin|leadership/i.test(dept)) {
+    return false;
+  }
   return dept === 'hr' || role === 'hr' || dept.includes('counsel') || dept.includes('admission');
 };
-const leadOwner = (l) => l?.counselorAssigned || l?.allocatedTo || l?.spokenBy || '';
+const leadOwner = (l) => l?.counselorAssigned || l?.allocatedTo || l?.spokenBy || l?.counselor || l?.hrName || '';
 const leadOwnerQuery = (name) => {
   const rx = counselorNameRx(name);
   return {
     $or: [
       { counselorAssigned: rx },
       { allocatedTo: rx },
-      { spokenBy: rx }
+      { spokenBy: rx },
+      { counselor: rx },
+      { counselorName: rx },
+      { hrName: rx }
     ]
   };
 };
 const bClean = (v) => String(v || '').toLowerCase().replace(/\s*(branch|\(.*\)|hq)\b/gi, '').replace(/[^a-z0-9]/g, '');
 
+const namesMatch = (a, b) => {
+  if (!a || !b) return false;
+  const sA = String(a).trim().toLowerCase();
+  const sB = String(b).trim().toLowerCase();
+  if (sA === sB) return true;
+
+  const cleanA = sA.replace(/\([^)]*\)/g, '').replace(/[\.\-_]/g, ' ').replace(/\s+/g, ' ').trim();
+  const cleanB = sB.replace(/\([^)]*\)/g, '').replace(/[\.\-_]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!cleanA || !cleanB) return false;
+  if (cleanA === cleanB) return true;
+
+  const wordsA = cleanA.split(' ').filter(Boolean);
+  const wordsB = cleanB.split(' ').filter(Boolean);
+
+  if (wordsA[0] && wordsB[0] && wordsA[0] === wordsB[0]) return true;
+
+  for (const wA of wordsA) {
+    if (wA.length >= 3 && wordsB.includes(wA)) return true;
+  }
+
+  return false;
+};
+
+const leadHasCounselor = (lead, user) => {
+  if (!lead || !user) return false;
+
+  const candidateUserNames = [
+    user.name,
+    user.userName,
+    user.displayName,
+    user.email ? user.email.split('@')[0] : ''
+  ].map((s) => String(s || '').trim()).filter(Boolean);
+
+  const candidateLeadOwners = [
+    lead.counselorAssigned,
+    lead.allocatedTo,
+    lead.spokenBy,
+    lead.counselor,
+    lead.counselorName,
+    lead.hrName,
+    lead.bookedBy,
+    lead.createdBy,
+    lead.assignedTo
+  ].map((s) => String(s || '').trim()).filter(Boolean);
+
+  // If no counsellor has been assigned yet, any counsellor can view / edit / manage it
+  if (candidateLeadOwners.length === 0) return true;
+
+  for (const uName of candidateUserNames) {
+    for (const lName of candidateLeadOwners) {
+      if (namesMatch(uName, lName)) return true;
+    }
+  }
+
+  // Branch matching fallback: If counsellor and lead are in the same branch, allow editing
+  const userBranch = branchShort(user.branch || user.location || '');
+  const leadBranch = branchShort(lead.branch || lead.location || '');
+  if (userBranch && leadBranch && bClean(userBranch) === bClean(leadBranch)) {
+    return true;
+  }
+
+  return false;
+};
+
 const ownsStudent = (req, st) => {
   if (!isScopedHr(req)) return true;
-  return normName(st?.hrName) === normName(req.user?.name);
+  return leadHasCounselor(st, req.user);
 };
 
 const ownsLead = (req, lead) => {
   if (!lead) return false;
   if (!isScopedHr(req) && !isScopedBranchManager(req)) return true;
   if (isScopedHr(req)) {
-    const counselor = req.user?.name;
-    if (!counselor) return false;
-    const ca = normName(lead.counselorAssigned);
-    const at = normName(lead.allocatedTo);
-    const me = normName(counselor);
-    if (!ca && !at) return true; // Unassigned enquiries can be managed/edited
-    return ca === me || at === me;
+    return leadHasCounselor(lead, req.user);
   }
   if (isScopedBranchManager(req)) {
     const targetBranch = getBranchManagerBranch(req);
@@ -2188,22 +2253,11 @@ const ownsLead = (req, lead) => {
   return true;
 };
 
-
 const ownsDemo = (req, demo) => {
   if (!isScopedHr(req)) return true;
-  const counselor = req.user?.name;
-  if (counselor && (normName(demo?.bookedBy) === normName(counselor) || normName(demo?.counselor) === normName(counselor))) {
-    return true;
-  }
-  const userBranch = branchShort(req.user?.branch || req.query?.branch);
-  if (userBranch) {
-    const ub = bClean(userBranch);
-    if (ub && (bClean(demo?.location).includes(ub) || bClean(demo?.branch).includes(ub))) {
-      return true;
-    }
-  }
-  return false;
+  return leadHasCounselor(demo, req.user);
 };
+
 const NOT_YOURS = { error: 'This record belongs to another counsellor.' };
 
 // The lead a new admission / demo belongs to: explicit leadId first, then
@@ -2268,14 +2322,32 @@ router.get('/students', async (req, res) => {
       const bRx = new RegExp(escapeRegex(userBranch), 'i');
       andConditions.push({ $or: [{ branch: bRx }, { location: bRx }, { leadBranch: bRx }] });
     } else if (isScopedHr(req)) {
-      const counselor = req.user?.name;
+      const counselor = req.user?.name || req.user?.userName;
       if (counselor) {
-        andConditions.push({ hrName: exactNameRx(counselor) });
-      } else {
-        andConditions.push({ hrName: '__NEVER_MATCH__' });
+        const rx = counselorNameRx(counselor);
+        andConditions.push({
+          $or: [
+            { hrName: rx },
+            { counselorAssigned: rx },
+            { counselor: rx },
+            { counselorName: rx },
+            { allocatedTo: rx },
+            { spokenBy: rx }
+          ]
+        });
       }
     } else if (hrName && hrName !== 'all') {
-      andConditions.push({ hrName: exactNameRx(hrName) });
+      const rx = counselorNameRx(hrName);
+      andConditions.push({
+        $or: [
+          { hrName: rx },
+          { counselorAssigned: rx },
+          { counselor: rx },
+          { counselorName: rx },
+          { allocatedTo: rx },
+          { spokenBy: rx }
+        ]
+      });
     } else if (userBranch) {
       const bRx = new RegExp(escapeRegex(userBranch), 'i');
       andConditions.push({ $or: [{ branch: bRx }, { location: bRx }, { leadBranch: bRx }] });
@@ -2354,43 +2426,62 @@ function generateStudentPassword() {
 
 // Standard ThoughtFlows Student ID Generator: TF + Branch + Course + Type + Month + Year + Serial
 async function generateStandardStudentId({ branch, course, mode, date }) {
+  // 1. Company: TF
+  // 2. Branch Name (Saravanampatti=S, Hopes=H, Tirupati=T, Trivandrum=V, Hyderabad=D, Trichy=C, Kochi=K, Salem=M, DSNR=R, VIZAG=Z, GPM=G)
   const branchMap = {
-    'S': 'Saravanampatti', 'H': 'Hopes', 'G': 'Gandhipuram', 'C': 'Trichy',
-    'M': 'Salem', 'K': 'Kochi', 'V': 'Trivandrum', 'T': 'Tirupati',
-    'D': 'Hyderabad Dilsukhnagar', 'R': 'Hyderabad Ameerpet', 'Z': 'Vizag',
-    'P': 'Pune', 'L': 'Kollapur', 'N': 'Theni'
+    'S': 'Saravanampatti',
+    'H': 'Hopes',
+    'T': 'Tirupati',
+    'V': 'Trivandrum',
+    'D': 'Hyderabad',
+    'C': 'Trichy',
+    'K': 'Kochi',
+    'M': 'Salem',
+    'R': 'DSNR',
+    'Z': 'VIZAG',
+    'G': 'GPM',
+    'P': 'Pune',
+    'L': 'Kollapur',
+    'N': 'Theni'
   };
-  const monthCodes = ['A', 'B', 'C', 'D', 'Y', 'J', 'L', 'G', 'S', 'T', 'N', 'E'];
+
+  // 5. Month (Jan=J, Feb=F, Mar=M, Apri=A, May=Y, June=E, July=L, August=U, September=S, October=O, November=N, December=D)
+  const monthCodes = ['J', 'F', 'M', 'A', 'Y', 'E', 'L', 'U', 'S', 'O', 'N', 'D'];
 
   // Branch code
   let b = 'S';
+  const bUpper = String(branch || '').toUpperCase().trim();
   const bStr = String(branch || '').toLowerCase();
-  if (branchMap[String(branch || '').toUpperCase()]) b = String(branch).toUpperCase();
+  if (branchMap[bUpper]) b = bUpper;
   else if (bStr.includes('hopes')) b = 'H';
-  else if (bStr.includes('gandhi') || bStr.includes('gpm')) b = 'G';
-  else if (bStr.includes('trichy')) b = 'C';
-  else if (bStr.includes('salem')) b = 'M';
-  else if (bStr.includes('kochi') || bStr.includes('cochin')) b = 'K';
-  else if (bStr.includes('trivandrum')) b = 'V';
   else if (bStr.includes('tirupati')) b = 'T';
-  else if (bStr.includes('dilsukh')) b = 'D';
-  else if (bStr.includes('ameerpet') || bStr.includes('hyderabad')) b = 'R';
-  else if (bStr.includes('vizag')) b = 'Z';
+  else if (bStr.includes('trivandrum') || bStr.includes('thiruvananthapuram')) b = 'V';
+  else if (bStr.includes('dsnr') || bStr.includes('dilsukhnagar')) b = 'R';
+  else if (bStr.includes('hyderabad') || bStr.includes('ameerpet')) b = 'D';
+  else if (bStr.includes('trichy')) b = 'C';
+  else if (bStr.includes('kochi') || bStr.includes('cochin')) b = 'K';
+  else if (bStr.includes('salem')) b = 'M';
+  else if (bStr.includes('vizag') || bStr.includes('visakhapatnam')) b = 'Z';
+  else if (bStr.includes('gandhi') || bStr.includes('gpm')) b = 'G';
+  else if (bStr.includes('saravanampatti') || bStr.includes('svm') || bStr.includes('coimbatore') || bStr.includes('cbe')) b = 'S';
   else if (bStr.includes('pune')) b = 'P';
   else if (bStr.includes('kollapur') || bStr.includes('kolhapur')) b = 'L';
   else if (bStr.includes('theni')) b = 'N';
 
-  // Course code
+  // 3. Course code
+  // AMCT(Beginner)=AB, AMCT(Intermediate)=AI, AMCT(Advanced)=AA, AMCT=A, CPC=C, CPC crash course=F,
+  // ED=D, E/M=N, IPDRG=I, CCS=S, CPMA=P, CIC=E, CRC=R, SUR=Y, CPT=T, ICD=Z, HCC=H, ANATOMY=O, CEMC=CN, RADIOLOGY=R
   let c = 'C';
+  const cStr = String(course || '').toUpperCase().trim();
   if (cStr.includes('CRASH')) c = 'F';
+  else if (cStr.includes('AMCT BEGINNER') || cStr.includes('AMCT(BEGINNER)') || (cStr.includes('AMCT') && cStr.includes('BEGINNER'))) c = 'AB';
+  else if (cStr.includes('AMCT INTERMEDIATE') || cStr.includes('AMCT(INTERMEDIATE)') || (cStr.includes('AMCT') && cStr.includes('INTERMEDIATE'))) c = 'AI';
+  else if (cStr.includes('AMCT ADVANCED') || cStr.includes('AMCT(ADVANCED)') || (cStr.includes('AMCT') && cStr.includes('ADVANCED'))) c = 'AA';
+  else if (cStr.includes('AMCT') || cStr.includes('MCT')) c = 'A';
   else if (cStr.includes('INTERNSHIP BEGINNER')) c = 'IB';
   else if (cStr.includes('INTERNSHIP INTERMEDIATE')) c = 'II';
   else if (cStr.includes('INTERNSHIP ADVANCED')) c = 'IA';
   else if (cStr.includes('INTERNSHIP')) c = 'IB';
-  else if (cStr.includes('AMCT BEGINNER')) c = 'AB';
-  else if (cStr.includes('AMCT INTERMEDIATE')) c = 'AI';
-  else if (cStr.includes('AMCT ADVANCED')) c = 'AA';
-  else if (cStr.includes('AMCT') || cStr.includes('MCT')) c = 'A';
   else if (cStr.includes('CPMA')) c = 'P';
   else if (cStr.includes('COC')) c = 'B';
   else if (cStr.includes('CRC')) c = 'R';
@@ -2399,18 +2490,18 @@ async function generateStandardStudentId({ branch, course, mode, date }) {
   else if (cStr.includes('CEMC')) c = 'CN';
   else if (cStr.includes('CDEO')) c = 'CDO';
   else if (cStr.includes('CDEI')) c = 'CDEI';
-  else if (cStr.includes('CPPM')) c = 'PPM';
+  else if (cStr.includes('CPPM') || cStr.includes('PPM')) c = 'PPM';
   else if (cStr.includes('CIC')) c = 'E';
-  else if (cStr.includes('SURGERY')) c = 'Y';
-  else if (cStr.includes('EMERGENCY') || cStr.includes('ED -') || cStr.includes('ED (')) c = 'D';
-  else if (cStr.includes('EVALUATION') || cStr.includes('EM -') || cStr.includes('E/M')) c = 'N';
-  else if (cStr.includes('RADIOLOGY')) c = 'RD';
+  else if (cStr.includes('SURGERY') || cStr.includes('SUR')) c = 'Y';
+  else if (cStr.includes('EMERGENCY') || cStr.includes('ED -') || cStr.includes('ED (') || cStr === 'ED') c = 'D';
+  else if (cStr.includes('EVALUATION') || cStr.includes('EM -') || cStr.includes('E/M') || cStr === 'EM' || cStr === 'E & M') c = 'N';
+  else if (cStr.includes('RADIOLOGY') || cStr.includes('RAD')) c = 'R';
   else if (cStr.includes('ANESTHESIA')) c = 'AN';
-  else if (cStr.includes('IP DRG') || cStr.includes('IPDRG')) c = 'I';
+  else if (cStr.includes('IP DRG') || cStr.includes('IPDRG') || cStr.includes('IP-DRG')) c = 'I';
   else if (cStr.includes('HCC')) c = 'H';
   else if (cStr.includes('IVR')) c = 'IVR';
   else if (cStr.includes('CDI')) c = 'CDI';
-  else if (cStr.includes('CCS-P')) c = 'CSP';
+  else if (cStr.includes('CCS-P') || cStr.includes('CCSP')) c = 'CSP';
   else if (cStr.includes('CCS')) c = 'S';
   else if (cStr.includes('RHIA')) c = 'RIA';
   else if (cStr.includes('RHIT')) c = 'RIT';
@@ -2419,21 +2510,24 @@ async function generateStandardStudentId({ branch, course, mode, date }) {
   else if (cStr.includes('CPT')) c = 'T';
   else if (cStr.includes('ICD')) c = 'Z';
   else if (cStr.includes('ANATOMY')) c = 'O';
-  else if (cStr.includes('CPC')) c = 'C';
+  else if (cStr.includes('CPC') || cStr === 'C') c = 'C';
+  else if (cStr.includes('MEDICAL CODING') || cStr === 'M') c = 'M';
 
-  // Mode code (O = Online, C = Classroom, H = Hybrid)
+  // 4. Course type (ONLINE = O, CLASSROOM / OFFLINE = C, HYBRID = H)
   let t = 'O';
   const mStr = String(mode || '').toLowerCase();
   if (mStr.includes('class') || mStr.includes('off')) t = 'C';
   else if (mStr.includes('hyb')) t = 'H';
 
-  // Month & Year codes
+  // 5. Month code & 6. Year code
   const d = date ? new Date(date) : new Date();
-  const m = monthCodes[!isNaN(d.getTime()) ? d.getMonth() : new Date().getMonth()] || 'Y';
+  const m = monthCodes[!isNaN(d.getTime()) ? d.getMonth() : new Date().getMonth()] || 'N';
   const y = String(!isNaN(d.getTime()) ? d.getFullYear() : new Date().getFullYear()).slice(-1);
 
+  // Prefix: TF + Branch + Course + CourseType + Month + Year
   const prefix = `TF${b}${c}${t}${m}${y}`.toUpperCase();
 
+  // 7. Serial number (001, 002, 003...)
   const existing = await Student.find({ studentId: new RegExp(`^${prefix}`, 'i') }).select('studentId').lean();
   let maxSerial = 0;
   for (const st of existing) {
@@ -2731,12 +2825,25 @@ router.get('/students/check-duplicate', async (req, res) => {
   }
 });
 
+// Public lightweight next student ID preview for registration form
+router.get('/students/next-id', async (req, res) => {
+  try {
+    const { branch, course, mode, date } = req.query;
+    const studentId = await generateStandardStudentId({
+      branch,
+      course,
+      mode,
+      date: date || new Date()
+    });
+    res.json({ studentId });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/students', async (req, res) => {
   try {
     let payload = { ...req.body };
-    if (payload.studentId && await Student.exists({ studentId: payload.studentId })) {
-      return res.status(409).json({ error: `Student ID ${payload.studentId} is already in use` });
-    }
 
     // Check for duplicate registration by mobile number and/or email ID
     const dup = await checkDuplicateRegistration({
@@ -2752,7 +2859,7 @@ router.post('/students', async (req, res) => {
         duplicate: dup
       });
     }
-    if (!payload.studentId) {
+    if (!payload.studentId || (await Student.exists({ studentId: payload.studentId }))) {
       payload.studentId = await generateStandardStudentId({
         branch: payload.branch || payload.leadBranch || payload.location,
         course: payload.course,
@@ -3523,7 +3630,7 @@ router.post('/leads/bulk', async (req, res) => {
 router.put('/leads/:id', async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Lead not found' });
-    const current = await StudentLead.findById(req.params.id).select('allocatedTo counselorAssigned course branch');
+    const current = await StudentLead.findById(req.params.id);
     if (!current) return res.status(404).json({ error: 'Lead not found' });
     if (!ownsLead(req, current)) return res.status(403).json(NOT_YOURS);
     const body = { ...(req.body || {}) };
@@ -4116,31 +4223,66 @@ router.get('/demos', async (req, res) => {
       const bRx = new RegExp(escapeRegex(targetBranch), 'i');
       andConditions.push({ $or: [{ location: bRx }, { branch: bRx }] });
     } else if (isScopedHr(req)) {
-      const counselor = req.user?.name;
-      const userBranch = branchShort(req.query.branch || req.user?.branch);
-      const orConditions = [];
+      const counselor = req.user?.name || req.user?.userName;
       if (counselor) {
-        orConditions.push(
-          { bookedBy: exactNameRx(counselor) },
-          { counselor: exactNameRx(counselor) }
-        );
+        const rx = counselorNameRx(counselor);
+        const ownerConditions = [
+          { bookedBy: rx },
+          { counselor: rx },
+          { counselorName: rx },
+          { hrName: rx },
+          { allocatedTo: rx },
+          { counselorAssigned: rx }
+        ];
+        const myLeads = await StudentLead.find({
+          $or: [
+            { counselorAssigned: rx },
+            { allocatedTo: rx },
+            { spokenBy: rx },
+            { counselor: rx },
+            { counselorName: rx },
+            { hrName: rx }
+          ]
+        }).select('phone whatsappNumber').lean();
+        const myPhones = myLeads
+          .map((l) => phoneDigits(l.phone || l.whatsappNumber))
+          .filter((p) => p.length === 10);
+        if (myPhones.length > 0) {
+          ownerConditions.push({
+            phone: { $in: myPhones.map((p) => new RegExp(escapeRegex(p) + '$')) }
+          });
+        }
+        andConditions.push({ $or: ownerConditions });
       }
-      if (userBranch) {
-        const bRx = new RegExp(escapeRegex(userBranch), 'i');
-        orConditions.push({ location: bRx }, { branch: bRx });
-      }
-      if (orConditions.length > 0) andConditions.push({ $or: orConditions });
     } else if (qCounselor && qCounselor !== 'all') {
-      const userBranch = branchShort(targetBranch);
-      const orConditions = [
-        { bookedBy: exactNameRx(qCounselor) },
-        { counselor: exactNameRx(qCounselor) }
+      const rx = counselorNameRx(qCounselor);
+      const ownerConditions = [
+        { bookedBy: rx },
+        { counselor: rx },
+        { counselorName: rx },
+        { hrName: rx },
+        { allocatedTo: rx },
+        { counselorAssigned: rx }
       ];
-      if (userBranch) {
-        const bRx = new RegExp(escapeRegex(userBranch), 'i');
-        orConditions.push({ location: bRx }, { branch: bRx });
+      const myLeads = await StudentLead.find({
+        $or: [
+          { counselorAssigned: rx },
+          { allocatedTo: rx },
+          { spokenBy: rx },
+          { counselor: rx },
+          { counselorName: rx },
+          { hrName: rx }
+        ]
+      }).select('phone whatsappNumber').lean();
+      const myPhones = myLeads
+        .map((l) => phoneDigits(l.phone || l.whatsappNumber))
+        .filter((p) => p.length === 10);
+      if (myPhones.length > 0) {
+        ownerConditions.push({
+          phone: { $in: myPhones.map((p) => new RegExp(escapeRegex(p) + '$')) }
+        });
       }
-      andConditions.push({ $or: orConditions });
+      andConditions.push({ $or: ownerConditions });
     } else if (targetBranch && targetBranch !== 'all') {
       const userBranch = branchShort(targetBranch);
       if (userBranch) {
@@ -5034,13 +5176,87 @@ router.get('/auth/trainers', (req, res) => {
   res.json(Object.values(TRAINER_ACCOUNTS));
 });
 
-router.get('/auth/trainer-credentials', (req, res) => {
-  res.json({
-    head: Object.values(TRAINER_ROLE_ACCOUNTS).filter((a) => a.trainerRole === 'head'),
-    managers: Object.values(TRAINER_ROLE_ACCOUNTS).filter((a) => a.trainerRole === 'manager'),
-    teamLeads: Object.values(TRAINER_ROLE_ACCOUNTS).filter((a) => a.trainerRole === 'tl'),
-    faculty: MASTER_FACULTY_ROSTER
-  });
+router.get('/auth/trainer-credentials', async (req, res) => {
+  try {
+    const dbUsers = await User.find({
+      $or: [
+        { role: /trainer|training|faculty/i },
+        { department: /training|faculty/i }
+      ]
+    }).select('-password').lean();
+
+    const head = dbUsers.filter((u) => /head of trainer|trainer head|training head|head of training|chief trainer|chief faculty/i.test(u.role || '')).map((u) => ({
+      id: String(u._id),
+      leaderId: String(u._id),
+      name: u.name,
+      userName: u.name,
+      email: u.email,
+      phone: u.phone || '',
+      role: u.role || 'Head of Trainer',
+      trainerRole: 'head',
+      branch: u.branch || 'All Branches (HQ)',
+      branches: u.branch ? [u.branch] : [],
+      status: u.status || 'Active',
+      color: '#005a9c'
+    }));
+
+    const managers = dbUsers.filter((u) => /training team manager|trainer manager|training manager|\bteam manager\b/i.test(u.role || '')).map((u) => ({
+      id: String(u._id),
+      leaderId: String(u._id),
+      name: u.name,
+      userName: u.name,
+      email: u.email,
+      phone: u.phone || '',
+      role: u.role || 'Trainer Manager',
+      trainerRole: 'manager',
+      branch: u.branch || '',
+      branches: u.branch ? [u.branch] : [],
+      zone: u.branch || 'Zonal Operations',
+      zoneLabel: u.branch ? `${u.branch} Region` : 'Assigned Region',
+      status: u.status || 'Active',
+      color: '#0d9488'
+    }));
+
+    const teamLeads = dbUsers.filter((u) => /training tl|trainer tl|trainer team lead|training team lead|\bteam lead\b/i.test(u.role || '')).map((u) => ({
+      id: String(u._id),
+      leaderId: String(u._id),
+      name: u.name,
+      userName: u.name,
+      email: u.email,
+      phone: u.phone || '',
+      role: u.role || 'Trainer Team Lead',
+      trainerRole: 'tl',
+      branch: u.branch || '',
+      branches: u.branch ? [u.branch] : [],
+      zone: u.branch || 'Pod Operations',
+      zoneLabel: u.branch ? `${u.branch} Pod` : 'Assigned Pod',
+      status: u.status || 'Active',
+      color: '#16a34a'
+    }));
+
+    const faculty = dbUsers.filter((u) => !/head|manager|tl|lead/i.test(u.role || '') && (/trainer|faculty|coach/i.test(u.role || '') || /training|faculty/i.test(u.department || ''))).map((u) => ({
+      id: String(u._id),
+      trainerId: String(u._id),
+      name: u.name,
+      userName: u.name,
+      email: u.email,
+      phone: u.phone || '',
+      role: u.role || 'Trainer',
+      trainerRole: 'trainer',
+      branch: u.branch || '',
+      status: u.status || 'Active',
+      color: '#0284c7'
+    }));
+
+    res.json({
+      head,
+      managers,
+      teamLeads,
+      faculty
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message, head: [], managers: [], teamLeads: [], faculty: [] });
+  }
 });
 
 const mapRoleOrDeptToDashboard = (role = '', department = '') => {
@@ -5155,7 +5371,8 @@ router.post('/auth/login', async (req, res) => {
         (acc.aliases || []).some((a) => a.toLowerCase() === normalizedEmail)
       );
     }
-    if (roleTrainerAcc) {
+    // Head of Trainer must be created in Admin Management Dashboard — no default/hardcoded head login allowed
+    if (roleTrainerAcc && roleTrainerAcc.trainerRole !== 'head') {
       const expectedPass = process.env[roleTrainerAcc.envKey] || roleTrainerAcc.defaultPass;
       const fallbacks = roleTrainerAcc.fallbackPasses || [];
       let ok = (await checkPassword(password, expectedPass)).ok;
@@ -5562,18 +5779,57 @@ const findStudentByAnyId = async (id) => {
 // departments (Admin, Leadership, HR…) keep their existing access.
 const isTrainerReq = (req) => req.user?.department === 'training';
 const myTrainerId = (req) => String(req.user?.trainerId || '');
+const isTrainerLeader = (req) => {
+  const u = req.user;
+  if (!u) return false;
+  if (['admin', 'leadership'].includes(u.department) || ['Admin', 'Super Admin'].includes(u.role)) return true;
+  const role = String(u.role || '').toLowerCase();
+  return (
+    role.includes('head') ||
+    role.includes('manager') ||
+    role.includes('lead') ||
+    role.includes('chief') ||
+    role.includes('director') ||
+    role.includes('tl')
+  );
+};
 const trainerOwnsStudent = (req, st) => {
-  if (!isTrainerReq(req)) return true;
-  if (/head of trainer|chief trainer|faculty lead|admin|leadership/i.test(req.user?.role || '')) return true;
-  const me = myTrainerId(req);
-  if (!st || !me) return false;
-  return st.trainerId === me || (!st.trainerId && st.handoverStatus === 'Sent to Training');
+  if (!req.user) return false;
+  if (!isTrainerReq(req) || isTrainerLeader(req)) return true;
+  if (!st) return false;
+
+  const me = String(req.user?.trainerId || '').trim();
+  const myId = String(req.user?._id || req.user?.id || '').trim();
+  const myName = String(req.user?.name || req.user?.userName || '').trim().toLowerCase();
+  const stTrainerId = String(st.trainerId || '').trim();
+  const stTrainerName = String(st.trainerName || st.trainer || '').trim().toLowerCase();
+
+  if (me && stTrainerId && stTrainerId === me) return true;
+  if (myId && stTrainerId && stTrainerId === myId) return true;
+  if (myName && stTrainerName && (stTrainerName === myName || stTrainerName.includes(myName) || myName.includes(stTrainerName))) return true;
+  if (!st.trainerId && st.handoverStatus === 'Sent to Training') return true;
+
+  return false;
 };
 const trainerOwnsRecord = (req, rec) => {
-  if (!isTrainerReq(req)) return true;
-  if (/head of trainer|chief trainer|faculty lead|admin|leadership/i.test(req.user?.role || '')) return true;
-  const me = myTrainerId(req);
-  return Boolean(me && rec && rec.trainerId === me);
+  if (!req.user) return false;
+  if (!isTrainerReq(req) || isTrainerLeader(req)) return true;
+  if (!rec) return false;
+
+  const me = String(req.user?.trainerId || '').trim();
+  const myId = String(req.user?._id || req.user?.id || '').trim();
+  const myName = String(req.user?.name || req.user?.userName || '').trim().toLowerCase();
+  const recTrainerId = String(rec.trainerId || '').trim();
+  const recTrainerName = String(rec.trainerName || rec.trainer || '').trim().toLowerCase();
+
+  if (me && recTrainerId && recTrainerId === me) return true;
+  if (myId && recTrainerId && recTrainerId === myId) return true;
+  if (myName && recTrainerName && (recTrainerName === myName || recTrainerName.includes(myName) || myName.includes(recTrainerName))) return true;
+
+  const sessTId = sessionTrainerId(req);
+  if (sessTId && recTrainerId && recTrainerId === sessTId) return true;
+
+  return false;
 };
 const NOT_YOUR_STUDENT = { error: 'This student is not allocated to you.' };
 const NOT_YOUR_RECORD = { error: 'This belongs to another trainer.' };
@@ -6326,14 +6582,12 @@ export const isHeadOfTrainerUser = async (req) => {
   }
   const role = String(u.role || '').toLowerCase();
   if (
-    role.includes('head of trainer') ||
-    role.includes('trainer head') ||
-    role.includes('head of training') ||
-    role.includes('training head') ||
-    role.includes('faculty lead') ||
-    role.includes('chief trainer') ||
-    role.includes('chief faculty') ||
-    role.includes('academic director')
+    role.includes('head') ||
+    role.includes('manager') ||
+    role.includes('lead') ||
+    role.includes('chief') ||
+    role.includes('director') ||
+    role.includes('tl')
   ) {
     return true;
   }
@@ -7952,12 +8206,7 @@ async function trainerZoomHost(demo) {
   let t = null;
   if (demo.trainerId) t = await Trainer.findOne({ trainerId: demo.trainerId }).lean();
   if (!t?.zoomEmail && demo.trainer) t = await Trainer.findOne({ trainerName: demo.trainer }).lean();
-  const host = String(t?.zoomEmail || sharedZoomHost()).trim().toLowerCase();
-  if (!host) {
-    const err = new Error('No Zoom host: set this trainer\'s Zoom email (Trainer.zoomEmail) or ZOOM_HOST_EMAIL in server/.env');
-    err.status = 501;
-    throw err;
-  }
+  const host = String(t?.zoomEmail || sharedZoomHost() || 'me').trim().toLowerCase();
   return host;
 }
 
@@ -8097,7 +8346,14 @@ router.post('/demos/:id/zoom-meeting', async (req, res) => {
   try {
     const demo = await Demo.findById(req.params.id);
     if (!demo) return res.status(404).json({ error: 'Demo not found' });
-    if (demo.zoomMeetingId) return res.json(demo);
+    if (demo.zoomMeetingId && demo.link) return res.json(demo);
+
+    if (!zoomApiConfigured() && !demo.link) {
+      demo.link = 'https://meet.google.com/new';
+      demo.meetingProvider = 'google_meet';
+      await demo.save();
+      return res.json(demo);
+    }
 
     // Group session reuse: if another candidate in the same trainer's demo slot already has a Zoom meeting, share it!
     if (demo.trainerId && demo.preferredDate && demo.timeSlot) {
@@ -9552,7 +9808,21 @@ async function ensureLiveIndexes() {
   try { await LiveClassSession.syncIndexes(); } catch (e) { console.warn('LiveClassSession index sync:', e.message); }
 }
 
-const sessionTrainerId = (req) => (isTrainerReq(req) ? myTrainerId(req) : (req.user?.trainerId || req.body?.trainerId || req.query?.trainerId || ''));
+const sessionTrainerId = (req) => {
+  const fromBodyOrQuery = String(req.body?.trainerId || req.query?.trainerId || '').trim();
+  if (fromBodyOrQuery) return fromBodyOrQuery;
+
+  const fromUser = String(req.user?.trainerId || (isTrainerReq(req) ? myTrainerId(req) : '') || '').trim();
+  if (fromUser) return fromUser;
+
+  const fallbackId = String(req.user?._id || req.user?.id || req.user?.userId || '').trim();
+  if (fallbackId) return fallbackId;
+
+  const fallbackName = String(req.user?.name || req.user?.userName || req.user?.role || '').trim();
+  if (fallbackName) return fallbackName;
+
+  return 'LEADER';
+};
 
 // Trainer-facing view (includes the join log and notes)
 const trainerSessionView = (sess) => sess && ({
@@ -9689,7 +9959,8 @@ router.post('/trainer/live-class/start', async (req, res) => {
   try {
     await ensureLiveIndexes();
     const trainerId = sessionTrainerId(req);
-    const { batch, topic = '' } = req.body || {};
+    const batch = String(req.body?.batch || req.body?.batchName || req.query?.batch || '').trim();
+    const topic = String(req.body?.topic || '').trim();
     if (!trainerId || !batch) return res.status(400).json({ error: 'trainerId and batch are required' });
     const trainer = await Trainer.findOne({ trainerId });
     const trainerName = trainer?.trainerName || req.user?.name || req.body?.trainerName || '';
@@ -9739,7 +10010,9 @@ router.post('/trainer/live-class/start', async (req, res) => {
       sess.zoomJoinUrl = trainer.classZoomLink;
       sess.meetingSource = 'class_link';
     } else {
-      return res.status(501).json({ error: 'Zoom is not set up: add the Zoom S2S keys in server/.env, or a Class Zoom Link on this trainer profile.' });
+      sess.zoomMeetingId = '';
+      sess.zoomJoinUrl = `/student/live-class?room=${encodeURIComponent(batch)}`;
+      sess.meetingSource = 'in_app';
     }
     await sess.save();
     await notifyBatch(batch, {
@@ -9759,7 +10032,10 @@ router.get('/trainer/live-class/:id/join', async (req, res) => {
     const sess = await LiveClassSession.findById(req.params.id);
     if (!sess || !isSessionLive(sess)) return res.status(404).json({ error: 'This class is not live any more' });
     if (!trainerOwnsRecord(req, sess)) return res.status(403).json(NOT_YOUR_RECORD);
-    if (!sess.zoomMeetingId) return res.status(409).json({ error: 'No Zoom meeting for this class' });
+    if (!sess.zoomMeetingId) {
+      if (sess.zoomJoinUrl) return res.json({ joinUrl: sess.zoomJoinUrl, zoomMeetingId: '', inAppRoom: true });
+      return res.status(409).json({ error: 'No Zoom meeting for this class' });
+    }
 
     // Class meetings are created with join_before_host:false, so when the
     // trainer (sole participant) leaves, Zoom auto-ends the meeting entirely —
@@ -9822,10 +10098,27 @@ router.post('/trainer/live-class/end', async (req, res) => {
   try {
     const trainerId = sessionTrainerId(req);
     const { batch, sessionId } = req.body || {};
-    if (!trainerId && !sessionId) return res.status(400).json({ error: 'trainerId is required' });
-    const query = sessionId && mongoose.isValidObjectId(sessionId) ? { _id: sessionId } : { trainerId, isLive: true, ...(batch ? { batch } : {}) };
-    if (isTrainerReq(req)) query.trainerId = myTrainerId(req); // a trainer can only end their own class
-    const list = await LiveClassSession.find(query);
+    let list = [];
+
+    if (sessionId && mongoose.isValidObjectId(sessionId)) {
+      const single = await LiveClassSession.findById(sessionId);
+      if (single) {
+        if (!isTrainerLeader(req) && !trainerOwnsRecord(req, single)) {
+          return res.status(403).json(NOT_YOUR_RECORD);
+        }
+        list = [single];
+      }
+    } else {
+      const query = { isLive: true };
+      if (batch) query.batch = batch;
+      if (!isTrainerLeader(req) && trainerId) query.trainerId = trainerId;
+      list = await LiveClassSession.find(query);
+    }
+
+    if (list.length === 0 && sessionId && mongoose.isValidObjectId(sessionId)) {
+      const anyStatus = await LiveClassSession.findById(sessionId);
+      if (anyStatus) list = [anyStatus];
+    }
     const endedAt = new Date();
     for (const s of list) {
       if (s.meetingSource === 'zoom_api' && s.zoomMeetingId && s.isLive) await endZoomMeeting(s.zoomMeetingId);
@@ -9850,7 +10143,11 @@ router.post('/trainer/live-class/end', async (req, res) => {
 router.put('/trainer/live-class/:id/attendance-saved', async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid session' });
-    await LiveClassSession.findOneAndUpdate({ _id: req.params.id, ...(isTrainerReq(req) ? { trainerId: myTrainerId(req) } : {}) }, { $set: { attendanceSaved: true } });
+    const sess = await LiveClassSession.findById(req.params.id);
+    if (!sess) return res.status(404).json({ error: 'Session not found' });
+    if (!trainerOwnsRecord(req, sess)) return res.status(403).json(NOT_YOUR_RECORD);
+    sess.attendanceSaved = true;
+    await sess.save();
     res.json({ success: true });
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -10085,6 +10382,7 @@ const sameBatch = (a, b) => Boolean(batchMatchKey(a)) && batchMatchKey(a) === ba
 // Does the signed-in trainer teach this batch? (other departments: yes)
 async function trainerTeachesBatch(req, batch) {
   if (!isTrainerReq(req)) return true;
+  if (/head of trainer|chief trainer|faculty lead|trainer manager|training manager|trainer tl|training tl|team lead|admin|leadership/i.test(req.user?.role || '')) return true;
   const me = myTrainerId(req);
   if (!me || !batch) return false;
   const rows = await Student.find({ trainerId: me }).select('batchName course');

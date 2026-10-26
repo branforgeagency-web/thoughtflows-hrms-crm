@@ -18,8 +18,8 @@ const ROLE_META = {
   head: {
     key: 'head',
     tier: 'EXECUTIVE LEADERSHIP',
-    title: 'Trainer Head Sign In',
-    subtitle: 'Pan-India Training Command · All 12 Branches',
+    title: 'Head of Trainer Sign In',
+    subtitle: 'Sign in with your Admin-created Head of Trainer account',
     icon: Crown,
     gradient: 'linear-gradient(135deg, #005a9c, #0284c7)',
     badgeBg: 'bg-blue-50 text-blue-700 border-blue-200',
@@ -169,8 +169,8 @@ export default function TrainerRoleLoginModal({
         <div className="mb-5 bg-slate-50 border border-slate-200/80 rounded-2xl p-3.5 flex items-start gap-2.5">
           <ShieldCheck className="w-4 h-4 text-teal-600 shrink-0 mt-0.5" />
           <div className="text-xs text-slate-600">
-            <span className="font-bold text-slate-800 block mb-0.5">Admin-Created Account Required</span>
-            Please sign in using the email address and password created for you in Admin. If you do not have an account yet, please contact your administrator.
+            <span className="font-bold text-slate-800 block mb-0.5">{roleKey === 'head' ? 'Admin-Created Head of Trainer Account Required' : 'Admin-Created Account Required'}</span>
+            {roleKey === 'head' ? 'Please create the user in Admin Management Dashboard with role "HEAD OF TRAINER", and sign in with that login.' : 'Please sign in using the email address and password created for you in Admin. If you do not have an account yet, please contact your administrator.'}
           </div>
         </div>
 
@@ -187,13 +187,13 @@ export default function TrainerRoleLoginModal({
           <div>
             <label className="block text-[11px] font-extrabold uppercase tracking-wider text-slate-700 mb-1.5 flex items-center gap-1.5">
               <Mail className="w-3.5 h-3.5 text-slate-400" />
-              {roleKey === 'trainer' ? 'Email Address or Trainer ID' : 'Account Email'}
+              {roleKey === 'head' ? 'Head of Trainer Email' : roleKey === 'trainer' ? 'Email Address or Trainer ID' : 'Account Email'}
             </label>
             <input
               type="text"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder={roleKey === 'trainer' ? 'Enter email address or Trainer ID' : 'Enter email address'}
+              placeholder={roleKey === 'head' ? 'Enter Head of Trainer email' : roleKey === 'trainer' ? 'Enter email address or Trainer ID' : 'Enter email address'}
               required
               autoFocus
               autoComplete="username"

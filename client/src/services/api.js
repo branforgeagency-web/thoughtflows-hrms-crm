@@ -97,7 +97,11 @@ const handleAuthError = (error) => {
       localStorage.removeItem('thoughtflows_user');
       localStorage.removeItem('thoughtflows_dashboard');
     } catch (_) {}
-    if (typeof window !== 'undefined') {
+    const isRegisterPage = typeof window !== 'undefined' && (
+      window.location.pathname.includes('/register') ||
+      window.location.search.includes('register')
+    );
+    if (!isRegisterPage && typeof window !== 'undefined') {
       window.location.reload();
     }
   }
@@ -155,6 +159,18 @@ export const createStudent = async (studentData) => {
 // Check for duplicate student/lead registration by phone or email
 export const checkDuplicateStudent = async (params) => {
   const res = await api.get('/students/check-duplicate', { params });
+  return res.data;
+};
+
+// Public next student ID preview for registration form
+export const getNextStudentId = async (params) => {
+  const res = await api.get('/students/next-id', { params });
+  return res.data;
+};
+
+// Training hierarchy and credentials (heads, managers, team leads, faculty)
+export const getTrainerCredentials = async () => {
+  const res = await api.get('/auth/trainer-credentials');
   return res.data;
 };
 

@@ -321,7 +321,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       const [stRes, ldRes, dmRes, recRes, closureRes] = await Promise.all([
         getStudents(shouldFilterOnServer ? { hrName: counselorFilter } : undefined),
         getLeads(shouldFilterOnServer ? { counselor: counselorFilter } : undefined),
-        getDemos(shouldFilterOnServer ? { counselor: counselorFilter, branch: branchShort } : undefined),
+        getDemos(shouldFilterOnServer ? { counselor: counselorFilter } : undefined),
         getRecordings(shouldFilterOnServer ? { counselor: counselorFilter } : undefined).catch(() => []),
         (counselorFilter ? getTodayClosure(counselorFilter, dKey) : Promise.resolve(null)).catch(() => null)
       ]);
@@ -439,10 +439,15 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     return false;
   };
 
-  const scopedStudents = useMemo(() => {
+  const rawScopedStudents = useMemo(() => {
     if (scopeMode === 'all' && isElevatedUser) return students;
     if (!myName) return students;
-    return students.filter(s => matchesMyName(s.hrName, myName));
+    return students.filter(s => 
+      matchesMyName(s.hrName, myName) || 
+      matchesMyName(s.counselor, myName) || 
+      matchesMyName(s.counselorName, myName) || 
+      matchesMyName(s.allocatedTo, myName)
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [students, scopeMode, isElevatedUser, myName]);
 
@@ -467,7 +472,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       baseLeads.map(l => l.admittedStudentId).filter(Boolean)
     );
 
-    const syntheticAdmittedLeads = scopedStudents
+    const syntheticAdmittedLeads = rawScopedStudents
       .filter(s => {
         const ph = (s.phone || '').replace(/\D/g, '').slice(-10);
         const hasByPhone = ph.length === 10 && leadPhones.has(ph);
@@ -503,25 +508,31 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
 
     return [...baseLeads, ...syntheticAdmittedLeads];
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [leads, scopedStudents, scopeMode, isElevatedUser, myName, currentUser?.name]);
+  }, [leads, rawScopedStudents, scopeMode, isElevatedUser, myName, currentUser?.name]);
+
+  // Scoped students directly from verified records
+  const scopedStudents = rawScopedStudents;
 
   const scopedDemos = useMemo(() => {
     if (scopeMode === 'all' && isElevatedUser) return demos;
-    if (!myName && !branchShort) return demos;
-    const bClean = (v) => String(v || '').toLowerCase().replace(/\s*(branch|\(.*\)|hq)\b/gi, '').replace(/[^a-z0-9]/g, '');
-    const myB = bClean(branchShort);
+    if (!myName) return demos;
     const leadPhones = new Set(
       scopedLeads.map(l => (l.phone || '').replace(/\D/g, '').slice(-10)).filter(Boolean)
     );
     return demos.filter(d => {
       const ph = (d.phone || '').replace(/\D/g, '').slice(-10);
       const isLeadCandidate = ph.length === 10 && leadPhones.has(ph);
-      const isMine = myName && (matchesMyName(d.counselor, myName) || matchesMyName(d.bookedBy, myName));
-      const isMyBranch = myB && (bClean(d.location).includes(myB) || bClean(d.branch).includes(myB));
-      return isMine || isMyBranch || isLeadCandidate;
+      const isMine = myName && (
+        matchesMyName(d.counselor, myName) || 
+        matchesMyName(d.bookedBy, myName) || 
+        matchesMyName(d.hrName, myName) ||
+        matchesMyName(d.counselorAssigned, myName) ||
+        matchesMyName(d.allocatedTo, myName)
+      );
+      return isMine || isLeadCandidate;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [demos, scopedLeads, scopeMode, isElevatedUser, myName, branchShort]);
+  }, [demos, scopedLeads, scopeMode, isElevatedUser, myName]);
 
   // Monthly admissions target: the Head of HR's target for this counsellor (or
   // "All HR"), otherwise Admin's default target from the incentive policy
@@ -2060,16 +2071,23 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
           existingStudents={students}
           initialData={{
             fullName: admittingLead.fullName || admittingLead.name || '',
+            fatherName: admittingLead.fatherName || '',
+            dob: admittingLead.dob || '',
             phone: admittingLead.phone || '',
+            whatsappNumber: admittingLead.whatsappNumber || admittingLead.phone || '',
             email: admittingLead.email || '',
-            location: admittingLead.location || '',
-            qualification: admittingLead.education || '',
+            location: admittingLead.location || admittingLead.address || admittingLead.branch || '',
+            qualification: admittingLead.qualification || admittingLead.education || '',
             passoutYear: admittingLead.passoutYear || '',
+            collegeCompany: admittingLead.collegeCompany || admittingLead.college || '',
             source: admittingLead.sourceName || admittingLead.source || '',
             courseName: admittingLead.course || '',
             branchName: admittingLead.branch || branchShort || '',
             leadBranch: admittingLead.branch || '',
-            batchTiming: admittingLead.batchTiming || ''
+            batchTiming: admittingLead.batchTiming || '',
+            mode: admittingLead.mode || admittingLead.courseType || 'Online',
+            courseFee: admittingLead.courseFee || admittingLead.feesAgreed || admittingLead.fee || '',
+            amountPaidNow: admittingLead.paidAmount || admittingLead.initialPayment || admittingLead.feesPaid || ''
           }}
           onSubmit={handleAdmitSubmit}
         />

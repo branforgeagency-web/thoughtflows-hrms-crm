@@ -80,9 +80,9 @@ export default function App() {
 
   const isHeadOfTrainerUser = (u) => {
     if (!u) return false;
-    const name = String(u.name || u.userName || '').toLowerCase();
     const role = String(u.role || '').toLowerCase();
-    return /head of trainer|trainer head/i.test(role) || /manoj|keerthika|vaishna|pavithra/i.test(name);
+    const dept = String(u.department || '').toLowerCase();
+    return /head of trainer|trainer head|training head|chief trainer|chief faculty/i.test(role) || (role.includes('head') && (role.includes('trainer') || dept.includes('training')));
   };
 
   const [selectedDashboard, setSelectedDashboard] = useState(() => {

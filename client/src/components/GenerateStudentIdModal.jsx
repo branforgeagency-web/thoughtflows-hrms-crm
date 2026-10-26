@@ -1,14 +1,26 @@
 import React, { useState, useEffect } from 'react';
 import { X, Check, Sparkles } from 'lucide-react';
 import { getStudents } from '../services/api';
+import {
+  BRANCH_MAP,
+  COURSE_MAP,
+  TYPE_MAP,
+  MONTH_MAP,
+  YEAR_MAP,
+  MONTH_INDEX_CODES
+} from '../utils/studentIdGenerator';
 
 export default function GenerateStudentIdModal({ isOpen, onClose, onConfirm, existingStudents }) {
-  // Generator parameters matching screenshot defaults
+  // Current month & year codes
+  const curMonthCode = MONTH_INDEX_CODES[new Date().getMonth()] || 'N';
+  const curYearCode = String(new Date().getFullYear()).slice(-1);
+
+  // Generator parameters matching official ThoughtFlows spreadsheet specification
   const [branch, setBranch] = useState('S');
   const [course, setCourse] = useState('C');
   const [courseType, setCourseType] = useState('O');
-  const [month, setMonth] = useState('Y');
-  const [year, setYear] = useState('6');
+  const [month, setMonth] = useState(curMonthCode);
+  const [year, setYear] = useState(curYearCode);
   const [serial, setSerial] = useState('001');
 
   const [allStudents, setAllStudents] = useState(existingStudents || []);
@@ -60,105 +72,6 @@ export default function GenerateStudentIdModal({ isOpen, onClose, onConfirm, exi
 
   if (!isOpen) return null;
 
-  const BRANCH_MAP = {
-    'S': 'Saravanampatti',
-    'H': 'Hopes',
-    'G': 'Gandhipuram',
-    'C': 'Trichy',
-    'M': 'Salem',
-    'K': 'Kochi',
-    'V': 'Trivandrum',
-    'T': 'Tirupati',
-    'D': 'Hyderabad Dilsukhnagar',
-    'R': 'Hyderabad Ameerpet',
-    'Z': 'Vizag',
-    'P': 'Pune',
-    'L': 'Kollapur',
-    'N': 'Theni'
-  };
-
-  const COURSE_MAP = {
-    // AMCT Certification Programmes
-    'AB': 'AMCT Beginner',
-    'AI': 'AMCT Intermediate',
-    'AA': 'AMCT Advanced',
-    'A': 'AMCT - Advanced Medical Coding',
-
-    // Medical Coding Internship Programmes
-    'IB': 'Internship Beginner',
-    'II': 'Internship Intermediate',
-    'IA': 'Internship Advanced',
-
-    // AAPC
-    'C': 'CPC - Certified Professional Coder',
-    'E': 'CIC - Certified Inpatient Coder',
-    'P': 'CPMA - Certified Professional Medical Auditor',
-    'B': 'COC - Certified Outpatient Coder',
-    'R': 'CRC - Certified Risk Adjustment Coder',
-    'PB': 'CPB - Certified Professional Biller',
-    'EDC': 'CEDC - Certified Emergency Department Coder',
-    'CN': 'CEMC - Certified Evaluation and Management Coder',
-    'CDO': 'CDEO - Certified Documentation Expert Outpatient',
-    'CDEI': 'CDEI - Certified Documentation Expert Inpatient',
-    'PPM': 'CPPM - Certified Physician Practice Manager',
-
-    // Speciality
-    'Y': 'Surgery - Specialty Surgery Coding',
-    'D': 'ED - Emergency Department Coding',
-    'N': 'EM - Evaluation and Management Coding',
-    'RD': 'Radiology - Radiology Coding',
-    'AN': 'Anesthesia - Anesthesia Coding',
-    'I': 'IP DRG - Inpatient DRG Coding',
-    'H': 'HCC - Risk Adjustment Coding',
-    'IVR': 'IVR - Interventional Radiology Coding',
-    'CDI': 'CDI - Clinical Documentation Improvement',
-
-    // AHIMA
-    'S': 'CCS - Certified Coding Specialist',
-    'CSP': 'CCS-P - Certified Coding Specialist – Physician-based',
-    'RIA': 'RHIA - Registered Health Information Administrator',
-    'RIT': 'RHIT - Registered Health Information Technician',
-
-    // HIMAA
-    'CCC': 'CCC - Certified Clinical Coder',
-    'HIM': 'HIM - Health Information Management',
-
-    // Foundation & Other
-    'F': 'CPC Crash Course',
-    'T': 'CPT Coding',
-    'Z': 'ICD-10 Coding',
-    'O': 'Anatomy & Physiology'
-  };
-
-  const TYPE_MAP = {
-    'O': 'Online',
-    'C': 'Classroom',
-    'H': 'Hybrid'
-  };
-
-  const MONTH_MAP = {
-    'A': 'Jan',
-    'B': 'Feb',
-    'C': 'Mar',
-    'D': 'Apr',
-    'Y': 'May',
-    'J': 'Jun',
-    'L': 'Jul',
-    'G': 'Aug',
-    'S': 'Sep',
-    'T': 'Oct',
-    'N': 'Nov',
-    'E': 'Dec'
-  };
-
-  const YEAR_MAP = {
-    '2': '2022',
-    '3': '2023',
-    '4': '2024',
-    '5': '2025',
-    '6': '2026'
-  };
-
   // Generated code components
   const companyPrefix = 'TF';
   const middleCode = `${branch}${course}${courseType}${month}${year}`;
@@ -183,7 +96,7 @@ export default function GenerateStudentIdModal({ isOpen, onClose, onConfirm, exi
         typeCode: courseType,
         typeName: TYPE_MAP[courseType] || 'Online',
         monthCode: month,
-        monthName: MONTH_MAP[month] || 'May',
+        monthName: MONTH_MAP[month] || 'November',
         yearCode: year,
         yearVal: YEAR_MAP[year] || '2026',
         serial
@@ -219,7 +132,7 @@ export default function GenerateStudentIdModal({ isOpen, onClose, onConfirm, exi
                 Generate Student ID
               </h2>
               <p className="text-[10px] font-mono font-bold tracking-widest text-slate-300/90 mt-0.5 uppercase">
-                PICK BRANCH · COURSE · TYPE · MONTH · YEAR · AUTO-SERIAL
+                1.TF · 2.BRANCH · 3.COURSE · 4.TYPE · 5.MONTH · 6.YEAR · 7.SERIAL
               </p>
             </div>
           </div>
@@ -246,25 +159,25 @@ export default function GenerateStudentIdModal({ isOpen, onClose, onConfirm, exi
             {/* Large Typography ID */}
             <div className="flex items-center justify-center font-mono font-black tracking-wider text-3xl sm:text-4xl">
               <span className="text-slate-900">{companyPrefix}</span>
-              <span className="text-cyan-500">{middleCode}</span>
-              <span className="bg-amber-100/90 text-amber-500 px-2 py-0.5 rounded-lg ml-1">
+              <span className="text-cyan-600">{middleCode}</span>
+              <span className="bg-amber-100/90 text-amber-600 px-2 py-0.5 rounded-lg ml-1">
                 {serial}
               </span>
             </div>
 
-            {/* Breakdown Subtitle with dot separators */}
-            <div className="text-[11px] font-mono text-slate-500 pt-1 flex items-center justify-center flex-wrap gap-x-1.5 gap-y-0.5">
-              <span>{companyPrefix}</span>
+            {/* Breakdown Subtitle */}
+            <div className="text-xs text-slate-500 font-mono flex items-center justify-center flex-wrap gap-1.5 pt-1">
+              <strong className="text-slate-800">{companyPrefix}</strong>
               <span>·</span>
-              <span className="text-teal-700 font-medium">{BRANCH_MAP[branch] || branch}</span>
+              <span className="text-teal-700 font-medium">{BRANCH_MAP[branch] || branch} ({branch})</span>
               <span>·</span>
-              <span className="text-teal-700 font-medium">{COURSE_MAP[course] || course}</span>
+              <span className="text-teal-700 font-medium">{COURSE_MAP[course] || course} ({course})</span>
               <span>·</span>
-              <span className="text-teal-700 font-medium">{TYPE_MAP[courseType] || courseType}</span>
+              <span className="text-teal-700 font-medium">{TYPE_MAP[courseType] || courseType} ({courseType})</span>
               <span>·</span>
-              <span className="text-teal-700 font-medium">{MONTH_MAP[month] || month}</span>
+              <span className="text-teal-700 font-medium">{MONTH_MAP[month] || month} ({month})</span>
               <span>·</span>
-              <span className="text-teal-700 font-medium">{YEAR_MAP[year] || year}</span>
+              <span className="text-teal-700 font-medium">{YEAR_MAP[year] || year} ({year})</span>
               <span>·</span>
               <span>Serial <strong className="text-slate-800 font-bold">{serial}</strong></span>
             </div>
@@ -276,7 +189,7 @@ export default function GenerateStudentIdModal({ isOpen, onClose, onConfirm, exi
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
               <div>
                 <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-500 uppercase mb-1.5">
-                  BRANCH
+                  2. BRANCH NAME
                 </label>
                 <select
                   value={branch}
@@ -285,15 +198,15 @@ export default function GenerateStudentIdModal({ isOpen, onClose, onConfirm, exi
                 >
                   <option value="S">S - Saravanampatti</option>
                   <option value="H">H - Hopes</option>
-                  <option value="G">G - Gandhipuram (GPM)</option>
-                  <option value="C">C - Trichy</option>
-                  <option value="M">M - Salem</option>
-                  <option value="K">K - Kochi</option>
-                  <option value="V">V - Trivandrum</option>
                   <option value="T">T - Tirupati</option>
-                  <option value="D">D - Hyderabad Dilsukhnagar</option>
-                  <option value="R">R - Hyderabad Ameerpet (DSNR)</option>
-                  <option value="Z">Z - Vizag</option>
+                  <option value="V">V - Trivandrum</option>
+                  <option value="D">D - Hyderabad</option>
+                  <option value="C">C - Trichy</option>
+                  <option value="K">K - Kochi</option>
+                  <option value="M">M - Salem</option>
+                  <option value="R">R - DSNR (Dilsukhnagar)</option>
+                  <option value="Z">Z - VIZAG</option>
+                  <option value="G">G - GPM (Gandhipuram)</option>
                   <option value="P">P - Pune</option>
                   <option value="L">L - Kollapur</option>
                   <option value="N">N - Theni</option>
@@ -302,112 +215,97 @@ export default function GenerateStudentIdModal({ isOpen, onClose, onConfirm, exi
 
               <div>
                 <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-500 uppercase mb-1.5">
-                  COURSE
+                  3. COURSE NAME
                 </label>
                 <select
                   value={course}
                   onChange={(e) => setCourse(e.target.value)}
                   className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer font-sans"
                 >
-                  <optgroup label="AMCT Certification Programmes">
-                    <option value="AB">AB - AMCT Beginner</option>
-                    <option value="AI">AI - AMCT Intermediate</option>
-                    <option value="AA">AA - AMCT Advanced</option>
-                    <option value="A">A - AMCT Foundation</option>
+                  <optgroup label="Official Specified Courses">
+                    <option value="AB">AB - AMCT(Beginner)</option>
+                    <option value="AI">AI - AMCT(Intermediate)</option>
+                    <option value="AA">AA - AMCT(Advanced)</option>
+                    <option value="A">A - AMCT</option>
+                    <option value="C">C - CPC</option>
+                    <option value="F">F - CPC crash course</option>
+                    <option value="D">D - ED</option>
+                    <option value="N">N - E/M</option>
+                    <option value="I">I - IPDRG</option>
+                    <option value="S">S - CCS</option>
+                    <option value="P">P - CPMA</option>
+                    <option value="E">E - CIC</option>
+                    <option value="R">R - CRC</option>
+                    <option value="Y">Y - SUR</option>
+                    <option value="T">T - CPT</option>
+                    <option value="Z">Z - ICD</option>
+                    <option value="H">H - HCC</option>
+                    <option value="O">O - ANATOMY</option>
+                    <option value="CN">CN - CEMC</option>
+                    <option value="R">R - RADIOLOGY</option>
                   </optgroup>
 
-                  <optgroup label="Medical Coding Internship Programmes">
+                  <optgroup label="Internship & Other Certifications">
                     <option value="IB">IB - Internship Beginner</option>
                     <option value="II">II - Internship Intermediate</option>
                     <option value="IA">IA - Internship Advanced</option>
-                  </optgroup>
-
-                  <optgroup label="AAPC Certifications">
-                    <option value="C">C - CPC (Certified Professional Coder)</option>
-                    <option value="E">E - CIC (Certified Inpatient Coder)</option>
-                    <option value="P">P - CPMA (Certified Professional Medical Auditor)</option>
-                    <option value="B">B - COC (Certified Outpatient Coder)</option>
-                    <option value="R">R - CRC (Certified Risk Adjustment Coder)</option>
-                    <option value="PB">PB - CPB (Certified Professional Biller)</option>
-                    <option value="EDC">EDC - CEDC (Certified Emergency Dept Coder)</option>
-                    <option value="CN">CN - CEMC (Certified Evaluation & Management)</option>
-                    <option value="CDO">CDO - CDEO (Certified Documentation Outpatient)</option>
-                    <option value="CDEI">CDEI - CDEI (Certified Documentation Inpatient)</option>
-                    <option value="PPM">PPM - CPPM (Physician Practice Manager)</option>
-                  </optgroup>
-
-                  <optgroup label="Speciality Tracks">
-                    <option value="Y">Y - Surgery Coding</option>
-                    <option value="D">D - ED (Emergency Department)</option>
-                    <option value="N">N - EM (Evaluation & Management)</option>
-                    <option value="RD">RD - Radiology Coding</option>
-                    <option value="AN">AN - Anesthesia Coding</option>
-                    <option value="I">I - IP DRG Hospital Coding</option>
-                    <option value="H">H - HCC Risk Adjustment</option>
+                    <option value="B">B - COC</option>
+                    <option value="PB">PB - CPB</option>
+                    <option value="EDC">EDC - CEDC</option>
+                    <option value="CDO">CDO - CDEO</option>
+                    <option value="CDEI">CDEI - CDEI</option>
+                    <option value="PPM">PPM - CPPM</option>
+                    <option value="AN">AN - Anesthesia</option>
                     <option value="IVR">IVR - Interventional Radiology</option>
                     <option value="CDI">CDI - Clinical Documentation Improvement</option>
-                  </optgroup>
-
-                  <optgroup label="AHIMA Certifications">
-                    <option value="S">S - CCS (Certified Coding Specialist)</option>
-                    <option value="CSP">CSP - CCS-P (Physician-based)</option>
-                    <option value="RIA">RIA - RHIA (Health Info Administrator)</option>
-                    <option value="RIT">RIT - RHIT (Health Info Technician)</option>
-                  </optgroup>
-
-                  <optgroup label="HIMAA Certifications">
-                    <option value="CCC">CCC - Certified Clinical Coder</option>
-                    <option value="HIM">HIM - Health Information Management</option>
-                  </optgroup>
-
-                  <optgroup label="Foundation & Prep Tracks">
-                    <option value="F">F - CPC Crash Course</option>
-                    <option value="T">T - CPT Coding</option>
-                    <option value="Z">Z - ICD-10 Coding</option>
-                    <option value="O">O - Anatomy & Physiology</option>
+                    <option value="CSP">CSP - CCS-P</option>
+                    <option value="RIA">RIA - RHIA</option>
+                    <option value="RIT">RIT - RHIT</option>
+                    <option value="CCC">CCC - CCC</option>
+                    <option value="HIM">HIM - HIM</option>
                   </optgroup>
                 </select>
               </div>
             </div>
 
-            {/* Row 2: Course Type & Month of Joining */}
+            {/* Row 2: Course Type & Month */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
               <div>
                 <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-500 uppercase mb-1.5">
-                  COURSE TYPE
+                  4. COURSE TYPE
                 </label>
                 <select
                   value={courseType}
                   onChange={(e) => setCourseType(e.target.value)}
                   className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer font-sans"
                 >
-                  <option value="O">O - Online</option>
-                  <option value="C">C - Classroom</option>
-                  <option value="H">H - Hybrid</option>
+                  <option value="O">O - ONLINE</option>
+                  <option value="C">C - CLASSROOM / OFFLINE</option>
+                  <option value="H">H - HYBRID</option>
                 </select>
               </div>
 
               <div>
                 <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-500 uppercase mb-1.5">
-                  MONTH OF JOINING
+                  5. MONTH (OFFICIAL SPEC)
                 </label>
                 <select
                   value={month}
                   onChange={(e) => setMonth(e.target.value)}
                   className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer font-sans"
                 >
-                  <option value="A">A - Jan</option>
-                  <option value="B">B - Feb</option>
-                  <option value="C">C - Mar</option>
-                  <option value="D">D - Apr</option>
+                  <option value="J">J - Jan</option>
+                  <option value="F">F - Feb</option>
+                  <option value="M">M - Mar</option>
+                  <option value="A">A - Apri</option>
                   <option value="Y">Y - May</option>
-                  <option value="J">J - Jun</option>
-                  <option value="L">L - Jul</option>
-                  <option value="G">G - Aug</option>
-                  <option value="S">S - Sep</option>
-                  <option value="T">T - Oct</option>
-                  <option value="N">N - Nov</option>
-                  <option value="E">E - Dec</option>
+                  <option value="E">E - June</option>
+                  <option value="L">L - July</option>
+                  <option value="U">U - August</option>
+                  <option value="S">S - September</option>
+                  <option value="O">O - October</option>
+                  <option value="N">N - November</option>
+                  <option value="D">D - December</option>
                 </select>
               </div>
             </div>
@@ -416,7 +314,7 @@ export default function GenerateStudentIdModal({ isOpen, onClose, onConfirm, exi
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
               <div>
                 <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-500 uppercase mb-1.5">
-                  YEAR
+                  6. YEAR
                 </label>
                 <select
                   value={year}
@@ -428,39 +326,43 @@ export default function GenerateStudentIdModal({ isOpen, onClose, onConfirm, exi
                   <option value="4">4 - 2024</option>
                   <option value="5">5 - 2025</option>
                   <option value="6">6 - 2026</option>
+                  <option value="7">7 - 2027</option>
+                  <option value="8">8 - 2028</option>
+                  <option value="9">9 - 2029</option>
+                  <option value="0">0 - 2030</option>
                 </select>
               </div>
 
               <div>
                 <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-500 uppercase mb-1.5">
-                  AUTO SERIAL (NEXT AVAILABLE)
+                  7. SERIAL NUMBER (001, 002...)
                 </label>
                 <input
                   type="text"
                   value={serial}
-                  onChange={(e) => setSerial(e.target.value)}
+                  onChange={(e) => setSerial(e.target.value.replace(/\D/g, '').slice(0, 3))}
+                  placeholder="001"
                   className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs text-slate-900 outline-none focus:border-[#00897b] transition-all font-mono font-bold"
-                  placeholder="025"
                 />
               </div>
             </div>
-
-            {/* Serial Info Tip */}
-            <div className="text-[11px] font-mono text-slate-500 flex items-center gap-1.5 pt-1">
-              <span>💡</span>
-              <span>Serial auto-increments per branch + course + month combination</span>
-            </div>
           </div>
 
-          {/* ACTION BUTTON */}
-          <div className="pt-2">
+          {/* ACTION BUTTONS */}
+          <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-5 py-2.5 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-bold transition-all cursor-pointer"
+            >
+              Cancel
+            </button>
             <button
               type="button"
               onClick={handleConfirm}
-              className="bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs sm:text-sm px-6 py-3 rounded-xl shadow-md transition-all active:scale-95 flex items-center gap-2 cursor-pointer"
+              className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white text-xs font-bold shadow-lg shadow-teal-500/20 transition-all cursor-pointer"
             >
-              <Check className="w-4 h-4 stroke-[3]" />
-              <span>Confirm & Use this ID</span>
+              <Check className="w-4 h-4" /> Use Student ID ({fullId})
             </button>
           </div>
         </div>

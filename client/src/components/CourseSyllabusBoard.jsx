@@ -54,8 +54,7 @@ export default function CourseSyllabusBoard({
       currentUser?.trainerRole === 'manager' ||
       /trainer manager|training manager/i.test(currentUser?.role || '') ||
       String(currentUser?.email || '').toLowerCase().includes('.manager@') ||
-      String(currentUser?.name || currentUser?.userName || '').toLowerCase().includes('keerthi') ||
-      String(currentUser?.name || currentUser?.userName || '').toLowerCase().includes('pavithra') ||
+      /manager|head of trainer|training team manager/i.test(currentUser?.role || '') ||
       ['admin', 'leadership'].includes(currentUser?.department)
     )
   );

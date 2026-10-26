@@ -1,76 +1,69 @@
-// Standard ThoughtFlows Student ID Generator
-// ID Pattern: TF · Branch · Course · Type · Month · Year · Serial
-// Example: TFSCOY6001 = TF (Company) - S (Saravanampatti) - C (CPC) - O (Online) - Y (May) - 6 (2026) - 001 (Serial)
+// Standard ThoughtFlows Student ID Generator (Official ThoughtFlows System Specification)
+// ID Pattern: 1.Company(TF) · 2.Branch · 3.Course · 4.CourseType · 5.Month · 6.Year · 7.Serial
+// Example: TFSMON6001 = TF (Company) - S (Saravanampatti) - M (Course) - O (Online) - N (Nov) - 6 (2026) - 001 (Serial)
+// Example with CPC: TFSCON6001 = TF - S (Saravanampatti) - C (CPC) - O (Online) - N (Nov) - 6 (2026) - 001 (Serial)
 
 export const BRANCH_MAP = {
   'S': 'Saravanampatti',
   'H': 'Hopes',
-  'G': 'Gandhipuram',
-  'C': 'Trichy',
-  'M': 'Salem',
-  'K': 'Kochi',
-  'V': 'Trivandrum',
   'T': 'Tirupati',
-  'D': 'Hyderabad Dilsukhnagar',
-  'R': 'Hyderabad Ameerpet',
-  'Z': 'Vizag',
+  'V': 'Trivandrum',
+  'D': 'Hyderabad',
+  'C': 'Trichy',
+  'K': 'Kochi',
+  'M': 'Salem',
+  'R': 'DSNR',
+  'Z': 'VIZAG',
+  'G': 'GPM',
   'P': 'Pune',
   'L': 'Kollapur',
-  'N': 'Theni',
-  'NM': 'Not Mentioned'
+  'N': 'Theni'
 };
 
 export const COURSE_MAP = {
-  // AMCT Certification Programmes
-  'AB': 'AMCT Beginner',
-  'AI': 'AMCT Intermediate',
-  'AA': 'AMCT Advanced',
-  'A': 'AMCT - Advanced Medical Coding',
+  // Official ThoughtFlows Course Name Mapping
+  'AB': 'AMCT(Beginner)',
+  'AI': 'AMCT(Intermediate)',
+  'AA': 'AMCT(Advanced)',
+  'A': 'AMCT',
+  'C': 'CPC',
+  'F': 'CPC crash course',
+  'D': 'ED',
+  'N': 'E/M',
+  'I': 'IPDRG',
+  'S': 'CCS',
+  'P': 'CPMA',
+  'E': 'CIC',
+  'R': 'CRC',
+  'Y': 'SUR',
+  'T': 'CPT',
+  'Z': 'ICD',
+  'H': 'HCC',
+  'O': 'ANATOMY',
+  'CN': 'CEMC',
+  'R_RAD': 'RADIOLOGY',
 
   // Medical Coding Internship Programmes
   'IB': 'Internship Beginner',
   'II': 'Internship Intermediate',
   'IA': 'Internship Advanced',
 
-  // AAPC Certifications
-  'C': 'CPC - Certified Professional Coder',
-  'E': 'CIC - Certified Inpatient Coder',
-  'P': 'CPMA - Certified Professional Medical Auditor',
-  'B': 'COC - Certified Outpatient Coder',
-  'R': 'CRC - Certified Risk Adjustment Coder',
-  'PB': 'CPB - Certified Professional Biller',
-  'EDC': 'CEDC - Certified Emergency Department Coder',
-  'CN': 'CEMC - Certified Evaluation and Management Coder',
-  'CDO': 'CDEO - Certified Documentation Expert Outpatient',
-  'CDEI': 'CDEI - Certified Documentation Expert Inpatient',
-  'PPM': 'CPPM - Certified Physician Practice Manager',
-
-  // Speciality Tracks
-  'Y': 'Surgery - Specialty Surgery Coding',
-  'D': 'ED - Emergency Department Coding',
-  'N': 'EM - Evaluation and Management Coding',
-  'RD': 'Radiology - Radiology Coding',
-  'AN': 'Anesthesia - Anesthesia Coding',
-  'I': 'IP DRG - Inpatient DRG Coding',
-  'H': 'HCC - Risk Adjustment Coding',
-  'IVR': 'IVR - Interventional Radiology Coding',
-  'CDI': 'CDI - Clinical Documentation Improvement',
-
-  // AHIMA Certifications
-  'S': 'CCS - Certified Coding Specialist',
-  'CSP': 'CCS-P - Certified Coding Specialist – Physician-based',
-  'RIA': 'RHIA - Registered Health Information Administrator',
-  'RIT': 'RHIT - Registered Health Information Technician',
-
-  // HIMAA Certifications
-  'CCC': 'CCC - Certified Clinical Coder',
-  'HIM': 'HIM - Health Information Management',
-
-  // Foundation & Prep Tracks
-  'F': 'CPC Crash Course',
-  'T': 'CPT Coding',
-  'Z': 'ICD-10 Coding',
-  'O': 'Anatomy & Physiology'
+  // Additional AAPC / AHIMA / Speciality Programmes
+  'B': 'COC',
+  'PB': 'CPB',
+  'EDC': 'CEDC',
+  'CDO': 'CDEO',
+  'CDEI': 'CDEI',
+  'PPM': 'CPPM',
+  'AN': 'Anesthesia',
+  'IVR': 'IVR',
+  'CDI': 'CDI',
+  'CSP': 'CCS-P',
+  'RIA': 'RHIA',
+  'RIT': 'RHIT',
+  'CCC': 'CCC',
+  'HIM': 'HIM',
+  'M': 'Medical Coding'
 };
 
 export const TYPE_MAP = {
@@ -80,18 +73,18 @@ export const TYPE_MAP = {
 };
 
 export const MONTH_MAP = {
-  'A': 'Jan',
-  'B': 'Feb',
-  'C': 'Mar',
-  'D': 'Apr',
+  'J': 'Jan',
+  'F': 'Feb',
+  'M': 'Mar',
+  'A': 'Apri',
   'Y': 'May',
-  'J': 'Jun',
-  'L': 'Jul',
-  'G': 'Aug',
-  'S': 'Sep',
-  'T': 'Oct',
-  'N': 'Nov',
-  'E': 'Dec'
+  'E': 'June',
+  'L': 'July',
+  'U': 'August',
+  'S': 'September',
+  'O': 'October',
+  'N': 'November',
+  'D': 'December'
 };
 
 export const YEAR_MAP = {
@@ -106,11 +99,12 @@ export const YEAR_MAP = {
   '0': '2030'
 };
 
-// 0-indexed month array matching MONTH_MAP codes
-const MONTH_INDEX_CODES = ['A', 'B', 'C', 'D', 'Y', 'J', 'L', 'G', 'S', 'T', 'N', 'E'];
+// 0-indexed month array matching official MONTH_MAP codes:
+// Jan=J, Feb=F, Mar=M, Apri=A, May=Y, June=E, July=L, August=U, September=S, October=O, November=N, December=D
+export const MONTH_INDEX_CODES = ['J', 'F', 'M', 'A', 'Y', 'E', 'L', 'U', 'S', 'O', 'N', 'D'];
 
 /**
- * Resolve single-letter branch code from name or existing code
+ * Resolve branch code (Saravanampatti=S, Hopes=H, Tirupati=T, Trivandrum=V, Hyderabad=D, Trichy=C, Kochi=K, Salem=M, DSNR=R, VIZAG=Z, GPM=G)
  */
 export function getBranchCode(branch) {
   if (!branch) return 'S';
@@ -120,25 +114,27 @@ export function getBranchCode(branch) {
 
   const low = str.toLowerCase();
   if (low.includes('hopes')) return 'H';
-  if (low.includes('gandhi') || low.includes('gpm')) return 'G';
-  if (low.includes('trichy')) return 'C';
-  if (low.includes('salem')) return 'M';
-  if (low.includes('kochi') || low.includes('cochin')) return 'K';
-  if (low.includes('trivandrum') || low.includes('thiruvananthapuram')) return 'V';
   if (low.includes('tirupati')) return 'T';
-  if (low.includes('dilsukhnagar') || low.includes('dsnr')) return 'D';
-  if (low.includes('ameerpet') || low.includes('hyderabad')) return 'R';
+  if (low.includes('trivandrum') || low.includes('thiruvananthapuram')) return 'V';
+  if (low.includes('dsnr') || low.includes('dilsukhnagar')) return 'R';
+  if (low.includes('hyderabad') || low.includes('ameerpet')) return 'D';
+  if (low.includes('trichy')) return 'C';
+  if (low.includes('kochi') || low.includes('cochin')) return 'K';
+  if (low.includes('salem')) return 'M';
   if (low.includes('vizag') || low.includes('visakhapatnam')) return 'Z';
+  if (low.includes('gandhi') || low.includes('gpm')) return 'G';
+  if (low.includes('saravanampatti') || low.includes('svm') || low.includes('coimbatore') || low.includes('cbe')) return 'S';
   if (low.includes('pune')) return 'P';
   if (low.includes('kollapur') || low.includes('kolhapur')) return 'L';
   if (low.includes('theni')) return 'N';
-  if (low.includes('saravanampatti') || low.includes('cbe') || low.includes('coimbatore')) return 'S';
 
   return 'S';
 }
 
 /**
- * Resolve course code from name, course object, or code string
+ * Resolve course code according to official specification:
+ * AMCT(Beginner)=AB, AMCT(Intermediate)=AI, AMCT(Advanced)=AA, AMCT=A, CPC=C, CPC crash course=F,
+ * ED=D, E/M=N, IPDRG=I, CCS=S, CPMA=P, CIC=E, CRC=R, SUR=Y, CPT=T, ICD=Z, HCC=H, ANATOMY=O, CEMC=CN, RADIOLOGY=R
  */
 export function getCourseCode(course) {
   if (!course) return 'C';
@@ -147,14 +143,14 @@ export function getCourseCode(course) {
   if (COURSE_MAP[upper]) return upper;
 
   if (upper.includes('CRASH')) return 'F';
+  if (upper.includes('AMCT BEGINNER') || upper.includes('AMCT(BEGINNER)') || (upper.includes('AMCT') && upper.includes('BEGINNER'))) return 'AB';
+  if (upper.includes('AMCT INTERMEDIATE') || upper.includes('AMCT(INTERMEDIATE)') || (upper.includes('AMCT') && upper.includes('INTERMEDIATE'))) return 'AI';
+  if (upper.includes('AMCT ADVANCED') || upper.includes('AMCT(ADVANCED)') || (upper.includes('AMCT') && upper.includes('ADVANCED'))) return 'AA';
+  if (upper.includes('AMCT') || upper.includes('MCT')) return 'A';
   if (upper.includes('INTERNSHIP BEGINNER')) return 'IB';
   if (upper.includes('INTERNSHIP INTERMEDIATE')) return 'II';
   if (upper.includes('INTERNSHIP ADVANCED')) return 'IA';
   if (upper.includes('INTERNSHIP')) return 'IB';
-  if (upper.includes('AMCT BEGINNER') || upper.includes('BEGINNER')) return 'AB';
-  if (upper.includes('AMCT INTERMEDIATE') || upper.includes('INTERMEDIATE')) return 'AI';
-  if (upper.includes('AMCT ADVANCED') || upper.includes('ADVANCED')) return 'AA';
-  if (upper.includes('AMCT') || upper.includes('MCT')) return 'A';
   if (upper.includes('CPMA')) return 'P';
   if (upper.includes('COC')) return 'B';
   if (upper.includes('CRC')) return 'R';
@@ -165,12 +161,12 @@ export function getCourseCode(course) {
   if (upper.includes('CDEI')) return 'CDEI';
   if (upper.includes('CPPM') || upper.includes('PPM')) return 'PPM';
   if (upper.includes('CIC')) return 'E';
-  if (upper.includes('SURGERY')) return 'Y';
-  if (upper.includes('EMERGENCY') || upper.includes('ED -') || upper.includes('ED (')) return 'D';
-  if (upper.includes('EVALUATION') || upper.includes('EM -') || upper.includes('E/M')) return 'N';
-  if (upper.includes('RADIOLOGY') || upper.includes('RAD')) return 'RD';
+  if (upper.includes('SURGERY') || upper.includes('SUR')) return 'Y';
+  if (upper.includes('EMERGENCY') || upper.includes('ED -') || upper.includes('ED (') || upper === 'ED') return 'D';
+  if (upper.includes('EVALUATION') || upper.includes('EM -') || upper.includes('E/M') || upper === 'EM' || upper === 'E & M') return 'N';
+  if (upper.includes('RADIOLOGY') || upper.includes('RAD')) return 'R';
   if (upper.includes('ANESTHESIA')) return 'AN';
-  if (upper.includes('IP DRG') || upper.includes('IPDRG')) return 'I';
+  if (upper.includes('IP DRG') || upper.includes('IPDRG') || upper.includes('IP-DRG')) return 'I';
   if (upper.includes('HCC')) return 'H';
   if (upper.includes('IVR')) return 'IVR';
   if (upper.includes('CDI')) return 'CDI';
@@ -183,13 +179,14 @@ export function getCourseCode(course) {
   if (upper.includes('CPT')) return 'T';
   if (upper.includes('ICD')) return 'Z';
   if (upper.includes('ANATOMY')) return 'O';
-  if (upper.includes('CPC')) return 'C';
+  if (upper.includes('CPC') || upper === 'C') return 'C';
+  if (upper.includes('MEDICAL CODING') || upper === 'M') return 'M';
 
   return 'C';
 }
 
 /**
- * Resolve course type code (O = Online, C = Classroom, H = Hybrid)
+ * Resolve course type code (ONLINE = O, CLASSROOM / OFFLINE = C, HYBRID = H)
  */
 export function getCourseTypeCode(courseType) {
   if (!courseType) return 'O';
@@ -202,45 +199,44 @@ export function getCourseTypeCode(courseType) {
 }
 
 /**
- * Resolve single-letter month code (A to E) from Date, string or month name
+ * Resolve single-letter month code according to official specification:
+ * Jan=J, Feb=F, Mar=M, Apri=A, May=Y, June=E, July=L, August=U, September=S, October=O, November=N, December=D
  */
 export function getMonthCode(dateOrMonth) {
   if (!dateOrMonth) {
     const cur = new Date();
-    return MONTH_INDEX_CODES[cur.getMonth()] || 'Y';
+    return MONTH_INDEX_CODES[cur.getMonth()] || 'N';
   }
 
   const str = String(dateOrMonth).trim().toUpperCase();
   if (MONTH_MAP[str]) return str;
 
-  // Month name lookup
   const monthNames = {
-    'JAN': 'A', 'JANUARY': 'A',
-    'FEB': 'B', 'FEBRUARY': 'B',
-    'MAR': 'C', 'MARCH': 'C',
-    'APR': 'D', 'APRIL': 'D',
+    'JAN': 'J', 'JANUARY': 'J',
+    'FEB': 'F', 'FEBRUARY': 'F',
+    'MAR': 'M', 'MARCH': 'M',
+    'APR': 'A', 'APRI': 'A', 'APRIL': 'A',
     'MAY': 'Y',
-    'JUN': 'J', 'JUNE': 'J',
+    'JUN': 'E', 'JUNE': 'E',
     'JUL': 'L', 'JULY': 'L',
-    'AUG': 'G', 'AUGUST': 'G',
+    'AUG': 'U', 'AUGUST': 'U',
     'SEP': 'S', 'SEPTEMBER': 'S',
-    'OCT': 'T', 'OCTOBER': 'T',
+    'OCT': 'O', 'OCTOBER': 'O',
     'NOV': 'N', 'NOVEMBER': 'N',
-    'DEC': 'E', 'DECEMBER': 'E'
+    'DEC': 'D', 'DECEMBER': 'D'
   };
   if (monthNames[str]) return monthNames[str];
 
-  // Try parsing date string (e.g. '2026-09-29' or Date object)
   const d = dateOrMonth instanceof Date ? dateOrMonth : new Date(dateOrMonth);
   if (!isNaN(d.getTime())) {
-    return MONTH_INDEX_CODES[d.getMonth()] || 'Y';
+    return MONTH_INDEX_CODES[d.getMonth()] || 'N';
   }
 
-  return 'Y';
+  return 'N';
 }
 
 /**
- * Resolve single-digit year code (e.g. 2026 -> '6')
+ * Resolve single-digit year code (2022=2, 2023=3, 2024=4, 2025=5, 2026=6...)
  */
 export function getYearCode(dateOrYear) {
   if (!dateOrYear) {
@@ -265,7 +261,7 @@ export function getYearCode(dateOrYear) {
 }
 
 /**
- * Calculate the next available 3-digit serial from existing students
+ * Calculate the next available 3-digit serial from existing students (001, 002, 003...)
  */
 export function calculateNextSerial(prefix, existingStudents = []) {
   const targetPrefix = String(prefix || '').toUpperCase();
@@ -292,7 +288,14 @@ export function calculateNextSerial(prefix, existingStudents = []) {
 }
 
 /**
- * Main generator function that builds student ID and all associated breakdown metadata
+ * Main generator function that builds student ID matching ThoughtFlows official formula:
+ * 1. Company name: TF
+ * 2. Branch name (Saravanampatti=S, Hopes=H, Tirupati=T, Trivandrum=V, Hyderabad=D, Trichy=C, Kochi=K, Salem=M, DSNR=R, VIZAG=Z, GPM=G)
+ * 3. Course name (AMCT Beginner=AB, CPC=C, etc.)
+ * 4. Course type (ONLINE=O, CLASSROOM=C, HYBRID=H)
+ * 5. Month (Jan=J, Feb=F, Mar=M, Apri=A, May=Y, June=E, July=L, August=U, September=S, October=O, November=N, December=D)
+ * 6. Year (2026=6)
+ * 7. Serial number (001, 002, 003...)
  */
 export function generateStudentIdDetails({
   branch,
@@ -321,12 +324,12 @@ export function generateStudentIdDetails({
   const fullId = `${prefix}${resolvedSerial}`;
 
   const branchName = BRANCH_MAP[branchCode] || 'Saravanampatti';
-  const courseName = COURSE_MAP[courseCode] || 'CPC - Certified Professional Coder';
+  const courseName = COURSE_MAP[courseCode] || 'CPC';
   const typeName = TYPE_MAP[typeCode] || 'Online';
-  const monthName = MONTH_MAP[monthCode] || 'May';
+  const monthName = MONTH_MAP[monthCode] || 'November';
   const yearVal = YEAR_MAP[yearCode] || `${new Date().getFullYear()}`;
 
-  const breakdownText = `${companyPrefix} · ${branchName} · ${courseName} · ${typeName} · ${monthName} · ${yearVal} · Serial ${resolvedSerial}`;
+  const breakdownText = `${companyPrefix} · ${branchName} (${branchCode}) · ${courseName} (${courseCode}) · ${typeName} (${typeCode}) · ${monthName} (${monthCode}) · ${yearVal} (${yearCode}) · Serial ${resolvedSerial}`;
 
   return {
     studentId: fullId,

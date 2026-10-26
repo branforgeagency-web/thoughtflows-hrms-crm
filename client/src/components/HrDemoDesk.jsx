@@ -34,7 +34,7 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
     if (propDemos !== undefined) {
       setDemos(propDemos);
     } else {
-      const params = currentUser?.name ? { counselor: currentUser.name, branch: branchShort } : undefined;
+      const params = currentUser?.name ? { counselor: currentUser.name } : undefined;
       getDemos(params)
         .then(res => {
           if (Array.isArray(res)) setDemos(res);

@@ -84,7 +84,10 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
     setStarting(true);
     setError('');
     try {
-      const sess = await startLiveClass({ trainerId, trainerName, batch: batch.name, topic: topic.trim() || batch.module || '' });
+      const bName = batch?.name || batch?.batchName || batch?.id || 'Active Batch';
+      const tId = trainerId || 'LEADER';
+      const tName = trainerName || 'Trainer';
+      const sess = await startLiveClass({ trainerId: tId, trainerName: tName, batch: bName, topic: topic.trim() || batch?.module || '' });
       setLive(sess);
       flash('✓ Class is live — your batch can now join from the Student Portal');
     } catch (e) {

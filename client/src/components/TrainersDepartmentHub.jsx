@@ -26,10 +26,6 @@ import TrainerHeadDashboard from './TrainerHeadDashboard';
 import TrainerOrgHierarchyChart from './TrainerOrgHierarchyChart';
 import TrainerRoleLoginModal from './TrainerRoleLoginModal';
 import {
-  TRAINER_HIERARCHY,
-  ALL_HIERARCHY_TRAINERS
-} from '../constants/trainerHierarchy';
-import {
   getTrainerSettings,
   getBatches,
   getStudents,

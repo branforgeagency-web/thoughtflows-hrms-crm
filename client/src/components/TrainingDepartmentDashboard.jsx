@@ -100,7 +100,6 @@ import {
 } from '../services/api';
 import { TRAINER_COURSES } from '../constants/courses';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
-import { ALL_HIERARCHY_TRAINERS } from '../constants/trainerHierarchy';
 
 export default function TrainingDepartmentDashboard({
   onClose,
@@ -154,7 +153,6 @@ export default function TrainingDepartmentDashboard({
     currentUser?.role === 'Centre Manager' ||
     /head of trainer|training head|head of training|chief trainer|chief faculty|faculty lead|branch head/i.test(trainerRole || '') ||
     /head of trainer|training head|head of training|chief trainer|chief faculty|faculty lead|branch head/i.test(currentUser?.role || '') ||
-    /manoj|keerthika|vaishna|pavithra|dr\.?\s*vikram/i.test(trainerName || currentUser?.name || currentUser?.userName || '') ||
     (trainerCourseKey === 'ALL' && /head|chief|lead/i.test(trainerRole || currentUser?.role || ''))
   );
   const isChiefFaculty = isHeadOfTrainer;
@@ -304,7 +302,7 @@ export default function TrainingDepartmentDashboard({
       .then(p => { if (alive) { setTrainerProfile(p); setProfileError(''); } })
       .catch(err => {
         if (alive) {
-          const matched = ALL_HIERARCHY_TRAINERS.find(ht => ht.id === tid || ht.name.toLowerCase() === String(name || '').toLowerCase()) || pickedIdentity;
+          const matched = pickedIdentity;
           if (matched) {
             setTrainerProfile({
               trainerId: matched.id || matched.trainerId || tid,
@@ -349,11 +347,6 @@ export default function TrainingDepartmentDashboard({
       setLeads(Array.isArray(ldRes?.leads) ? ldRes.leads : (Array.isArray(ldRes) ? ldRes : []));
       setDoubts(Array.isArray(dbtRes) ? dbtRes : []);
       const mergedRoster = [...(Array.isArray(rosterRes) ? rosterRes : [])];
-      ALL_HIERARCHY_TRAINERS.forEach((ht) => {
-        if (!mergedRoster.some((m) => String(m.trainerName || m.name || '').toLowerCase() === ht.name.toLowerCase() || m.trainerId === ht.id)) {
-          mergedRoster.push(ht);
-        }
-      });
       setTrainerRoster(mergedRoster);
       if (!hasSignedInUser && !pickedIdentity && mergedRoster.length > 0) {
         const first = mergedRoster[0];
