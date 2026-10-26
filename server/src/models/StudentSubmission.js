@@ -23,6 +23,9 @@ const studentSubmissionSchema = new mongoose.Schema(
     fileName: { type: String, default: '' },
     mimeType: { type: String, default: '' },
     fileSize: { type: Number, default: 0 },
+    storageKey: { type: String, default: '' },
+    storageUrl: { type: String, default: '' },
+    storageProvider: { type: String, enum: ['amplify', 'inline'], default: 'inline' },
     data: { type: String, default: '', select: false },
     status: {
       type: String,

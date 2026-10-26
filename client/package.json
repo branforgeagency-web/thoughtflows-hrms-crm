@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@zoom/meetingsdk": "^6.5.0",
+    "aws-amplify": "^6.22.2",
     "axios": "^1.7.9",
     "clsx": "^2.1.1",
     "lodash": "^4.17.21",

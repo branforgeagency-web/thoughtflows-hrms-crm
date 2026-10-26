@@ -57,6 +57,7 @@ import {
 } from '../services/api';
 import NotificationBell from './NotificationBell';
 import { COURSE_CATEGORIES } from '../constants/courses';
+import { isAmplifyStorageConfigured, uploadStudentSubmissionFile, uploadResumeFile } from '../services/amplifyStorage';
 
 // ----------------------------------------------------------------------------
 // Program rules (not student data)
@@ -527,8 +528,28 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
       if (file) {
         if (file.size > 12 * 1024 * 1024) throw new Error('File is larger than 12 MB');
         payload.fileName = file.name;
+        payload.fileSize = file.size;
         payload.mimeType = file.type;
-        payload.data = await fileToBase64(file);
+
+        // Try uploading to AWS Amplify S3 Storage if configured
+        if (isAmplifyStorageConfigured()) {
+          try {
+            const s3Result = type === 'resume'
+              ? await uploadResumeFile(file, st.studentId)
+              : await uploadStudentSubmissionFile(file, st.studentId, { type });
+            payload.storageKey = s3Result.storageKey;
+            payload.storageUrl = s3Result.storageUrl;
+            payload.storageProvider = 'amplify';
+          } catch (amplifyErr) {
+            console.warn('Amplify submission upload fallback to inline:', amplifyErr);
+          }
+        }
+
+        // If Amplify was not used or failed, fall back to inline base64
+        if (!payload.storageUrl) {
+          payload.data = await fileToBase64(file);
+          payload.storageProvider = 'inline';
+        }
       }
       await createStudentSubmission(st.studentId, payload);
     }, trainer ? `✓ Sent to ${trainer.trainerName} for review` : '✓ Submitted');

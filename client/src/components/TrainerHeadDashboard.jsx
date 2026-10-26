@@ -43,7 +43,8 @@ import {
   Video,
   CalendarCheck,
   PhoneCall,
-  UserPlus
+  UserPlus,
+  Lock
 } from 'lucide-react';
 import {
   getStudents,
@@ -62,12 +63,15 @@ import {
   createDemoMeeting,
   setDemoMeetingLink,
   rescheduleDemo,
-  acknowledgeDemo
+  acknowledgeDemo,
+  getTeam
 } from '../services/api';
 import TrainerOrgHierarchyChart from './TrainerOrgHierarchyChart';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 import CourseSyllabusBoard from './CourseSyllabusBoard';
 import ClassSessionRoom from './ClassSessionRoom';
+import TeamRosterBoard from './TeamRosterBoard';
+import { getCurrentWeekScheduleDays, getWeekRangeString, localDateKey } from '../utils/dateUtils';
 
 export default function TrainerHeadDashboard({
   roleType = 'head', // 'head' | 'manager' | 'tl'
@@ -119,7 +123,26 @@ export default function TrainerHeadDashboard({
   const [demos, setDemos] = useState([]);
   const [doubts, setDoubts] = useState([]);
   const [trainerCredentials, setTrainerCredentials] = useState(null);
+  const [teamMembers, setTeamMembers] = useState([]);
   const [loading, setLoading] = useState(true);
+
+  // Current user's shift and weekly roster details
+  const currentUserName = currentUser?.name || currentUser?.userName || '';
+  const myRosterRecord = useMemo(() => {
+    if (!currentUserName || !teamMembers.length) return null;
+    const uNorm = currentUserName.toLowerCase().trim();
+    const uFirst = uNorm.split(' ')[0];
+    return teamMembers.find((m) => (m.name || '').toLowerCase().trim() === uNorm) ||
+      teamMembers.find((m) => (m.name || '').toLowerCase().trim().startsWith(uFirst)) ||
+      null;
+  }, [currentUserName, teamMembers]);
+
+  const myWeeklySchedule = useMemo(() => {
+    if (Array.isArray(myRosterRecord?.weeklySchedule) && myRosterRecord.weeklySchedule.length) {
+      return myRosterRecord.weeklySchedule;
+    }
+    return getCurrentWeekScheduleDays();
+  }, [myRosterRecord]);
 
   // Global & Local Filters
   const [selectedBranch, setSelectedBranch] = useState('all');
@@ -130,6 +153,60 @@ export default function TrainerHeadDashboard({
   const [leadershipViewMode, setLeadershipViewMode] = useState('cards'); // 'cards' | 'chart'
   const [mappingManagerFilter, setMappingManagerFilter] = useState('all');
   const [mappingTLFilter, setMappingTLFilter] = useState('all');
+
+  // Table Column Filters
+  // 1. Branch-Wise Students Table Filters
+  const [studentCourseFilter, setStudentCourseFilter] = useState('all');
+  const [studentAttendanceFilter, setStudentAttendanceFilter] = useState('all'); // 'all' | 'risk' | 'good'
+  const [studentSyllabusFilter, setStudentSyllabusFilter] = useState('all'); // 'all' | 'completed' | 'pending'
+  const [studentCertifiedFilter, setStudentCertifiedFilter] = useState('all'); // 'all' | 'certified' | 'uncertified'
+  const [studentPlacementFilter, setStudentPlacementFilter] = useState('all'); // 'all' | 'placed' | 'in_course'
+
+  // 2. Trainer Attendance & Shift Records Filters
+  const [attBranchFilter, setAttBranchFilter] = useState('all');
+  const [attShiftFilter, setAttShiftFilter] = useState('all');
+  const [attStatusFilter, setAttStatusFilter] = useState('all'); // 'all' | 'active' | 'inactive'
+  const [attPctFilter, setAttPctFilter] = useState('all'); // 'all' | 'high' | 'moderate' | 'low'
+  const [attSearch, setAttSearch] = useState('');
+
+  // 3. Trainer & Batch Mapping Filters
+  const [mappingBranchFilter, setMappingBranchFilter] = useState('all');
+  const [mappingCourseFilter, setMappingCourseFilter] = useState('all');
+  const [mappingBatchFilter, setMappingBatchFilter] = useState('all');
+  const [mappingSearch, setMappingSearch] = useState('');
+
+  // 4. Batch-Wise Syllabus Progress Breakdown Filters
+  const [syllabusBranchFilter, setSyllabusBranchFilter] = useState('all');
+  const [syllabusCourseFilter, setSyllabusCourseFilter] = useState('all');
+  const [syllabusFacultyFilter, setSyllabusFacultyFilter] = useState('all');
+  const [syllabusProgressFilter, setSyllabusProgressFilter] = useState('all'); // 'all' | 'completed' | 'in_progress' | 'zero'
+  const [syllabusSearch, setSyllabusSearch] = useState('');
+
+  // 5. Weak Students Report Filters
+  const [weakBranchFilter, setWeakBranchFilter] = useState('all');
+  const [weakBatchFilter, setWeakBatchFilter] = useState('all');
+  const [weakFacultyFilter, setWeakFacultyFilter] = useState('all');
+  const [weakReasonFilter, setWeakReasonFilter] = useState('all'); // 'all' | 'attendance' | 'score'
+  const [weakSearch, setWeakSearch] = useState('');
+
+  // 6. Demo Details Table Filters
+  const [demoBranchFilter, setDemoBranchFilter] = useState('all');
+  const [demoCourseFilter, setDemoCourseFilter] = useState('all');
+  const [demoFacultyFilter, setDemoFacultyFilter] = useState('all');
+  const [demoStatusFilter, setDemoStatusFilter] = useState('all');
+  const [demoSearch, setDemoSearch] = useState('');
+
+  // 7. Leadership Matrix Table Filters
+  const [matrixRoleFilter, setMatrixRoleFilter] = useState('all'); // 'all' | 'manager' | 'tl'
+  const [matrixZoneFilter, setMatrixZoneFilter] = useState('all');
+  const [matrixStatusFilter, setMatrixStatusFilter] = useState('all');
+  const [matrixSearch, setMatrixSearch] = useState('');
+
+  // 8. Batches Grid Filters
+  const [batchBranchFilter, setBatchBranchFilter] = useState('all');
+  const [batchCourseFilter, setBatchCourseFilter] = useState('all');
+  const [batchFacultyFilter, setBatchFacultyFilter] = useState('all');
+  const [batchSearch, setBatchSearch] = useState('');
 
   // Reassignment Modal State
   const [reassignDemoTarget, setReassignDemoTarget] = useState(null);
@@ -163,9 +240,10 @@ export default function TrainerHeadDashboard({
       getDemos().catch(() => []),
       getTrainerDoubts().catch(() => []),
       getTrainerCredentials().catch(() => null),
-      getTrainingMaterials().catch(() => [])
+      getTrainingMaterials().catch(() => []),
+      getTeam({ departmentCode: 'ACAD' }).catch(() => [])
     ])
-      .then(([stData, bData, brData, trData, attData, dData, dbtData, credData, matData]) => {
+      .then(([stData, bData, brData, trData, attData, dData, dbtData, credData, matData, tData]) => {
         // Pure Real Data: Use trainers returned directly from database / API
         const realTrainers = [...(Array.isArray(trData) ? trData : [])];
         const knownIds = new Set(realTrainers.map((t) => t.trainerId || t.id).filter(Boolean));
@@ -196,6 +274,7 @@ export default function TrainerHeadDashboard({
         setDoubts(Array.isArray(dbtData) ? dbtData : []);
         if (credData) setTrainerCredentials(credData);
         if (Array.isArray(matData)) setMaterials(matData);
+        if (Array.isArray(tData)) setTeamMembers(tData);
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -204,7 +283,7 @@ export default function TrainerHeadDashboard({
   useEffect(() => {
     loadDashboardData();
     const unsub = onDataUpdate((entity) => {
-      if (['students', 'batches', 'trainers', 'demos', 'doubts', 'trainer_attendance'].includes(entity)) {
+      if (['students', 'batches', 'trainers', 'demos', 'doubts', 'trainer_attendance', 'team'].includes(entity)) {
         loadDashboardData();
       }
     });
@@ -966,10 +1045,14 @@ export default function TrainerHeadDashboard({
     };
   }, [scopedBatches]);
 
-  // Filtered Students (used in Branch-Wise Student view)
+  // Filtered Students (used in Branch-Wise Student view) with full column filtering
+  const studentUniqueCourses = useMemo(() => Array.from(new Set(scopedStudents.map((s) => s.course).filter(Boolean))).sort(), [scopedStudents]);
+  const studentUniqueBatches = useMemo(() => Array.from(new Set(scopedStudents.map((s) => s.batch || s.batchName).filter(Boolean))).sort(), [scopedStudents]);
+  const studentUniqueTrainers = useMemo(() => Array.from(new Set(scopedStudents.map((s) => s.trainer || s.faculty).filter(Boolean))).sort(), [scopedStudents]);
+
   const filteredStudents = useMemo(() => {
     return scopedStudents.filter((s) => {
-      if (selectedBranch !== 'all' && String(s.branch || s.location || '').toLowerCase() !== selectedBranch.toLowerCase()) {
+      if (selectedBranch !== 'all' && String(s.branch || s.location || s.leadBranch || '').toLowerCase() !== selectedBranch.toLowerCase()) {
         return false;
       }
       if (selectedBatch !== 'all' && String(s.batch || s.batchName || s.batchId || '').toLowerCase() !== selectedBatch.toLowerCase()) {
@@ -978,16 +1061,273 @@ export default function TrainerHeadDashboard({
       if (selectedTrainer !== 'all' && String(s.trainer || s.faculty || s.trainerId || '').toLowerCase() !== selectedTrainer.toLowerCase()) {
         return false;
       }
+      if (studentCourseFilter !== 'all' && String(s.course || s.courseKey || '').toLowerCase() !== studentCourseFilter.toLowerCase()) {
+        return false;
+      }
+      if (studentAttendanceFilter !== 'all') {
+        const att = Math.round(Number(s.attendancePercentage ?? s.attendance ?? 85));
+        if (studentAttendanceFilter === 'risk' && att >= 75) return false;
+        if (studentAttendanceFilter === 'good' && att < 75) return false;
+      }
+      if (studentSyllabusFilter !== 'all') {
+        const isDone = isStudentSyllabusCompleted(s);
+        if (studentSyllabusFilter === 'completed' && !isDone) return false;
+        if (studentSyllabusFilter === 'pending' && isDone) return false;
+      }
+      if (studentCertifiedFilter !== 'all') {
+        const isCert = isStudentCertified(s);
+        if (studentCertifiedFilter === 'certified' && !isCert) return false;
+        if (studentCertifiedFilter === 'uncertified' && isCert) return false;
+      }
+      if (studentPlacementFilter !== 'all') {
+        const isPlaced = isStudentPlaced(s);
+        if (studentPlacementFilter === 'placed' && !isPlaced) return false;
+        if (studentPlacementFilter === 'in_course' && isPlaced) return false;
+      }
       if (searchQuery) {
         const q = searchQuery.toLowerCase();
         const matchesName = String(s.name || '').toLowerCase().includes(q);
         const matchesId = String(s.studentId || '').toLowerCase().includes(q);
         const matchesPhone = String(s.phone || '').includes(q);
-        if (!matchesName && !matchesId && !matchesPhone) return false;
+        const matchesBranch = String(s.branch || s.location || '').toLowerCase().includes(q);
+        const matchesCourse = String(s.course || '').toLowerCase().includes(q);
+        const matchesBatch = String(s.batch || s.batchName || '').toLowerCase().includes(q);
+        const matchesFaculty = String(s.trainer || s.faculty || '').toLowerCase().includes(q);
+        if (!matchesName && !matchesId && !matchesPhone && !matchesBranch && !matchesCourse && !matchesBatch && !matchesFaculty) return false;
       }
       return true;
     });
-  }, [scopedStudents, selectedBranch, selectedBatch, selectedTrainer, searchQuery]);
+  }, [
+    scopedStudents, selectedBranch, selectedBatch, selectedTrainer, 
+    studentCourseFilter, studentAttendanceFilter, studentSyllabusFilter, 
+    studentCertifiedFilter, studentPlacementFilter, searchQuery
+  ]);
+
+  // Filtered Trainer Attendance Report
+  const attUniqueBranches = useMemo(() => Array.from(new Set(trainerAttendanceReport.map(t => t.branch).filter(Boolean))).sort(), [trainerAttendanceReport]);
+  const attUniqueShifts = useMemo(() => Array.from(new Set(trainerAttendanceReport.map(t => t.shift).filter(Boolean))).sort(), [trainerAttendanceReport]);
+
+  const filteredAttendanceReport = useMemo(() => {
+    return trainerAttendanceReport.filter((tr) => {
+      if (attBranchFilter !== 'all' && String(tr.branch || '').toLowerCase() !== attBranchFilter.toLowerCase()) {
+        return false;
+      }
+      if (attShiftFilter !== 'all' && String(tr.shift || '').toLowerCase() !== attShiftFilter.toLowerCase()) {
+        return false;
+      }
+      if (attStatusFilter !== 'all') {
+        if (attStatusFilter === 'active' && !tr.isActive) return false;
+        if (attStatusFilter === 'inactive' && tr.isActive) return false;
+      }
+      if (attPctFilter !== 'all') {
+        const pct = Number(tr.attendancePct) || 0;
+        if (attPctFilter === 'high' && pct < 90) return false;
+        if (attPctFilter === 'moderate' && (pct < 75 || pct >= 90)) return false;
+        if (attPctFilter === 'low' && pct >= 75) return false;
+      }
+      if (attSearch) {
+        const q = attSearch.toLowerCase();
+        const matchesName = String(tr.trainerName || '').toLowerCase().includes(q);
+        const matchesBranch = String(tr.branch || '').toLowerCase().includes(q);
+        const matchesShift = String(tr.shift || '').toLowerCase().includes(q);
+        if (!matchesName && !matchesBranch && !matchesShift) return false;
+      }
+      return true;
+    });
+  }, [trainerAttendanceReport, attBranchFilter, attShiftFilter, attStatusFilter, attPctFilter, attSearch]);
+
+  // Filtered Trainer & Batch Mapping
+  const mappingUniqueBranches = useMemo(() => Array.from(new Set(trainerBatchMapping.map(t => t.branch).filter(Boolean))).sort(), [trainerBatchMapping]);
+  const mappingUniqueCourses = useMemo(() => Array.from(new Set(trainerBatchMapping.map(t => t.course).filter(Boolean))).sort(), [trainerBatchMapping]);
+  const mappingUniqueBatches = useMemo(() => {
+    const list = [];
+    trainerBatchMapping.forEach(t => t.batches.forEach(b => {
+      const name = b.batchName || b.name || b.batchId;
+      if (name && !list.includes(name)) list.push(name);
+    }));
+    return list.sort();
+  }, [trainerBatchMapping]);
+
+  const filteredBatchMapping = useMemo(() => {
+    return trainerBatchMapping.filter((tr) => {
+      if (mappingBranchFilter !== 'all' && !String(tr.branch || tr.zone || '').toLowerCase().includes(mappingBranchFilter.toLowerCase())) {
+        return false;
+      }
+      if (mappingCourseFilter !== 'all' && String(tr.course || '').toLowerCase() !== mappingCourseFilter.toLowerCase()) {
+        return false;
+      }
+      if (mappingBatchFilter !== 'all') {
+        const hasBatch = tr.batches.some(b => String(b.batchName || b.name || b.batchId || '').toLowerCase() === mappingBatchFilter.toLowerCase());
+        if (!hasBatch) return false;
+      }
+      if (mappingSearch) {
+        const q = mappingSearch.toLowerCase();
+        const matchesName = String(tr.trainerName || '').toLowerCase().includes(q);
+        const matchesBranch = String(tr.branch || tr.zone || '').toLowerCase().includes(q);
+        const matchesCourse = String(tr.course || '').toLowerCase().includes(q);
+        const matchesTL = String(tr.teamLeadName || '').toLowerCase().includes(q);
+        const matchesMgr = String(tr.managerName || '').toLowerCase().includes(q);
+        if (!matchesName && !matchesBranch && !matchesCourse && !matchesTL && !matchesMgr) return false;
+      }
+      return true;
+    });
+  }, [trainerBatchMapping, mappingBranchFilter, mappingCourseFilter, mappingBatchFilter, mappingSearch]);
+
+  // Filtered Batch-Wise Syllabus Progress Breakdown
+  const syllabusUniqueBranches = useMemo(() => Array.from(new Set(batchWiseReport.map(b => b.branch).filter(Boolean))).sort(), [batchWiseReport]);
+  const syllabusUniqueCourses = useMemo(() => Array.from(new Set(batchWiseReport.map(b => b.course).filter(Boolean))).sort(), [batchWiseReport]);
+  const syllabusUniqueFaculty = useMemo(() => Array.from(new Set(batchWiseReport.map(b => b.trainer || b.faculty || b.trainerName).filter(Boolean))).sort(), [batchWiseReport]);
+
+  const filteredSyllabusBatches = useMemo(() => {
+    return batchWiseReport.filter((b) => {
+      if (syllabusBranchFilter !== 'all' && String(b.branch || '').toLowerCase() !== syllabusBranchFilter.toLowerCase()) {
+        return false;
+      }
+      if (syllabusCourseFilter !== 'all' && String(b.course || '').toLowerCase() !== syllabusCourseFilter.toLowerCase()) {
+        return false;
+      }
+      if (syllabusFacultyFilter !== 'all' && !String(b.trainer || b.faculty || b.trainerName || '').toLowerCase().includes(syllabusFacultyFilter.toLowerCase())) {
+        return false;
+      }
+      if (syllabusProgressFilter !== 'all') {
+        const pct = b.enrolledCount > 0 ? Math.round((b.completedSyllabusCount / b.enrolledCount) * 100) : 0;
+        if (syllabusProgressFilter === 'completed' && pct < 100) return false;
+        if (syllabusProgressFilter === 'in_progress' && (pct === 0 || pct === 100)) return false;
+        if (syllabusProgressFilter === 'zero' && pct > 0) return false;
+      }
+      if (syllabusSearch) {
+        const q = syllabusSearch.toLowerCase();
+        const matchesBatch = String(b.batchName || b.name || '').toLowerCase().includes(q);
+        const matchesCourse = String(b.course || '').toLowerCase().includes(q);
+        const matchesBranch = String(b.branch || '').toLowerCase().includes(q);
+        const matchesFaculty = String(b.trainer || b.faculty || b.trainerName || '').toLowerCase().includes(q);
+        if (!matchesBatch && !matchesCourse && !matchesBranch && !matchesFaculty) return false;
+      }
+      return true;
+    });
+  }, [batchWiseReport, syllabusBranchFilter, syllabusCourseFilter, syllabusFacultyFilter, syllabusProgressFilter, syllabusSearch]);
+
+  // Filtered Weak Students Report
+  const weakUniqueBranches = useMemo(() => Array.from(new Set(allWeakStudents.map(s => s.branch).filter(Boolean))).sort(), [allWeakStudents]);
+  const weakUniqueBatches = useMemo(() => Array.from(new Set(allWeakStudents.map(s => s.batch).filter(Boolean))).sort(), [allWeakStudents]);
+  const weakUniqueFaculty = useMemo(() => Array.from(new Set(allWeakStudents.map(s => s.trainer || s.faculty).filter(Boolean))).sort(), [allWeakStudents]);
+
+  const filteredWeakStudents = useMemo(() => {
+    return allWeakStudents.filter((st) => {
+      if (weakBranchFilter !== 'all' && String(st.branch || '').toLowerCase() !== weakBranchFilter.toLowerCase()) {
+        return false;
+      }
+      if (weakBatchFilter !== 'all' && String(st.batch || '').toLowerCase() !== weakBatchFilter.toLowerCase()) {
+        return false;
+      }
+      if (weakFacultyFilter !== 'all' && !String(st.trainer || st.faculty || '').toLowerCase().includes(weakFacultyFilter.toLowerCase())) {
+        return false;
+      }
+      if (weakReasonFilter !== 'all') {
+        const reason = String(st.attentionReason || '').toLowerCase();
+        if (weakReasonFilter === 'attendance' && !reason.includes('attendance')) return false;
+        if (weakReasonFilter === 'score' && !reason.includes('score')) return false;
+      }
+      if (weakSearch) {
+        const q = weakSearch.toLowerCase();
+        const matchesName = String(st.name || '').toLowerCase().includes(q);
+        const matchesId = String(st.studentId || '').toLowerCase().includes(q);
+        const matchesBranch = String(st.branch || '').toLowerCase().includes(q);
+        const matchesBatch = String(st.batch || '').toLowerCase().includes(q);
+        const matchesFaculty = String(st.trainer || st.faculty || '').toLowerCase().includes(q);
+        if (!matchesName && !matchesId && !matchesBranch && !matchesBatch && !matchesFaculty) return false;
+      }
+      return true;
+    });
+  }, [allWeakStudents, weakBranchFilter, weakBatchFilter, weakFacultyFilter, weakReasonFilter, weakSearch]);
+
+  // Filtered Demo Details
+  const demoUniqueBranches = useMemo(() => Array.from(new Set(scopedDemos.map(d => d.branch).filter(Boolean))).sort(), [scopedDemos]);
+  const demoUniqueCourses = useMemo(() => Array.from(new Set(scopedDemos.map(d => d.course).filter(Boolean))).sort(), [scopedDemos]);
+  const demoUniqueFaculty = useMemo(() => Array.from(new Set(scopedDemos.map(d => d.trainer || d.trainerMapping).filter(Boolean))).sort(), [scopedDemos]);
+  const demoUniqueStatuses = useMemo(() => Array.from(new Set(scopedDemos.map(d => String(d.status || '').toLowerCase()).filter(Boolean))).sort(), [scopedDemos]);
+
+  const filteredDemosList = useMemo(() => {
+    return displayedDemos.filter((dm) => {
+      if (demoBranchFilter !== 'all' && String(dm.branch || '').toLowerCase() !== demoBranchFilter.toLowerCase()) {
+        return false;
+      }
+      if (demoCourseFilter !== 'all' && String(dm.course || '').toLowerCase() !== demoCourseFilter.toLowerCase()) {
+        return false;
+      }
+      if (demoFacultyFilter !== 'all' && !String(dm.trainer || dm.trainerMapping || '').toLowerCase().includes(demoFacultyFilter.toLowerCase())) {
+        return false;
+      }
+      if (demoStatusFilter !== 'all' && String(dm.status || '').toLowerCase() !== demoStatusFilter.toLowerCase()) {
+        return false;
+      }
+      if (demoSearch) {
+        const q = demoSearch.toLowerCase();
+        const matchesCand = String(dm.candidateName || '').toLowerCase().includes(q);
+        const matchesPhone = String(dm.phone || '').includes(q);
+        const matchesCourse = String(dm.course || '').toLowerCase().includes(q);
+        const matchesBranch = String(dm.branch || '').toLowerCase().includes(q);
+        const matchesFaculty = String(dm.trainer || dm.trainerMapping || '').toLowerCase().includes(q);
+        if (!matchesCand && !matchesPhone && !matchesCourse && !matchesBranch && !matchesFaculty) return false;
+      }
+      return true;
+    });
+  }, [displayedDemos, demoBranchFilter, demoCourseFilter, demoFacultyFilter, demoStatusFilter, demoSearch]);
+
+  // Filtered Complete Training Leadership Matrix
+  const combinedLeadershipList = useMemo(() => {
+    return [
+      ...trainerManagersList.map(m => ({ ...m, roleTier: 'manager' })),
+      ...trainerTLsList.map(tl => ({ ...tl, roleTier: 'tl' }))
+    ];
+  }, [trainerManagersList, trainerTLsList]);
+
+  const matrixUniqueZones = useMemo(() => Array.from(new Set(combinedLeadershipList.map(l => l.zone).filter(Boolean))).sort(), [combinedLeadershipList]);
+
+  const filteredLeadershipList = useMemo(() => {
+    return combinedLeadershipList.filter((ldr) => {
+      if (matrixRoleFilter !== 'all' && ldr.roleTier !== matrixRoleFilter) return false;
+      if (matrixZoneFilter !== 'all' && !String(ldr.zone || '').toLowerCase().includes(matrixZoneFilter.toLowerCase())) return false;
+      if (matrixStatusFilter !== 'all' && !String(ldr.status || '').toLowerCase().includes(matrixStatusFilter.toLowerCase())) return false;
+      if (matrixSearch) {
+        const q = matrixSearch.toLowerCase();
+        const matchesName = String(ldr.name || '').toLowerCase().includes(q);
+        const matchesEmail = String(ldr.email || '').toLowerCase().includes(q);
+        const matchesPhone = String(ldr.phone || '').includes(q);
+        const matchesZone = String(ldr.zone || '').toLowerCase().includes(q);
+        if (!matchesName && !matchesEmail && !matchesPhone && !matchesZone) return false;
+      }
+      return true;
+    });
+  }, [combinedLeadershipList, matrixRoleFilter, matrixZoneFilter, matrixStatusFilter, matrixSearch]);
+
+  // Filtered Batches List
+  const batchUniqueBranches = useMemo(() => Array.from(new Set(batchWiseReport.map(b => b.branch).filter(Boolean))).sort(), [batchWiseReport]);
+  const batchUniqueCourses = useMemo(() => Array.from(new Set(batchWiseReport.map(b => b.course).filter(Boolean))).sort(), [batchWiseReport]);
+  const batchUniqueFaculty = useMemo(() => Array.from(new Set(batchWiseReport.map(b => b.trainer || b.faculty || b.trainerName).filter(Boolean))).sort(), [batchWiseReport]);
+
+  const filteredBatchList = useMemo(() => {
+    return batchWiseReport.filter((b) => {
+      if (batchBranchFilter !== 'all' && String(b.branch || '').toLowerCase() !== batchBranchFilter.toLowerCase()) {
+        return false;
+      }
+      if (batchCourseFilter !== 'all' && String(b.course || '').toLowerCase() !== batchCourseFilter.toLowerCase()) {
+        return false;
+      }
+      if (batchFacultyFilter !== 'all' && !String(b.trainer || b.faculty || b.trainerName || '').toLowerCase().includes(batchFacultyFilter.toLowerCase())) {
+        return false;
+      }
+      if (batchSearch) {
+        const q = batchSearch.toLowerCase();
+        const matchesName = String(b.batchName || b.name || '').toLowerCase().includes(q);
+        const matchesCourse = String(b.course || '').toLowerCase().includes(q);
+        const matchesBranch = String(b.branch || '').toLowerCase().includes(q);
+        const matchesFaculty = String(b.trainer || b.faculty || b.trainerName || '').toLowerCase().includes(q);
+        if (!matchesName && !matchesCourse && !matchesBranch && !matchesFaculty) return false;
+      }
+      return true;
+    });
+  }, [batchWiseReport, batchBranchFilter, batchCourseFilter, batchFacultyFilter, batchSearch]);
 
   // Reassign demo handler
   const handleConfirmReassign = async () => {
@@ -1287,6 +1627,26 @@ export default function TrainerHeadDashboard({
                 </div>
                 <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-blue-500/20 text-blue-300">
                   {scopedTrainers.length}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveTab('shift_availability')}
+                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
+                  activeTab === 'shift_availability'
+                    ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                    : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <Clock className="w-4 h-4 shrink-0 text-amber-400" />
+                  <span>Shift &amp; Availability</span>
+                </div>
+                <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-md ${
+                  isHeadRole ? 'bg-amber-500/20 text-amber-300' : 'bg-slate-700 text-slate-300'
+                }`}>
+                  {isHeadRole ? 'Manage' : 'View'}
                 </span>
               </button>
 
@@ -1598,6 +1958,22 @@ export default function TrainerHeadDashboard({
                   </div>
                   <div className="text-2xl font-black text-slate-900">95% Average</div>
                   <div className="text-xs text-emerald-700 font-semibold mt-1">Live Shift Adherence →</div>
+                </div>
+
+                <div
+                  onClick={() => setActiveTab('shift_availability')}
+                  className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-2xs hover:shadow-md transition-all cursor-pointer group"
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Shift &amp; Availability</span>
+                    <Clock className="w-4 h-4 text-amber-500 group-hover:scale-110 transition-transform" />
+                  </div>
+                  <div className="text-2xl font-black text-slate-900">
+                    {isHeadRole ? 'Roster Allocator' : 'My Shift & Roster'}
+                  </div>
+                  <div className="text-xs text-amber-700 font-semibold mt-1">
+                    {isHeadRole ? 'Manage shifts & week offs →' : 'View shift & weekly roster →'}
+                  </div>
                 </div>
 
                 {isHeadRole && (
@@ -2224,8 +2600,84 @@ export default function TrainerHeadDashboard({
                         </p>
                       </div>
                       <span className="text-xs font-bold text-[#00897b]">
-                        {trainerManagersList.length + trainerTLsList.length} Leaders Reporting to Head
+                        Showing {filteredLeadershipList.length} of {trainerManagersList.length + trainerTLsList.length} Leaders
                       </span>
+                    </div>
+
+                    {/* Column Filters for Leadership Matrix */}
+                    <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200/80 space-y-3">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2.5">
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Role Tier</label>
+                          <select
+                            value={matrixRoleFilter}
+                            onChange={(e) => setMatrixRoleFilter(e.target.value)}
+                            className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                          >
+                            <option value="all">All Role Tiers</option>
+                            <option value="manager">Trainer Managers ({trainerManagersList.length})</option>
+                            <option value="tl">Trainer Team Leads ({trainerTLsList.length})</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Assigned Zone</label>
+                          <select
+                            value={matrixZoneFilter}
+                            onChange={(e) => setMatrixZoneFilter(e.target.value)}
+                            className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                          >
+                            <option value="all">All Zones</option>
+                            {matrixUniqueZones.map((z) => (
+                              <option key={z} value={z}>{z}</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Status</label>
+                          <select
+                            value={matrixStatusFilter}
+                            onChange={(e) => setMatrixStatusFilter(e.target.value)}
+                            className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                          >
+                            <option value="all">All Statuses</option>
+                            <option value="active">Active · On Duty</option>
+                            <option value="inactive">Inactive / On Leave</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Search Leader</label>
+                          <div className="relative">
+                            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                            <input
+                              type="text"
+                              value={matrixSearch}
+                              onChange={(e) => setMatrixSearch(e.target.value)}
+                              placeholder="Name, email, phone, zone..."
+                              className="w-full text-xs bg-white border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-slate-800 placeholder-slate-400 outline-none focus:border-teal-500"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      {(matrixRoleFilter !== 'all' || matrixZoneFilter !== 'all' || matrixStatusFilter !== 'all' || matrixSearch) && (
+                        <div className="flex justify-end pt-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMatrixRoleFilter('all');
+                              setMatrixZoneFilter('all');
+                              setMatrixStatusFilter('all');
+                              setMatrixSearch('');
+                            }}
+                            className="px-2.5 py-1 rounded-lg text-xs font-bold text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200 transition-all cursor-pointer"
+                          >
+                            ✕ Reset Filters
+                          </button>
+                        </div>
+                      )}
                     </div>
 
                     <div className="overflow-x-auto border border-slate-200 rounded-xl">
@@ -2245,58 +2697,41 @@ export default function TrainerHeadDashboard({
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 text-slate-700">
-                          {trainerManagersList.length === 0 && trainerTLsList.length === 0 && (
+                          {filteredLeadershipList.length === 0 && (
                             <tr>
                               <td colSpan={10} className="py-8 text-center text-slate-400">
-                                No Trainer Managers or TLs created yet in Admin Management.
+                                No training leaders match the selected filters.
                               </td>
                             </tr>
                           )}
-                          {/* Managers */}
-                          {trainerManagersList.map((m) => (
-                            <tr key={m.id} className="hover:bg-teal-50/30">
+                          {filteredLeadershipList.map((ldr) => (
+                            <tr key={`${ldr.roleTier}-${ldr.id}`} className={ldr.roleTier === 'manager' ? 'hover:bg-teal-50/30' : 'hover:bg-emerald-50/30'}>
                               <td className="py-3 px-3">
-                                <span className="px-2 py-0.5 rounded-full bg-teal-100 text-teal-900 font-black text-[10px] uppercase border border-teal-200">
-                                  Trainer Manager
-                                </span>
+                                {ldr.roleTier === 'manager' ? (
+                                  <span className="px-2 py-0.5 rounded-full bg-teal-100 text-teal-900 font-black text-[10px] uppercase border border-teal-200">
+                                    Trainer Manager
+                                  </span>
+                                ) : (
+                                  <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-900 font-black text-[10px] uppercase border border-emerald-200">
+                                    Trainer Team Lead
+                                  </span>
+                                )}
                               </td>
-                              <td className="py-3 px-3 font-black text-slate-900">{m.name}</td>
+                              <td className="py-3 px-3 font-black text-slate-900">{ldr.name}</td>
                               <td className="py-3 px-3 font-semibold text-blue-700">
-                                {trainerCredentials?.head?.[0]?.name ? `Head of Training (${trainerCredentials.head[0].name})` : 'Head of Training'}
+                                {ldr.roleTier === 'manager'
+                                  ? (trainerCredentials?.head?.[0]?.name ? `Head of Training (${trainerCredentials.head[0].name})` : 'Head of Training')
+                                  : (ldr.managerName ? `${ldr.managerName} (Manager)` : 'Training Manager')}
                               </td>
-                              <td className="py-3 px-3 font-medium text-teal-800">{m.zone} ({m.zoneLabel})</td>
-                              <td className="py-3 px-3 text-[11px] max-w-[180px] truncate">{m.branches.join(', ') || 'All Zone Branches'}</td>
-                              <td className="py-3 px-3 font-black text-slate-900">{m.trainersCount} Trainers</td>
-                              <td className="py-3 px-3 font-bold text-blue-700">{m.batchesCount} Batches</td>
-                              <td className="py-3 px-3 font-mono text-[11px] text-slate-500">{m.email}</td>
-                              <td className="py-3 px-3 font-mono text-[11px]">{m.phone}</td>
+                              <td className="py-3 px-3 font-medium text-teal-800">{ldr.zone} ({ldr.zoneLabel})</td>
+                              <td className="py-3 px-3 text-[11px] max-w-[180px] truncate">{ldr.branches?.join(', ') || (ldr.roleTier === 'manager' ? 'All Zone Branches' : 'Pod Branches')}</td>
+                              <td className="py-3 px-3 font-black text-slate-900">{ldr.trainersCount} Trainers</td>
+                              <td className="py-3 px-3 font-bold text-blue-700">{ldr.batchesCount} Batches</td>
+                              <td className="py-3 px-3 font-mono text-[11px] text-slate-500">{ldr.email}</td>
+                              <td className="py-3 px-3 font-mono text-[11px]">{ldr.phone}</td>
                               <td className="py-3 px-3">
                                 <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-bold text-[10px] border border-emerald-200">
-                                  {m.status}
-                                </span>
-                              </td>
-                            </tr>
-                          ))}
-
-                          {/* Team Leads */}
-                          {trainerTLsList.map((tl) => (
-                            <tr key={tl.id} className="hover:bg-emerald-50/30">
-                              <td className="py-3 px-3">
-                                <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-900 font-black text-[10px] uppercase border border-emerald-200">
-                                  Trainer Team Lead
-                                </span>
-                              </td>
-                              <td className="py-3 px-3 font-black text-slate-900">{tl.name}</td>
-                              <td className="py-3 px-3 font-semibold text-teal-700">{tl.managerName ? `${tl.managerName} (Manager)` : 'Training Manager'}</td>
-                              <td className="py-3 px-3 font-medium text-emerald-800">{tl.zone} ({tl.zoneLabel})</td>
-                              <td className="py-3 px-3 text-[11px] max-w-[180px] truncate">{tl.branches.join(', ') || 'Pod Branches'}</td>
-                              <td className="py-3 px-3 font-black text-slate-900">{tl.trainersCount} Trainers</td>
-                              <td className="py-3 px-3 font-bold text-blue-700">{tl.batchesCount} Batches</td>
-                              <td className="py-3 px-3 font-mono text-[11px] text-slate-500">{tl.email}</td>
-                              <td className="py-3 px-3 font-mono text-[11px]">{tl.phone}</td>
-                              <td className="py-3 px-3">
-                                <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-bold text-[10px] border border-emerald-200">
-                                  {tl.status}
+                                  {ldr.status}
                                 </span>
                               </td>
                             </tr>
@@ -2425,6 +2860,162 @@ export default function TrainerHeadDashboard({
                   </div>
                 </div>
 
+                {/* Column Filters Bar for Branch-Wise Students Table */}
+                <div className="bg-slate-50 p-3 rounded-xl border border-slate-200/80 space-y-2.5">
+                  <div className="flex items-center justify-between gap-2 flex-wrap text-xs">
+                    <span className="font-bold text-slate-600 uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+                      <Filter className="w-3.5 h-3.5 text-teal-600" /> Filter Table Columns:
+                    </span>
+                    <span className="font-bold text-slate-400 text-[11px]">
+                      Showing {filteredStudents.length} of {scopedStudents.length} students
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+                    {/* Branch Filter */}
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Branch</label>
+                      <select
+                        value={selectedBranch}
+                        onChange={(e) => setSelectedBranch(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Branches ({scopedStudents.length})</option>
+                        {scopedBranchNames.map((b) => (
+                          <option key={b} value={b}>{b}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Course Filter */}
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Course</label>
+                      <select
+                        value={studentCourseFilter}
+                        onChange={(e) => setStudentCourseFilter(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Courses ({scopedStudents.length})</option>
+                        {studentUniqueCourses.map((c) => (
+                          <option key={c} value={c}>{c}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Batch Filter */}
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Batch</label>
+                      <select
+                        value={selectedBatch}
+                        onChange={(e) => setSelectedBatch(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Batches</option>
+                        {studentUniqueBatches.map((b) => (
+                          <option key={b} value={b}>{b}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Faculty Filter */}
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Faculty</label>
+                      <select
+                        value={selectedTrainer}
+                        onChange={(e) => setSelectedTrainer(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Faculty</option>
+                        {studentUniqueTrainers.map((tr) => (
+                          <option key={tr} value={tr}>{tr}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Attendance Filter */}
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Attendance</label>
+                      <select
+                        value={studentAttendanceFilter}
+                        onChange={(e) => setStudentAttendanceFilter(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Attendance</option>
+                        <option value="good">Good (≥75%)</option>
+                        <option value="risk">At Risk (&lt;75%)</option>
+                      </select>
+                    </div>
+
+                    {/* Placement Filter */}
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Placement</label>
+                      <select
+                        value={studentPlacementFilter}
+                        onChange={(e) => setStudentPlacementFilter(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Placement</option>
+                        <option value="placed">Placed</option>
+                        <option value="in_course">In Course</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Secondary Filter Row: Search, Syllabus, Certification & Reset */}
+                  <div className="flex items-center gap-2 pt-1 flex-wrap">
+                    <div className="relative flex-1 min-w-[200px]">
+                      <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        placeholder="Search student ID, name, phone, course, batch, faculty..."
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-slate-800 placeholder-slate-400 outline-none focus:border-teal-500"
+                      />
+                    </div>
+
+                    <select
+                      value={studentSyllabusFilter}
+                      onChange={(e) => setStudentSyllabusFilter(e.target.value)}
+                      className="text-xs bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                    >
+                      <option value="all">Syllabus: All</option>
+                      <option value="completed">100% Completed</option>
+                      <option value="pending">In Progress</option>
+                    </select>
+
+                    <select
+                      value={studentCertifiedFilter}
+                      onChange={(e) => setStudentCertifiedFilter(e.target.value)}
+                      className="text-xs bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                    >
+                      <option value="all">Certified: All</option>
+                      <option value="certified">Certified</option>
+                      <option value="uncertified">Not Certified</option>
+                    </select>
+
+                    {(selectedBranch !== 'all' || selectedBatch !== 'all' || selectedTrainer !== 'all' || studentCourseFilter !== 'all' || studentAttendanceFilter !== 'all' || studentSyllabusFilter !== 'all' || studentCertifiedFilter !== 'all' || studentPlacementFilter !== 'all' || searchQuery) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedBranch('all');
+                          setSelectedBatch('all');
+                          setSelectedTrainer('all');
+                          setStudentCourseFilter('all');
+                          setStudentAttendanceFilter('all');
+                          setStudentSyllabusFilter('all');
+                          setStudentCertifiedFilter('all');
+                          setStudentPlacementFilter('all');
+                          setSearchQuery('');
+                        }}
+                        className="px-2.5 py-1.5 rounded-lg text-xs font-bold text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200 transition-all cursor-pointer"
+                      >
+                        ✕ Reset Filters
+                      </button>
+                    )}
+                  </div>
+                </div>
+
                 <div className="overflow-x-auto border border-slate-200 rounded-xl">
                   <table className="w-full text-left text-xs">
                     <thead className="bg-slate-50 text-slate-600 font-bold border-b border-slate-200">
@@ -2521,14 +3112,101 @@ export default function TrainerHeadDashboard({
                 <div className="flex items-center justify-between pb-2 border-b border-slate-100">
                   <div>
                     <h3 className="text-base font-extrabold text-slate-900">
-                      {roleType === 'head' ? 'All Academy Batches' : `${currentLeader.name}'s Assigned Batches`} ({batchWiseReport.length})
+                      {roleType === 'head' ? 'All Academy Batches' : `${currentLeader.name}'s Assigned Batches`} ({filteredBatchList.length})
                     </h3>
                     <p className="text-xs text-slate-400">Assigned trainers, enrolled students count, and batch performance metrics.</p>
                   </div>
                 </div>
 
+                {/* Filter Bar for Batches */}
+                <div className="bg-slate-50 p-3 rounded-xl border border-slate-200/80 space-y-2">
+                  <div className="flex items-center justify-between gap-2 flex-wrap text-xs">
+                    <span className="font-bold text-slate-600 uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+                      <Filter className="w-3.5 h-3.5 text-teal-600" /> Filter Batches:
+                    </span>
+                    <span className="font-bold text-slate-400 text-[11px]">
+                      Showing {filteredBatchList.length} of {batchWiseReport.length} batches
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Branch</label>
+                      <select
+                        value={batchBranchFilter}
+                        onChange={(e) => setBatchBranchFilter(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Branches ({batchWiseReport.length})</option>
+                        {batchUniqueBranches.map(b => (
+                          <option key={b} value={b}>{b}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Course</label>
+                      <select
+                        value={batchCourseFilter}
+                        onChange={(e) => setBatchCourseFilter(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Courses</option>
+                        {batchUniqueCourses.map(c => (
+                          <option key={c} value={c}>{c}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Faculty</label>
+                      <select
+                        value={batchFacultyFilter}
+                        onChange={(e) => setBatchFacultyFilter(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Faculty</option>
+                        {batchUniqueFaculty.map(f => (
+                          <option key={f} value={f}>{f}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Search</label>
+                      <div className="relative">
+                        <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="text"
+                          value={batchSearch}
+                          onChange={(e) => setBatchSearch(e.target.value)}
+                          placeholder="Search batch, course, faculty..."
+                          className="w-full text-xs bg-white border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-slate-800 placeholder-slate-400 outline-none focus:border-teal-500"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {(batchBranchFilter !== 'all' || batchCourseFilter !== 'all' || batchFacultyFilter !== 'all' || batchSearch) && (
+                    <div className="flex justify-end pt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setBatchBranchFilter('all');
+                          setBatchCourseFilter('all');
+                          setBatchFacultyFilter('all');
+                          setBatchSearch('');
+                        }}
+                        className="px-2.5 py-1 rounded-lg text-xs font-bold text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200 transition-all cursor-pointer"
+                      >
+                        ✕ Reset Filters
+                      </button>
+                    </div>
+                  )}
+                </div>
+
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {batchWiseReport.map((b) => (
+                  {filteredBatchList.map((b) => (
                     <div key={b.batchId || b.name} className="p-4 rounded-2xl border border-slate-200 bg-slate-50/50 space-y-3">
                       <div className="flex items-center justify-between">
                         <span className="text-sm font-black text-slate-900">{b.batchName}</span>
@@ -2588,12 +3266,104 @@ export default function TrainerHeadDashboard({
                   <div>
                     <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
                       <AlertTriangle className="w-5 h-5 text-rose-500" />
-                      <span>Weak Students Report ({allWeakStudents.length})</span>
+                      <span>Weak Students Report ({filteredWeakStudents.length} of {allWeakStudents.length})</span>
                     </h3>
                     <p className="text-xs text-slate-400">
                       Students in your batches requiring additional attention due to attendance &lt; 75% or test scores below target.
                     </p>
                   </div>
+                </div>
+
+                {/* Column Filters for Weak Students */}
+                <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200/80 space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-2.5">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Branch</label>
+                      <select
+                        value={weakBranchFilter}
+                        onChange={(e) => setWeakBranchFilter(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Branches</option>
+                        {weakUniqueBranches.map((b) => (
+                          <option key={b} value={b}>{b}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Batch</label>
+                      <select
+                        value={weakBatchFilter}
+                        onChange={(e) => setWeakBatchFilter(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Batches</option>
+                        {weakUniqueBatches.map((b) => (
+                          <option key={b} value={b}>{b}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Faculty</label>
+                      <select
+                        value={weakFacultyFilter}
+                        onChange={(e) => setWeakFacultyFilter(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Faculty</option>
+                        {weakUniqueFaculty.map((f) => (
+                          <option key={f} value={f}>{f}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Reason</label>
+                      <select
+                        value={weakReasonFilter}
+                        onChange={(e) => setWeakReasonFilter(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Reasons</option>
+                        <option value="attendance">Low Attendance (&lt;75%)</option>
+                        <option value="score">Low Score / Exam Risk</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Search Student</label>
+                      <div className="relative">
+                        <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="text"
+                          value={weakSearch}
+                          onChange={(e) => setWeakSearch(e.target.value)}
+                          placeholder="Name, ID, branch, batch..."
+                          className="w-full text-xs bg-white border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-slate-800 placeholder-slate-400 outline-none focus:border-teal-500"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {(weakBranchFilter !== 'all' || weakBatchFilter !== 'all' || weakFacultyFilter !== 'all' || weakReasonFilter !== 'all' || weakSearch) && (
+                    <div className="flex justify-end pt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setWeakBranchFilter('all');
+                          setWeakBatchFilter('all');
+                          setWeakFacultyFilter('all');
+                          setWeakReasonFilter('all');
+                          setWeakSearch('');
+                        }}
+                        className="px-2.5 py-1 rounded-lg text-xs font-bold text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200 transition-all cursor-pointer"
+                      >
+                        ✕ Reset Filters
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 <div className="overflow-x-auto border border-slate-200 rounded-xl">
@@ -2612,7 +3382,7 @@ export default function TrainerHeadDashboard({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-slate-700">
-                      {allWeakStudents.map((st) => (
+                      {filteredWeakStudents.map((st) => (
                         <tr key={st.studentId || st._id} className="hover:bg-slate-50">
                           <td className="py-3 px-3 font-extrabold text-slate-900">{st.name}</td>
                           <td className="py-3 px-3 font-mono text-slate-500">{st.studentId || 'ID-N/A'}</td>
@@ -2633,10 +3403,12 @@ export default function TrainerHeadDashboard({
                           </td>
                         </tr>
                       ))}
-                      {allWeakStudents.length === 0 && (
+                      {filteredWeakStudents.length === 0 && (
                         <tr>
                           <td colSpan={9} className="py-8 text-center text-xs text-slate-400">
-                            No students flagged as weak or requiring special attention!
+                            {allWeakStudents.length === 0
+                              ? 'No students flagged as weak or requiring special attention!'
+                              : 'No weak students match the selected filters.'}
                           </td>
                         </tr>
                       )}
@@ -2708,8 +3480,103 @@ export default function TrainerHeadDashboard({
 
               {/* Batch-Wise Syllabus Progress Table */}
               <div className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-xs space-y-4">
-                <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-                  <h3 className="text-base font-extrabold text-slate-900">Batch-Wise Syllabus Progress Breakdown</h3>
+                <div className="flex items-center justify-between pb-2 border-b border-slate-100 flex-wrap gap-2">
+                  <h3 className="text-base font-extrabold text-slate-900">
+                    Batch-Wise Syllabus Progress Breakdown ({filteredSyllabusBatches.length} of {batchWiseReport.length})
+                  </h3>
+                </div>
+
+                {/* Column Filters for Syllabus Progress */}
+                <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200/80 space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-2.5">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Branch</label>
+                      <select
+                        value={syllabusBranchFilter}
+                        onChange={(e) => setSyllabusBranchFilter(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Branches</option>
+                        {syllabusUniqueBranches.map((b) => (
+                          <option key={b} value={b}>{b}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Course</label>
+                      <select
+                        value={syllabusCourseFilter}
+                        onChange={(e) => setSyllabusCourseFilter(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Courses</option>
+                        {syllabusUniqueCourses.map((c) => (
+                          <option key={c} value={c}>{c}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Faculty</label>
+                      <select
+                        value={syllabusFacultyFilter}
+                        onChange={(e) => setSyllabusFacultyFilter(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Faculty</option>
+                        {syllabusUniqueFaculty.map((f) => (
+                          <option key={f} value={f}>{f}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Completion</label>
+                      <select
+                        value={syllabusProgressFilter}
+                        onChange={(e) => setSyllabusProgressFilter(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Progress</option>
+                        <option value="completed">100% Completed</option>
+                        <option value="in_progress">In Progress (1-99%)</option>
+                        <option value="zero">Not Started (0%)</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Search</label>
+                      <div className="relative">
+                        <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="text"
+                          value={syllabusSearch}
+                          onChange={(e) => setSyllabusSearch(e.target.value)}
+                          placeholder="Batch, course, branch..."
+                          className="w-full text-xs bg-white border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-slate-800 placeholder-slate-400 outline-none focus:border-teal-500"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {(syllabusBranchFilter !== 'all' || syllabusCourseFilter !== 'all' || syllabusFacultyFilter !== 'all' || syllabusProgressFilter !== 'all' || syllabusSearch) && (
+                    <div className="flex justify-end pt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSyllabusBranchFilter('all');
+                          setSyllabusCourseFilter('all');
+                          setSyllabusFacultyFilter('all');
+                          setSyllabusProgressFilter('all');
+                          setSyllabusSearch('');
+                        }}
+                        className="px-2.5 py-1 rounded-lg text-xs font-bold text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200 transition-all cursor-pointer"
+                      >
+                        ✕ Reset Filters
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 <div className="overflow-x-auto border border-slate-200 rounded-xl">
@@ -2727,7 +3594,7 @@ export default function TrainerHeadDashboard({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-slate-700">
-                      {batchWiseReport.map((b) => {
+                      {filteredSyllabusBatches.map((b) => {
                         const pct = b.enrolledCount > 0 ? Math.round((b.completedSyllabusCount / b.enrolledCount) * 100) : 0;
                         return (
                           <tr key={b.batchId || b.name} className="hover:bg-slate-50">
@@ -2749,6 +3616,13 @@ export default function TrainerHeadDashboard({
                           </tr>
                         );
                       })}
+                      {filteredSyllabusBatches.length === 0 && (
+                        <tr>
+                          <td colSpan={8} className="py-8 text-center text-xs text-slate-400">
+                            No batches match the selected syllabus filters.
+                          </td>
+                        </tr>
+                      )}
                     </tbody>
                   </table>
                 </div>
@@ -2765,34 +3639,118 @@ export default function TrainerHeadDashboard({
                 <div className="flex items-center justify-between pb-2 border-b border-slate-100 flex-wrap gap-2">
                   <div>
                     <h3 className="text-base font-extrabold text-slate-900">
-                      Trainer and Batch Mapping Matrix ({trainerBatchMapping.length})
+                      Trainer and Batch Mapping Matrix ({filteredBatchMapping.length} of {trainerBatchMapping.length})
                     </h3>
                     <p className="text-xs text-slate-400">Shows which trainer is assigned to which batch, reporting Team Lead, and managing Trainer Manager.</p>
                   </div>
+                </div>
 
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <select
-                      value={mappingManagerFilter}
-                      onChange={(e) => setMappingManagerFilter(e.target.value)}
-                      className="text-xs bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 font-bold text-slate-700"
-                    >
-                      <option value="all">All Trainer Managers</option>
-                      {trainerManagersList.map((m) => (
-                        <option key={m.id} value={m.name}>{m.name} ({m.zone})</option>
-                      ))}
-                    </select>
+                {/* Column Filters for Trainer & Batch Mapping */}
+                <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200/80 space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2.5">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Branch / Zone</label>
+                      <select
+                        value={mappingBranchFilter}
+                        onChange={(e) => setMappingBranchFilter(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Branches</option>
+                        {mappingUniqueBranches.map((b) => (
+                          <option key={b} value={b}>{b}</option>
+                        ))}
+                      </select>
+                    </div>
 
-                    <select
-                      value={mappingTLFilter}
-                      onChange={(e) => setMappingTLFilter(e.target.value)}
-                      className="text-xs bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 font-bold text-slate-700"
-                    >
-                      <option value="all">All Team Leads (TL)</option>
-                      {trainerTLsList.map((tl) => (
-                        <option key={tl.id} value={tl.name}>{tl.name} ({tl.zone})</option>
-                      ))}
-                    </select>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Course</label>
+                      <select
+                        value={mappingCourseFilter}
+                        onChange={(e) => setMappingCourseFilter(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Courses</option>
+                        {mappingUniqueCourses.map((c) => (
+                          <option key={c} value={c}>{c}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Batch</label>
+                      <select
+                        value={mappingBatchFilter}
+                        onChange={(e) => setMappingBatchFilter(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Batches</option>
+                        {mappingUniqueBatches.map((b) => (
+                          <option key={b} value={b}>{b}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Team Lead (TL)</label>
+                      <select
+                        value={mappingTLFilter}
+                        onChange={(e) => setMappingTLFilter(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Team Leads</option>
+                        {trainerTLsList.map((tl) => (
+                          <option key={tl.id} value={tl.name}>{tl.name}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Trainer Manager</label>
+                      <select
+                        value={mappingManagerFilter}
+                        onChange={(e) => setMappingManagerFilter(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Managers</option>
+                        {trainerManagersList.map((m) => (
+                          <option key={m.id} value={m.name}>{m.name}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Search</label>
+                      <div className="relative">
+                        <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="text"
+                          value={mappingSearch}
+                          onChange={(e) => setMappingSearch(e.target.value)}
+                          placeholder="Trainer, branch..."
+                          className="w-full text-xs bg-white border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-slate-800 placeholder-slate-400 outline-none focus:border-teal-500"
+                        />
+                      </div>
+                    </div>
                   </div>
+
+                  {(mappingBranchFilter !== 'all' || mappingCourseFilter !== 'all' || mappingBatchFilter !== 'all' || mappingTLFilter !== 'all' || mappingManagerFilter !== 'all' || mappingSearch) && (
+                    <div className="flex justify-end pt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMappingBranchFilter('all');
+                          setMappingCourseFilter('all');
+                          setMappingBatchFilter('all');
+                          setMappingTLFilter('all');
+                          setMappingManagerFilter('all');
+                          setMappingSearch('');
+                        }}
+                        className="px-2.5 py-1 rounded-lg text-xs font-bold text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200 transition-all cursor-pointer"
+                      >
+                        ✕ Reset Filters
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 <div className="overflow-x-auto border border-slate-200 rounded-xl">
@@ -2809,7 +3767,7 @@ export default function TrainerHeadDashboard({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-slate-700">
-                      {trainerBatchMapping.map((tr) => (
+                      {filteredBatchMapping.map((tr) => (
                         <tr key={tr.trainerId || tr.id} className="hover:bg-slate-50">
                           <td className="py-3 px-3 font-extrabold text-slate-900">{tr.trainerName}</td>
                           <td className="py-3 px-3">{tr.zone ? `${tr.zone} · ` : ''}{tr.branch || '—'}</td>
@@ -2840,6 +3798,13 @@ export default function TrainerHeadDashboard({
                           </td>
                         </tr>
                       ))}
+                      {filteredBatchMapping.length === 0 && (
+                        <tr>
+                          <td colSpan={7} className="py-8 text-center text-xs text-slate-400">
+                            No trainers or batch mappings match the selected filters.
+                          </td>
+                        </tr>
+                      )}
                     </tbody>
                   </table>
                 </div>
@@ -2847,17 +3812,229 @@ export default function TrainerHeadDashboard({
             </div>
           )}
 
+          {/* ================= SECTION: SHIFT & AVAILABILITY (HEAD, MANAGER, TL) ================= */}
+          {activeTab === 'shift_availability' && (
+            <div className="space-y-6">
+              {/* My Shift & Availability Hero Card */}
+              <div className="bg-[#0f212d] text-white rounded-3xl p-6 sm:p-7 border border-[#1b3446] shadow-sm space-y-5">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2.5 flex-wrap">
+                      <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight">
+                        {currentUserName || 'Staff Member'}
+                      </h2>
+                      <span className={`text-xs font-bold px-3 py-1 rounded-full border ${
+                        isHeadRole
+                          ? 'bg-blue-500/20 text-blue-300 border-blue-500/40'
+                          : isManagerRole
+                            ? 'bg-teal-500/20 text-teal-300 border-teal-500/40'
+                            : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                      }`}>
+                        {roleType === 'head' ? 'Head of Trainer' : roleType === 'manager' ? 'Trainer Manager' : 'Trainer Team Lead (TL)'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-300 font-medium font-mono">
+                      {[
+                        currentUser?.email,
+                        currentUser?.branch || currentUser?.zone || 'All Branches (HQ)',
+                        `Shift: ${myRosterRecord?.shift || '10:00 AM – 7:00 PM (General Shift)'}`
+                      ].filter(Boolean).join(' · ')}
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <span className={`px-3 py-1.5 rounded-xl font-bold border ${
+                      myRosterRecord?.status === 'On Leave'
+                        ? 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+                        : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                    }`}>
+                      {myRosterRecord?.status === 'On Leave' ? '🏖️ On Leave' : '💼 Available · On Duty'}
+                    </span>
+                    {isHeadRole ? (
+                      <span className="px-3 py-1.5 rounded-xl font-bold border bg-amber-500/20 text-amber-300 border-amber-500/40 flex items-center gap-1.5">
+                        <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                        <span>Head Command · All Rosters Updated by Head Only</span>
+                      </span>
+                    ) : (
+                      <span className="px-3 py-1.5 rounded-xl font-bold border bg-slate-800 text-slate-300 border-slate-600 flex items-center gap-1.5">
+                        <Lock className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Read-Only · All Rosters Updated by Head of Trainer Only</span>
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* 7-Day Personal Schedule Calendar */}
+                <div className="bg-[#152a36] rounded-2xl p-4 sm:p-5 border border-[#213f52] space-y-3">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div>
+                      <h4 className="text-xs sm:text-sm font-bold text-white flex items-center gap-2">
+                        <span>📅</span>
+                        <span>My Assigned Shift Roster &middot; Week of {getWeekRangeString()}</span>
+                      </h4>
+                      <p className="text-[11px] text-slate-400 font-mono mt-0.5">
+                        {isHeadRole
+                          ? 'Your personal executive shift. As Head of Trainer, you can allocate and update all rosters below.'
+                          : 'Weekly schedule set by Head of Trainer. All training rosters are updated exclusively by Head of Trainer.'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-7 gap-1.5 sm:gap-2 pt-1">
+                    {myWeeklySchedule.map((shift, idx) => {
+                      const isOff = shift.type === 'off' || shift.timing === 'Week Off' || shift.timing === 'On Leave' || shift.isOff;
+                      return (
+                        <div
+                          key={idx}
+                          className={`rounded-xl p-2 sm:p-2.5 text-center border transition-all flex flex-col justify-between min-h-[64px] sm:min-h-[72px] ${
+                            shift.isToday
+                              ? 'border-2 border-teal-400 bg-teal-950/80 text-teal-200 shadow-md shadow-teal-900/30 ring-1 ring-teal-400/50'
+                              : isOff
+                                ? 'bg-rose-950/40 text-rose-300 border-rose-900/50 font-bold'
+                                : 'bg-[#0e1d26] border-slate-700/60 text-slate-300'
+                          }`}
+                        >
+                          <div className="text-[10px] sm:text-[11px] font-extrabold tracking-wider font-mono">
+                            {shift.day || shift.dayName}
+                            {shift.isToday && (
+                              <span className="block text-[8px] uppercase tracking-widest text-teal-300 font-black">
+                                Today
+                              </span>
+                            )}
+                          </div>
+                          <div className={`text-xs sm:text-sm font-black mt-1 ${
+                            shift.isToday
+                              ? 'text-teal-200'
+                              : isOff
+                                ? 'text-rose-400'
+                                : 'text-white'
+                          }`}>
+                            {shift.timing || (isOff ? 'Week Off' : '10–7')}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              {/* Training Roster Board */}
+              <TeamRosterBoard
+                departmentCode="ACAD"
+                managerLabel="Head of Trainer"
+                readOnly={!isHeadRole}
+                readOnlyNotice="All training shift rosters and availability are updated exclusively by the Head of Trainer."
+                editorRole={roleType}
+                currentUser={currentUser}
+                showRoleFilter={true}
+                onRosterChange={loadDashboardData}
+              />
+            </div>
+          )}
+
           {/* ================= SECTION 6: TRAINER ATTENDANCE DETAILS ================= */}
           {activeTab === 'trainer_attendance' && (
             <div className="space-y-6">
               <div className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-xs space-y-4">
-                <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-100 flex-wrap gap-2">
                   <div>
                     <h3 className="text-base font-extrabold text-slate-900">
-                      Trainer Attendance &amp; Shift Records ({trainerAttendanceReport.length})
+                      Trainer Attendance &amp; Shift Records ({filteredAttendanceReport.length} of {trainerAttendanceReport.length})
                     </h3>
                     <p className="text-xs text-slate-400">Present days, absent days, and monthly attendance summaries for your faculty.</p>
                   </div>
+                </div>
+
+                {/* Column Filters for Trainer Attendance */}
+                <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200/80 space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-2.5">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Branch</label>
+                      <select
+                        value={attBranchFilter}
+                        onChange={(e) => setAttBranchFilter(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Branches</option>
+                        {attUniqueBranches.map((b) => (
+                          <option key={b} value={b}>{b}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Shift</label>
+                      <select
+                        value={attShiftFilter}
+                        onChange={(e) => setAttShiftFilter(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Shifts</option>
+                        {attUniqueShifts.map((s) => (
+                          <option key={s} value={s}>{s}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Attendance %</label>
+                      <select
+                        value={attPctFilter}
+                        onChange={(e) => setAttPctFilter(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Attendance %</option>
+                        <option value="high">High (≥ 90%)</option>
+                        <option value="moderate">Moderate (75% – 89%)</option>
+                        <option value="low">Attention Needed (&lt; 75%)</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Status</label>
+                      <select
+                        value={attStatusFilter}
+                        onChange={(e) => setAttStatusFilter(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Statuses</option>
+                        <option value="active">Active Faculty</option>
+                        <option value="inactive">Inactive</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Search</label>
+                      <div className="relative">
+                        <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="text"
+                          value={attSearch}
+                          onChange={(e) => setAttSearch(e.target.value)}
+                          placeholder="Trainer, branch, shift..."
+                          className="w-full text-xs bg-white border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-slate-800 placeholder-slate-400 outline-none focus:border-teal-500"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {(attBranchFilter !== 'all' || attShiftFilter !== 'all' || attPctFilter !== 'all' || attStatusFilter !== 'all' || attSearch) && (
+                    <div className="flex justify-end pt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAttBranchFilter('all');
+                          setAttShiftFilter('all');
+                          setAttPctFilter('all');
+                          setAttStatusFilter('all');
+                          setAttSearch('');
+                        }}
+                        className="px-2.5 py-1 rounded-lg text-xs font-bold text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200 transition-all cursor-pointer"
+                      >
+                        ✕ Reset Filters
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 <div className="overflow-x-auto border border-slate-200 rounded-xl">
@@ -2874,7 +4051,7 @@ export default function TrainerHeadDashboard({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-slate-700">
-                      {trainerAttendanceReport.map((tr) => (
+                      {filteredAttendanceReport.map((tr) => (
                         <tr key={tr.trainerId || tr.id} className="hover:bg-slate-50">
                           <td className="py-3 px-3 font-extrabold text-slate-900">{tr.trainerName}</td>
                           <td className="py-3 px-3">{tr.branch}</td>
@@ -2889,6 +4066,13 @@ export default function TrainerHeadDashboard({
                           </td>
                         </tr>
                       ))}
+                      {filteredAttendanceReport.length === 0 && (
+                        <tr>
+                          <td colSpan={7} className="py-8 text-center text-xs text-slate-400">
+                            No trainer attendance records match the selected filters.
+                          </td>
+                        </tr>
+                      )}
                     </tbody>
                   </table>
                 </div>
@@ -2987,6 +4171,99 @@ export default function TrainerHeadDashboard({
                   </div>
                 </div>
 
+                {/* Column Filters for Demos */}
+                <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200/80 space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-2.5">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Branch</label>
+                      <select
+                        value={demoBranchFilter}
+                        onChange={(e) => setDemoBranchFilter(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Branches</option>
+                        {demoUniqueBranches.map((b) => (
+                          <option key={b} value={b}>{b}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Course</label>
+                      <select
+                        value={demoCourseFilter}
+                        onChange={(e) => setDemoCourseFilter(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Courses</option>
+                        {demoUniqueCourses.map((c) => (
+                          <option key={c} value={c}>{c}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Faculty</label>
+                      <select
+                        value={demoFacultyFilter}
+                        onChange={(e) => setDemoFacultyFilter(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Faculty</option>
+                        {demoUniqueFaculty.map((f) => (
+                          <option key={f} value={f}>{f}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Status</label>
+                      <select
+                        value={demoStatusFilter}
+                        onChange={(e) => setDemoStatusFilter(e.target.value)}
+                        className="w-full text-xs bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                      >
+                        <option value="all">All Statuses</option>
+                        {demoUniqueStatuses.map((s) => (
+                          <option key={s} value={s} className="capitalize">{s}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Search Candidate</label>
+                      <div className="relative">
+                        <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="text"
+                          value={demoSearch}
+                          onChange={(e) => setDemoSearch(e.target.value)}
+                          placeholder="Candidate, phone, course..."
+                          className="w-full text-xs bg-white border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-slate-800 placeholder-slate-400 outline-none focus:border-teal-500"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {(demoBranchFilter !== 'all' || demoCourseFilter !== 'all' || demoFacultyFilter !== 'all' || demoStatusFilter !== 'all' || demoSearch) && (
+                    <div className="flex justify-end pt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDemoBranchFilter('all');
+                          setDemoCourseFilter('all');
+                          setDemoFacultyFilter('all');
+                          setDemoStatusFilter('all');
+                          setDemoSearch('');
+                        }}
+                        className="px-2.5 py-1 rounded-lg text-xs font-bold text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200 transition-all cursor-pointer"
+                      >
+                        ✕ Reset Filters
+                      </button>
+                    </div>
+                  )}
+                </div>
+
                 <div className="overflow-x-auto border border-slate-200 rounded-xl">
                   <table className="w-full text-left text-xs">
                     <thead className="bg-slate-50 text-slate-600 font-bold border-b border-slate-200">
@@ -3001,7 +4278,7 @@ export default function TrainerHeadDashboard({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-slate-700">
-                      {displayedDemos.map((dm) => {
+                      {filteredDemosList.map((dm) => {
                         const leaderName = currentLeaderTrainerName.toLowerCase();
                         const leaderId = String(currentLeaderTrainerId);
                         const dTr = String(dm.trainer || dm.faculty || dm.trainerMapping || '').toLowerCase();
@@ -3105,12 +4382,12 @@ export default function TrainerHeadDashboard({
                           </tr>
                         );
                       })}
-                      {displayedDemos.length === 0 && (
+                      {filteredDemosList.length === 0 && (
                         <tr>
                           <td colSpan={7} className="py-8 text-center text-xs text-slate-400">
-                            {demoFilterTab === 'mine'
+                            {displayedDemos.length === 0 && demoFilterTab === 'mine'
                               ? 'No demos currently assigned to you. Click "Take Demo" on any scheduled demo to assign it to yourself!'
-                              : 'No demo sessions found for this filter.'}
+                              : 'No demo sessions match the selected filters.'}
                           </td>
                         </tr>
                       )}

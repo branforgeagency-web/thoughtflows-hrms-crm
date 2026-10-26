@@ -8,6 +8,7 @@ import {
   assignTrainingMaterial,
   deleteTrainingMaterial
 } from '../services/api';
+import { isAmplifyStorageConfigured, uploadTrainingMaterialFile } from '../services/amplifyStorage';
 
 const CATEGORIES = ['General', 'CPT Guidelines', 'ICD-10-CM', 'ICD-10-PCS', 'HCPCS Level II', 'E/M', 'Anatomy & Physiology', 'Billing & RCM', 'Exam Practice', 'Viva & Interview'];
 const MAX_MB = 12;
@@ -43,26 +44,46 @@ export default function TrainingLibraryMaterials({ currentUser = {}, batches = [
     if (file.size > MAX_MB * 1024 * 1024) { flash(`File is larger than ${MAX_MB} MB`); return; }
     setUploading(true);
     try {
-      const data = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
-      });
-      await uploadTrainingMaterial({
+      const payload = {
         title: uploadTitle.trim() || file.name.replace(/\.[^.]+$/, ''),
         description: uploadNote.trim(),
         category: uploadCategory,
         fileName: file.name,
+        fileSize: file.size,
         mimeType: file.type || 'application/octet-stream',
-        data,
         uploadedBy: currentUser.name,
         uploaderId: myId,
         branch: currentUser.branch
-      });
+      };
+
+      // Try uploading to AWS Amplify S3 Storage first if configured
+      if (isAmplifyStorageConfigured()) {
+        try {
+          const s3Result = await uploadTrainingMaterialFile(file, { category: uploadCategory });
+          payload.storageKey = s3Result.storageKey;
+          payload.storageUrl = s3Result.storageUrl;
+          payload.storageProvider = 'amplify';
+        } catch (amplifyErr) {
+          console.warn('Amplify upload failed, falling back to database storage:', amplifyErr);
+        }
+      }
+
+      // If Amplify was not used or did not provide storageUrl, fall back to inline base64
+      if (!payload.storageUrl) {
+        const data = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+        payload.data = data;
+        payload.storageProvider = 'inline';
+      }
+
+      await uploadTrainingMaterial(payload);
       setUploadTitle('');
       setUploadNote('');
-      flash(`"${file.name}" uploaded to the shared library`);
+      flash(`"${file.name}" uploaded to the shared library${payload.storageProvider === 'amplify' ? ' (AWS S3)' : ''}`);
       onChanged?.();
     } catch (err) {
       flash(err?.response?.data?.error || 'Upload failed');

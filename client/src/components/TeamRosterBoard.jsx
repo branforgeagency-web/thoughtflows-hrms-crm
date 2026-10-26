@@ -4,9 +4,15 @@ import {
   Search, 
   CheckCircle2, 
   Clock, 
-  Sparkles,
-  Save,
-  Check
+  Sparkles, 
+  Save, 
+  Check, 
+  Lock, 
+  Eye, 
+  Users, 
+  ShieldCheck, 
+  Briefcase,
+  Filter
 } from 'lucide-react';
 import { getTeam, setTeamMemberShift, onDataUpdate } from '../services/api';
 import { getCurrentWeekScheduleDays } from '../utils/dateUtils';
@@ -17,19 +23,14 @@ export default function TeamRosterBoard({
   departmentCode = 'DEP-HR-001',
   managerLabel = 'Head of HR',
   onBack = null,
-  // Optional allow-list of member names (case-insensitive) — scopes the
-  // board down to e.g. just one Head of Trainer's own zone instead of the
-  // whole department, while still fetching live from the server (unlike
-  // customMembers, which replaces the fetch outright).
-  allowedNames = null
+  allowedNames = null,
+  readOnly = false,
+  readOnlyNotice = '',
+  editorRole = 'head',
+  currentUser = null,
+  showRoleFilter = false
 }) {
   const [members, setMembers] = useState(customMembers || []);
-  // A stable primitive key for allowedNames — the caller (e.g. a region's
-  // trainer list) often passes a brand-new array literal every render, and
-  // depending on that array reference directly in the data-fetch effect
-  // below would re-fetch from the server on every re-render. Depending on
-  // this derived string instead means the effect only re-runs when the
-  // actual set of names changes.
   const allowedNamesKey = useMemo(
     () => (Array.isArray(allowedNames) && allowedNames.length
       ? allowedNames.map(n => String(n || '').trim().toLowerCase()).filter(Boolean).sort().join('|')
@@ -38,9 +39,12 @@ export default function TeamRosterBoard({
   );
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
+  const [roleCategoryFilter, setRoleCategoryFilter] = useState('All'); // 'All' | 'Leadership' | 'Trainers'
+  const [branchFilter, setBranchFilter] = useState('All');
+  const [shiftFilter, setShiftFilter] = useState('All');
   const [toastMessage, setToastMessage] = useState(null);
 
-  // Modal for Head of HR Weekly Roster Allocation
+  // Modal for Weekly Roster Allocation / View
   const [scheduleModalMember, setScheduleModalMember] = useState(null);
   const [editingSchedule, setEditingSchedule] = useState([]);
   const [isSaving, setIsSaving] = useState(false);
@@ -66,6 +70,7 @@ export default function TeamRosterBoard({
             id: m._id || m.id,
             name: m.name,
             role: m.role || 'Staff',
+            branchName: m.branchName || '',
             assignedCount: m.assigned || 0,
             pendingCount: m.pending || 0,
             status: m.available !== false ? 'Available' : 'On Leave',
@@ -102,29 +107,64 @@ export default function TeamRosterBoard({
     return members.filter(m => m.status === 'On Leave').length;
   }, [members]);
 
+  const leadershipCount = useMemo(() => {
+    return members.filter(m => /head|manager|team lead|\btl\b/i.test(m.role || '')).length;
+  }, [members]);
+
+  const trainersCount = useMemo(() => {
+    return members.filter(m => !/head|manager|team lead|\btl\b/i.test(m.role || '')).length;
+  }, [members]);
+
+  const uniqueBranches = useMemo(() => {
+    return Array.from(new Set(members.map(m => m.branchName).filter(Boolean))).sort();
+  }, [members]);
+
+  const uniqueShifts = useMemo(() => {
+    return Array.from(new Set(members.map(m => m.shift).filter(Boolean))).sort();
+  }, [members]);
+
   const filteredMembers = useMemo(() => {
     return members.filter(m => {
       const matchSearch = 
-        m.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        m.role.toLowerCase().includes(searchQuery.toLowerCase());
+        (m.name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (m.role || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (m.branchName || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (m.shift || '').toLowerCase().includes(searchQuery.toLowerCase());
       
-      if (statusFilter === 'Available') return matchSearch && m.status === 'Available';
-      if (statusFilter === 'On Leave') return matchSearch && m.status === 'On Leave';
-      return matchSearch;
+      if (!matchSearch) return false;
+
+      if (statusFilter === 'Available' && m.status !== 'Available') return false;
+      if (statusFilter === 'On Leave' && m.status !== 'On Leave') return false;
+
+      if (branchFilter !== 'All' && String(m.branchName || '').toLowerCase() !== branchFilter.toLowerCase()) {
+        return false;
+      }
+
+      if (shiftFilter !== 'All' && String(m.shift || '').toLowerCase() !== shiftFilter.toLowerCase()) {
+        return false;
+      }
+
+      if (roleCategoryFilter === 'Leadership') {
+        return /head|manager|team lead|\btl\b/i.test(m.role || '');
+      }
+      if (roleCategoryFilter === 'Trainers') {
+        return !/head|manager|team lead|\btl\b/i.test(m.role || '');
+      }
+
+      return true;
     });
-  }, [members, searchQuery, statusFilter]);
+  }, [members, searchQuery, statusFilter, roleCategoryFilter, branchFilter, shiftFilter]);
 
   // Open Weekly Roster Allocation Modal
   const handleOpenScheduleModal = (member) => {
     setScheduleModalMember(member);
-
-    // The saved roster lives on the team member record (server)
     const existing = Array.isArray(member.weeklySchedule) && member.weeklySchedule.length ? member.weeklySchedule : null;
     setEditingSchedule(existing || getCurrentWeekScheduleDays());
   };
 
   // Change single day schedule in modal
   const handleDayTimingChange = (index, newTiming) => {
+    if (readOnly) return;
     setEditingSchedule(prev => {
       const copy = [...prev];
       const isOff = newTiming === 'Week Off' || newTiming === 'On Leave';
@@ -138,25 +178,25 @@ export default function TeamRosterBoard({
     });
   };
 
-  // Save allocated weekly roster
+  // Save allocated weekly roster (Head of Trainer only)
   const handleSaveWeeklySchedule = async (e) => {
     e?.preventDefault();
-    if (!scheduleModalMember) return;
+    if (!scheduleModalMember || readOnly) return;
     setIsSaving(true);
 
     try {
-      // Save to database
+      const primaryTiming = editingSchedule.find(d => !d.isOff && d.timing !== 'Week Off')?.timing || 'General Shift';
       await setTeamMemberShift(scheduleModalMember.id, {
         name: scheduleModalMember.name,
         role: scheduleModalMember.role,
-        shift: 'general',
-        weeklySchedule: editingSchedule
+        shift: primaryTiming,
+        weeklySchedule: editingSchedule,
+        editorRole: editorRole || 'head'
       });
 
-      // Update local member state
       setMembers(prev => prev.map(m => {
         if (m.id === scheduleModalMember.id) {
-          return { ...m, weeklySchedule: editingSchedule };
+          return { ...m, weeklySchedule: editingSchedule, shift: primaryTiming };
         }
         return m;
       }));
@@ -172,8 +212,13 @@ export default function TeamRosterBoard({
     }
   };
 
-  // Toggle Availability
+  // Toggle Availability (Head of Trainer only)
   const handleToggleStatus = async (id, currentStatus) => {
+    if (readOnly) {
+      showToast('🔒 Read-Only: Availability and rosters can only be updated by the Head of Trainer.');
+      return;
+    }
+
     const nextStatus = currentStatus === 'Available' ? 'On Leave' : 'Available';
     const nextAvailable = nextStatus === 'Available';
 
@@ -185,7 +230,7 @@ export default function TeamRosterBoard({
     }));
 
     try {
-      await setTeamMemberShift(id, { available: nextAvailable }).catch(() => {});
+      await setTeamMemberShift(id, { available: nextAvailable, editorRole: editorRole || 'head' }).catch(() => {});
     } catch (e) {}
 
     showToast(`Availability status toggled to "${nextStatus}"`);
@@ -208,6 +253,29 @@ export default function TeamRosterBoard({
         </div>
       )}
 
+      {/* Authority Notice Banners */}
+      {readOnly ? (
+        <div className="mb-5 p-3.5 bg-amber-50 border border-amber-200/90 rounded-2xl flex items-center gap-3 text-xs text-amber-900 font-medium shadow-2xs">
+          <Lock className="w-4 h-4 text-amber-700 shrink-0" />
+          <div className="flex-1">
+            <strong className="font-extrabold text-amber-950">Read-Only Roster:</strong> {readOnlyNotice || 'All training shift rosters and availability are updated exclusively by the Head of Trainer. You can view schedules, work shifts, and availability.'}
+          </div>
+          <span className="text-[10px] font-mono font-bold bg-amber-100 text-amber-900 border border-amber-300 px-2 py-0.5 rounded-full uppercase tracking-wider shrink-0">
+            Head Managed
+          </span>
+        </div>
+      ) : departmentCode === 'ACAD' ? (
+        <div className="mb-5 p-3.5 bg-sky-50 border border-sky-200/90 rounded-2xl flex items-center justify-between gap-3 text-xs text-sky-900 font-medium shadow-2xs flex-wrap">
+          <div className="flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-sky-600 shrink-0" />
+            <span><strong className="font-extrabold text-sky-950">Head of Trainer Exclusive Command:</strong> You have full authority to update shifts, week offs, and availability for all faculty, managers, and team leads.</span>
+          </div>
+          <span className="text-[10px] font-mono font-bold bg-sky-100 text-sky-900 border border-sky-300 px-2.5 py-1 rounded-full uppercase tracking-wider">
+            Edit Authority
+          </span>
+        </div>
+      ) : null}
+
       {/* Main Header Container */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
         <div>
@@ -223,11 +291,11 @@ export default function TeamRosterBoard({
           <div className="flex items-center gap-2.5">
             <span className="text-xl sm:text-2xl select-none">📅</span>
             <h3 className="text-xl sm:text-2xl font-bold text-[#0f172a] tracking-tight">
-              Team Roster & Weekly Schedule Allocator
+              {readOnly ? 'Training Department Roster & Shifts' : 'Team Roster & Weekly Schedule Allocator'}
             </h3>
           </div>
           <p className="text-xs sm:text-sm text-slate-400 font-mono mt-1 font-medium pl-0.5">
-            {managerLabel} Console &middot; Allocate work days and week offs for each employee
+            {managerLabel} Console &middot; {readOnly ? 'View daily work shifts and week offs for your team' : 'Allocate work days, shift timings, and week offs'}
           </p>
         </div>
 
@@ -239,7 +307,7 @@ export default function TeamRosterBoard({
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search member, role..."
+              placeholder="Search member, role, branch..."
               className="w-full text-xs bg-slate-50 border border-slate-200 rounded-xl pl-8 pr-3 py-2 text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 transition-all font-sans"
             />
             {searchQuery && (
@@ -287,13 +355,112 @@ export default function TeamRosterBoard({
         </div>
       </div>
 
+      {/* Role Category Filter Tabs (For Academics / Training Department) */}
+      {(showRoleFilter || departmentCode === 'ACAD') && (
+        <div className="flex items-center gap-2 mb-3 overflow-x-auto pb-1 text-xs">
+          <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider shrink-0 mr-1">Filter Role:</span>
+          <button
+            type="button"
+            onClick={() => setRoleCategoryFilter('All')}
+            className={`px-3 py-1.5 rounded-xl font-bold transition-all cursor-pointer ${
+              roleCategoryFilter === 'All'
+                ? 'bg-slate-900 text-white shadow-xs'
+                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+            }`}
+          >
+            All Staff ({members.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setRoleCategoryFilter('Leadership')}
+            className={`px-3 py-1.5 rounded-xl font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+              roleCategoryFilter === 'Leadership'
+                ? 'bg-blue-600 text-white shadow-xs'
+                : 'bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200/60'
+            }`}
+          >
+            <ShieldCheck className="w-3.5 h-3.5" />
+            <span>Leadership (Managers &amp; TLs) ({leadershipCount})</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setRoleCategoryFilter('Trainers')}
+            className={`px-3 py-1.5 rounded-xl font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+              roleCategoryFilter === 'Trainers'
+                ? 'bg-teal-600 text-white shadow-xs'
+                : 'bg-teal-50 text-teal-700 hover:bg-teal-100 border border-teal-200/60'
+            }`}
+          >
+            <Users className="w-3.5 h-3.5" />
+            <span>Faculty Trainers ({trainersCount})</span>
+          </button>
+        </div>
+      )}
+
+      {/* Column Filters Bar: Branch, Shift, and Status */}
+      <div className="flex items-center gap-2.5 mb-4 flex-wrap bg-slate-50/80 p-2.5 rounded-2xl border border-slate-200/70 text-xs">
+        <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider shrink-0 flex items-center gap-1">
+          <Filter className="w-3.5 h-3.5 text-slate-400" /> Filter Columns:
+        </span>
+
+        {/* Branch Filter Dropdown */}
+        <div className="flex items-center gap-1.5">
+          <label className="text-[11px] font-bold text-slate-600">Branch:</label>
+          <select
+            value={branchFilter}
+            onChange={(e) => setBranchFilter(e.target.value)}
+            className="text-xs bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 font-bold text-slate-700 outline-none focus:border-purple-500"
+          >
+            <option value="All">All Branches ({members.length})</option>
+            {uniqueBranches.map(b => (
+              <option key={b} value={b}>{b} ({members.filter(m => m.branchName === b).length})</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Shift Filter Dropdown */}
+        <div className="flex items-center gap-1.5">
+          <label className="text-[11px] font-bold text-slate-600">Shift:</label>
+          <select
+            value={shiftFilter}
+            onChange={(e) => setShiftFilter(e.target.value)}
+            className="text-xs bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 font-bold text-slate-700 outline-none focus:border-purple-500"
+          >
+            <option value="All">All Shifts ({members.length})</option>
+            {uniqueShifts.map(s => (
+              <option key={s} value={s}>{s} ({members.filter(m => m.shift === s).length})</option>
+            ))}
+          </select>
+        </div>
+
+        <span className="text-[11px] font-bold text-slate-400 ml-auto mr-1">
+          Showing {filteredMembers.length} of {members.length}
+        </span>
+
+        {(branchFilter !== 'All' || shiftFilter !== 'All' || roleCategoryFilter !== 'All' || statusFilter !== 'All' || searchQuery) && (
+          <button
+            type="button"
+            onClick={() => {
+              setBranchFilter('All');
+              setShiftFilter('All');
+              setRoleCategoryFilter('All');
+              setStatusFilter('All');
+              setSearchQuery('');
+            }}
+            className="px-2.5 py-1 rounded-lg text-[11px] font-bold text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200 transition-all cursor-pointer"
+          >
+            ✕ Reset Filters
+          </button>
+        )}
+      </div>
+
       {/* List of Roster Member Rows */}
       <div className="space-y-3">
         {filteredMembers.length === 0 ? (
           <div className="text-center py-12 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
             <p className="text-xs font-semibold text-slate-500">No team members match the current search filter.</p>
             <button 
-              onClick={() => { setSearchQuery(''); setStatusFilter('All'); }}
+              onClick={() => { setSearchQuery(''); setStatusFilter('All'); setRoleCategoryFilter('All'); }}
               className="mt-2 text-xs text-purple-600 hover:underline font-bold cursor-pointer"
             >
               Reset Filters
@@ -302,6 +469,7 @@ export default function TeamRosterBoard({
         ) : (
           filteredMembers.map((m) => {
             const isAvailable = m.status === 'Available';
+            const isLeadershipRole = /head|manager|team lead|\btl\b/i.test(m.role || '');
 
             return (
               <div
@@ -314,52 +482,109 @@ export default function TeamRosterBoard({
                     className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${
                       isAvailable ? 'bg-emerald-500' : 'bg-rose-500 animate-pulse'
                     }`} 
+                    title={isAvailable ? 'Available' : 'On Leave'}
                   />
 
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <h4 className="text-sm sm:text-base font-bold text-[#0f172a] tracking-tight group-hover:text-purple-900 transition-colors">
                         {m.name}
                       </h4>
+                      <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-md border ${
+                        isLeadershipRole
+                          ? 'bg-blue-50 text-blue-700 border-blue-200'
+                          : 'bg-teal-50 text-teal-700 border-teal-200'
+                      }`}>
+                        {m.role}
+                      </span>
+                      {m.branchName && (
+                        <span className="text-[11px] font-medium text-slate-500">
+                          📍 {m.branchName}
+                        </span>
+                      )}
+                      <span className="text-[11px] font-mono text-slate-400 font-semibold">
+                        Shift: {m.shift}
+                      </span>
                     </div>
 
-                    <div className="text-xs text-slate-400 font-mono mt-0.5 flex items-center gap-1.5 flex-wrap">
-                      <span>{m.role}</span>
-                      <span className="text-slate-300 font-bold">&middot;</span>
-                      <span>{m.assignedCount} assigned</span>
-                      <span className="text-slate-300 font-bold">&middot;</span>
-                      <span>{m.pendingCount} pending</span>
+                    {/* 7-Day Mini Schedule Preview */}
+                    <div className="mt-2 flex items-center gap-1 overflow-x-auto py-0.5">
+                      {(Array.isArray(m.weeklySchedule) && m.weeklySchedule.length ? m.weeklySchedule : getCurrentWeekScheduleDays()).map((dayItem, dIdx) => {
+                        const isOff = dayItem.timing === 'Week Off' || dayItem.timing === 'On Leave' || dayItem.type === 'off' || dayItem.isOff;
+                        return (
+                          <span
+                            key={dIdx}
+                            className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded border ${
+                              dayItem.isToday
+                                ? 'bg-teal-600 text-white border-teal-700 ring-1 ring-teal-400 shadow-2xs'
+                                : isOff
+                                  ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                  : 'bg-slate-100 text-slate-700 border-slate-200'
+                            }`}
+                            title={`${dayItem.day || dayItem.dayName || ''}: ${dayItem.timing || (isOff ? 'Week Off' : 'Work')}`}
+                          >
+                            {String(dayItem.day || dayItem.dayName || '').slice(0, 3)}: {isOff ? 'OFF' : (dayItem.timing || '10–7')}
+                          </span>
+                        );
+                      })}
                     </div>
                   </div>
                 </div>
 
                 {/* Right Side Actions */}
                 <div className="flex items-center gap-2.5 w-full sm:w-auto pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100 flex-wrap justify-end">
-                  {/* Allocate Weekly Roster Button for HR Head */}
-                  <button
-                    onClick={() => handleOpenScheduleModal(m)}
-                    className="px-3.5 py-1.5 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200/90 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
-                  >
-                    <Calendar className="w-3.5 h-3.5 text-purple-600" />
-                    <span>Allocate Roster</span>
-                  </button>
+                  {readOnly ? (
+                    /* Read-Only: View Schedule Modal */
+                    <button
+                      type="button"
+                      onClick={() => handleOpenScheduleModal(m)}
+                      className="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
+                    >
+                      <Eye className="w-3.5 h-3.5 text-slate-500" />
+                      <span>View Schedule</span>
+                    </button>
+                  ) : (
+                    /* Head of Trainer: Allocate Weekly Roster Button */
+                    <button
+                      type="button"
+                      onClick={() => handleOpenScheduleModal(m)}
+                      className="px-3.5 py-1.5 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200/90 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
+                    >
+                      <Calendar className="w-3.5 h-3.5 text-purple-600" />
+                      <span>Allocate Roster</span>
+                    </button>
+                  )}
 
-                  {/* Toggle Status Button */}
-                  <button
-                    onClick={() => handleToggleStatus(m.id, m.status)}
-                    className="cursor-pointer transition-transform active:scale-95"
-                    title="Click to toggle availability status"
-                  >
-                    {isAvailable ? (
-                      <span className="inline-block bg-[#dcfce7] text-[#16a34a] border border-[#bbf7d0] text-[11px] sm:text-xs font-semibold px-3.5 py-1 rounded-full tracking-wide">
-                        Available
-                      </span>
-                    ) : (
-                      <span className="inline-block bg-[#ffe4e6] text-[#e11d48] border border-[#fecdd3] text-[11px] sm:text-xs font-semibold px-3.5 py-1 rounded-full tracking-wide">
-                        On Leave
-                      </span>
-                    )}
-                  </button>
+                  {/* Availability Pill: Toggleable only by Head of Trainer */}
+                  {readOnly ? (
+                    <span 
+                      className={`inline-block text-[11px] sm:text-xs font-semibold px-3.5 py-1 rounded-full tracking-wide select-none ${
+                        isAvailable 
+                          ? 'bg-[#dcfce7] text-[#16a34a] border border-[#bbf7d0]' 
+                          : 'bg-[#ffe4e6] text-[#e11d48] border border-[#fecdd3]'
+                      }`}
+                      title="Availability set by Head of Trainer"
+                    >
+                      {isAvailable ? 'Available' : 'On Leave'}
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => handleToggleStatus(m.id, m.status)}
+                      className="cursor-pointer transition-transform active:scale-95"
+                      title="Click to toggle availability status"
+                    >
+                      {isAvailable ? (
+                        <span className="inline-block bg-[#dcfce7] text-[#16a34a] border border-[#bbf7d0] text-[11px] sm:text-xs font-semibold px-3.5 py-1 rounded-full tracking-wide">
+                          Available
+                        </span>
+                      ) : (
+                        <span className="inline-block bg-[#ffe4e6] text-[#e11d48] border border-[#fecdd3] text-[11px] sm:text-xs font-semibold px-3.5 py-1 rounded-full tracking-wide">
+                          On Leave
+                        </span>
+                      )}
+                    </button>
+                  )}
                 </div>
               </div>
             );
@@ -367,7 +592,7 @@ export default function TeamRosterBoard({
         )}
       </div>
 
-      {/* Modal for Allocating Weekly Roster (Head of HR) */}
+      {/* Modal for Allocating / Viewing Weekly Roster */}
       {scheduleModalMember && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl p-6 max-w-lg w-full shadow-2xl border border-slate-200 space-y-5 animate-in fade-in zoom-in-95">
@@ -376,7 +601,7 @@ export default function TeamRosterBoard({
                 <div className="flex items-center gap-2">
                   <span className="text-xl">📅</span>
                   <h3 className="font-extrabold text-slate-900 text-base">
-                    Allocate Weekly Schedule
+                    {readOnly ? 'Weekly Schedule' : 'Allocate Weekly Schedule'}
                   </h3>
                 </div>
                 <p className="text-xs text-slate-500 font-mono mt-0.5">
@@ -385,6 +610,7 @@ export default function TeamRosterBoard({
               </div>
 
               <button
+                type="button"
                 onClick={() => setScheduleModalMember(null)}
                 className="w-7 h-7 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 flex items-center justify-center text-xs font-bold cursor-pointer"
               >
@@ -392,14 +618,21 @@ export default function TeamRosterBoard({
               </button>
             </div>
 
-            <p className="text-xs text-slate-600 bg-purple-50 p-3 rounded-xl border border-purple-200/70">
-              ⚡ <strong>{managerLabel} Control:</strong> Set work shift timings or assign <strong>Week Off</strong> for each day. This updates {scheduleModalMember.name}&apos;s schedule in real time.
-            </p>
+            {readOnly ? (
+              <p className="text-xs text-amber-900 bg-amber-50 p-3 rounded-xl border border-amber-200/70 flex items-center gap-2">
+                <Lock className="w-4 h-4 text-amber-700 shrink-0" />
+                <span><strong>Read-Only View:</strong> This weekly schedule is managed and updated by Head of Trainer only.</span>
+              </p>
+            ) : (
+              <p className="text-xs text-slate-600 bg-purple-50 p-3 rounded-xl border border-purple-200/70">
+                ⚡ <strong>{managerLabel} Control:</strong> Set work shift timings or assign <strong>Week Off</strong> for each day. This updates {scheduleModalMember.name}&apos;s schedule in real time.
+              </p>
+            )}
 
             {/* 7 Days Allocation Grid */}
             <div className="space-y-2.5 max-h-[340px] overflow-y-auto pr-1">
               {editingSchedule.map((item, idx) => {
-                const isOff = item.timing === 'Week Off' || item.timing === 'On Leave' || item.type === 'off';
+                const isOff = item.timing === 'Week Off' || item.timing === 'On Leave' || item.type === 'off' || item.isOff;
 
                 return (
                   <div 
@@ -424,53 +657,61 @@ export default function TeamRosterBoard({
                       </div>
                     </div>
 
-                    {/* Shift Selector Pill Buttons */}
-                    <div className="flex items-center gap-1 flex-wrap">
-                      <button
-                        type="button"
-                        onClick={() => handleDayTimingChange(idx, '10–7')}
-                        className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold transition-all cursor-pointer ${
-                          item.timing === '10–7' && !isOff
-                            ? 'bg-purple-600 text-white shadow-2xs'
-                            : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
-                        }`}
-                      >
-                        10–7 General
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDayTimingChange(idx, '9–6')}
-                        className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold transition-all cursor-pointer ${
-                          item.timing === '9–6' && !isOff
-                            ? 'bg-blue-600 text-white shadow-2xs'
-                            : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
-                        }`}
-                      >
-                        9–6 Morning
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDayTimingChange(idx, '12–9')}
-                        className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold transition-all cursor-pointer ${
-                          item.timing === '12–9' && !isOff
-                            ? 'bg-amber-600 text-white shadow-2xs'
-                            : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
-                        }`}
-                      >
-                        12–9 Evening
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDayTimingChange(idx, 'Week Off')}
-                        className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold transition-all cursor-pointer ${
-                          isOff
-                            ? 'bg-rose-600 text-white shadow-2xs'
-                            : 'bg-white text-slate-700 border border-slate-200 hover:bg-rose-50 hover:text-rose-700'
-                        }`}
-                      >
-                        Week Off
-                      </button>
-                    </div>
+                    {/* Shift Selector Pill Buttons (Only in Edit mode) */}
+                    {!readOnly ? (
+                      <div className="flex items-center gap-1 flex-wrap">
+                        <button
+                          type="button"
+                          onClick={() => handleDayTimingChange(idx, '10–7')}
+                          className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold transition-all cursor-pointer ${
+                            item.timing === '10–7' && !isOff
+                              ? 'bg-purple-600 text-white shadow-2xs'
+                              : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
+                          }`}
+                        >
+                          10–7 General
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDayTimingChange(idx, '9–6')}
+                          className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold transition-all cursor-pointer ${
+                            item.timing === '9–6' && !isOff
+                              ? 'bg-blue-600 text-white shadow-2xs'
+                              : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
+                          }`}
+                        >
+                          9–6 Morning
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDayTimingChange(idx, '12–9')}
+                          className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold transition-all cursor-pointer ${
+                            item.timing === '12–9' && !isOff
+                              ? 'bg-amber-600 text-white shadow-2xs'
+                              : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
+                          }`}
+                        >
+                          12–9 Evening
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDayTimingChange(idx, 'Week Off')}
+                          className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold transition-all cursor-pointer ${
+                            isOff
+                              ? 'bg-rose-600 text-white shadow-2xs'
+                              : 'bg-white text-slate-700 border border-slate-200 hover:bg-rose-50 hover:text-rose-700'
+                          }`}
+                        >
+                          Week Off
+                        </button>
+                      </div>
+                    ) : (
+                      <span className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold ${
+                        isOff ? 'bg-rose-100 text-rose-800' : 'bg-emerald-100 text-emerald-800'
+                      }`}>
+                        {isOff ? 'Week Off' : item.timing}
+                      </span>
+                    )}
                   </div>
                 );
               })}
@@ -478,22 +719,34 @@ export default function TeamRosterBoard({
 
             {/* Actions */}
             <div className="flex items-center gap-3 pt-2">
-              <button
-                type="button"
-                onClick={() => setScheduleModalMember(null)}
-                className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs transition-all cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={isSaving}
-                onClick={handleSaveWeeklySchedule}
-                className="flex-1 py-2.5 bg-purple-700 hover:bg-purple-800 text-white font-extrabold rounded-xl text-xs transition-all shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
-              >
-                <Save className="w-4 h-4" />
-                <span>{isSaving ? 'Saving Roster...' : 'Save Weekly Schedule'}</span>
-              </button>
+              {readOnly ? (
+                <button
+                  type="button"
+                  onClick={() => setScheduleModalMember(null)}
+                  className="w-full py-2.5 bg-slate-800 hover:bg-slate-900 text-white font-bold rounded-xl text-xs transition-all cursor-pointer"
+                >
+                  Close Schedule
+                </button>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setScheduleModalMember(null)}
+                    className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs transition-all cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isSaving}
+                    onClick={handleSaveWeeklySchedule}
+                    className="flex-1 py-2.5 bg-purple-700 hover:bg-purple-800 text-white font-extrabold rounded-xl text-xs transition-all shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <Save className="w-4 h-4" />
+                    <span>{isSaving ? 'Saving Roster...' : 'Save Weekly Schedule'}</span>
+                  </button>
+                </>
+              )}
             </div>
           </div>
         </div>

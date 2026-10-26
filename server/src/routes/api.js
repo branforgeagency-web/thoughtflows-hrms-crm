@@ -1755,6 +1755,53 @@ async function syncTeamFromUsers(force = false) {
       await TeamMember.updateOne({ _id: m._id }, { $set: { role, departmentCode, branchName } });
     }
   }
+
+  // Ensure all built-in Training Department roles (Head, Managers, TLs, Faculty) are in TeamMember
+  const trainerLeadershipDefaults = [
+    { name: 'Manoj', role: 'Head of Training Department', branch: 'All Branches (HQ)' },
+    { name: 'Keerthi', role: 'Training Manager', branch: 'Saravanampatti' },
+    { name: 'Pavithra', role: 'Training Manager', branch: 'Ameerpet' },
+    { name: 'Ram Balaji', role: 'Trainer Team Lead', branch: 'Saravanampatti' },
+    { name: 'Vaishna', role: 'Trainer Team Lead', branch: 'Kochi' },
+    { name: 'Mounika', role: 'Trainer Team Lead', branch: 'Ameerpet' },
+    { name: 'Srithar S', role: 'Trainer', branch: 'Gandhipuram' },
+    { name: 'Tharani shri', role: 'Trainer', branch: 'Saravanampatti' },
+    { name: 'Jennifer preethi', role: 'Trainer', branch: 'Gandhipuram' },
+    { name: 'Karkuzhali', role: 'Trainer', branch: 'Hopes' },
+    { name: 'Sowmiya', role: 'Trainer', branch: 'Salem' },
+    { name: 'Darsana', role: 'Trainer', branch: 'Trichy' },
+    { name: 'Sharon', role: 'Trainer', branch: 'Theni' },
+    { name: 'Kaviya', role: 'Trainer', branch: 'Saravanampatti' },
+    { name: 'Priya', role: 'Trainer', branch: 'Gandhipuram' },
+    { name: 'Sumaiya', role: 'Trainer', branch: 'Hopes' },
+    { name: 'Sophiga', role: 'Trainer', branch: 'Coimbatore' },
+    { name: 'Aleena', role: 'Trainer', branch: 'Kochi' },
+    { name: 'Aswini', role: 'Trainer', branch: 'Trivandrum' },
+    { name: 'Shilpa', role: 'Trainer', branch: 'Kochi' },
+    { name: 'Varamani', role: 'Trainer', branch: 'Trivandrum' },
+    { name: 'Shiny', role: 'Trainer', branch: 'Kochi' },
+    { name: 'Shiva kumar', role: 'Trainer', branch: 'Trivandrum' },
+    { name: 'Abarna', role: 'Trainer', branch: 'Kochi' },
+    { name: 'Pooja', role: 'Trainer', branch: 'Ameerpet' },
+    { name: 'Varsha', role: 'Trainer', branch: 'Dilsukhnagar' },
+    { name: 'Charishma', role: 'Trainer', branch: 'Tirupati' },
+    { name: 'Prasanna', role: 'Trainer', branch: 'Vizag' },
+    { name: 'Aashifa', role: 'Trainer', branch: 'Ameerpet' },
+    { name: 'Santhiya', role: 'Trainer', branch: 'Dilsukhnagar' },
+    { name: 'Kavitha', role: 'Trainer', branch: 'Tirupati' },
+    { name: 'Santhosh', role: 'Trainer', branch: 'Gandhipuram' }
+  ];
+  for (const tDef of trainerLeadershipDefaults) {
+    const key = normName(tDef.name);
+    if (!key) continue;
+    keep.add(key);
+    const m = byName.get(key);
+    if (!m) {
+      await TeamMember.create({ name: tDef.name, role: tDef.role, departmentCode: 'ACAD', branchName: tDef.branch });
+    } else if (m.departmentCode !== 'ACAD') {
+      await TeamMember.updateOne({ _id: m._id }, { $set: { departmentCode: 'ACAD' } });
+    }
+  }
   // Rows with no staff account behind them (deleted users, old placeholder rows)
   const orphanIds = members.filter((m) => !keep.has(normName(m.name))).map((m) => m._id);
   if (orphanIds.length) await TeamMember.deleteMany({ _id: { $in: orphanIds } });
@@ -1824,20 +1871,43 @@ router.get('/leadership/team', async (req, res) => {
 
 router.patch('/leadership/team/:id/shift', async (req, res) => {
   try {
-    const { shift, weeklySchedule, available, name } = req.body || {};
+    const { shift, weeklySchedule, available, name, editorRole } = req.body || {};
     const updateData = {};
     if (shift !== undefined) updateData.shift = shift;
     if (weeklySchedule !== undefined) updateData.weeklySchedule = weeklySchedule;
     if (available !== undefined) updateData.available = available;
 
-    let updated = null;
+    let target = null;
     if (mongoose.Types.ObjectId.isValid(req.params.id)) {
-      updated = await TeamMember.findByIdAndUpdate(req.params.id, updateData, { new: true });
+      target = await TeamMember.findById(req.params.id);
     }
-    if (!updated && name) {
-      updated = await TeamMember.findOneAndUpdate({ name: exactNameRx(name) }, updateData, { new: true });
+    if (!target && name) {
+      target = await TeamMember.findOne({ name: exactNameRx(name) });
     }
-    if (!updated) return res.status(404).json({ error: 'Team member not found — staff appear here once Admin creates their account.' });
+    if (!target) return res.status(404).json({ error: 'Team member not found — staff appear here once Admin creates their account.' });
+
+    // Training department roster permission check:
+    // All training department rosters are updated by Head of Trainer only
+    if (target.departmentCode === 'ACAD') {
+      const requesterRole = editorRole || req.user?.trainerRole || req.user?.role;
+      const isAuthorized = !requesterRole || /head|admin|leadership|director|chief/i.test(requesterRole);
+      if (!isAuthorized) {
+        return res.status(403).json({ error: 'All training rosters can only be updated by the Head of Trainer.' });
+      }
+    }
+
+    const updated = await TeamMember.findByIdAndUpdate(target._id, updateData, { new: true });
+
+    // Synchronize shift and active status with Trainer model if exists
+    if (updated && updated.departmentCode === 'ACAD') {
+      const trainerPatch = {};
+      if (shift !== undefined) trainerPatch.shift = shift;
+      if (available !== undefined) trainerPatch.active = available;
+      if (Object.keys(trainerPatch).length > 0) {
+        await Trainer.findOneAndUpdate({ trainerName: exactNameRx(updated.name) }, { $set: trainerPatch });
+      }
+    }
+
     res.json(updated);
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -7288,11 +7358,15 @@ router.get('/training/materials', async (req, res) => {
 
 router.post('/training/materials', async (req, res) => {
   try {
-    const { title, description, category, fileName, mimeType, data, uploadedBy, uploaderId, branch } = req.body || {};
-    if (!data || !fileName) return res.status(400).json({ error: 'A file is required' });
-    const base64 = String(data).includes(',') ? String(data).split(',').pop() : String(data);
-    const size = Math.floor((base64.length * 3) / 4);
-    if (size > MAX_MATERIAL_BYTES) return res.status(413).json({ error: 'File is larger than 12 MB' });
+    const { title, description, category, fileName, mimeType, data, uploadedBy, uploaderId, branch, storageKey, storageUrl, storageProvider } = req.body || {};
+    if (!data && !storageKey && !storageUrl && !fileName) return res.status(400).json({ error: 'A file is required' });
+    let base64 = '';
+    let size = Number(req.body?.fileSize) || 0;
+    if (data) {
+      base64 = String(data).includes(',') ? String(data).split(',').pop() : String(data);
+      size = Math.floor((base64.length * 3) / 4);
+      if (size > MAX_MATERIAL_BYTES) return res.status(413).json({ error: 'File is larger than 12 MB' });
+    }
     const doc = await TrainingMaterial.create({
       title: title || fileName,
       description: description || '',
@@ -7301,6 +7375,9 @@ router.post('/training/materials', async (req, res) => {
       fileFormat: (fileName.split('.').pop() || '').toUpperCase(),
       mimeType: mimeType || 'application/octet-stream',
       fileSize: size,
+      storageKey: storageKey || '',
+      storageUrl: storageUrl || '',
+      storageProvider: (storageKey || storageUrl) ? (storageProvider || 'amplify') : 'inline',
       data: base64,
       uploadedBy: uploadedBy || '',
       uploaderId: isTrainerReq(req) ? myTrainerId(req) : (uploaderId || ''),
@@ -7317,13 +7394,17 @@ router.post('/training/materials', async (req, res) => {
 router.get('/training/materials/:id/file', async (req, res) => {
   try {
     const doc = await TrainingMaterial.findById(req.params.id).select('+data');
-    if (!doc || !doc.data) return res.status(404).json({ error: 'File not found' });
+    if (!doc) return res.status(404).json({ error: 'Material not found' });
     // Students may only open material assigned to their own batch
     if (req.user?.department === 'student') {
       const st = await findStudentByAnyId(req.user.studentId || '');
       const batch = studentBatchOf(st);
       if (!batch || !(doc.assignments || []).some((a) => a.batch === batch)) return res.status(403).json({ error: 'This material is not assigned to your batch' });
     }
+    if (doc.storageUrl) {
+      return res.redirect(doc.storageUrl);
+    }
+    if (!doc.data) return res.status(404).json({ error: 'File not found' });
     const buf = Buffer.from(doc.data, 'base64');
     res.setHeader('Content-Type', doc.mimeType || 'application/octet-stream');
     const disposition = req.query.download ? 'attachment' : 'inline';
@@ -9286,11 +9367,23 @@ router.post('/student-portal/:id/submissions', async (req, res) => {
   try {
     const st = await findStudentByAnyId(req.params.id);
     if (!st) return res.status(404).json({ error: 'Student not found' });
-    const { type, title, note = '', link = '', materialId = '', fileName = '', mimeType = '', data = '' } = req.body || {};
+    const {
+      type,
+      title,
+      note = '',
+      link = '',
+      materialId = '',
+      fileName = '',
+      mimeType = '',
+      data = '',
+      storageKey = '',
+      storageUrl = '',
+      storageProvider
+    } = req.body || {};
     if (!type) return res.status(400).json({ error: 'type is required' });
-    if (!data && !link) return res.status(400).json({ error: 'Attach a file or share a link' });
+    if (!data && !link && !storageKey && !storageUrl) return res.status(400).json({ error: 'Attach a file or share a link' });
     let base64 = '';
-    let size = 0;
+    let size = Number(req.body?.fileSize) || 0;
     if (data) {
       base64 = String(data).includes(',') ? String(data).split(',').pop() : String(data);
       size = Math.floor((base64.length * 3) / 4);
@@ -9311,6 +9404,9 @@ router.post('/student-portal/:id/submissions', async (req, res) => {
       fileName,
       mimeType: mimeType || (fileName ? 'application/octet-stream' : ''),
       fileSize: size,
+      storageKey: storageKey || '',
+      storageUrl: storageUrl || '',
+      storageProvider: (storageKey || storageUrl) ? (storageProvider || 'amplify') : 'inline',
       data: base64
     });
     if (type === 'resume' || type === 'video_intro') {
@@ -9354,9 +9450,13 @@ router.get('/student-portal/submissions/:id/file', async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
     const doc = await StudentSubmission.findById(req.params.id).select('+data');
-    if (!doc || !doc.data) return res.status(404).json({ error: 'File not found' });
+    if (!doc) return res.status(404).json({ error: 'Submission not found' });
     // Students may only open their own submissions
     if (req.user?.department === 'student' && doc.studentId !== req.user.studentId) return res.status(403).json({ error: 'Not allowed' });
+    if (doc.storageUrl) {
+      return res.redirect(doc.storageUrl);
+    }
+    if (!doc.data) return res.status(404).json({ error: 'File not found' });
     res.setHeader('Content-Type', doc.mimeType || 'application/octet-stream');
     const disposition = req.query.download ? 'attachment' : 'inline';
     res.setHeader('Content-Disposition', `${disposition}; filename="${encodeURIComponent(doc.fileName || 'file')}"`);
