@@ -31,7 +31,9 @@ import {
   Menu,
   PlayCircle,
   Sparkles,
-  Star
+  Star,
+  Maximize2,
+  Minimize2
 } from 'lucide-react';
 import StudentOnlineTest from './StudentOnlineTest';
 import BookNewDemoModal from './BookNewDemoModal';
@@ -243,6 +245,10 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
   const [testId, setTestId] = useState(null); // online test being taken
   const [followText, setFollowText] = useState({}); // doubt id → follow-up draft
 
+  // Live class full view state (replaces modal with true full view)
+  const [inLiveClass, setInLiveClass] = useState(false);
+  const [liveClassMin, setLiveClassMin] = useState(false);
+
   // form state shared by the modals
   const [form, setForm] = useState({});
   const setF = (k) => (e) => setForm((f) => ({ ...f, [k]: e?.target ? (e.target.type === 'file' ? e.target.files[0] : e.target.value) : e }));
@@ -260,6 +266,16 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
     setModal({ type, ...payload });
   };
   const closeModal = () => { setModal(null); setForm({}); };
+
+  const handleOpenLiveClass = () => {
+    if (live) {
+      setInLiveClass(true);
+      setLiveClassMin(false);
+      closeModal();
+    } else {
+      openModal('liveClass');
+    }
+  };
 
   // --------------------------------------------------------------------------
   // Derived view of the real record
@@ -282,7 +298,8 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
 
   // Heartbeat tracking student attendance duration during live class (1 hr 45 min rule)
   useEffect(() => {
-    if (modal?.type !== 'liveClass' || !live?.sessionId || !st?.studentId) return undefined;
+    const isLiveActive = inLiveClass || modal?.type === 'liveClass';
+    if (!isLiveActive || !live?.sessionId || !st?.studentId) return undefined;
     const sendPulse = async () => {
       try {
         const res = await sendLiveClassHeartbeat({
@@ -299,7 +316,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
     sendPulse();
     const timer = setInterval(sendPulse, 30000);
     return () => clearInterval(timer);
-  }, [modal?.type, live?.sessionId, st?.studentId, st?.email]);
+  }, [inLiveClass, modal?.type, live?.sessionId, st?.studentId, st?.email]);
 
   // --------------------------------------------------------------------------
   // Load everything for the signed-in student from the server
@@ -666,9 +683,9 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
               </p>
             </div>
           </div>
-          <button onClick={() => openModal('liveClass')}
-            className={`w-full sm:w-auto px-7 py-3 rounded-2xl text-xs font-bold flex items-center justify-center gap-2 cursor-pointer flex-shrink-0 ${live ? 'bg-[#009688] hover:bg-[#00897b] text-white' : 'bg-slate-800 hover:bg-slate-700 text-teal-300 border border-slate-700'}`}>
-            {live ? '▶ Join Class' : 'Classroom Status'}<ArrowRight className="w-4 h-4" />
+          <button onClick={handleOpenLiveClass}
+            className={`w-full sm:w-auto px-7 py-3 rounded-2xl text-xs font-bold flex items-center justify-center gap-2 cursor-pointer flex-shrink-0 ${live ? 'bg-[#009688] hover:bg-[#00897b] text-white shadow-lg animate-pulse' : 'bg-slate-800 hover:bg-slate-700 text-teal-300 border border-slate-700'}`}>
+            {live ? '▶ Join Class (Full View)' : 'Classroom Status'}<ArrowRight className="w-4 h-4" />
           </button>
         </div>
 
@@ -1474,7 +1491,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
         {live ? (
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div><div className="text-sm font-bold text-slate-900">{live.topic || d.batch}</div><div className="text-xs text-slate-500">{live.trainerName} · started {new Date(live.startedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</div></div>
-            <Btn tone="teal" onClick={() => openModal('liveClass')}><Video className="w-4 h-4" />Join Now</Btn>
+            <Btn tone="teal" onClick={handleOpenLiveClass}><Video className="w-4 h-4" />Join Now (Full View)</Btn>
           </div>
         ) : (
           <div className="text-xs text-slate-600 space-y-1">
@@ -3103,60 +3120,28 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
       }
 
       case 'liveClass':
+        if (live) {
+          // Live class is rendered in Full View below, not in a modal
+          setTimeout(() => {
+            setInLiveClass(true);
+            setLiveClassMin(false);
+            closeModal();
+          }, 0);
+          return null;
+        }
         return (
-          <Modal wide={Boolean(live)} title={live ? (live.topic || d.batch) : 'Classroom status'} sub={live ? `Live with ${live.trainerName}` : undefined} onClose={closeModal}>
-            {live ? (
-              <>
-                <ZoomMeeting
-                  key={live.sessionId}
-                  getJoinDetails={(reset) => joinStudentLiveClass({ studentId: st.studentId, email: st.email, batch: d.batch, reset })}
-                  studentEmail={st.email || undefined}
-                  userName={d.name}
-                  isTrainerHost={false}
-                  height={560}
-                />
-                <div className="mt-3 p-3 rounded-xl border bg-slate-50 border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-                  <div className="flex items-center gap-2.5">
-                    <div className={`w-3 h-3 rounded-full shrink-0 ${eligibleForPresent ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
-                    <div>
-                      <div className="text-xs font-bold text-slate-800 flex items-center gap-2">
-                        Online Session Attendance: <span className="font-mono text-teal-700 font-extrabold">{liveAttendedMins} min</span>
-                        {eligibleForPresent ? (
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">✓ Present Ready</span>
-                        ) : (
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300">Requires 1h 45m</span>
-                        )}
-                      </div>
-                      <span className="text-[11px] text-slate-500 mt-0.5 block">
-                        {eligibleForPresent
-                          ? '✓ 1 hour and 45 minutes attendance requirement reached. Trainer can mark attendance as Present.'
-                          : `⏱ Minimum 1 hour and 45 minutes (105 mins) required before attendance can be marked as Present. (${Math.max(0, 105 - liveAttendedMins)} mins remaining)`}
-                      </span>
-                    </div>
-                  </div>
-                  <span className={`text-xs font-bold px-2.5 py-1 rounded-lg border self-start sm:self-auto shrink-0 ${
-                    eligibleForPresent
-                      ? 'bg-emerald-50 text-emerald-700 border-emerald-300'
-                      : 'bg-amber-50 text-amber-700 border-amber-300'
-                  }`}>
-                    {eligibleForPresent ? '✓ Eligible for Present' : `${liveAttendedMins}m / 105m`}
-                  </span>
-                </div>
-                <p className="text-[11px] text-slate-400 mt-2">Active online duration updates continuously every 30 seconds. Minimum 1h 45m required for full attendance credit.</p>
-              </>
-            ) : (
-              <div className="text-center">
-                <Pill tone="amber">NOT STARTED</Pill>
-                <h3 className="text-base font-extrabold text-slate-900 mt-3">Waiting for your trainer</h3>
-                <p className="text-xs text-slate-500 mt-1">You can join as soon as {trainer?.trainerName || 'your trainer'} starts the class. This page checks every 30 seconds.</p>
-                <div className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-xl p-3 mt-4 text-left space-y-1">
-                  <div>• Course: <b>{st.course}</b></div>
-                  <div>• Batch: <b>{d.batch || 'Not allocated'}</b></div>
-                  <div>• Timing: <b>{st.batchTiming || 'Not set'}</b></div>
-                </div>
-                <Btn tone="light" className="mx-auto mt-4" onClick={() => load(true)}><RefreshCw className="w-4 h-4" />Check again</Btn>
+          <Modal title="Classroom status" onClose={closeModal}>
+            <div className="text-center">
+              <Pill tone="amber">NOT STARTED</Pill>
+              <h3 className="text-base font-extrabold text-slate-900 mt-3">Waiting for your trainer</h3>
+              <p className="text-xs text-slate-500 mt-1">You can join as soon as {trainer?.trainerName || 'your trainer'} starts the class. This page checks every 30 seconds.</p>
+              <div className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-xl p-3 mt-4 text-left space-y-1">
+                <div>• Course: <b>{st.course}</b></div>
+                <div>• Batch: <b>{d.batch || 'Not allocated'}</b></div>
+                <div>• Timing: <b>{st.batchTiming || 'Not set'}</b></div>
               </div>
-            )}
+              <Btn tone="light" className="mx-auto mt-4" onClick={() => load(true)}><RefreshCw className="w-4 h-4" />Check again</Btn>
+            </div>
           </Modal>
         );
 
@@ -3242,6 +3227,161 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
       {toast && (
         <div className="fixed bottom-6 right-6 z-[70] bg-slate-900 text-white px-4 py-3 rounded-2xl shadow-2xl text-xs font-semibold flex items-center gap-2 max-w-sm">
           <CheckCircle2 className="w-4 h-4 text-teal-400 flex-shrink-0" /><span>{toast}</span>
+        </div>
+      )}
+
+      {/* ================= FULL VIEW LIVE CLASS FOR STUDENT (NO MODAL) ================= */}
+      {inLiveClass && live && (
+        <div
+          className={
+            liveClassMin
+              ? 'fixed bottom-5 right-5 z-[100] bg-[#07151c] border-2 border-teal-500/60 rounded-2xl shadow-2xl p-4 flex items-center gap-3.5 text-white'
+              : 'fixed inset-0 z-[100] bg-[#030b0f] flex flex-col w-screen h-screen overflow-hidden'
+          }
+        >
+          {liveClassMin ? (
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
+                <span className="w-3 h-3 rounded-full bg-emerald-400 animate-pulse" />
+                <div>
+                  <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                    <span>Live Class Active</span>
+                    <span className="text-[10px] text-teal-300 font-mono">({liveAttendedMins}m)</span>
+                  </div>
+                  <div className="text-[10px] text-slate-400">
+                    {eligibleForPresent ? '✓ Eligible for Present' : `${Math.max(0, 105 - liveAttendedMins)}m to 1h 45m`}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 ml-2">
+                <button
+                  onClick={() => setLiveClassMin(false)}
+                  className="px-3 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold flex items-center gap-1 cursor-pointer shadow-md transition-all"
+                  title="Expand to Full View"
+                >
+                  <Maximize2 className="w-3.5 h-3.5" />
+                  <span>Full View</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setInLiveClass(false);
+                    showToast(`Left live class · ${liveAttendedMins} min attendance recorded`);
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold flex items-center gap-1 cursor-pointer shadow-md transition-all"
+                  title="Leave live class"
+                >
+                  <X className="w-3.5 h-3.5" />
+                  <span>Leave</span>
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              {/* Full View Header */}
+              <div className="px-4 sm:px-6 py-2.5 bg-[#07151c] border-b border-[#1b3446] flex items-center justify-between gap-3 text-white flex-shrink-0 z-30 shadow-md">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="hidden sm:block bg-white rounded-lg px-2 py-1 shadow-sm shrink-0">
+                    <img src="/thoughtflows-logo.png" alt="Thoughtflows" className="h-5 w-auto object-contain" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                        LIVE CLASS
+                      </span>
+                      <h2 className="text-sm sm:text-base font-extrabold text-white truncate">
+                        {live.topic || d.batch}
+                      </h2>
+                      <span className="text-xs text-slate-300 font-medium hidden md:inline">
+                        · Faculty: <b className="text-teal-300">{live.trainerName}</b>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+                  {/* Attendance badge */}
+                  <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[#0b202c] border border-teal-500/30 text-xs shadow-inner">
+                    <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${eligibleForPresent ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+                    <div className="text-left">
+                      <span className="font-mono text-teal-300 font-extrabold">{liveAttendedMins} min</span>
+                      <span className="text-slate-400 text-[10px] ml-1 hidden lg:inline">
+                        {eligibleForPresent ? '(✓ Present Ready)' : `(${Math.max(0, 105 - liveAttendedMins)}m left)`}
+                      </span>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => setLiveClassMin(true)}
+                    className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all border border-slate-700 shadow-sm"
+                    title="Minimize to portal (keeps audio & attendance active)"
+                  >
+                    <Minimize2 className="w-3.5 h-3.5 text-slate-300" />
+                    <span className="hidden sm:inline">Minimize</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setInLiveClass(false);
+                      showToast(`Left live class · ${liveAttendedMins} min attendance recorded`);
+                    }}
+                    className="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all shadow-md"
+                    title="Leave live class"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                    <span>Leave Class</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Full View Zoom Container */}
+              <div className="flex-1 w-full h-full relative bg-[#030b0f] overflow-hidden flex flex-col">
+                <ZoomMeeting
+                  key={live.sessionId}
+                  getJoinDetails={(reset) => joinStudentLiveClass({ studentId: st.studentId, email: st.email, batch: d.batch, reset })}
+                  studentEmail={st.email || undefined}
+                  userName={d.name}
+                  isTrainerHost={false}
+                  height="100%"
+                  onLeft={() => {
+                    setInLiveClass(false);
+                    showToast(`Left live class · ${liveAttendedMins} min attendance recorded`);
+                  }}
+                />
+              </div>
+
+              {/* Attendance Tracker Footer Strip */}
+              <div className="px-4 sm:px-6 py-2 bg-[#07151c] border-t border-[#1b3446] flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-slate-300 flex-shrink-0 z-20">
+                <div className="flex items-center gap-2">
+                  <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${eligibleForPresent ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+                  <span className="text-[11px] sm:text-xs">
+                    {eligibleForPresent
+                      ? '✓ 1 hour and 45 minutes attendance requirement reached. Trainer can mark your attendance as Present.'
+                      : `⏱ 1 hour and 45 minutes (105 mins) required for Present attendance. Active: ${liveAttendedMins}m (${Math.max(0, 105 - liveAttendedMins)} mins remaining)`}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-3 shrink-0">
+                  <div className="w-28 sm:w-44 bg-slate-800 rounded-full h-2 overflow-hidden border border-slate-700">
+                    <div
+                      className={`h-full transition-all duration-500 ${eligibleForPresent ? 'bg-emerald-500' : 'bg-amber-500'}`}
+                      style={{ width: `${Math.min(100, Math.round((liveAttendedMins / 105) * 100))}%` }}
+                    />
+                  </div>
+                  <span className="font-mono text-xs font-bold text-teal-300">
+                    {Math.min(100, Math.round((liveAttendedMins / 105) * 100))}%
+                  </span>
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                    eligibleForPresent
+                      ? 'bg-emerald-950/80 text-emerald-300 border-emerald-500/40'
+                      : 'bg-amber-950/80 text-amber-300 border-amber-500/40'
+                  }`}>
+                    {eligibleForPresent ? '✓ Present Ready' : `${liveAttendedMins}m / 105m`}
+                  </span>
+                </div>
+              </div>
+            </>
+          )}
         </div>
       )}
 

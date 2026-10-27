@@ -1937,11 +1937,14 @@ export default function TrainingDepartmentDashboard({
                 <button onClick={() => endDemo(demoRoom)} className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-[11px] font-bold">End</button>
               </div>
             )}
-            <div className={demoMin ? 'fixed top-0 -left-[4000px] w-[1100px] pointer-events-none' : 'fixed inset-0 z-[80] bg-black/75 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 overflow-y-auto'}>
-              <div className="bg-[#0f212d] rounded-2xl w-full max-w-6xl p-4 sm:p-5 space-y-3 border border-[#1b3446] shadow-2xl">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-white border-b border-slate-700/60 pb-3">
+            <div className={demoMin ? 'fixed top-0 -left-[4000px] w-[1100px] pointer-events-none' : 'fixed inset-0 z-[80] bg-[#030b0f] flex flex-col w-screen h-screen overflow-hidden'}>
+              <div className="flex flex-col w-full h-full">
+                <div className="px-4 sm:px-6 py-2.5 bg-[#07151c] border-b border-[#1b3446] flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-white flex-shrink-0 z-20 shadow-md">
                   <div>
                     <div className="flex items-center gap-2">
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                        Live Demo
+                      </span>
                       <span className="text-sm sm:text-base font-extrabold">
                         {demoRoom.sessionStudents?.length > 1
                           ? `Group Demo Session · ${demoRoom.course}`
@@ -1949,7 +1952,7 @@ export default function TrainingDepartmentDashboard({
                       </span>
                       {demoRoom.sessionStudents?.length > 1 && (
                         <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
-                          {demoRoom.sessionStudents.length} Students at a time
+                          {demoRoom.sessionStudents.length} Students
                         </span>
                       )}
                     </div>
@@ -1961,15 +1964,15 @@ export default function TrainingDepartmentDashboard({
                     {demoRoom.sessionStudents?.length > 1 ? (
                       <button
                         onClick={() => handleEmailAllSession({ students: demoRoom.sessionStudents })}
-                        className="px-3 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold transition-all cursor-pointer"
+                        className="px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold transition-all cursor-pointer shadow-sm"
                       >
                         ✉️ Email Link to All
                       </button>
                     ) : (
-                      <button onClick={() => handleEmailDemoLink(demoRoom)} className="px-3 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold transition-all cursor-pointer">Email link to student</button>
+                      <button onClick={() => handleEmailDemoLink(demoRoom)} className="px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold transition-all cursor-pointer shadow-sm">Email link to student</button>
                     )}
-                    <button onClick={() => setDemoMin(true)} className="px-3 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold transition-all cursor-pointer">Minimize</button>
-                    <button onClick={() => endDemo(demoRoom)} className="px-3 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-all cursor-pointer">
+                    <button onClick={() => setDemoMin(true)} className="px-3 py-1.5 rounded-xl bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold transition-all cursor-pointer shadow-sm">Minimize</button>
+                    <button onClick={() => endDemo(demoRoom)} className="px-3.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-all cursor-pointer shadow-sm">
                       {demoRoom.sessionStudents?.length > 1 ? 'End Session & Complete Attendance' : 'End Demo'}
                     </button>
                   </div>
@@ -1977,14 +1980,14 @@ export default function TrainingDepartmentDashboard({
 
                 {/* Candidate Roster Strip when multiple students are in the demo */}
                 {demoRoom.sessionStudents?.length > 1 && (
-                  <div className="bg-[#142937] p-3 rounded-xl border border-slate-700/60">
-                    <div className="text-[11px] font-bold text-slate-300 mb-2 flex items-center justify-between">
-                      <span>👥 Group Demo Attendees ({demoRoom.sessionStudents.length} candidates taking demo together):</span>
+                  <div className="bg-[#0b1b24] px-4 py-2 border-b border-slate-700/60 flex-shrink-0">
+                    <div className="text-[11px] font-bold text-slate-300 mb-1.5 flex items-center justify-between">
+                      <span>👥 Group Demo Attendees ({demoRoom.sessionStudents.length} candidates):</span>
                       <span className="text-[10px] text-emerald-400 font-medium">All candidates join this same Zoom room</span>
                     </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 max-h-32 overflow-y-auto">
                       {demoRoom.sessionStudents.map((st) => (
-                        <div key={st._id} className="p-2.5 rounded-lg bg-[#0b1720] border border-slate-700/50 flex items-center justify-between gap-2 text-xs">
+                        <div key={st._id} className="p-2 rounded-lg bg-[#07131a] border border-slate-700/50 flex items-center justify-between gap-2 text-xs">
                           <div className="min-w-0">
                             <div className="font-bold text-white truncate">{st.candidateName}</div>
                             <div className="text-[10px] text-slate-400 truncate">{st.phone || st.email || '—'}</div>
@@ -2029,17 +2032,19 @@ export default function TrainingDepartmentDashboard({
                   </div>
                 )}
 
-                <ZoomMeeting
-                  demoId={demoRoom._id}
-                  userName={trainerName}
-                  height={560}
-                  onBusy={handleZoomBusyFallback}
-                  onLeft={() => {
-                    setDemoRoom(null);
-                    setDemoMin(false);
-                    flashDemoToast('You left the meeting. Mark attendance for each candidate from the Demos tab, or reopen to rejoin.', 5500);
-                  }}
-                />
+                <div className="flex-1 w-full h-full relative bg-[#030b0f] overflow-hidden flex flex-col">
+                  <ZoomMeeting
+                    demoId={demoRoom._id}
+                    userName={trainerName}
+                    height="100%"
+                    onBusy={handleZoomBusyFallback}
+                    onLeft={() => {
+                      setDemoRoom(null);
+                      setDemoMin(false);
+                      flashDemoToast('You left the meeting. Mark attendance for each candidate from the Demos tab, or reopen to rejoin.', 5500);
+                    }}
+                  />
+                </div>
               </div>
             </div>
           </>

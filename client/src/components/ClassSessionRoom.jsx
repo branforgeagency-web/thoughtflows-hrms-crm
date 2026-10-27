@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import useFileToken from '../hooks/useFileToken';
 import { localDateKey } from '../utils/dateUtils';
-import { Play, Clock, CheckSquare, Users, MessageSquare, Send, Copy, X, RefreshCw, ExternalLink } from 'lucide-react';
+import { Play, Clock, CheckSquare, Users, MessageSquare, Send, Copy, X, RefreshCw, ExternalLink, Maximize2, Minimize2, BookOpen } from 'lucide-react';
 import ZoomMeeting from './ZoomMeeting';
 import {
   getLiveClasses,
@@ -38,6 +38,9 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
   const [noteText, setNoteText] = useState('');
   const [endReview, setEndReview] = useState(null); // { session, batch, marks }
   const [savingAtt, setSavingAtt] = useState(false);
+  const [isFullView, setIsFullView] = useState(false);
+  const [showRosterDrawer, setShowRosterDrawer] = useState(false);
+  const [showMaterialsDrawer, setShowMaterialsDrawer] = useState(false);
 
   const flash = (msg, ms = 3500) => { setToast(msg); setTimeout(() => setToast(''), ms); };
   const liveBatch = live ? batches.find((b) => b.name === live.batch) || null : null;
@@ -233,6 +236,165 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
         </div>
       ) : (
         <div className="space-y-5">
+          {/* ================= FULL VIEW OVERLAY FOR TRAINER ================= */}
+          {isFullView && (
+            <div className="fixed inset-0 z-[100] bg-[#030b0f] flex flex-col w-screen h-screen overflow-hidden">
+              {/* Full View Header */}
+              <div className="px-4 sm:px-6 py-2.5 bg-[#07151c] border-b border-[#1b3446] flex items-center justify-between gap-3 text-white flex-shrink-0 z-30 shadow-md">
+                <div className="flex items-center gap-3 min-w-0">
+                  <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 shrink-0">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />LIVE
+                  </span>
+                  <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-900/90 border border-slate-700 text-xs font-mono font-bold text-amber-300 shrink-0">
+                    <Clock className="w-3.5 h-3.5" />{fmtTimer(elapsed)}
+                  </span>
+                  <div className="min-w-0">
+                    <h2 className="text-sm sm:text-base font-extrabold truncate">{live.topic || live.batch}</h2>
+                    <p className="text-[11px] text-slate-400 truncate">{live.batch} · Faculty: {trainerName}</p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                  <button
+                    onClick={() => { setShowRosterDrawer(prev => !prev); setShowMaterialsDrawer(false); }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                      showRosterDrawer
+                        ? 'bg-teal-600 text-white shadow-md'
+                        : 'bg-slate-800 hover:bg-slate-700 text-teal-300 border border-slate-700'
+                    }`}
+                  >
+                    <Users className="w-3.5 h-3.5" />
+                    <span>Attendees ({(live.joins || []).length}/{roster.length})</span>
+                  </button>
+
+                  <button
+                    onClick={() => { setShowMaterialsDrawer(prev => !prev); setShowRosterDrawer(false); }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                      showMaterialsDrawer
+                        ? 'bg-teal-600 text-white shadow-md'
+                        : 'bg-slate-800 hover:bg-slate-700 text-teal-300 border border-slate-700'
+                    }`}
+                  >
+                    <BookOpen className="w-3.5 h-3.5" />
+                    <span>Materials ({batchMaterials.length})</span>
+                  </button>
+
+                  <button
+                    onClick={() => { try { navigator.clipboard.writeText(inviteText().replace(/\*/g, '')); flash('Invite copied'); } catch (_) {} }}
+                    className="hidden md:flex px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold items-center gap-1 cursor-pointer border border-slate-700"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>Invite</span>
+                  </button>
+
+                  <button
+                    onClick={() => setIsFullView(false)}
+                    className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer border border-slate-700 transition-all shadow-xs"
+                    title="Exit Full View"
+                  >
+                    <Minimize2 className="w-3.5 h-3.5" />
+                    <span>Exit Full View</span>
+                  </button>
+
+                  <button
+                    onClick={handleEnd}
+                    className="px-3.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold cursor-pointer transition-all shadow-md"
+                  >
+                    End Class
+                  </button>
+                </div>
+              </div>
+
+              {/* Full View Area with Zoom & Slide-over Drawers */}
+              <div className="flex-1 w-full h-full relative bg-[#030b0f] overflow-hidden flex">
+                <div className="flex-1 w-full h-full relative">
+                  <ZoomMeeting
+                    key={live.sessionId}
+                    getJoinDetails={joinDetails}
+                    userName={trainerName}
+                    height="100%"
+                    isTrainerHost
+                    onLeft={() => flash('You left the Zoom call. The class is still live — rejoin anytime, or click "End Class" when you\'re done.', 6000)}
+                  />
+                </div>
+
+                {/* Slide-over Attendees Drawer */}
+                {showRosterDrawer && (
+                  <div className="w-80 sm:w-96 bg-[#0c1e28] border-l border-slate-700/80 p-4 flex flex-col z-20 shadow-2xl overflow-y-auto">
+                    <div className="flex items-center justify-between pb-3 border-b border-slate-700/60 mb-3">
+                      <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                        <CheckSquare className="w-4 h-4 text-teal-400" />
+                        Who Joined & Live Duration
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <button onClick={refreshLive} className="text-slate-400 hover:text-white" title="Refresh">
+                          <RefreshCw className="w-3.5 h-3.5" />
+                        </button>
+                        <button onClick={() => setShowRosterDrawer(false)} className="text-slate-400 hover:text-white">
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="divide-y divide-slate-800 flex-1 overflow-y-auto">
+                      {roster.length === 0 && <div className="py-6 text-center text-xs text-slate-400">No students in this batch.</div>}
+                      {roster.map((s) => {
+                        const j = joinedMap[studentKeyOf(s)];
+                        const dur = typeof j?.durationMinutes === 'number' && j.durationMinutes > 0
+                          ? j.durationMinutes
+                          : (j?.joinedAt ? Math.max(0, Math.round((Date.now() - new Date(j.joinedAt)) / 60000)) : 0);
+                        return (
+                          <div key={studentKeyOf(s)} className="py-2.5 flex items-center justify-between text-xs">
+                            <div className="min-w-0 pr-2">
+                              <span className="font-bold text-white truncate block">{s.name}</span>
+                              {j && (
+                                <span className="text-[10px] text-slate-400">
+                                  Joined {fmtTime(j.joinedAt)} · <span className={dur >= 105 ? 'text-emerald-400 font-bold' : 'text-amber-400 font-medium'}>{dur}m attended</span>
+                                </span>
+                              )}
+                            </div>
+                            {j
+                              ? <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${dur >= 105 ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/40' : (j.late ? 'bg-amber-950 text-amber-300' : 'bg-teal-950 text-teal-300')}`}>{dur >= 105 ? '✓ 1h 45m+ (Present)' : (j.late ? 'Late' : 'Active')}</span>
+                              : <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-800 text-slate-400">Not yet</span>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Slide-over Materials Drawer */}
+                {showMaterialsDrawer && (
+                  <div className="w-80 sm:w-96 bg-[#0c1e28] border-l border-slate-700/80 p-4 flex flex-col z-20 shadow-2xl overflow-y-auto">
+                    <div className="flex items-center justify-between pb-3 border-b border-slate-700/60 mb-3">
+                      <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                        <BookOpen className="w-4 h-4 text-teal-400" />
+                        Session Materials
+                      </span>
+                      <button onClick={() => setShowMaterialsDrawer(false)} className="text-slate-400 hover:text-white">
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                    <div className="space-y-2">
+                      {batchMaterials.length === 0 ? (
+                        <div className="py-6 text-center text-xs text-slate-400">No materials assigned to this batch.</div>
+                      ) : (
+                        batchMaterials.map((m) => (
+                          <a key={m._id} href={trainingMaterialFileUrl(m._id)} target="_blank" rel="noreferrer" className="p-2.5 rounded-xl border border-slate-700 bg-slate-800/60 hover:border-teal-400 flex items-center gap-2.5 text-xs text-white">
+                            <span className="w-8 h-8 rounded-lg bg-teal-500/20 text-teal-300 flex items-center justify-center font-bold text-[10px] shrink-0">{m.fileFormat}</span>
+                            <span className="min-w-0">
+                              <span className="block font-bold truncate">{m.title}</span>
+                              <span className="block text-[10px] text-slate-400 truncate">{m.category}</span>
+                            </span>
+                          </a>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
           <div className="bg-[#0b242c] p-5 rounded-2xl border border-[#16414e] text-white flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-md">
             <div>
               <div className="flex items-center gap-3 flex-wrap">
@@ -250,6 +412,10 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
               <p className="text-xs text-slate-300">{live.batch}{live.meetingSource === 'class_link' ? ' · using your fixed class Zoom link' : ''}</p>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
+              <button onClick={() => setIsFullView(true)}
+                className="px-3.5 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-xs font-bold flex items-center gap-1.5 text-white cursor-pointer shadow-md transition-all">
+                <Maximize2 className="w-4 h-4" /><span>Full View</span>
+              </button>
               <button onClick={() => { try { navigator.clipboard.writeText(inviteText().replace(/\*/g, '')); flash('Invite copied'); } catch (_) {} }}
                 className="px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold flex items-center gap-1.5"><Copy className="w-4 h-4" />Copy invite</button>
               <button onClick={() => window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent(inviteText())}`, '_blank')}
@@ -260,14 +426,24 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             <div className="lg:col-span-8 space-y-4">
-              <ZoomMeeting
-                key={live.sessionId}
-                getJoinDetails={joinDetails}
-                userName={trainerName}
-                height={560}
-                isTrainerHost
-                onLeft={() => flash('You left the Zoom call. The class is still live — rejoin anytime, or click "End Class" when you\'re done.', 6000)}
-              />
+              <div className="relative">
+                <button
+                  onClick={() => setIsFullView(true)}
+                  className="absolute top-3 left-3 z-20 px-3 py-1.5 rounded-xl bg-teal-600/90 hover:bg-teal-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-lg backdrop-blur-sm transition-all"
+                  title="Expand to Full View"
+                >
+                  <Maximize2 className="w-3.5 h-3.5" />
+                  <span>Full View</span>
+                </button>
+                <ZoomMeeting
+                  key={live.sessionId}
+                  getJoinDetails={joinDetails}
+                  userName={trainerName}
+                  height={620}
+                  isTrainerHost
+                  onLeft={() => flash('You left the Zoom call. The class is still live — rejoin anytime, or click "End Class" when you\'re done.', 6000)}
+                />
+              </div>
               {live.zoomJoinUrl && (
                 <a href={live.zoomJoinUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-bold text-[#00897b] hover:underline">
                   <ExternalLink className="w-3.5 h-3.5" />Open in the Zoom app instead

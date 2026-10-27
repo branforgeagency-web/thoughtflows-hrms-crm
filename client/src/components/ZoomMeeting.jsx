@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { RefreshCw, AlertCircle, X } from 'lucide-react';
+import { RefreshCw, AlertCircle, X, Maximize2, Minimize2 } from 'lucide-react';
 import ZoomMtgEmbedded from '@zoom/meetingsdk/embedded';
 import { authHeaders } from '../services/api';
 
@@ -67,7 +67,24 @@ export default function ZoomMeeting({
   const [error, setError] = useState('');
   const [meetingNo, setMeetingNo] = useState('');
   const [rootKey, setRootKey] = useState(0); // fresh DOM root for the SDK on every retry
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const wrapperRef = useRef(null);
   const debugRef = useRef(null);
+
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      const el = wrapperRef.current || containerRef.current;
+      el?.requestFullscreen?.().then(() => setIsFullscreen(true)).catch(() => {});
+    } else {
+      document.exitFullscreen?.().then(() => setIsFullscreen(false)).catch(() => {});
+    }
+  };
+
+  useEffect(() => {
+    const handleFsChange = () => setIsFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener('fullscreenchange', handleFsChange);
+    return () => document.removeEventListener('fullscreenchange', handleFsChange);
+  }, []);
 
   // Fresh join details from the server on EVERY attempt (server frees the trainer's Zoom user first)
   const fetchDetails = useCallback(async (reset = false) => {
@@ -136,8 +153,9 @@ export default function ZoomMeeting({
       // an explicit size + disabling drag/resize (per Zoom's documented
       // customize.video options) makes it fill the room instead.
       const rect = containerRef.current.getBoundingClientRect();
-      const viewWidth = Math.round(Math.min(1400, Math.max(360, rect.width || 900)));
-      const viewHeight = Math.round(Math.min(810, Math.max(240, rect.height || height)));
+      const numHeight = typeof height === 'number' ? height : (rect.height > 200 ? rect.height : 600);
+      const viewWidth = Math.round(Math.min(1440, Math.max(360, rect.width || window.innerWidth || 1200)));
+      const viewHeight = Math.round(Math.min(810, Math.max(240, rect.height || numHeight)));
       await client.init({
         zoomAppRoot: containerRef.current,
         language: 'en-US',
@@ -229,6 +247,7 @@ export default function ZoomMeeting({
 
   return (
     <div
+      ref={wrapperRef}
       // overflow was previously "hidden" to keep the rounded corners clean,
       // but the Zoom SDK renders its own native popups (notably the Leave-
       // meeting confirmation) positioned relative to this box — "hidden"
@@ -237,18 +256,28 @@ export default function ZoomMeeting({
       // those popups render in full; the corners staying square underneath
       // a popup is a much smaller tradeoff than Leave not working at all.
       className="relative bg-[#07151c] rounded-2xl border border-[#1a4250] overflow-visible shadow-2xl text-white flex flex-col w-full h-full"
-      style={{ minHeight: height, height: '100%' }}
+      style={{ minHeight: typeof height === 'number' ? height : undefined, height: '100%' }}
     >
       <div className="relative flex-1 w-full h-full bg-[#030b0f] rounded-2xl flex flex-col items-center justify-center">
         {status === 'joined' && (
-          <button
-            onClick={handleLeave}
-            title="Leave this call"
-            className="absolute top-3 right-3 z-20 px-3 py-2 rounded-xl bg-rose-600/90 hover:bg-rose-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-lg backdrop-blur-sm"
-          >
-            <X className="w-3.5 h-3.5" />
-            <span>Leave call</span>
-          </button>
+          <div className="absolute top-3 right-3 z-20 flex items-center gap-2">
+            <button
+              onClick={toggleFullscreen}
+              title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+              className="px-3 py-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-lg backdrop-blur-sm transition-all"
+            >
+              {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+              <span className="hidden sm:inline">{isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}</span>
+            </button>
+            <button
+              onClick={handleLeave}
+              title="Leave this call"
+              className="px-3 py-2 rounded-xl bg-rose-600/90 hover:bg-rose-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-lg backdrop-blur-sm transition-all"
+            >
+              <X className="w-3.5 h-3.5" />
+              <span>Leave call</span>
+            </button>
+          </div>
         )}
         {status === 'left' && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-center p-6 z-10">
@@ -321,8 +350,8 @@ export default function ZoomMeeting({
           key={rootKey}
           ref={containerRef}
           id="zoomSDKContainer"
-          className="w-full h-full flex-1"
-          style={{ width: '100%', height: '100%', minHeight: height }}
+          className="w-full h-full flex-1 flex items-center justify-center"
+          style={{ width: '100%', height: '100%', minHeight: typeof height === 'number' ? height : undefined }}
         />
       </div>
     </div>
