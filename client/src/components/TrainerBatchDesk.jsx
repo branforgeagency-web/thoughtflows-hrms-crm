@@ -61,7 +61,7 @@ export default function TrainerBatchDesk({ batches = [] }) {
     } catch (e) {
       flash(`⚠ ${errOf(e, 'Could not load this batch')}`);
     }
-  }, [batch?.name]);
+  }, [batch?.name, batch?.course]);
 
   useEffect(() => { load(); }, [load]);
 

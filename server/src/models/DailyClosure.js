@@ -13,9 +13,39 @@ const dailyClosureSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  department: {
+    type: String,
+    default: 'hr'
+  },
   date: {
     type: String, // 'YYYY-MM-DD'
     required: true
+  },
+  // Detailed summary of work completed during the day
+  summary: {
+    type: String,
+    default: ''
+  },
+  // Work session details associated with this EOD
+  workStartTime: {
+    type: String,
+    default: ''
+  },
+  workEndTime: {
+    type: String,
+    default: ''
+  },
+  workingMinutes: {
+    type: Number,
+    default: 0
+  },
+  workingHoursText: {
+    type: String,
+    default: ''
+  },
+  workSessionStatus: {
+    type: String,
+    default: 'Not Started'
   },
   callsMade: {
     type: Number,

@@ -435,14 +435,22 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
                   <Maximize2 className="w-3.5 h-3.5" />
                   <span>Full View</span>
                 </button>
-                <ZoomMeeting
-                  key={live.sessionId}
-                  getJoinDetails={joinDetails}
-                  userName={trainerName}
-                  height={620}
-                  isTrainerHost
-                  onLeft={() => flash('You left the Zoom call. The class is still live — rejoin anytime, or click "End Class" when you\'re done.', 6000)}
-                />
+                {!isFullView ? (
+                  <ZoomMeeting
+                    key={live.sessionId}
+                    getJoinDetails={joinDetails}
+                    userName={trainerName}
+                    height={620}
+                    isTrainerHost
+                    onLeft={() => flash('You left the Zoom call. The class is still live — rejoin anytime, or click "End Class" when you\'re done.', 6000)}
+                  />
+                ) : (
+                  <div className="h-[620px] w-full rounded-2xl bg-slate-950/80 border border-slate-800 flex flex-col items-center justify-center text-slate-400 gap-2">
+                    <Maximize2 className="w-8 h-8 text-teal-400 animate-pulse" />
+                    <span className="text-sm font-semibold text-slate-200">Zoom call is currently open in Full View mode</span>
+                    <span className="text-xs text-slate-500">Minimize Full View above to return to this layout</span>
+                  </div>
+                )}
               </div>
               {live.zoomJoinUrl && (
                 <a href={live.zoomJoinUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-bold text-[#00897b] hover:underline">

@@ -1285,6 +1285,19 @@ export const getMyAttendance = async (branchName) => {
 
 export const setMyAttendance = async (action, branchName) => {
   const res = await api.post('/attendance/me', { action, ...(branchName ? { branchName } : {}) });
+  notifyDataUpdate('attendance');
+  return res.data;
+};
+
+export const startMyWork = async (branchName) => {
+  const res = await api.post('/attendance/me', { action: 'start_work', ...(branchName ? { branchName } : {}) });
+  notifyDataUpdate('attendance');
+  return res.data;
+};
+
+export const closeMyWork = async (branchName) => {
+  const res = await api.post('/attendance/me', { action: 'close_work', ...(branchName ? { branchName } : {}) });
+  notifyDataUpdate('attendance');
   return res.data;
 };
 

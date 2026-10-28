@@ -4,6 +4,7 @@ const attendanceSchema = new mongoose.Schema(
   {
     branchName: { type: String, required: true },
     employeeName: { type: String, required: true },
+    userEmail: { type: String, default: '' },
     date: { type: String, required: true }, // YYYY-MM-DD
     checkIn: String,
     checkOut: String,
@@ -12,7 +13,16 @@ const attendanceSchema = new mongoose.Schema(
     // Break tracking (self clock-in from staff dashboards)
     breakMinutes: { type: Number, default: 0 },
     breakStartedAt: { type: Date, default: null },
-    department: { type: String, default: '' }
+    department: { type: String, default: '' },
+    // Official work session tracking
+    workStartTime: { type: Date, default: null },
+    workEndTime: { type: Date, default: null },
+    workingMinutes: { type: Number, default: 0 },
+    sessionStatus: { 
+      type: String, 
+      enum: ['Not Started', 'In Progress', 'Completed', 'not_started', 'in_progress', 'completed'], 
+      default: 'Not Started' 
+    }
   },
   { timestamps: true }
 );

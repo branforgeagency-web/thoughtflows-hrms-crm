@@ -1105,7 +1105,11 @@ router.get('/closures/today', async (req, res) => {
 
 router.post('/closures', async (req, res) => {
   try {
-    const { date, callsMade, connected, demosBooked, admissions, feesCollected, pendingFus, notes, branch, systemMetrics } = req.body;
+    const { 
+      date, callsMade, connected, demosBooked, admissions, feesCollected, pendingFus, 
+      notes, summary, branch, systemMetrics, workStartTime, workEndTime, workingMinutes, 
+      workingHoursText, workSessionStatus 
+    } = req.body;
     // A counsellor can only close their own day
     const counselorName = isScopedHr(req) ? String(req.user?.name || "") : String(req.body.counselorName || req.user?.name || "");
     if (!counselorName || !date) {
@@ -1120,6 +1124,13 @@ router.post('/closures', async (req, res) => {
         $set: {
           counselorName: counselorName.trim(),
           date,
+          summary: summary || notes || '',
+          notes: notes || summary || '',
+          workStartTime: workStartTime || '',
+          workEndTime: workEndTime || '',
+          workingMinutes: Number(workingMinutes) || 0,
+          workingHoursText: workingHoursText || '',
+          workSessionStatus: workSessionStatus || 'In Progress',
           callsMade: Number(callsMade) || 0,
           connected: Number(connected) || 0,
           demosBooked: Number(demosBooked) || 0,
@@ -1127,9 +1138,9 @@ router.post('/closures', async (req, res) => {
           feesCollected: Number(feesCollected) || 0,
           pendingFus: Number(pendingFus) || 0,
           branch: branch || req.user?.branch || '',
+          department: req.user?.department || 'hr',
           status: 'submitted',
           submittedAt: new Date(),
-          notes: notes || '',
           counselorEmail: req.body.counselorEmail || req.user?.email || '',
           // What the system counted, so any hand-corrected number is visible to managers
           systemMetrics: systemMetrics || null,
@@ -1309,6 +1320,7 @@ const isTrainerManagerUser = (req) => {
     trainerRole === 'trainer_manager' ||
     role.includes('trainer manager') ||
     role.includes('training manager') ||
+    role.includes('training team manager') ||
     email.includes('.manager@') ||
     headerRole === 'manager' ||
     bodyRole === 'manager'
@@ -2135,22 +2147,72 @@ async function selfAttendanceKey(req) {
   const member = employeeName ? await TeamMember.findOne({ name: new RegExp(`^${escapeRegex(employeeName)}$`, 'i') }).select('name branchName') : null;
   return {
     employeeName: member?.name || employeeName,
-    branchName: member?.branchName || String(req.body?.branchName || req.query?.branchName || '').trim() || 'Unassigned'
+    branchName: member?.branchName || String(req.body?.branchName || req.query?.branchName || req.user?.branch || '').trim() || 'Unassigned'
   };
 }
 const attendanceView = (r) => {
   if (!r) return null;
-  const o = r.toObject();
+  const o = r.toObject ? r.toObject() : { ...r };
   const running = o.breakStartedAt ? Math.max(0, Math.round((Date.now() - new Date(o.breakStartedAt).getTime()) / 60000)) : 0;
-  return { ...o, breakMinutesTotal: (o.breakMinutes || 0) + running };
+  const totalBreakMins = (o.breakMinutes || 0) + running;
+
+  let calculatedWorkingMinutes = o.workingMinutes || 0;
+  const isOngoing = o.workStartTime && (o.sessionStatus === 'In Progress' || o.status === 'in' || o.status === 'break') && !o.workEndTime;
+  
+  if (isOngoing) {
+    const elapsed = Math.max(0, Math.round((Date.now() - new Date(o.workStartTime).getTime()) / 60000));
+    calculatedWorkingMinutes = Math.max(0, elapsed - totalBreakMins);
+  } else if (o.workStartTime && o.workEndTime) {
+    const elapsed = Math.max(0, Math.round((new Date(o.workEndTime).getTime() - new Date(o.workStartTime).getTime()) / 60000));
+    calculatedWorkingMinutes = Math.max(0, elapsed - (o.breakMinutes || 0));
+  }
+
+  const hours = Math.floor(calculatedWorkingMinutes / 60);
+  const mins = calculatedWorkingMinutes % 60;
+  const durationText = `${hours} hr${hours === 1 ? '' : 's'} ${mins} min${mins === 1 ? '' : 's'}`;
+
+  // Session status determination
+  let sessionStatus = o.sessionStatus || 'Not Started';
+  if (!o.workStartTime && (!o.checkIn || o.status === 'absent')) {
+    sessionStatus = 'Not Started';
+  } else if (o.workEndTime || o.status === 'out') {
+    sessionStatus = 'Completed';
+  } else if (o.workStartTime) {
+    sessionStatus = 'In Progress';
+  }
+
+  return { 
+    ...o, 
+    breakMinutesTotal: totalBreakMins,
+    calculatedWorkingMinutes,
+    durationText,
+    sessionStatus
+  };
 };
 
 router.get('/attendance/me', async (req, res) => {
   try {
     const { employeeName, branchName } = await selfAttendanceKey(req);
     if (!employeeName) return res.status(400).json({ error: 'No staff name on this login' });
-    const rec = await Attendance.findOne({ employeeName, branchName, date: todayStr() });
-    res.json(attendanceView(rec) || { employeeName, branchName, date: todayStr(), status: 'absent', breakMinutes: 0, breakMinutesTotal: 0 });
+    const date = todayStr();
+    let rec = await Attendance.findOne({ employeeName: exactNameRx(employeeName), date });
+    if (!rec && branchName) {
+      rec = await Attendance.findOne({ employeeName, branchName, date });
+    }
+    res.json(attendanceView(rec) || { 
+      employeeName, 
+      branchName, 
+      date, 
+      status: 'absent', 
+      sessionStatus: 'Not Started', 
+      workStartTime: null, 
+      workEndTime: null, 
+      workingMinutes: 0, 
+      hoursWorked: 0,
+      breakMinutes: 0, 
+      breakMinutesTotal: 0,
+      durationText: '0 hrs 0 mins'
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -2158,23 +2220,75 @@ router.get('/attendance/me', async (req, res) => {
 
 router.post('/attendance/me', async (req, res) => {
   try {
-    const { action } = req.body || {}; // 'in' | 'break' | 'resume' | 'out'
-    if (!['in', 'break', 'resume', 'out'].includes(action)) return res.status(400).json({ error: 'Invalid action' });
+    const { action } = req.body || {}; // 'start_work' | 'start' | 'close_work' | 'close' | 'in' | 'break' | 'resume' | 'out'
+    const validActions = ['start_work', 'start', 'close_work', 'close', 'in', 'break', 'resume', 'out'];
+    if (!validActions.includes(action)) return res.status(400).json({ error: 'Invalid action' });
     const { employeeName, branchName } = await selfAttendanceKey(req);
     if (!employeeName) return res.status(400).json({ error: 'No staff name on this login' });
     const date = todayStr();
     const now = new Date();
+    const hhmmFormatted = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
     const hhmm = now.toTimeString().slice(0, 5);
-    let rec = await Attendance.findOne({ employeeName, branchName, date });
-    if (!rec) rec = new Attendance({ employeeName, branchName, date, department: req.user?.department || '' });
-    if (!rec.checkIn) rec.checkIn = hhmm;
+
+    let rec = await Attendance.findOne({ employeeName: exactNameRx(employeeName), date });
+    if (!rec && branchName) {
+      rec = await Attendance.findOne({ employeeName, branchName, date });
+    }
+    if (!rec) {
+      rec = new Attendance({ 
+        employeeName, 
+        branchName, 
+        date, 
+        department: req.user?.department || 'hr',
+        userEmail: req.user?.email || '',
+        sessionStatus: 'Not Started'
+      });
+    }
+
     const closeBreak = () => {
       if (rec.breakStartedAt) {
         rec.breakMinutes = (rec.breakMinutes || 0) + Math.max(0, Math.round((now - new Date(rec.breakStartedAt)) / 60000));
         rec.breakStartedAt = null;
       }
     };
-    if (action === 'in') {
+
+    if (action === 'start_work' || action === 'start') {
+      // Prevent duplicate start timestamps: do not overwrite workStartTime if already recorded
+      if (!rec.workStartTime) {
+        rec.workStartTime = now;
+      }
+      if (!rec.checkIn) {
+        rec.checkIn = hhmmFormatted;
+      }
+      rec.sessionStatus = 'In Progress';
+      if (rec.status !== 'break') rec.status = 'in';
+      rec.department = req.user?.department || 'hr';
+      rec.userEmail = req.user?.email || '';
+    } else if (action === 'close_work' || action === 'close' || action === 'out') {
+      closeBreak();
+      // Record logout time and calculate total working duration between start and end
+      if (!rec.workEndTime) {
+        rec.workEndTime = now;
+      }
+      rec.checkOut = hhmmFormatted;
+      rec.sessionStatus = 'Completed';
+      rec.status = 'out';
+
+      if (rec.workStartTime) {
+        const diffMins = Math.max(0, Math.round((new Date(rec.workEndTime).getTime() - new Date(rec.workStartTime).getTime()) / 60000));
+        const netMins = Math.max(0, diffMins - (rec.breakMinutes || 0));
+        rec.workingMinutes = netMins;
+        rec.hoursWorked = Math.round((netMins / 60) * 10) / 10;
+      } else {
+        rec.workingMinutes = 0;
+        rec.hoursWorked = 0;
+      }
+    } else if (action === 'in') {
+      if (!rec.workStartTime) {
+        rec.workStartTime = now;
+        rec.checkIn = hhmmFormatted;
+        rec.sessionStatus = 'In Progress';
+      }
       if (rec.status !== 'break') rec.status = 'in';
     } else if (action === 'break') {
       if (!rec.breakStartedAt) rec.breakStartedAt = now;
@@ -2182,15 +2296,8 @@ router.post('/attendance/me', async (req, res) => {
     } else if (action === 'resume') {
       closeBreak();
       rec.status = 'in';
-    } else if (action === 'out') {
-      closeBreak();
-      rec.checkOut = hhmm;
-      rec.status = 'out';
-      const [inH, inM] = rec.checkIn.split(':').map(Number);
-      const [outH, outM] = hhmm.split(':').map(Number);
-      const worked = outH * 60 + outM - (inH * 60 + inM) - (rec.breakMinutes || 0);
-      rec.hoursWorked = Math.max(0, Math.round(worked / 6) / 10);
     }
+
     await rec.save();
     res.json(attendanceView(rec));
   } catch (e) {
@@ -3980,7 +4087,7 @@ async function findEligibleTrainers({ language, location, preferredDate, timeSlo
   // 1. Language & Location matching
   const languageLocationMatched = roster.filter((t) => {
     const languageOk = !langNorm || (t.languages || []).some((l) => norm(l) === langNorm);
-    const locationOk = !locNorm || norm(t.branchName) === locNorm;
+    const locationOk = !locNorm || norm(t.branchName) === locNorm || norm(t.branchName).includes(locNorm) || locNorm.includes(norm(t.branchName));
     return languageOk && locationOk;
   });
 
@@ -4279,7 +4386,14 @@ router.get('/demos', async (req, res) => {
     }
 
     if (isIndividualTrainerUser(req)) {
-      andConditions.push({ trainerId: req.user.trainerId });
+      const tId = req.user.trainerId;
+      const tName = req.user.name || req.user.userName;
+      const conds = [{ trainerId: tId }];
+      if (tName) {
+        const rx = new RegExp(escapeRegex(tName), 'i');
+        conds.push({ trainer: rx }, { trainerMapping: rx });
+      }
+      andConditions.push({ $or: conds });
     } else if (isTrainerTLUser(req) || isTrainerManagerUser(req)) {
       const allowedTrainers = req.user.supervisedTrainers || [];
       const allowedBranches = (req.user.branches || []).map((b) => new RegExp(escapeRegex(b), 'i'));
@@ -5094,6 +5208,8 @@ const TRAINER_ROLE_ACCOUNTS = {
     aliases: ['rambalaji@thoughtflows.in', 'rambalaji', 'ram_balaji'],
     role: 'Trainer Team Lead',
     trainerRole: 'tl',
+    managerId: 'keerthi',
+    managerName: 'Keerthi',
     department: 'training',
     departmentCode: 'ACAD',
     departmentName: 'Training Department · Tamil Nadu Pod',
@@ -5116,6 +5232,8 @@ const TRAINER_ROLE_ACCOUNTS = {
     aliases: ['vaishna@thoughtflows.in', 'vaishna'],
     role: 'Trainer Team Lead',
     trainerRole: 'tl',
+    managerId: 'keerthi',
+    managerName: 'Keerthi',
     department: 'training',
     departmentCode: 'ACAD',
     departmentName: 'Training Department · Kerala Pod',
@@ -5138,6 +5256,8 @@ const TRAINER_ROLE_ACCOUNTS = {
     aliases: ['mounika@thoughtflows.in', 'mounika'],
     role: 'Trainer Team Lead',
     trainerRole: 'tl',
+    managerId: 'pavithra',
+    managerName: 'Pavithra',
     department: 'training',
     departmentCode: 'ACAD',
     departmentName: 'Training Department · AP/TS Pod',
@@ -5318,10 +5438,70 @@ router.get('/auth/trainer-credentials', async (req, res) => {
       color: '#0284c7'
     }));
 
+    // Ensure managers and team leads fall back to TRAINER_ROLE_ACCOUNTS if DB accounts are missing
+    const fallbackManagers = Object.values(TRAINER_ROLE_ACCOUNTS)
+      .filter((a) => a.trainerRole === 'manager')
+      .map((a) => ({
+        id: a.leaderId || a.id,
+        leaderId: a.leaderId || a.id,
+        name: a.name,
+        userName: a.name,
+        email: a.email,
+        phone: a.phone || '',
+        role: a.role || 'Trainer Manager',
+        trainerRole: 'manager',
+        branch: a.branch || '',
+        branches: a.branches || (a.branch ? [a.branch] : []),
+        zone: a.zone || a.branch || 'Zonal Operations',
+        zoneLabel: a.zoneLabel || (a.branch ? `${a.branch} Region` : 'Assigned Region'),
+        status: 'Active',
+        color: a.color || '#0d9488'
+      }));
+
+    const finalManagers = [...managers];
+    fallbackManagers.forEach((fm) => {
+      const exists = finalManagers.some((m) => m.name.toLowerCase() === fm.name.toLowerCase() || m.email.toLowerCase() === fm.email.toLowerCase());
+      if (!exists) finalManagers.push(fm);
+    });
+
+    const fallbackTLs = Object.values(TRAINER_ROLE_ACCOUNTS)
+      .filter((a) => a.trainerRole === 'tl')
+      .map((a) => ({
+        id: a.leaderId || a.id,
+        leaderId: a.leaderId || a.id,
+        name: a.name,
+        userName: a.name,
+        email: a.email,
+        phone: a.phone || '',
+        role: a.role || 'Trainer Team Lead',
+        trainerRole: 'tl',
+        branch: a.branch || '',
+        branches: a.branches || (a.branch ? [a.branch] : []),
+        zone: a.zone || a.branch || 'Pod Operations',
+        zoneLabel: a.zoneLabel || (a.branch ? `${a.branch} Pod` : 'Assigned Pod'),
+        managerId: a.managerId || '',
+        managerName: a.managerName || '',
+        status: 'Active',
+        color: a.color || '#16a34a'
+      }));
+
+    const finalTLs = teamLeads.map((tl) => {
+      const match = fallbackTLs.find((f) => f.name.toLowerCase() === tl.name.toLowerCase() || f.email.toLowerCase() === tl.email.toLowerCase());
+      return {
+        ...tl,
+        managerId: tl.managerId || match?.managerId || '',
+        managerName: tl.managerName || match?.managerName || ''
+      };
+    });
+    fallbackTLs.forEach((ftl) => {
+      const exists = finalTLs.some((tl) => tl.name.toLowerCase() === ftl.name.toLowerCase() || tl.email.toLowerCase() === ftl.email.toLowerCase());
+      if (!exists) finalTLs.push(ftl);
+    });
+
     res.json({
       head,
-      managers,
-      teamLeads,
+      managers: finalManagers,
+      teamLeads: finalTLs,
       faculty
     });
   } catch (err) {
@@ -5333,7 +5513,7 @@ const mapRoleOrDeptToDashboard = (role = '', department = '') => {
   const r = (role || '').toLowerCase();
   const d = (department || '').toLowerCase();
 
-  if (r.includes('trainer') || r.includes('faculty') || d.includes('faculty') || d.includes('training')) {
+  if (r.includes('trainer') || r.includes('training') || r.includes('faculty') || d.includes('faculty') || d.includes('training')) {
     return {
       department: 'training',
       departmentCode: 'ACAD',
@@ -6420,7 +6600,18 @@ router.get('/trainer/attendance', async (req, res) => {
     if (date) query.date = date;
     if (from) query.date = { $gte: from };
     const list = await ClassAttendance.find(query).sort({ date: -1 });
-    res.json(list.map((a) => ({ ...a.toObject(), id: a._id.toString(), records: Object.fromEntries(a.records || []) })));
+    res.json(
+      list.map((a) => {
+        const obj = a.toObject();
+        let records = obj.records || {};
+        if (records instanceof Map) {
+          records = Object.fromEntries(records);
+        } else if (Array.isArray(records)) {
+          records = Object.fromEntries(records);
+        }
+        return { ...obj, id: a._id.toString(), records };
+      })
+    );
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -6569,8 +6760,36 @@ router.get('/batches', async (req, res) => {
     }
     const rows = await Student.aggregate([
       { $match: match },
-      { $group: { _id: { batch: '$batchName', trainerId: '$trainerId' }, trainerName: { $first: '$trainerName' }, course: { $first: '$course' }, students: { $sum: 1 } } },
-      { $project: { _id: 0, batch: '$_id.batch', trainerId: '$_id.trainerId', trainerName: 1, course: 1, students: 1 } },
+      {
+        $group: {
+          _id: { batch: '$batchName', trainerId: '$trainerId' },
+          trainerName: { $first: '$trainerName' },
+          course: { $first: '$course' },
+          branch: { $first: '$branch' },
+          timing: { $first: '$batchTiming' },
+          mode: { $first: '$mode' },
+          students: { $sum: 1 }
+        }
+      },
+      {
+        $project: {
+          _id: 0,
+          id: '$_id.batch',
+          name: '$_id.batch',
+          batch: '$_id.batch',
+          batchName: '$_id.batch',
+          batchId: '$_id.batch',
+          trainerId: '$_id.trainerId',
+          trainerName: 1,
+          trainer: '$trainerName',
+          faculty: '$trainerName',
+          course: 1,
+          branch: 1,
+          timing: 1,
+          mode: 1,
+          students: 1
+        }
+      },
       { $sort: { batch: 1 } }
     ]);
     res.json(rows);
@@ -10519,9 +10738,9 @@ router.get('/training/course-syllabus/all', async (req, res) => {
 
 router.put('/training/course-syllabus', async (req, res) => {
   try {
-    const privileged = isTrainerManagerUser(req);
+    const privileged = isTrainerManagerUser(req) || isTrainerHeadUser(req) || (await isHeadOfTrainerUser(req));
     if (!privileged) {
-      return res.status(403).json({ error: 'Only Trainer Managers can add or edit the course syllabus for courses.' });
+      return res.status(403).json({ error: 'Only Trainer Head and Trainer Managers can add or edit the course syllabus for courses.' });
     }
     const course = tidyBatchName(req.body?.course || '');
     if (!course) return res.status(400).json({ error: 'course is required' });

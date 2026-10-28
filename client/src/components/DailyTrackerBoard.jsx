@@ -306,6 +306,36 @@ export default function DailyTrackerBoard({
                       </div>
                     </div>
 
+                    {/* Work Session Information Strip */}
+                    <div className="flex flex-wrap items-center justify-between gap-2.5 bg-slate-50/90 border border-slate-200/70 rounded-xl px-4 py-2.5 text-xs">
+                      <div className="flex items-center gap-4 flex-wrap">
+                        <div className="flex items-center gap-1.5 text-slate-700">
+                          <Clock className="w-3.5 h-3.5 text-purple-600" />
+                          <span className="font-medium text-slate-500">Work Session:</span>
+                          <span className="font-bold text-slate-900">{c.workStartTime || 'Not Recorded'}</span>
+                          <span className="text-slate-400">→</span>
+                          <span className="font-bold text-slate-900">{c.workEndTime || (c.workSessionStatus === 'Completed' ? 'Completed' : 'In Progress')}</span>
+                        </div>
+                        {Boolean(c.workingHoursText || c.workingMinutes) && (
+                          <div className="flex items-center gap-1.5 text-slate-700">
+                            <span className="font-medium text-slate-500">Duration:</span>
+                            <span className="font-extrabold text-purple-700 bg-purple-100/70 px-2 py-0.5 rounded-md font-mono">
+                              {c.workingHoursText || `${Math.floor((c.workingMinutes || 0) / 60)}h ${(c.workingMinutes || 0) % 60}m`}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                      <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase border ${
+                        c.workSessionStatus === 'Completed'
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                          : c.workSessionStatus === 'In Progress'
+                            ? 'bg-cyan-50 text-cyan-700 border-cyan-200 animate-pulse'
+                            : 'bg-amber-50 text-amber-700 border-amber-200'
+                      }`}>
+                        {c.workSessionStatus || (c.workEndTime ? 'Completed' : 'In Progress')}
+                      </span>
+                    </div>
+
                     {/* EOD Metrics Grid */}
                     <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 pt-1">
                       <div className="bg-slate-50 rounded-xl p-3 text-center border border-slate-100">
@@ -335,10 +365,21 @@ export default function DailyTrackerBoard({
                       </div>
                     </div>
 
-                    {/* EOD Notes */}
-                    {c.notes && (
-                      <div className="bg-purple-50/60 border border-purple-100 rounded-xl p-3 text-xs text-purple-950 font-medium">
-                        <strong className="font-bold">EOD Remarks:</strong> {c.notes}
+                    {/* Detailed EOD Summary & Remarks */}
+                    {(c.summary || c.notes) && (
+                      <div className="bg-purple-50/70 border border-purple-100 rounded-xl p-3.5 text-xs text-purple-950 font-medium space-y-1">
+                        <div className="flex items-center gap-1.5 font-bold text-purple-900">
+                          <FileText className="w-3.5 h-3.5 text-purple-600" />
+                          <span>Detailed Work Summary:</span>
+                        </div>
+                        <p className="whitespace-pre-wrap leading-relaxed text-slate-800 bg-white/70 p-2.5 rounded-lg border border-purple-100/60 font-sans">
+                          {c.summary || c.notes}
+                        </p>
+                        {c.summary && c.notes && c.summary !== c.notes && (
+                          <div className="text-[11px] text-purple-700 pt-1">
+                            <strong>Additional Notes:</strong> {c.notes}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>

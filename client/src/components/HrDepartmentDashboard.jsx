@@ -28,8 +28,14 @@ import {
   PhoneCall,
   Users,
   AlertTriangle,
-  FileSpreadsheet
+  FileSpreadsheet,
+  FileText,
+  Send,
+  ShieldCheck,
+  Play
 } from 'lucide-react';
+import HrEodReportSection from './HrEodReportSection';
+import { StartWorkConfirmationModal, CloseWorkConfirmationModal } from './WorkSessionModals';
 import HrPipelineView from './HrPipelineView';
 import HrFollowUpBoard from './HrFollowUpBoard';
 import HrDemoDesk from './HrDemoDesk';
@@ -48,7 +54,7 @@ import LeadCallModal from './LeadCallModal';
 import BookNewDemoModal from './BookNewDemoModal';
 import AddLeadModal from './AddLeadModal';
 import CompleteRegistrationModal from './CompleteRegistrationModal';
-import { getStudents, getLeads, createLead, updateLead, updateStudent, getDemos, createDemo, createStudent, getRecordings, getTodayClosure, saveDailyClosure, onDataUpdate, getNotifications, markNotificationRead, markNotificationsRead, getStudentRequests, getStudentTickets, getMyAttendance, setMyAttendance, logCall, getTodayCallLog, getHrTargets } from '../services/api';
+import { getStudents, getLeads, createLead, updateLead, updateStudent, getDemos, createDemo, createStudent, getRecordings, getTodayClosure, saveDailyClosure, onDataUpdate, getNotifications, markNotificationRead, markNotificationsRead, getStudentRequests, getStudentTickets, getMyAttendance, setMyAttendance, startMyWork, closeMyWork, logCall, getTodayCallLog, getHrTargets } from '../services/api';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 import { useIncentivePolicy, progressiveIncentive } from '../utils/incentive';
 
@@ -154,29 +160,176 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     return () => clearInterval(timer);
   }, [isOnBreak, breakStartTime]);
 
-  // Server attendance (Leadership branch view): clock in on open, restore break state
-  useEffect(() => {
+  // Format timestamp helper
+  const formatTimeDisplay = (timeVal) => {
+    if (!timeVal) return '';
+    if (typeof timeVal === 'string' && (timeVal.includes('AM') || timeVal.includes('PM') || /^\d{1,2}:\d{2}$/.test(timeVal))) {
+      return timeVal;
+    }
+    try {
+      const d = new Date(timeVal);
+      if (isNaN(d.getTime())) return String(timeVal);
+      return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+    } catch {
+      return String(timeVal);
+    }
+  };
+
+  // Official Work Session & Attendance State
+  const [attendanceRecord, setAttendanceRecord] = useState(null);
+  const [sessionStatus, setSessionStatus] = useState('Not Started'); // 'Not Started' | 'In Progress' | 'Completed'
+  const [workStartTime, setWorkStartTime] = useState(null);
+  const [workEndTime, setWorkEndTime] = useState(null);
+  const [workingDurationText, setWorkingDurationText] = useState('0 hrs 0 mins');
+  const [workingMinutes, setWorkingMinutes] = useState(0);
+
+  // Modals & EOD state
+  const [showStartWorkModal, setShowStartWorkModal] = useState(false);
+  const [showCloseWorkModal, setShowCloseWorkModal] = useState(false);
+  const [workModalLoading, setWorkModalLoading] = useState(false);
+  const [eodSummaryText, setEodSummaryText] = useState('');
+  const [eodSubmitting, setEodSubmitting] = useState(false);
+
+  // Load server attendance & restore work session state
+  const loadAttendance = async (promptIfNew = true) => {
     if (!userName) return;
-    (async () => {
-      try {
-        const rec = await getMyAttendance(currentUser?.branch);
-        if (!rec?.checkIn || rec.status === 'absent') await setMyAttendance('in', currentUser?.branch);
-        else if (rec.status === 'break' && rec.breakStartedAt && !isOnBreak) {
+    try {
+      const rec = await getMyAttendance(currentUser?.branch);
+      if (rec) {
+        setAttendanceRecord(rec);
+        const sStatus = rec.sessionStatus || (rec.workEndTime ? 'Completed' : rec.workStartTime ? 'In Progress' : 'Not Started');
+        setSessionStatus(sStatus);
+        setWorkStartTime(rec.workStartTime || null);
+        setWorkEndTime(rec.workEndTime || null);
+        setWorkingMinutes(rec.calculatedWorkingMinutes || rec.workingMinutes || 0);
+        setWorkingDurationText(rec.durationText || '0 hrs 0 mins');
+
+        // Restore break state if any
+        if (rec.status === 'break' && rec.breakStartedAt && !isOnBreak) {
           const start = new Date(rec.breakStartedAt).getTime();
           setBreakStartTime(start);
           try { localStorage.setItem(breakStartKey, String(start)); } catch (_) {}
           setIsOnBreak(true);
         } else if (rec.status === 'in' && isOnBreak) {
-          // Break was ended on another device
           try { localStorage.removeItem(breakStartKey); } catch (_) {}
           setBreakStartTime(null);
           setIsOnBreak(false);
         }
-        if (typeof rec?.breakMinutes === 'number' && rec.breakMinutes * 60 > accumulatedBreak) setAccumulatedBreak(rec.breakMinutes * 60);
-      } catch (_) { /* offline: local timer still works */ }
-    })();
+        if (typeof rec?.breakMinutes === 'number' && rec.breakMinutes * 60 > accumulatedBreak) {
+          setAccumulatedBreak(rec.breakMinutes * 60);
+        }
+
+        // Display confirmation popup asking “Are you ready to start today’s work?”
+        // only if work has not started yet and not dismissed during this tab session
+        const dismissedKey = `thoughtflows_start_work_dismissed_${userKey}_${localDateKey()}`;
+        let dismissed = false;
+        try { dismissed = sessionStorage.getItem(dismissedKey) === 'true'; } catch (_) {}
+        if (promptIfNew && sStatus === 'Not Started' && !dismissed) {
+          setShowStartWorkModal(true);
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to fetch attendance state:', e);
+    }
+  };
+
+  useEffect(() => {
+    loadAttendance(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userName]);
+
+  // Live Working Hours Duration timer while session is 'In Progress'
+  useEffect(() => {
+    if (sessionStatus !== 'In Progress' || !workStartTime) return undefined;
+
+    const calcDuration = () => {
+      try {
+        const startMs = new Date(workStartTime).getTime();
+        if (isNaN(startMs)) return;
+        const nowMs = Date.now();
+        const diffMins = Math.max(0, Math.floor((nowMs - startMs) / 60000));
+        const netMins = Math.max(0, diffMins - Math.floor(accumulatedBreak / 60) - (isOnBreak ? Math.floor(breakSeconds / 60) : 0));
+        setWorkingMinutes(netMins);
+        const hours = Math.floor(netMins / 60);
+        const mins = netMins % 60;
+        setWorkingDurationText(`${hours} hr${hours === 1 ? '' : 's'} ${mins} min${mins === 1 ? '' : 's'}`);
+      } catch (_) {}
+    };
+
+    calcDuration();
+    const interval = setInterval(calcDuration, 30000);
+    return () => clearInterval(interval);
+  }, [sessionStatus, workStartTime, accumulatedBreak, isOnBreak, breakSeconds]);
+
+  // 1. Confirm Start Work: record official work login time
+  const handleConfirmStartWork = async () => {
+    setWorkModalLoading(true);
+    try {
+      const res = await startMyWork(currentUser?.branch);
+      setAttendanceRecord(res);
+      setSessionStatus('In Progress');
+      setWorkStartTime(res.workStartTime || new Date().toISOString());
+      setWorkingDurationText(res.durationText || '0 hrs 1 min');
+      setShowStartWorkModal(false);
+      showToast(`✓ Work started at ${res.checkIn || formatTimeDisplay(res.workStartTime)}!`);
+    } catch (err) {
+      showToast(`⚠ Could not record start work: ${err?.response?.data?.error || err.message}`);
+    } finally {
+      setWorkModalLoading(false);
+    }
+  };
+
+  // 1. Cancel Start Work: do not record work login time
+  const handleCancelStartWork = () => {
+    setShowStartWorkModal(false);
+    try {
+      sessionStorage.setItem(`thoughtflows_start_work_dismissed_${userKey}_${localDateKey()}`, 'true');
+    } catch (_) {}
+    showToast('Work session not started. Click "Start Work" when you are ready.');
+  };
+
+  // 2. Click Logout: display confirmation popup asking: “Are you sure you want to close today’s work?”
+  const handleLogoutClick = () => {
+    setShowCloseWorkModal(true);
+  };
+
+  const handleCancelCloseWork = () => {
+    setShowCloseWorkModal(false);
+    showToast('Work session remains active.');
+  };
+
+  // 2. Confirm Close Work: record logout time, calculate total working duration between start & end
+  const handleConfirmCloseWork = async (summaryOverride) => {
+    setWorkModalLoading(true);
+    try {
+      // Record official logout time and calculate total working duration in backend
+      const res = await closeMyWork(currentUser?.branch);
+      setAttendanceRecord(res);
+      setSessionStatus('Completed');
+      setWorkEndTime(res.workEndTime || new Date().toISOString());
+      setWorkingDurationText(res.durationText || workingDurationText);
+
+      // If summary is provided or already submitted, update EOD report with completed session details
+      const summaryToSave = summaryOverride || eodSummaryText;
+      if (summaryToSave.trim() || closureSubmitted) {
+        try {
+          await handleEodReportSubmit(summaryToSave, res);
+        } catch (_) {}
+      }
+
+      setShowCloseWorkModal(false);
+      showToast('✓ Today\'s work closed successfully! Total Duration: ' + (res.durationText || workingDurationText));
+
+      setTimeout(() => {
+        if (onLogout) onLogout();
+        else if (onClose) onClose();
+      }, 700);
+    } catch (err) {
+      showToast(`⚠ Error closing work: ${err?.response?.data?.error || err.message}`);
+    } finally {
+      setWorkModalLoading(false);
+    }
+  };
 
   const handleToggleBreak = () => {
     setMyAttendance(isOnBreak ? 'resume' : 'break', currentUser?.branch).catch(() => {});
@@ -336,6 +489,9 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         if (closureRes.submittedAt) {
           setClosureSubmittedAt(new Date(closureRes.submittedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }));
         }
+        if (closureRes.summary || closureRes.notes) {
+          setEodSummaryText(closureRes.summary || closureRes.notes);
+        }
         setCustomMetrics({
           callsMade: closureRes.callsMade,
           connected: closureRes.connected,
@@ -353,12 +509,14 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             if (parsed.submitted) {
               setClosureSubmitted(true);
               setClosureSubmittedAt(parsed.submittedAt || '');
+              if (parsed.summary) setEodSummaryText(parsed.summary);
               if (parsed.metrics) setCustomMetrics(parsed.metrics);
             }
           } else {
             // New day reset!
             setClosureSubmitted(false);
             setClosureSubmittedAt('');
+            setEodSummaryText('');
             setCustomMetrics(null);
           }
         } catch {
@@ -647,14 +805,30 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     return computedDailyMetrics;
   }, [customMetrics, computedDailyMetrics]);
 
-  // Submit today's closure to database and command center
-  const handleDailyClosureSubmit = async () => {
+  // 3. Submit EOD Report to HR Head (saves report with HR user details, date, submission time, work session info, and CRM metrics)
+  const handleEodReportSubmit = async (customSummary = null, attendanceOverride = null) => {
+    setEodSubmitting(true);
     try {
+      const summaryToSave = customSummary !== null ? customSummary : eodSummaryText;
+      const att = attendanceOverride || attendanceRecord;
+      const startTime = att?.checkIn || formatTimeDisplay(att?.workStartTime || workStartTime);
+      const endTime = att?.checkOut || formatTimeDisplay(att?.workEndTime || workEndTime);
+      const durText = att?.durationText || workingDurationText || `${Math.floor(workingMinutes / 60)} hrs ${workingMinutes % 60} mins`;
+      const curSessionStatus = att?.sessionStatus || sessionStatus;
+
       const payload = {
         counselorName: userName,
         counselorEmail: currentUser?.email || '',
         branch: branchName,
+        department: currentUser?.department || 'hr',
         date: todayKey,
+        summary: summaryToSave,
+        notes: summaryToSave || `Daily EOD closure submitted by ${userName} on ${todayKey}`,
+        workStartTime: startTime,
+        workEndTime: endTime,
+        workingMinutes: workingMinutes || 0,
+        workingHoursText: durText,
+        workSessionStatus: curSessionStatus,
         callsMade: closureMetrics.callsMade,
         connected: closureMetrics.connected,
         demosBooked: closureMetrics.demosBooked,
@@ -662,7 +836,6 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         feesCollected: closureMetrics.rawFeesCollected,
         pendingFus: closureMetrics.pendingFus,
         status: 'submitted',
-        notes: `Daily closure submitted by ${userName} on ${todayKey}`,
         // What the system counted — managers see which numbers were hand-corrected
         systemMetrics: {
           callsMade: computedDailyMetrics.callsMade,
@@ -673,8 +846,8 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
           pendingFus: computedDailyMetrics.pendingFus
         }
       };
-      await saveDailyClosure(payload);
-      setMyAttendance('out', currentUser?.branch).catch(() => {});
+
+      const res = await saveDailyClosure(payload);
       setClosureSubmitted(true);
       const timeStr = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
       setClosureSubmittedAt(timeStr);
@@ -682,15 +855,23 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         localStorage.setItem(`thoughtflows_closure_${todayKey}_${userName}`, JSON.stringify({
           submitted: true,
           submittedAt: timeStr,
+          summary: summaryToSave,
           metrics: payload
         }));
       } catch (e) {}
-      showToast(`✓ Today's closure (${todayKey}) submitted to Command Center!`);
+      showToast(`✓ EOD Report successfully submitted to HR Head (${timeStr})!`);
+      setEodSubmitting(false);
+      return res;
     } catch (err) {
-      // Not saved — leave it unsubmitted so the counsellor can retry
-      console.error('Failed to submit daily closure:', err);
-      showToast(`⚠ Closure NOT submitted: ${err?.response?.data?.error || err.message}. Please try again.`);
+      console.error('Failed to submit daily EOD closure:', err);
+      showToast(`⚠ EOD Report NOT submitted: ${err?.response?.data?.error || err.message}. Please try again.`);
+      setEodSubmitting(false);
+      throw err;
     }
+  };
+
+  const handleDailyClosureSubmit = async () => {
+    return handleEodReportSubmit();
   };
 
   // Open student requests + support tickets for this counsellor (Student Portal → HR)
@@ -743,6 +924,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       { name: 'Call Recordings', badge: callRecordings.length > 0 ? String(callRecordings.length) : null, icon: PhoneCall, iconBg: 'bg-sky-600', badgeBg: 'bg-sky-500', color: 'sky' },
       { name: 'My Targets', badge: null, icon: Target, iconBg: 'bg-rose-500', color: 'pink' },
       { name: 'My Schedule', badge: null, icon: Calendar, iconBg: 'bg-blue-500', color: 'blue' },
+      { name: 'EOD Report', badge: closureSubmitted ? 'Done ✓' : 'Due', icon: FileText, iconBg: 'bg-[#0e6977]', badgeBg: closureSubmitted ? 'bg-emerald-500' : 'bg-amber-500', color: 'teal' },
       { name: 'LMS', badge: 'Learn', isPillBadge: true, icon: BookOpen, iconBg: 'bg-yellow-700', color: 'green' },
       { name: 'Fees', badge: pendingFeesStats.count > 0 ? String(pendingFeesStats.count) : null, badgeBg: 'bg-amber-500', icon: IndianRupee, iconBg: 'bg-teal-600', color: 'teal' },
       { name: 'Handover', badge: handoverCount, icon: Repeat, iconBg: 'bg-orange-600', badgeBg: 'bg-orange-500', color: 'orange' },
@@ -1219,6 +1401,33 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             </div>
           </div>
 
+          {/* Work Session Status Pill */}
+          <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white/90 border border-slate-200/80 text-xs shadow-2xs">
+            <span className={`w-2 h-2 rounded-full ${
+              sessionStatus === 'Completed'
+                ? 'bg-emerald-500'
+                : sessionStatus === 'In Progress'
+                  ? 'bg-teal-500 animate-pulse'
+                  : 'bg-amber-400'
+            }`} />
+            <span className="font-extrabold text-slate-800">
+              {sessionStatus === 'Completed'
+                ? 'Work Completed'
+                : sessionStatus === 'In Progress'
+                  ? `Active • ${workingDurationText}`
+                  : 'Work: Not Started'}
+            </span>
+            {sessionStatus === 'Not Started' && (
+              <button
+                type="button"
+                onClick={() => setShowStartWorkModal(true)}
+                className="ml-1 px-2 py-0.5 rounded-md bg-[#0e6977] hover:bg-[#094c56] text-white text-[10px] font-bold transition-all cursor-pointer"
+              >
+                Start
+              </button>
+            )}
+          </div>
+
           {/* Break Button */}
           <button
             onClick={handleToggleBreak}
@@ -1245,9 +1454,9 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             )}
           </button>
 
-          {/* Logout Button */}
+          {/* Logout Button: triggers "Are you sure you want to close today's work?" */}
           <button
-            onClick={onLogout || onClose}
+            onClick={handleLogoutClick}
             className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-all ${
               barTheme === 'clay'
                 ? 'clay-btn clay-btn-danger'
@@ -1432,6 +1641,32 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             />
             <TrainerQualityBoard title="Faculty roster & quality overview" />
           </div>
+        ) : activeTab === 'EOD Report' ? (
+          <HrEodReportSection
+            currentUser={currentUser}
+            userName={userName}
+            branchName={branchName}
+            todayKey={todayKey}
+            todayDisplay={todayDisplay}
+            attendanceRecord={attendanceRecord}
+            sessionStatus={sessionStatus}
+            workStartTimeFormatted={attendanceRecord?.checkIn || formatTimeDisplay(workStartTime)}
+            workEndTimeFormatted={attendanceRecord?.checkOut || formatTimeDisplay(workEndTime)}
+            workingDurationText={workingDurationText}
+            closureMetrics={closureMetrics}
+            computedDailyMetrics={computedDailyMetrics}
+            customMetrics={customMetrics}
+            setCustomMetrics={setCustomMetrics}
+            closureSubmitted={closureSubmitted}
+            closureSubmittedAt={closureSubmittedAt}
+            eodSummaryText={eodSummaryText}
+            setEodSummaryText={setEodSummaryText}
+            onSubmitEod={handleEodReportSubmit}
+            onStartWorkClick={() => setShowStartWorkModal(true)}
+            onCloseWorkClick={() => setShowCloseWorkModal(true)}
+            isElevatedUser={isElevatedUser}
+            showToast={showToast}
+          />
         ) : activeTab === 'Home' ? (
           <>
         
@@ -1472,6 +1707,113 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
                   <span className="w-2 h-2 rounded-full bg-emerald-500" />
                   <span>My Workspace: {scopedLeads.length} Leads • {scopedStudents.length} Students</span>
                 </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Today's Official Work Session & Attendance Card */}
+        <div className="bg-white rounded-2xl border border-slate-200/90 p-4 sm:p-5 shadow-xs text-left">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-teal-50 border border-teal-200/80 flex items-center justify-center text-teal-700 shadow-2xs">
+                <Clock className="w-5 h-5 stroke-[2.2]" />
+              </div>
+              <div>
+                <h3 className="text-sm sm:text-base font-extrabold text-slate-900 leading-tight">
+                  Today&apos;s Work Session &amp; Attendance
+                </h3>
+                <p className="text-[11px] text-slate-400">
+                  Confirmed working hours &bull; Official Shift Check-in &amp; Check-out
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className={`px-3 py-1 rounded-full text-xs font-extrabold uppercase border flex items-center gap-1.5 ${
+                sessionStatus === 'Completed'
+                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                  : sessionStatus === 'In Progress'
+                    ? 'bg-teal-50 text-teal-800 border-teal-300 ring-2 ring-teal-200/60'
+                    : 'bg-amber-50 text-amber-700 border-amber-200'
+              }`}>
+                <span className={`w-2 h-2 rounded-full ${
+                  sessionStatus === 'Completed' ? 'bg-emerald-500' : sessionStatus === 'In Progress' ? 'bg-teal-500 animate-ping' : 'bg-amber-400'
+                }`} />
+                {sessionStatus}
+              </span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 pt-3.5">
+            <div className="bg-slate-50/80 border border-slate-200/70 rounded-xl p-3 text-center">
+              <div className="text-[10px] font-bold text-slate-400 uppercase">Work Start Time</div>
+              <div className="text-base sm:text-lg font-black text-slate-900 mt-1 font-mono">
+                {attendanceRecord?.checkIn || formatTimeDisplay(workStartTime) || 'Not Started'}
+              </div>
+              <div className="text-[10px] text-slate-400 mt-0.5">Recorded on Start Work</div>
+            </div>
+
+            <div className="bg-slate-50/80 border border-slate-200/70 rounded-xl p-3 text-center">
+              <div className="text-[10px] font-bold text-slate-400 uppercase">Work End Time</div>
+              <div className={`text-base sm:text-lg font-black mt-1 font-mono ${
+                attendanceRecord?.checkOut || workEndTime ? 'text-slate-900' : sessionStatus === 'In Progress' ? 'text-teal-600' : 'text-slate-400'
+              }`}>
+                {attendanceRecord?.checkOut || formatTimeDisplay(workEndTime) || (sessionStatus === 'In Progress' ? 'In Progress' : '--:--')}
+              </div>
+              <div className="text-[10px] text-slate-400 mt-0.5">Recorded on Close Work</div>
+            </div>
+
+            <div className="bg-teal-50/50 border border-teal-200/70 rounded-xl p-3 text-center">
+              <div className="text-[10px] font-extrabold text-[#0e6977] uppercase">Total Working Duration</div>
+              <div className="text-base sm:text-lg font-black text-[#0e6977] mt-1 font-mono">
+                {workingDurationText || '0 hrs 0 mins'}
+              </div>
+              <div className="text-[10px] text-teal-600 font-medium mt-0.5">
+                {sessionStatus === 'In Progress' ? 'Active live timer' : 'Official duration'}
+              </div>
+            </div>
+
+            <div className="flex flex-col justify-center items-center gap-1.5 p-1">
+              {sessionStatus === 'Not Started' && (
+                <button
+                  type="button"
+                  onClick={() => setShowStartWorkModal(true)}
+                  className="w-full py-2.5 rounded-xl bg-[#0e6977] hover:bg-[#0a4f5a] text-white text-xs font-bold shadow-xs active:scale-95 transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Play className="w-3.5 h-3.5 fill-white stroke-none" />
+                  <span>Start Work</span>
+                </button>
+              )}
+              {sessionStatus === 'In Progress' && (
+                <div className="w-full flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowCloseWorkModal(true)}
+                    className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-xs active:scale-95 transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    <span>Close Work</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleTabChange('EOD Report')}
+                    className="px-3 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-all cursor-pointer"
+                    title="Open EOD Report"
+                  >
+                    EOD →
+                  </button>
+                </div>
+              )}
+              {sessionStatus === 'Completed' && (
+                <button
+                  type="button"
+                  onClick={() => handleTabChange('EOD Report')}
+                  className="w-full py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer"
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>View / Edit EOD</span>
+                </button>
               )}
             </div>
           </div>
@@ -1924,6 +2266,13 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
 
             <div className="flex items-center gap-3 flex-wrap">
               <button
+                onClick={() => handleTabChange('EOD Report')}
+                className="px-3.5 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-teal-200 font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer border border-white/15"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>Open Full EOD Report →</span>
+              </button>
+              <button
                 onClick={handleDailyClosureSubmit}
                 disabled={closureSubmitted}
                 className={`px-4 py-2 rounded-xl ${
@@ -1932,7 +2281,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
                     : 'bg-[#0e6977] hover:bg-[#0a4f5a] text-white shadow-md active:scale-[0.98] cursor-pointer'
                 } font-bold text-xs flex items-center gap-1.5 transition-all`}
               >
-                <span>{closureSubmitted ? `Closure Submitted (${closureSubmittedAt || 'Done'}) ✓` : "Submit Today's Closure →"}</span>
+                <span>{closureSubmitted ? `Closure Submitted (${closureSubmittedAt || 'Done'}) ✓` : "Submit EOD to HR Head →"}</span>
               </button>
               <span className="text-[11px] text-slate-400">
                 Tomorrow's priority: {overdueCount} overdue follow-ups + {feePendingCount} fee-pending students
@@ -2137,6 +2486,33 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         onBulkImported={() => loadAllData(true)}
         initialMode={addLeadModalMode}
         currentUser={currentUser}
+      />
+
+      {/* 1. Start Work Confirmation Modal: "Are you ready to start today’s work?" */}
+      <StartWorkConfirmationModal
+        isOpen={showStartWorkModal}
+        onClose={handleCancelStartWork}
+        onConfirmStart={handleConfirmStartWork}
+        loading={workModalLoading}
+        userName={userName}
+        branchName={branchName}
+      />
+
+      {/* 2. Close Work Confirmation Modal: "Are you sure you want to close today’s work?" */}
+      <CloseWorkConfirmationModal
+        isOpen={showCloseWorkModal}
+        onClose={handleCancelCloseWork}
+        onConfirmClose={handleConfirmCloseWork}
+        loading={workModalLoading}
+        userName={userName}
+        workStartTime={workStartTime}
+        workStartTimeFormatted={attendanceRecord?.checkIn || formatTimeDisplay(workStartTime)}
+        workingDurationText={workingDurationText}
+        closureSubmitted={closureSubmitted}
+        closureSubmittedAt={closureSubmittedAt}
+        eodSummary={eodSummaryText}
+        onEodSummaryChange={setEodSummaryText}
+        onOpenEodTab={() => handleTabChange('EOD Report')}
       />
     </div>
   );

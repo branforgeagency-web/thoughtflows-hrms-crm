@@ -414,12 +414,20 @@ export default function TrainingDepartmentDashboard({
   // were "Sent to Training" before trainer allocation existed fall back to course match.
   const myStudents = React.useMemo(() => {
     if (!students || students.length === 0 || !trainerId) return [];
+    const tIdNorm = String(trainerId).trim().toLowerCase();
+    const tNameNorm = String(trainerName || '').trim().toLowerCase();
     return students.filter(st => {
-      if (st.trainerId) return st.trainerId === trainerId;
+      if (st.trainerId) {
+        return String(st.trainerId).trim().toLowerCase() === tIdNorm;
+      }
+      const stTrName = String(st.trainerName || st.trainer || '').trim().toLowerCase();
+      if (stTrName && tNameNorm && (stTrName === tNameNorm || stTrName.includes(tNameNorm) || tNameNorm.includes(stTrName))) {
+        return true;
+      }
       if (st.handoverStatus !== 'Sent to Training') return false;
       return isChiefFaculty || courseMatches(st.course);
     });
-  }, [students, trainerId, isChiefFaculty, courseMatches]);
+  }, [students, trainerId, trainerName, isChiefFaculty, courseMatches]);
 
   // Match student against branch filter
   const studentMatchesBranch = React.useCallback((st, filter) => {

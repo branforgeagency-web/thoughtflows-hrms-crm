@@ -72,6 +72,7 @@ import CourseSyllabusBoard from './CourseSyllabusBoard';
 import ClassSessionRoom from './ClassSessionRoom';
 import TeamRosterBoard from './TeamRosterBoard';
 import { getCurrentWeekScheduleDays, getWeekRangeString, localDateKey } from '../utils/dateUtils';
+import { ALL_HIERARCHY_TRAINERS, TRAINER_HIERARCHY } from '../constants/trainerHierarchy';
 
 export default function TrainerHeadDashboard({
   roleType = 'head', // 'head' | 'manager' | 'tl'
@@ -99,13 +100,8 @@ export default function TrainerHeadDashboard({
   }, [activeTab, roleType]);
   const isHeadRole = roleType === 'head';
   const isManagerRole = roleType === 'manager' || currentUser?.trainerRole === 'manager' || /trainer manager|training manager/i.test(currentUser?.role || '') || String(currentUser?.email || '').toLowerCase().includes('.manager@');
-  const [syllabusSubTab, setSyllabusSubTab] = useState(() => isManagerRole ? 'master' : 'progress');
-
-  useEffect(() => {
-    if (!isHeadRole && (activeTab === 'weak_students' || activeTab === 'doubts')) {
-      setActiveTab('overview');
-    }
-  }, [isHeadRole, activeTab]);
+  const canManageSyllabus = isHeadRole || isManagerRole;
+  const [syllabusSubTab, setSyllabusSubTab] = useState(() => canManageSyllabus ? 'master' : 'progress');
   const [navOpen, setNavOpen] = useState(false);
 
   // Active Leader Selection
@@ -265,10 +261,44 @@ export default function TrainerHeadDashboard({
           }
         });
 
+        // Enrich trainers with hierarchy metadata (TL, Manager, Zone, Branch)
+        const enrichedTrainers = realTrainers.map((t) => {
+          const tId = String(t.trainerId || t.id || '').toLowerCase();
+          const tName = String(t.trainerName || t.name || '').toLowerCase();
+          const meta = ALL_HIERARCHY_TRAINERS.find(
+            (ht) => String(ht.id).toLowerCase() === tId || String(ht.name).toLowerCase() === tName
+          );
+          if (meta) {
+            return {
+              ...meta,
+              ...t,
+              teamLeadId: t.teamLeadId || meta.teamLeadId,
+              teamLeadName: t.teamLeadName || meta.teamLeadName,
+              managerId: t.managerId || meta.managerId,
+              managerName: t.managerName || meta.managerName,
+              zone: t.zone || meta.zone,
+              zoneLabel: t.zoneLabel || meta.zoneLabel,
+              branchName: t.branchName || t.branch || meta.branchName
+            };
+          }
+          return t;
+        });
+
+        // Supplement any missing hierarchy trainers
+        ALL_HIERARCHY_TRAINERS.forEach((ht) => {
+          const exists = enrichedTrainers.some(
+            (t) => String(t.trainerId || t.id || '').toLowerCase() === String(ht.id).toLowerCase() ||
+                   String(t.trainerName || t.name || '').toLowerCase() === String(ht.name).toLowerCase()
+          );
+          if (!exists) {
+            enrichedTrainers.push(ht);
+          }
+        });
+
         setStudents(Array.isArray(stData) ? stData : []);
         setBatches(Array.isArray(bData) ? bData : []);
         setBranches(Array.isArray(brData) ? brData : []);
-        setTrainers(realTrainers);
+        setTrainers(enrichedTrainers);
         setAttendanceRecords(Array.isArray(attData) ? attData : []);
         setDemos(Array.isArray(dData) ? dData : []);
         setDoubts(Array.isArray(dbtData) ? dbtData : []);
@@ -601,20 +631,24 @@ export default function TrainerHeadDashboard({
   const allWeakStudents = useMemo(() => {
     return scopedStudents
       .filter((s) => {
-        const att = Number(s.attendancePercentage ?? s.attendance ?? 85);
-        const score = Number(s.averageScore ?? s.score ?? 80);
-        return att < 75 || score < 60 || s.isWeak === true;
+        const att = Number(s.attendancePercentage ?? s.attendancePct ?? s.attendance ?? (s.isWeak ? 60 : 85));
+        const score = Number(s.averageScore ?? s.assessmentScore ?? s.readinessScore ?? s.score ?? (s.isWeak ? 50 : 80));
+        return att < 75 || score < 60 || s.isWeak === true || s.status === 'Needs Attention' || s.academicStatus === 'Weak';
       })
-      .map((s) => ({
-        ...s,
-        attPct: Number(s.attendancePercentage ?? s.attendance ?? 70),
-        scorePct: Number(s.averageScore ?? s.score ?? 58),
-        learningProgress: s.completedModules || s.currentModule || 'Module 2 · In Progress',
-        attentionReason:
-          Number(s.attendancePercentage ?? 85) < 75
-            ? 'Attendance Drop below 75%'
-            : 'Low Test Score (<60%)'
-      }));
+      .map((s) => {
+        const att = Number(s.attendancePercentage ?? s.attendancePct ?? s.attendance ?? 70);
+        const score = Number(s.averageScore ?? s.assessmentScore ?? s.readinessScore ?? s.score ?? 58);
+        return {
+          ...s,
+          attPct: att,
+          scorePct: score,
+          learningProgress: s.completedModules || s.currentModule || 'Module 2 · In Progress',
+          attentionReason:
+            att < 75
+              ? 'Attendance Drop below 75%'
+              : (score < 60 ? 'Low Test Score (<60%)' : (s.notes || 'Identified as needing academic support'))
+        };
+      });
   }, [scopedStudents]);
 
   // 4. Syllabus Completion Report
@@ -638,13 +672,17 @@ export default function TrainerHeadDashboard({
     };
   }, [scopedStudents]);
 
-  // Detailed Trainer Managers list (derived strictly from Admin-created user credentials in DB)
+  // Detailed Trainer Managers list (derived from user credentials or master hierarchy fallback)
   const trainerManagersList = useMemo(() => {
-    const managers = (trainerCredentials?.managers || []).map((m) => {
+    const rawList = (trainerCredentials?.managers?.length)
+      ? trainerCredentials.managers
+      : TRAINER_HIERARCHY.managers;
+
+    const managers = rawList.map((m) => {
       const mBranches = (m.branches?.length ? m.branches : (m.branch ? [m.branch] : [])).map((b) => String(b).toLowerCase().trim());
       const mId = m.id || m.leaderId;
 
-      const reportingTLs = (trainerCredentials?.teamLeads || []).filter((tl) => {
+      const reportingTLs = (trainerCredentials?.teamLeads?.length ? trainerCredentials.teamLeads : TRAINER_HIERARCHY.teamLeads).filter((tl) => {
         if (tl.managerId && (tl.managerId === mId || tl.managerId === m.name)) return true;
         if (mBranches.length > 0 && tl.branches) {
           const tlBranches = tl.branches.map((b) => String(b).toLowerCase().trim());
@@ -702,9 +740,13 @@ export default function TrainerHeadDashboard({
     return managers;
   }, [trainers, batches, students, trainerCredentials]);
 
-  // Detailed Trainer Team Leads (TLs) list (derived strictly from Admin-created user credentials in DB)
+  // Detailed Trainer Team Leads (TLs) list (derived from user credentials or master hierarchy fallback)
   const trainerTLsList = useMemo(() => {
-    const tls = (trainerCredentials?.teamLeads || []).map((tl) => {
+    const rawList = (trainerCredentials?.teamLeads?.length)
+      ? trainerCredentials.teamLeads
+      : TRAINER_HIERARCHY.teamLeads;
+
+    const tls = rawList.map((tl) => {
       const tlId = tl.id || tl.leaderId;
       const tlBranches = (tl.branches?.length ? tl.branches : (tl.branch ? [tl.branch] : [])).map((b) => String(b).toLowerCase().trim());
 
@@ -846,12 +888,13 @@ export default function TrainerHeadDashboard({
   const scopedDemos = useMemo(() => {
     if (roleType === 'head') return demos;
     return demos.filter((d) => {
+      if (d.trainerId && scopedTrainerIds.includes(d.trainerId)) return true;
       const tName = String(d.trainer || d.trainerMapping || '').toLowerCase();
       if (scopedTrainerNames.some((stn) => tName.includes(stn.toLowerCase()))) return true;
       const dBranch = String(d.branch || d.location || '').toLowerCase();
       return scopedBranchNames.some((sbn) => sbn.toLowerCase() === dBranch);
     });
-  }, [demos, roleType, scopedTrainerNames, scopedBranchNames]);
+  }, [demos, roleType, scopedTrainerIds, scopedTrainerNames, scopedBranchNames]);
 
   const demoReport = useMemo(() => {
     const scheduled = scopedDemos.filter((d) =>
@@ -908,7 +951,7 @@ export default function TrainerHeadDashboard({
     const map = {};
 
     scopedBatches.forEach((b) => {
-      const bName = b.name || b.batchId || b.batchName || 'Active Batch';
+      const bName = b.batch || b.name || b.batchId || b.batchName || 'Active Batch';
       map[bName] = {
         id: b._id || b.id || bName.toLowerCase().replace(/[^a-z0-9]/g, '-'),
         name: bName,
@@ -1572,27 +1615,25 @@ export default function TrainerHeadDashboard({
                 </span>
               </button>
 
-              {isHeadRole && (
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('weak_students')}
-                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
-                    activeTab === 'weak_students'
-                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
-                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400" />
-                    <span>Weak Students Report</span>
-                  </div>
-                  {allWeakStudents.length > 0 && (
-                    <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-rose-500 text-white">
-                      {allWeakStudents.length}
-                    </span>
-                  )}
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => setActiveTab('weak_students')}
+                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
+                  activeTab === 'weak_students'
+                    ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                    : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400" />
+                  <span>Weak Students Report</span>
+                </div>
+                {allWeakStudents.length > 0 && (
+                  <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-rose-500 text-white">
+                    {allWeakStudents.length}
+                  </span>
+                )}
+              </button>
 
               <button
                 type="button"
@@ -1686,27 +1727,25 @@ export default function TrainerHeadDashboard({
                 </span>
               </button>
 
-              {isHeadRole && (
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('doubts')}
-                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
-                    activeTab === 'doubts'
-                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
-                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <MessageSquare className="w-4 h-4 shrink-0" />
-                    <span>Doubt Box Details</span>
-                  </div>
-                  {doubtsReport.pending.length > 0 && (
-                    <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-amber-500 text-slate-900">
-                      {doubtsReport.pending.length}
-                    </span>
-                  )}
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => setActiveTab('doubts')}
+                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
+                  activeTab === 'doubts'
+                    ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                    : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <MessageSquare className="w-4 h-4 shrink-0" />
+                  <span>Doubt Box Details</span>
+                </div>
+                {doubtsReport.pending.length > 0 && (
+                  <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-amber-500 text-slate-900">
+                    {doubtsReport.pending.length}
+                  </span>
+                )}
+              </button>
             </div>
           </div>
         </div>
@@ -1919,7 +1958,7 @@ export default function TrainerHeadDashboard({
               </div>
 
               {/* Operational KPI Summary Cards */}
-              <div className={`grid grid-cols-1 sm:grid-cols-2 ${isHeadRole ? 'lg:grid-cols-4' : 'lg:grid-cols-3'} gap-4`}>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
                 <div
                   onClick={() => setActiveTab('batches')}
                   className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-2xs hover:shadow-md transition-all cursor-pointer group"
@@ -1976,27 +2015,25 @@ export default function TrainerHeadDashboard({
                   </div>
                 </div>
 
-                {isHeadRole && (
-                  <div
-                    onClick={() => setActiveTab('weak_students')}
-                    className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-2xs hover:shadow-md transition-all cursor-pointer group"
-                  >
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                        Weak Students
-                      </span>
-                      <AlertTriangle className="w-5 h-5 text-rose-500 group-hover:scale-110 transition-transform" />
-                    </div>
-                    <div className="text-2xl font-black text-rose-600">{allWeakStudents.length}</div>
-                    <div className="text-xs text-rose-600 font-semibold mt-1">
-                      Attendance &lt; 75% or Low Score →
-                    </div>
+                <div
+                  onClick={() => setActiveTab('weak_students')}
+                  className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-2xs hover:shadow-md transition-all cursor-pointer group"
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                      Weak Students
+                    </span>
+                    <AlertTriangle className="w-5 h-5 text-rose-500 group-hover:scale-110 transition-transform" />
                   </div>
-                )}
+                  <div className="text-2xl font-black text-rose-600">{allWeakStudents.length}</div>
+                  <div className="text-xs text-rose-600 font-semibold mt-1">
+                    Attendance &lt; 75% or Low Score →
+                  </div>
+                </div>
               </div>
 
               {/* Bottom Operational Row */}
-              <div className={`grid grid-cols-1 sm:grid-cols-2 ${isHeadRole ? 'lg:grid-cols-2' : 'lg:grid-cols-1'} gap-4`}>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div
                   onClick={() => setActiveTab('demos')}
                   className="bg-white p-4 rounded-2xl border border-slate-200/90 shadow-2xs hover:shadow-md transition-all cursor-pointer group"
@@ -2009,19 +2046,17 @@ export default function TrainerHeadDashboard({
                   <div className="text-[11px] text-cyan-700 font-medium mt-0.5">{demoReport.scheduled.length} Upcoming Demos →</div>
                 </div>
 
-                {isHeadRole && (
-                  <div
-                    onClick={() => setActiveTab('doubts')}
-                    className="bg-white p-4 rounded-2xl border border-slate-200/90 shadow-2xs hover:shadow-md transition-all cursor-pointer group"
-                  >
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-[10.5px] font-bold text-slate-400 uppercase">Student Doubts</span>
-                      <MessageSquare className="w-4 h-4 text-amber-500" />
-                    </div>
-                    <div className="text-xl font-black text-slate-900">{doubtsReport.pending.length} Pending</div>
-                    <div className="text-[11px] text-amber-700 font-medium mt-0.5">{doubtsReport.resolved.length} Resolved →</div>
+                <div
+                  onClick={() => setActiveTab('doubts')}
+                  className="bg-white p-4 rounded-2xl border border-slate-200/90 shadow-2xs hover:shadow-md transition-all cursor-pointer group"
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[10.5px] font-bold text-slate-400 uppercase">Student Doubts</span>
+                    <MessageSquare className="w-4 h-4 text-amber-500" />
                   </div>
-                )}
+                  <div className="text-xl font-black text-slate-900">{doubtsReport.pending.length} Pending</div>
+                  <div className="text-[11px] text-amber-700 font-medium mt-0.5">{doubtsReport.resolved.length} Resolved →</div>
+                </div>
               </div>
 
               {/* Training Leadership: Trainer Managers & Team Leads Quick Cards (Head Command) */}
@@ -3444,7 +3479,7 @@ export default function TrainerHeadDashboard({
                       : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
                   }`}
                 >
-                  {isManagerRole ? '📖 Add / Manage Course Syllabus' : '📖 All Courses Master Syllabus (View)'}
+                  {canManageSyllabus ? '📖 Add / Manage Course Syllabus' : '📖 All Courses Master Syllabus (View)'}
                 </button>
               </div>
 
@@ -3452,7 +3487,7 @@ export default function TrainerHeadDashboard({
                 <CourseSyllabusBoard
                   currentUser={currentUser}
                   roleType={roleType}
-                  readOnly={!isManagerRole}
+                  readOnly={!canManageSyllabus}
                   courseOptions={Array.from(new Set(batches.map((b) => b.course).filter(Boolean)))}
                 />
               ) : (
