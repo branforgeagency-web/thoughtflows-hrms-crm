@@ -68,7 +68,6 @@ const ACADEMY_ROLES = [
   'BUSINESS LEAD',
   'DEPARTMENT HEAD',
   'OPERATIONAL HEAD',
-  'TRAINER HEAD',
   'HEAD OF TRAINER',
   'TRAINER',
   'TRAINING TL',
@@ -1379,7 +1378,9 @@ export default function AdminManagementDashboard({
               u.role?.toLowerCase().includes(q) ||
               u.department?.toLowerCase().includes(q) ||
               u.branch?.toLowerCase().includes(q);
-            const matchesRole = userRoleFilter === 'All' || u.role === userRoleFilter;
+            const matchesRole = userRoleFilter === 'All' || 
+              u.role === userRoleFilter ||
+              (userRoleFilter === 'HEAD OF TRAINER' && /head of trainer|trainer head/i.test(u.role || ''));
             return matchesSearch && matchesRole;
           });
 
