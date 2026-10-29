@@ -4476,17 +4476,21 @@ export default function TrainerHeadDashboard({
                                   Outcome
                                 </button>
 
-                                {/* Reassign button */}
+                                {/* Assign / Reassign button */}
                                 <button
                                   type="button"
                                   onClick={() => {
                                     setReassignDemoTarget(dm);
                                     setReassignForm({ toTrainerId: '', reason: '' });
                                   }}
-                                  className="px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 font-bold text-xs border border-blue-200 transition-all cursor-pointer"
-                                  title="Reassign to another faculty"
+                                  className={`px-2.5 py-1 rounded-lg font-bold text-xs border transition-all cursor-pointer ${
+                                    dm.trainer
+                                      ? 'bg-blue-50 hover:bg-blue-100 text-blue-700 border-blue-200'
+                                      : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-300 font-extrabold'
+                                  }`}
+                                  title={dm.trainer ? "Reassign to another faculty" : "Assign to available faculty"}
                                 >
-                                  Reassign
+                                  {dm.trainer ? 'Reassign' : 'Assign Faculty'}
                                 </button>
                               </div>
                             </td>
@@ -4698,7 +4702,9 @@ export default function TrainerHeadDashboard({
         <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full p-6 text-slate-800 space-y-4">
             <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-              <h3 className="text-sm font-extrabold text-slate-900">Reassign Demo Session</h3>
+              <h3 className="text-sm font-extrabold text-slate-900">
+                {reassignDemoTarget.trainer ? 'Reassign Demo Session' : 'Assign Demo to Available Trainer'}
+              </h3>
               <button
                 type="button"
                 onClick={() => setReassignDemoTarget(null)}
@@ -4710,10 +4716,12 @@ export default function TrainerHeadDashboard({
             <div className="text-xs text-slate-600 space-y-1">
               <div><strong>Candidate:</strong> {reassignDemoTarget.candidateName}</div>
               <div><strong>Course:</strong> {reassignDemoTarget.course}</div>
-              <div><strong>Current Faculty:</strong> {reassignDemoTarget.trainer || 'Unassigned'}</div>
+              <div><strong>Current Faculty:</strong> {reassignDemoTarget.trainer || 'Unassigned (Pending Assignment)'}</div>
             </div>
             <div className="space-y-1.5">
-              <label className="text-xs font-bold text-slate-700">Assign to New Faculty</label>
+              <label className="text-xs font-bold text-slate-700">
+                {reassignDemoTarget.trainer ? 'Assign to New Faculty' : 'Select Faculty / Trainer'}
+              </label>
               <select
                 value={reassignForm.toTrainerId}
                 onChange={(e) => setReassignForm((p) => ({ ...p, toTrainerId: e.target.value }))}
@@ -4751,7 +4759,7 @@ export default function TrainerHeadDashboard({
                 onClick={handleConfirmReassign}
                 className="px-4 py-2 rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white text-xs font-bold shadow-xs disabled:opacity-50 cursor-pointer"
               >
-                {reassigning ? 'Reassigning...' : 'Confirm Reassign'}
+                {reassigning ? 'Assigning...' : (reassignDemoTarget.trainer ? 'Confirm Reassign' : 'Assign Faculty')}
               </button>
             </div>
           </div>

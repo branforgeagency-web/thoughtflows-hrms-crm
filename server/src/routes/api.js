@@ -4479,37 +4479,15 @@ router.post('/demos', async (req, res) => {
     const location = rawData.location || rawData.branchName || '';
     const preferredDate = rawData.preferredDate || todayStr();
     const demoSlot = rawData.timeSlot || rawData.time || '10:00–11:30 AM';
-
-    // Demo Booking Notification Requirement: find demo experts based on
-    // language, location, and available timings (fresher demo experts available
-    // throughout the day, specialty course demos scheduled per trainer availability).
     const isSpecialty = isSpecialtyCourse(course);
-    const { eligible, reason: noEligibleTrainerReason } = await findEligibleTrainers({
-      language,
-      location,
-      preferredDate,
-      timeSlot: demoSlot,
-      course
-    });
-
-    // Among the eligible pool, prefer a trainer whose subject matches the
-    // course being demoed (this is a ranking preference, not a hard filter —
-    // the 5 conditions above are the only hard requirements).
-    const courseNorm = norm(course);
-    const ranked = [...eligible].sort(
-      (a, b) => (norm(b.courseKey) === courseNorm) - (norm(a.courseKey) === courseNorm)
-    );
-    const primary = ranked[0] || null;
-
-    ranked.forEach((t) => notifyTrainer(t, { candidateName: rawData.candidateName || rawData.studentName || rawData.name, course, language, location, preferredDate, timeSlot: demoSlot, bookedBy: rawData.bookedBy }));
-
-    console.log(
-      `[DEMO NOTIFICATION EVALUATION] Course: ${course} | Language: ${language} | Location: ${location} | ` +
-      `Slot: ${preferredDate} ${demoSlot} | Eligible trainers: ${ranked.length ? ranked.map((t) => t.trainerId).join(', ') : 'none'}`
-    );
 
     const bookedByName = rawData.bookedBy || rawData.counselor || req.user?.name || '';
     const demoBranch = rawData.branch || location || '';
+
+    // Demos are moved directly to Trainer Head / Trainer Manager to assign available trainers.
+    // If a trainer was explicitly passed (e.g. admin override), use it; otherwise leave unassigned.
+    const explicitTrainer = (rawData.trainer || rawData.faculty || '').trim();
+    const explicitTrainerId = (rawData.trainerId || '').trim();
 
     const enrichedPayload = {
       ...rawData,
@@ -4523,42 +4501,40 @@ router.post('/demos', async (req, res) => {
       bookedBy: bookedByName,
       preferredDate,
       timeSlot: demoSlot,
-      trainer: primary?.trainerName || '',
-      trainerId: primary?.trainerId || '',
-      trainerRole: primary?.specialization || '',
-      expertCourse: primary?.expertCourse || '',
-      isExpertMatched: Boolean(primary),
+      trainer: explicitTrainer,
+      trainerId: explicitTrainerId,
+      trainerRole: rawData.trainerRole || '',
+      expertCourse: rawData.expertCourse || '',
+      isExpertMatched: Boolean(explicitTrainer),
       isSpecialty,
       courseType: isSpecialty ? 'specialty' : 'fresher',
 
-      // Strict Notification Decision Fields
-      isExperienced: primary?.isExperienced ?? false,
-      shiftTiming: primary?.shift || '',
-      notificationSent: ranked.length > 0,
-      notifiedTrainerIds: ranked.map((t) => t.trainerId),
-      notifiedTrainerNames: ranked.map((t) => t.trainerName),
-      notificationSentTo: primary?.trainerId || null,
-      notificationSentToName: primary?.trainerName || null,
-      notificationSentAt: ranked.length ? new Date() : null,
+      // Demo routing: moved to Trainer Head / Manager for trainer assignment
+      isExperienced: false,
+      shiftTiming: '',
+      notificationSent: false,
+      notifiedTrainerIds: [],
+      notifiedTrainerNames: [],
+      notificationSentTo: explicitTrainerId || null,
+      notificationSentToName: explicitTrainer || null,
+      notificationSentAt: null,
       notificationRead: false,
-      notificationBlockReason: ranked.length ? '' : noEligibleTrainerReason,
-      noEligibleTrainerReason: ranked.length ? '' : noEligibleTrainerReason,
+      notificationBlockReason: '',
+      noEligibleTrainerReason: '',
       hasConflict: false,
       conflictReason: '',
-      priority: ranked.length ? 'Urgent - Subject Matter Expert First' : 'Standard - No Alert Dispatched',
+      priority: 'Standard - Moved to Trainer Head / Manager for Assignment',
 
-      trainerMapping: ranked.length
-        ? `★ Notification sent to ${ranked.length} matching trainer${ranked.length > 1 ? 's' : ''}: ${ranked.map((t) => t.trainerName).join(', ')}`
-        : `🔕 Notification Not Sent: ${noEligibleTrainerReason}`,
+      trainerMapping: explicitTrainer || 'Pending Trainer Head / Manager Assignment',
       status: String(rawData.status || 'booked').toLowerCase()
     };
     if (!enrichedPayload.phone) return res.status(400).json({ error: 'Candidate phone number is required' });
 
     // Group demo session: if another student already has an active meeting in this trainer's slot, share it!
-    if (primary?.trainerId && preferredDate && demoSlot) {
+    if (explicitTrainerId && preferredDate && demoSlot) {
       try {
         const existingSession = await Demo.findOne({
-          trainerId: primary.trainerId,
+          trainerId: explicitTrainerId,
           preferredDate,
           timeSlot: demoSlot,
           zoomMeetingId: { $exists: true, $ne: '' }
@@ -4573,6 +4549,25 @@ router.post('/demos', async (req, res) => {
 
     const newDemo = new Demo(enrichedPayload);
     await newDemo.save();
+
+    // Notify Trainer Head & Trainer Managers to assign available trainers
+    await pushNotification({
+      audience: 'training',
+      type: 'demo_assignment_pending',
+      title: `New Demo to Assign: ${newDemo.candidateName}`,
+      message: `${course} · ${language} · ${newDemo.branch || newDemo.location} · ${preferredDate} ${demoSlot}. Moved to Trainer Head & Manager to assign available trainer.`,
+      createdBy: bookedByName
+    });
+
+    await pushNotification({
+      audience: 'trainer',
+      recipientId: '',
+      recipientName: '',
+      type: 'demo_assignment_pending',
+      title: `New Demo to Assign: ${newDemo.candidateName}`,
+      message: `${course} · ${language} · ${newDemo.branch || newDemo.location} · ${preferredDate} ${demoSlot}. Awaiting trainer assignment by Trainer Head / Manager.`,
+      createdBy: bookedByName
+    });
 
     // Demo Requests Outside Fixed Timings — no trainer is auto-notified here;
     // the respective Head is flagged to coordinate and handle this manually.
@@ -4784,16 +4779,18 @@ async function reassignOneDemo(demo, { toTrainerId, reason, by }) {
   }
   await demo.save();
 
+  if (fromTrainerId) {
+    pushNotification({
+      audience: 'trainer', recipientId: fromTrainerId, recipientName: fromTrainerName, type: 'demo-reassigned',
+      title: `Demo reassigned: ${demo.candidateName}`,
+      message: `Your demo with ${demo.candidateName} on ${demo.preferredDate} ${demo.timeSlot || ''} has been reassigned to ${toTrainer.trainerName}${reason ? ` (${reason})` : ''}.`,
+      createdBy: by || ''
+    }).catch(() => {});
+  }
   pushNotification({
-    audience: 'trainer', recipientId: fromTrainerId, recipientName: fromTrainerName, type: 'demo-reassigned',
-    title: `Demo reassigned: ${demo.candidateName}`,
-    message: `Your demo with ${demo.candidateName} on ${demo.preferredDate} ${demo.timeSlot || ''} has been reassigned to ${toTrainer.trainerName}${reason ? ` (${reason})` : ''}.`,
-    createdBy: by || ''
-  }).catch(() => {});
-  pushNotification({
-    audience: 'trainer', recipientId: toTrainer.trainerId, recipientName: toTrainer.trainerName, type: 'demo-reassigned',
+    audience: 'trainer', recipientId: toTrainer.trainerId, recipientName: toTrainer.trainerName, type: 'demo-assigned',
     title: `New demo assigned to you: ${demo.candidateName}`,
-    message: `${demo.course || ''} · ${demo.language || ''} · ${demo.location || ''} · ${demo.preferredDate} ${demo.timeSlot || ''} — reassigned from ${fromTrainerName}${reason ? ` (${reason})` : ''}.`,
+    message: `${demo.course || ''} · ${demo.language || ''} · ${demo.location || ''} · ${demo.preferredDate} ${demo.timeSlot || ''} — ${fromTrainerId ? `reassigned from ${fromTrainerName}` : `assigned by ${by || 'Training Head / Manager'}`}${reason ? ` (${reason})` : ''}.`,
     createdBy: by || ''
   }).catch(() => {});
 

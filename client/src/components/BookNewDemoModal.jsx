@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Calendar,
   Clock,
@@ -6,16 +6,12 @@ import {
   Phone,
   Video,
   Check,
-  CheckCircle2,
   X,
   Sparkles,
   AlertTriangle,
-  ShieldCheck,
-  ShieldAlert,
   Info
 } from 'lucide-react';
 
-import { getEligibleTrainers } from '../services/api';
 import { COURSE_CATEGORIES, TRAINER_COURSES, isSpecialtyCourse } from '../constants/courses';
 
 const COURSES = TRAINER_COURSES;
@@ -76,35 +72,6 @@ export default function BookNewDemoModal({ isOpen, onClose, initialData, onConfi
   const [outsideFixedTiming, setOutsideFixedTiming] = useState(false);
   const [customTimeRequested, setCustomTimeRequested] = useState('');
 
-  // ------------------------------------------------------------------
-  // Demo Booking Notification Requirement — live preview
-  // Asks the backend (the single source of truth) which trainers would
-  // actually be notified for the currently selected language, location,
-  // date and time slot, so the form never lies to the person booking it.
-  // ------------------------------------------------------------------
-  const [preview, setPreview] = useState({ loading: true, count: 0, trainers: [], reason: '' });
-  const requestSeq = useRef(0);
-
-  useEffect(() => {
-    let cancelled = false;
-    const seq = ++requestSeq.current;
-    setPreview((p) => ({ ...p, loading: true }));
-
-    getEligibleTrainers({ language, location, preferredDate, timeSlot, course })
-      .then((data) => {
-        if (cancelled || seq !== requestSeq.current) return;
-        setPreview({ loading: false, count: data.count || 0, trainers: data.trainers || [], reason: data.reason || '' });
-      })
-      .catch(() => {
-        if (cancelled || seq !== requestSeq.current) return;
-        setPreview({ loading: false, count: 0, trainers: [], reason: 'Could not reach the server to check trainer availability.' });
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [language, location, preferredDate, timeSlot, course]);
-
   useEffect(() => {
     if (initialData?.location || initialData?.branch) {
       setLocation(initialData.location || initialData.branch);
@@ -113,8 +80,6 @@ export default function BookNewDemoModal({ isOpen, onClose, initialData, onConfi
       if (match) setLocation(match);
     }
   }, [initialData, userBranchClean]);
-
-  const eligible = preview.count > 0;
 
   const showToast = (msg) => {
     setToastMsg(msg);
@@ -167,11 +132,9 @@ export default function BookNewDemoModal({ isOpen, onClose, initialData, onConfi
     }
 
     if (outsideFixedTiming) {
-      showToast(`✓ Demo booked for ${studentName} at ${effectiveTimeSlot} (outside fixed timings). Flagged for the respective Head to coordinate.`);
-    } else if (eligible) {
-      showToast(`✓ Demo booked for ${studentName}! Notification sent to ${preview.count} matching trainer${preview.count > 1 ? 's' : ''}.`);
+      showToast(`✓ Demo booked for ${studentName} at ${effectiveTimeSlot} (outside fixed timings). Flagged for Trainer Head & Manager to coordinate.`);
     } else {
-      showToast(`✓ Demo booked for ${studentName}. No trainer matched ${language} · ${location} · ${timeSlot} — notification suppressed.`);
+      showToast(`✓ Demo booked for ${studentName}! Moved to Trainer Head & Manager for assignment.`);
     }
 
     setTimeout(() => {
@@ -200,7 +163,7 @@ export default function BookNewDemoModal({ isOpen, onClose, initialData, onConfi
                 Book New Demo
               </h3>
               <p className="text-[10px] text-slate-500 font-medium">
-                Finalizes demo experts by language, location &amp; available timings (Fresher: all-day · Specialty: per trainer availability)
+                Fill details and move demo to Trainer Head / Trainer Manager to assign available trainers
               </p>
             </div>
           </div>
@@ -431,75 +394,12 @@ export default function BookNewDemoModal({ isOpen, onClose, initialData, onConfi
             </div>
           </div>
 
-          {/* ======================================================== */}
-          {/* LIVE NOTIFICATION PREVIEW — pulled from the real trainer   */}
-          {/* roster on the server (language + location + free-at-time + */}
-          {/* Experienced-in-Demo + Active) — never a client-side guess. */}
-          {/* ======================================================== */}
-          <div className={`rounded-2xl p-4 border transition-all space-y-3 ${
-            preview.loading
-              ? 'bg-slate-50 border-slate-200 text-slate-600'
-              : eligible
-              ? 'bg-[#ecfdf5] border-emerald-300 text-emerald-950 shadow-xs'
-              : 'bg-[#fef2f2] border-rose-300 text-rose-950 shadow-xs'
-          }`}>
-            <div className="flex items-center justify-between gap-2 border-b pb-2.5 border-black/5">
-              <div className="flex items-center gap-2">
-                {preview.loading ? (
-                  <div className="w-6 h-6 rounded-full bg-slate-400 text-white flex items-center justify-center font-bold text-xs">…</div>
-                ) : eligible ? (
-                  <div className="w-6 h-6 rounded-full bg-emerald-600 text-white flex items-center justify-center font-bold text-xs">✓</div>
-                ) : (
-                  <div className="w-6 h-6 rounded-full bg-rose-600 text-white flex items-center justify-center font-bold text-xs">✕</div>
-                )}
-                <div>
-                  <div className="font-extrabold text-[12px] uppercase tracking-wide">
-                    {preview.loading
-                      ? 'Checking trainer availability…'
-                      : eligible
-                      ? `Notification WILL Be Sent to ${preview.count} Trainer${preview.count > 1 ? 's' : ''}`
-                      : 'Notification WILL NOT Be Sent'}
-                  </div>
-                  <div className="text-[10.5px] opacity-80 font-medium">
-                    {preview.loading
-                      ? 'Matching language, location & free time against the live trainer roster'
-                      : eligible
-                      ? preview.trainers.map((t) => t.trainerName).join(', ')
-                      : preview.reason || `No trainer matches ${language} · ${location} · ${timeSlot}`}
-                  </div>
-                </div>
-              </div>
-
-              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider shrink-0 ${
-                eligible ? 'bg-emerald-200/80 text-emerald-900 border border-emerald-300' : 'bg-rose-200/80 text-rose-900 border border-rose-300'
-              }`}>
-                {preview.loading ? 'Checking' : eligible ? 'Ready to Send' : 'Blocked'}
-              </span>
-            </div>
-
-            {/* Demo Experts Flow Conditions */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10.5px]">
-              <div className="p-2 rounded-xl border bg-white/80 border-black/5">
-                <div className="font-bold flex items-center gap-1"><span>🗣️</span> 1. Language &amp; Location</div>
-                <div className="mt-0.5 opacity-80 text-[10px]">Teaches in {language} &amp; stationed at {location}</div>
-              </div>
-              <div className="p-2 rounded-xl border bg-white/80 border-black/5">
-                <div className="font-bold flex items-center gap-1"><span>⚡</span> 2. Fresher Demo Experts</div>
-                <div className="mt-0.5 opacity-80 text-[10px]">Available throughout the day across all demo slots</div>
-              </div>
-              <div className="p-2 rounded-xl border bg-white/80 border-black/5">
-                <div className="font-bold flex items-center gap-1"><span>🎯</span> 3. Specialty Course Demos</div>
-                <div className="mt-0.5 opacity-80 text-[10px]">Scheduled according to trainer availability ({timeSlot})</div>
-              </div>
-              <div className="p-2 rounded-xl border bg-white/80 border-black/5">
-                <div className="font-bold flex items-center gap-1"><span>👥</span> 4. Group Capacity &amp; Active Roster</div>
-                <div className="mt-0.5 opacity-80 text-[10px]">Up to 6 students per group session · active roster status</div>
-              </div>
-            </div>
-
-            <div className="text-[10.5px] leading-relaxed pt-0.5">
-              <strong>Demo Experts Flow:</strong> Demo experts are finalized based on language, location, and available timings. Fresher demo experts are available throughout the day, while specialty course demos are scheduled strictly according to trainer availability.
-            </div>
+          {/* Demo routing note */}
+          <div className="rounded-xl p-3 bg-teal-50/70 border border-teal-200/90 text-teal-950 flex items-center gap-2.5">
+            <span className="text-base shrink-0">📋</span>
+            <span className="text-[11px] font-medium leading-relaxed">
+              This demo will be routed directly to the <strong>Trainer Head</strong> and <strong>Trainer Manager</strong> to assign available trainers.
+            </span>
           </div>
 
           {/* Modal Footer Buttons */}
@@ -507,20 +407,16 @@ export default function BookNewDemoModal({ isOpen, onClose, initialData, onConfi
             <button
               type="button"
               onClick={onClose}
-              className="py-2 px-5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs transition-all cursor-pointer"
+              className="py-2.5 px-5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs transition-all cursor-pointer"
             >
               Cancel
             </button>
 
             <button
               type="submit"
-              className={`py-2 px-6 rounded-xl font-bold text-xs shadow-sm transition-all active:scale-95 cursor-pointer text-white ${
-                eligible
-                  ? 'bg-[#0e6977] hover:bg-[#0a4f5a]'
-                  : 'bg-slate-800 hover:bg-slate-900'
-              }`}
+              className="py-2.5 px-6 rounded-xl font-bold text-xs shadow-sm transition-all active:scale-95 cursor-pointer text-white bg-[#0e6977] hover:bg-[#0a4f5a]"
             >
-              {eligible ? 'Confirm Demo & Send Notification' : 'Confirm Demo (Notification Suppressed)'}
+              Confirm &amp; Move Demo to Trainer Head / Manager
             </button>
           </div>
         </form>

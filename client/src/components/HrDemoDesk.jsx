@@ -497,12 +497,7 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
             });
             setDemos(prev => [created, ...prev]);
             if (onRefreshDemos) onRefreshDemos();
-            if (created.notificationSent) {
-              const names = created.notifiedTrainerNames?.length ? created.notifiedTrainerNames.join(', ') : created.trainer;
-              showToast(`✓ Booked Demo for ${created.candidateName}! Notification sent to ${names}.`);
-            } else {
-              showToast(`✓ Booked Demo for ${created.candidateName}. Notification not sent: ${created.notificationBlockReason || created.noEligibleTrainerReason || 'No matching trainer'}`);
-            }
+            showToast(`✓ Booked Demo for ${created.candidateName}! Moved to Trainer Head & Manager for trainer assignment.`);
           } catch (err) {
             console.error('Failed to book demo:', err);
             showToast(err?.response?.data?.error || 'Error saving demo to database');

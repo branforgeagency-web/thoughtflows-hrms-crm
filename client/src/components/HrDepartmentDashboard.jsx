@@ -566,11 +566,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       const created = await createDemo({ ...demoData, bookedBy: currentUser?.name || currentUser?.userName || '' });
       setDemos(prev => [created, ...prev]);
       setShowBookDemoModal(false);
-      if (created.notificationSent) {
-        showToast(`✓ Booked demo for ${created.candidateName}! Notification sent to ${created.trainer}`);
-      } else {
-        showToast(`✓ Booked demo for ${created.candidateName}. Notification not sent: ${created.notificationBlockReason || 'Conditions not met'}`);
-      }
+      showToast(`✓ Booked Demo for ${created.candidateName}! Moved to Trainer Head & Manager for trainer assignment.`);
     } catch (err) {
       console.error('Failed to book demo:', err);
       showToast('Error saving demo to database');

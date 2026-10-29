@@ -1132,7 +1132,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
           setSelectedOutcome('Demo Booked');
           try {
             await createDemo(demo);
-            showToast(`✓ Demo booked for ${demo.studentName}! Routed to trainer ${demo.trainer || ''}.`);
+            showToast(`✓ Demo booked for ${demo.studentName || demo.candidateName}! Moved to Trainer Head & Manager for trainer assignment.`);
           } catch (e) {
             console.warn('Failed to save demo in modal:', e);
             showToast(`Could not save demo: ${e.message}`);
