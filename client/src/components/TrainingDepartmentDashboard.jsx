@@ -60,6 +60,7 @@ import TrainingShiftAvailability from './TrainingShiftAvailability';
 import TrainerQualityBoard from './TrainerQualityBoard';
 import TrainerStudentDesk from './TrainerStudentDesk';
 import ClassSessionRoom from './ClassSessionRoom';
+import UtilizationDashboard from './UtilizationDashboard';
 import {
   getStudents,
   updateStudent,
@@ -1521,6 +1522,23 @@ export default function TrainingDepartmentDashboard({
                 </button>
 
                 <button
+                  onClick={() => setActiveNav('utilization')}
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all ${
+                    activeNav === 'utilization'
+                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <Clock className="w-4 h-4 shrink-0 text-teal-400" />
+                    <span>Hourly Utilization</span>
+                  </div>
+                  <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-teal-500/20 text-teal-300">
+                    8h
+                  </span>
+                </button>
+
+                <button
                   onClick={() => setActiveNav('session_room')}
                   className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold transition-all ${
                     activeNav === 'session_room'
@@ -1792,6 +1810,7 @@ export default function TrainingDepartmentDashboard({
           <div className="min-w-0 flex-1">
             <h1 className="text-xl font-extrabold text-[#0f242d] tracking-tight">
               {activeNav === 'home' && 'Home'}
+              {activeNav === 'utilization' && 'Hourly Utilization Dashboard & Work Tracker'}
               {activeNav === 'allocation' && 'Student Handover & Trainer Allocation Desk'}
               {activeNav === 'session_room' && 'Class Session Room'}
               {activeNav === 'batch_desk' && 'Syllabus & Announcements'}
@@ -2084,6 +2103,20 @@ export default function TrainingDepartmentDashboard({
             />
           </div>
 
+          {/* ================= HOURLY UTILIZATION DASHBOARD & WORK TRACKER ================= */}
+          {activeNav === 'utilization' && (
+            <div className="space-y-6">
+              <UtilizationDashboard
+                roleType="trainer"
+                currentUser={currentUser}
+                trainerProfile={trainerProfile}
+                pickedIdentity={pickedIdentity}
+                batches={batches}
+                students={students}
+              />
+            </div>
+          )}
+
           {/* ================= TAB 1: HOME (EXACT MATCH TO REFERENCE SCREENSHOT) ================= */}
           {activeNav === 'home' && (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
@@ -2241,6 +2274,33 @@ export default function TrainingDepartmentDashboard({
                     </button>
                   </div>
                 )}
+
+                {/* Hourly Utilization Banner */}
+                <div
+                  onClick={() => setActiveNav('utilization')}
+                  className="bg-gradient-to-r from-teal-700 to-sky-700 text-white rounded-2xl p-4 flex items-center justify-between gap-4 shadow-sm hover:shadow-md transition-all cursor-pointer"
+                >
+                  <div className="flex items-center gap-3.5">
+                    <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center text-white shrink-0">
+                      <Clock className="w-5 h-5 stroke-[2.2]" />
+                    </div>
+                    <div>
+                      <div className="text-xs font-black uppercase tracking-wider text-teal-200">
+                        Today&apos;s 8-Hour Work Plan &amp; Utilization Tracker
+                      </div>
+                      <div className="text-xs text-white/90 font-medium">
+                        View the hour-by-hour tasks assigned by your Team Lead and update your actual work progress.
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); setActiveNav('utilization'); }}
+                    className="px-4 py-2 rounded-xl bg-white text-teal-900 text-xs font-black shadow-xs shrink-0 hover:bg-teal-50 transition-colors cursor-pointer"
+                  >
+                    Open Tracker →
+                  </button>
+                </div>
 
                 {/* 4. Quick Metric Tiles */}
                 <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">

@@ -457,14 +457,24 @@ export default function TeamRosterBoard({
       {/* List of Roster Member Rows */}
       <div className="space-y-3">
         {filteredMembers.length === 0 ? (
-          <div className="text-center py-12 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
-            <p className="text-xs font-semibold text-slate-500">No team members match the current search filter.</p>
-            <button 
-              onClick={() => { setSearchQuery(''); setStatusFilter('All'); setRoleCategoryFilter('All'); }}
-              className="mt-2 text-xs text-purple-600 hover:underline font-bold cursor-pointer"
-            >
-              Reset Filters
-            </button>
+          <div className="text-center py-12 bg-slate-50 rounded-2xl border border-dashed border-slate-200 space-y-1.5">
+            <Users className="w-8 h-8 text-slate-300 mx-auto" />
+            <p className="text-sm font-bold text-slate-700">
+              {members.length === 0 ? 'No credentialed staff found for this department' : 'No team members match the current filter'}
+            </p>
+            <p className="text-xs text-slate-400 max-w-md mx-auto">
+              {members.length === 0 
+                ? 'Only real staff accounts created by an Admin with active credentials will appear in the team roster.'
+                : 'Try adjusting your search keywords, role, branch, or shift filters.'}
+            </p>
+            {members.length > 0 && (
+              <button 
+                onClick={() => { setSearchQuery(''); setStatusFilter('All'); setRoleCategoryFilter('All'); setBranchFilter('All'); setShiftFilter('All'); }}
+                className="mt-2 text-xs text-purple-600 hover:underline font-bold cursor-pointer"
+              >
+                Reset Filters
+              </button>
+            )}
           </div>
         ) : (
           filteredMembers.map((m) => {

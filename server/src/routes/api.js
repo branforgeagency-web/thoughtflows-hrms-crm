@@ -55,6 +55,9 @@ import SopDocument from '../models/SopDocument.js';
 import TeamTask from '../models/TeamTask.js';
 import { BRANCH_MASTER, DEPARTMENT_MASTER, DEPT_CODE_BY_DASHBOARD } from '../constants/org.js';
 
+import TrainerHourlyWork from '../models/TrainerHourlyWork.js';
+import { DEFAULT_WORK_SLOTS } from '../constants/trainerHierarchy.js';
+
 const router = express.Router();
 
 // Drop legacy unique index if it exists in MongoDB so group demos up to 6 students work smoothly
@@ -1768,52 +1771,21 @@ async function syncTeamFromUsers(force = false) {
     }
   }
 
-  // Ensure all built-in Training Department roles (Head, Managers, TLs, Faculty) are in TeamMember
-  const trainerLeadershipDefaults = [
-    { name: 'Manoj', role: 'Head of Training Department', branch: 'All Branches (HQ)' },
-    { name: 'Keerthi', role: 'Training Manager', branch: 'Saravanampatti' },
-    { name: 'Pavithra', role: 'Training Manager', branch: 'Ameerpet' },
-    { name: 'Ram Balaji', role: 'Trainer Team Lead', branch: 'Saravanampatti' },
-    { name: 'Vaishna', role: 'Trainer Team Lead', branch: 'Kochi' },
-    { name: 'Mounika', role: 'Trainer Team Lead', branch: 'Ameerpet' },
-    { name: 'Srithar S', role: 'Trainer', branch: 'Gandhipuram' },
-    { name: 'Tharani shri', role: 'Trainer', branch: 'Saravanampatti' },
-    { name: 'Jennifer preethi', role: 'Trainer', branch: 'Gandhipuram' },
-    { name: 'Karkuzhali', role: 'Trainer', branch: 'Hopes' },
-    { name: 'Sowmiya', role: 'Trainer', branch: 'Salem' },
-    { name: 'Darsana', role: 'Trainer', branch: 'Trichy' },
-    { name: 'Sharon', role: 'Trainer', branch: 'Theni' },
-    { name: 'Kaviya', role: 'Trainer', branch: 'Saravanampatti' },
-    { name: 'Priya', role: 'Trainer', branch: 'Gandhipuram' },
-    { name: 'Sumaiya', role: 'Trainer', branch: 'Hopes' },
-    { name: 'Sophiga', role: 'Trainer', branch: 'Coimbatore' },
-    { name: 'Aleena', role: 'Trainer', branch: 'Kochi' },
-    { name: 'Aswini', role: 'Trainer', branch: 'Trivandrum' },
-    { name: 'Shilpa', role: 'Trainer', branch: 'Kochi' },
-    { name: 'Varamani', role: 'Trainer', branch: 'Trivandrum' },
-    { name: 'Shiny', role: 'Trainer', branch: 'Kochi' },
-    { name: 'Shiva kumar', role: 'Trainer', branch: 'Trivandrum' },
-    { name: 'Abarna', role: 'Trainer', branch: 'Kochi' },
-    { name: 'Pooja', role: 'Trainer', branch: 'Ameerpet' },
-    { name: 'Varsha', role: 'Trainer', branch: 'Dilsukhnagar' },
-    { name: 'Charishma', role: 'Trainer', branch: 'Tirupati' },
-    { name: 'Prasanna', role: 'Trainer', branch: 'Vizag' },
-    { name: 'Aashifa', role: 'Trainer', branch: 'Ameerpet' },
-    { name: 'Santhiya', role: 'Trainer', branch: 'Dilsukhnagar' },
-    { name: 'Kavitha', role: 'Trainer', branch: 'Tirupati' },
-    { name: 'Santhosh', role: 'Trainer', branch: 'Gandhipuram' }
+  // Purge any mock/hardcoded trainer staff rows that do not belong to real User accounts
+  const KNOWN_MOCK_NAMES = [
+    'Manoj', 'Keerthi', 'Pavithra', 'Ram Balaji', 'Vaishna', 'Mounika',
+    'Srithar S', 'Tharani shri', 'Jennifer preethi', 'Karkuzhali', 'Sowmiya',
+    'Darsana', 'Sharon', 'Kaviya', 'Priya', 'Sumaiya', 'Sophiga',
+    'Aleena', 'Aswini', 'Shilpa', 'Varamani', 'Shiny', 'Shiva kumar',
+    'Abarna', 'Pooja', 'Varsha', 'Charishma', 'Prasanna', 'Aashifa',
+    'Santhiya', 'Kavitha', 'Santhosh'
   ];
-  for (const tDef of trainerLeadershipDefaults) {
-    const key = normName(tDef.name);
-    if (!key) continue;
-    keep.add(key);
-    const m = byName.get(key);
-    if (!m) {
-      await TeamMember.create({ name: tDef.name, role: tDef.role, departmentCode: 'ACAD', branchName: tDef.branch });
-    } else if (m.departmentCode !== 'ACAD') {
-      await TeamMember.updateOne({ _id: m._id }, { $set: { departmentCode: 'ACAD' } });
-    }
+  const realStaffNames = new Set(staff.map((u) => normName(u.name)));
+  const mockToDelete = KNOWN_MOCK_NAMES.filter((nm) => !realStaffNames.has(normName(nm)));
+  if (mockToDelete.length) {
+    await TeamMember.deleteMany({ name: { $in: mockToDelete.map((n) => new RegExp(`^${escapeRegex(n)}$`, 'i')) } });
   }
+
   // Rows with no staff account behind them (deleted users, old placeholder rows)
   const orphanIds = members.filter((m) => !keep.has(normName(m.name))).map((m) => m._id);
   if (orphanIds.length) await TeamMember.deleteMany({ _id: { $in: orphanIds } });
@@ -5123,208 +5095,6 @@ const DEPARTMENT_PORTALS = {
   }
 };
 
-// Registered Academy Trainer Account (Srithar S)
-// Master Organization Accounts for Trainer Department Roles
-const TRAINER_ROLE_ACCOUNTS = {
-  'manoj.head@thoughtflows.in': {
-    id: 'usr_head_manoj',
-    leaderId: 'manoj',
-    name: 'Manoj',
-    userName: 'Manoj',
-    email: 'manoj.head@thoughtflows.in',
-    aliases: ['manoj@thoughtflows.in', 'manoj', 'head'],
-    role: 'Head of Training Department',
-    trainerRole: 'head',
-    department: 'training',
-    departmentCode: 'ACAD',
-    departmentName: 'Training Department',
-    branch: 'All Branches (HQ)',
-    defaultPass: 'Head@123',
-    fallbackPasses: ['Manoj@123', 'Head@123'],
-    envKey: 'TRAINER_HEAD_PASSWORD',
-    color: '#005a9c',
-    branches: [
-      'Saravanampatti', 'Gandhipuram', 'Hopes', 'Salem', 'Trichy', 'Theni', 'Coimbatore',
-      'Kochi', 'Trivandrum', 'Ameerpet', 'Dilsukhnagar', 'Tirupati', 'Vizag'
-    ],
-    supervisedTrainers: [
-      'TR-TN-01', 'TR-TN-02', 'TR-TN-03', 'TR-TN-04', 'TR-TN-05', 'TR-TN-06', 'TR-TN-07', 'TR-TN-08', 'TR-TN-09', 'TR-TN-10',
-      'TR-KL-01', 'TR-KL-02', 'TR-KL-03', 'TR-KL-04', 'TR-KL-05', 'TR-KL-06', 'TR-KL-07',
-      'TR-AP-01', 'TR-AP-02', 'TR-AP-03', 'TR-AP-04', 'TR-AP-05', 'TR-AP-06', 'TR-AP-07', 'TR-AP-08',
-      'TR-CBG-001'
-    ]
-  },
-  'keerthi.manager@thoughtflows.in': {
-    id: 'usr_mgr_keerthi',
-    leaderId: 'keerthi',
-    name: 'Keerthi',
-    userName: 'Keerthi',
-    email: 'keerthi.manager@thoughtflows.in',
-    aliases: ['keerthi@thoughtflows.in', 'keerthi'],
-    role: 'Training Manager',
-    trainerRole: 'manager',
-    department: 'training',
-    departmentCode: 'ACAD',
-    departmentName: 'Training Department · TN & KL',
-    zone: 'TN / KL',
-    branch: 'Saravanampatti',
-    defaultPass: 'Keerthi@123',
-    envKey: 'TRAINER_MGR_KEERTHI_PASSWORD',
-    color: '#0d9488',
-    branches: ['Saravanampatti', 'Gandhipuram', 'Hopes', 'Salem', 'Trichy', 'Theni', 'Coimbatore', 'Kochi', 'Trivandrum'],
-    supervisedTrainers: [
-      'TR-TN-01', 'TR-TN-02', 'TR-TN-03', 'TR-TN-04', 'TR-TN-05', 'TR-TN-06', 'TR-TN-07', 'TR-TN-08', 'TR-TN-09', 'TR-TN-10',
-      'TR-KL-01', 'TR-KL-02', 'TR-KL-03', 'TR-KL-04', 'TR-KL-05', 'TR-KL-06', 'TR-KL-07'
-    ]
-  },
-  'pavithra.manager@thoughtflows.in': {
-    id: 'usr_mgr_pavithra',
-    leaderId: 'pavithra',
-    name: 'Pavithra',
-    userName: 'Pavithra',
-    email: 'pavithra.manager@thoughtflows.in',
-    aliases: ['pavithra@thoughtflows.in', 'pavithra'],
-    role: 'Training Manager',
-    trainerRole: 'manager',
-    department: 'training',
-    departmentCode: 'ACAD',
-    departmentName: 'Training Department · AP & TS',
-    zone: 'AP / TS',
-    branch: 'Ameerpet',
-    defaultPass: 'Pavithra@123',
-    envKey: 'TRAINER_MGR_PAVITHRA_PASSWORD',
-    color: '#7c3aed',
-    branches: ['Ameerpet', 'Dilsukhnagar', 'Tirupati', 'Vizag', 'Gandhipuram'],
-    supervisedTrainers: [
-      'TR-AP-01', 'TR-AP-02', 'TR-AP-03', 'TR-AP-04', 'TR-AP-05', 'TR-AP-06', 'TR-AP-07', 'TR-AP-08'
-    ]
-  },
-  'rambalaji.tl@thoughtflows.in': {
-    id: 'usr_tl_ram_balaji',
-    leaderId: 'ram_balaji',
-    name: 'Ram Balaji',
-    userName: 'Ram Balaji',
-    email: 'rambalaji.tl@thoughtflows.in',
-    aliases: ['rambalaji@thoughtflows.in', 'rambalaji', 'ram_balaji'],
-    role: 'Trainer Team Lead',
-    trainerRole: 'tl',
-    managerId: 'keerthi',
-    managerName: 'Keerthi',
-    department: 'training',
-    departmentCode: 'ACAD',
-    departmentName: 'Training Department · Tamil Nadu Pod',
-    zone: 'TN',
-    branch: 'Saravanampatti',
-    defaultPass: 'RamBalaji@123',
-    envKey: 'TRAINER_TL_RAMBALAJI_PASSWORD',
-    color: '#16a34a',
-    branches: ['Saravanampatti', 'Gandhipuram', 'Hopes', 'Salem', 'Trichy', 'Theni', 'Coimbatore'],
-    supervisedTrainers: [
-      'TR-TN-01', 'TR-TN-02', 'TR-TN-03', 'TR-TN-04', 'TR-TN-05', 'TR-TN-06', 'TR-TN-07', 'TR-TN-08', 'TR-TN-09', 'TR-TN-10'
-    ]
-  },
-  'vaishna.tl@thoughtflows.in': {
-    id: 'usr_tl_vaishna',
-    leaderId: 'vaishna',
-    name: 'Vaishna',
-    userName: 'Vaishna',
-    email: 'vaishna.tl@thoughtflows.in',
-    aliases: ['vaishna@thoughtflows.in', 'vaishna'],
-    role: 'Trainer Team Lead',
-    trainerRole: 'tl',
-    managerId: 'keerthi',
-    managerName: 'Keerthi',
-    department: 'training',
-    departmentCode: 'ACAD',
-    departmentName: 'Training Department · Kerala Pod',
-    zone: 'KL',
-    branch: 'Kochi',
-    defaultPass: 'Vaishna@123',
-    envKey: 'TRAINER_TL_VAISHNA_PASSWORD',
-    color: '#0284c7',
-    branches: ['Kochi', 'Trivandrum'],
-    supervisedTrainers: [
-      'TR-KL-01', 'TR-KL-02', 'TR-KL-03', 'TR-KL-04', 'TR-KL-05', 'TR-KL-06', 'TR-KL-07'
-    ]
-  },
-  'mounika.tl@thoughtflows.in': {
-    id: 'usr_tl_mounika',
-    leaderId: 'mounika',
-    name: 'Mounika',
-    userName: 'Mounika',
-    email: 'mounika.tl@thoughtflows.in',
-    aliases: ['mounika@thoughtflows.in', 'mounika'],
-    role: 'Trainer Team Lead',
-    trainerRole: 'tl',
-    managerId: 'pavithra',
-    managerName: 'Pavithra',
-    department: 'training',
-    departmentCode: 'ACAD',
-    departmentName: 'Training Department · AP/TS Pod',
-    zone: 'AP / TS',
-    branch: 'Ameerpet',
-    defaultPass: 'Mounika@123',
-    envKey: 'TRAINER_TL_MOUNIKA_PASSWORD',
-    color: '#db2777',
-    branches: ['Ameerpet', 'Dilsukhnagar', 'Tirupati', 'Vizag', 'Gandhipuram'],
-    supervisedTrainers: [
-      'TR-AP-01', 'TR-AP-02', 'TR-AP-03', 'TR-AP-04', 'TR-AP-05', 'TR-AP-06', 'TR-AP-07', 'TR-AP-08'
-    ]
-  }
-};
-
-const MASTER_FACULTY_ROSTER = [
-  { id: 'TR-CBG-001', name: 'Srithar S', email: 'srithar.brandforge@gmail.com', branch: 'Gandhipuram', course: 'CPC', pass: 'Srithar@123' },
-  { id: 'TR-TN-01', name: 'Tharani shri', email: 'tharanishri.trainer@thoughtflows.in', branch: 'Saravanampatti', course: 'CPC', pass: 'Trainer@123' },
-  { id: 'TR-TN-02', name: 'Jennifer preethi', email: 'jennifer.trainer@thoughtflows.in', branch: 'Gandhipuram', course: 'CPC', pass: 'Trainer@123' },
-  { id: 'TR-TN-03', name: 'Karkuzhali', email: 'karkuzhali.trainer@thoughtflows.in', branch: 'Hopes', course: 'CIC', pass: 'Trainer@123' },
-  { id: 'TR-TN-04', name: 'Sowmiya', email: 'sowmiya.trainer@thoughtflows.in', branch: 'Salem', course: 'CPB', pass: 'Trainer@123' },
-  { id: 'TR-TN-05', name: 'Darsana', email: 'darsana.trainer@thoughtflows.in', branch: 'Trichy', course: 'CPC', pass: 'Trainer@123' },
-  { id: 'TR-TN-06', name: 'Sharon', email: 'sharon.trainer@thoughtflows.in', branch: 'Theni', course: 'CPMA', pass: 'Trainer@123' },
-  { id: 'TR-TN-07', name: 'Kaviya', email: 'kaviya.trainer@thoughtflows.in', branch: 'Saravanampatti', course: 'CPC', pass: 'Trainer@123' },
-  { id: 'TR-TN-08', name: 'Priya', email: 'priya.trainer@thoughtflows.in', branch: 'Gandhipuram', course: 'CRC', pass: 'Trainer@123' },
-  { id: 'TR-TN-09', name: 'Sumaiya', email: 'sumaiya.trainer@thoughtflows.in', branch: 'Hopes', course: 'CPC', pass: 'Trainer@123' },
-  { id: 'TR-TN-10', name: 'Sophiga', email: 'sophiga.trainer@thoughtflows.in', branch: 'Coimbatore', course: 'CIC', pass: 'Trainer@123' },
-  { id: 'TR-KL-01', name: 'Aleena', email: 'aleena.trainer@thoughtflows.in', branch: 'Kochi', course: 'CPC', pass: 'Trainer@123' },
-  { id: 'TR-KL-02', name: 'Aswini', email: 'aswini.trainer@thoughtflows.in', branch: 'Trivandrum', course: 'CIC', pass: 'Trainer@123' },
-  { id: 'TR-KL-03', name: 'Shilpa', email: 'shilpa.trainer@thoughtflows.in', branch: 'Kochi', course: 'CPB', pass: 'Trainer@123' },
-  { id: 'TR-KL-04', name: 'Varamani', email: 'varamani.trainer@thoughtflows.in', branch: 'Trivandrum', course: 'CPC', pass: 'Trainer@123' },
-  { id: 'TR-KL-05', name: 'Shiny', email: 'shiny.trainer@thoughtflows.in', branch: 'Kochi', course: 'CPMA', pass: 'Trainer@123' },
-  { id: 'TR-KL-06', name: 'Shiva kumar', email: 'shivakumar.trainer@thoughtflows.in', branch: 'Trivandrum', course: 'CRC', pass: 'Trainer@123' },
-  { id: 'TR-KL-07', name: 'Abarna', email: 'abarna.trainer@thoughtflows.in', branch: 'Kochi', course: 'CPC', pass: 'Trainer@123' },
-  { id: 'TR-AP-01', name: 'Pooja', email: 'pooja.trainer@thoughtflows.in', branch: 'Ameerpet', course: 'CPC', pass: 'Trainer@123' },
-  { id: 'TR-AP-02', name: 'Varsha', email: 'varsha.trainer@thoughtflows.in', branch: 'Dilsukhnagar', course: 'CIC', pass: 'Trainer@123' },
-  { id: 'TR-AP-03', name: 'Charishma', email: 'charishma.trainer@thoughtflows.in', branch: 'Tirupati', course: 'CPB', pass: 'Trainer@123' },
-  { id: 'TR-AP-04', name: 'Prasanna', email: 'prasanna.trainer@thoughtflows.in', branch: 'Vizag', course: 'CPC', pass: 'Trainer@123' },
-  { id: 'TR-AP-05', name: 'Aashifa', email: 'aashifa.trainer@thoughtflows.in', branch: 'Ameerpet', course: 'CPMA', pass: 'Trainer@123' },
-  { id: 'TR-AP-06', name: 'Santhiya', email: 'santhiya.trainer@thoughtflows.in', branch: 'Dilsukhnagar', course: 'CPC', pass: 'Trainer@123' },
-  { id: 'TR-AP-07', name: 'Kavitha', email: 'kavitha.trainer@thoughtflows.in', branch: 'Tirupati', course: 'CRC', pass: 'Trainer@123' },
-  { id: 'TR-AP-08', name: 'Santhosh', email: 'santhosh.trainer@thoughtflows.in', branch: 'Gandhipuram', course: 'IP-DRG', pass: 'Trainer@123' }
-];
-
-const TRAINER_ACCOUNTS = {
-  'srithar.brandforge@gmail.com': {
-    id: 'TR-CBG-001',
-    trainerId: 'TR-CBG-001',
-    name: 'Srithar S',
-    userName: 'Srithar S',
-    email: 'srithar.brandforge@gmail.com',
-    department: 'training',
-    departmentCode: 'ACAD',
-    departmentName: 'Training & Faculty Department',
-    role: 'Trainer',
-    courseKey: 'CPC',
-    course: 'CPC — Certified Professional Coder',
-    expertCourse: 'CPC — Certified Professional Coder',
-    specialization: 'Medical Coding Faculty',
-    branch: 'Gandhipuram',
-    shift: '6:00 AM – 2:00 PM',
-    shiftStartMin: 360,
-    shiftEndMin: 840,
-    color: '#00897b'
-  }
-};
-
 // Dedicated Branch Manager Accounts per Branch
 const BRANCH_ACCOUNTS = {
   'gandhipuram@thoughtflows.in': { branch: 'Gandhipuram', code: 'CBE-GPM', manager: 'Sindhu S', defaultPass: 'Gandhipuram@123' },
@@ -5362,8 +5132,13 @@ router.get('/auth/departments', (req, res) => {
   res.json(DEPARTMENT_PORTALS);
 });
 
-router.get('/auth/trainers', (req, res) => {
-  res.json(Object.values(TRAINER_ACCOUNTS));
+router.get('/auth/trainers', async (req, res) => {
+  try {
+    const trainers = await Trainer.find({ active: { $ne: false } }).lean();
+    res.json(trainers);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 router.get('/auth/trainer-credentials', async (req, res) => {
@@ -5438,74 +5213,51 @@ router.get('/auth/trainer-credentials', async (req, res) => {
       color: '#0284c7'
     }));
 
-    // Ensure managers and team leads fall back to TRAINER_ROLE_ACCOUNTS if DB accounts are missing
-    const fallbackManagers = Object.values(TRAINER_ROLE_ACCOUNTS)
-      .filter((a) => a.trainerRole === 'manager')
-      .map((a) => ({
-        id: a.leaderId || a.id,
-        leaderId: a.leaderId || a.id,
-        name: a.name,
-        userName: a.name,
-        email: a.email,
-        phone: a.phone || '',
-        role: a.role || 'Trainer Manager',
-        trainerRole: 'manager',
-        branch: a.branch || '',
-        branches: a.branches || (a.branch ? [a.branch] : []),
-        zone: a.zone || a.branch || 'Zonal Operations',
-        zoneLabel: a.zoneLabel || (a.branch ? `${a.branch} Region` : 'Assigned Region'),
-        status: 'Active',
-        color: a.color || '#0d9488'
-      }));
-
-    const finalManagers = [...managers];
-    fallbackManagers.forEach((fm) => {
-      const exists = finalManagers.some((m) => m.name.toLowerCase() === fm.name.toLowerCase() || m.email.toLowerCase() === fm.email.toLowerCase());
-      if (!exists) finalManagers.push(fm);
-    });
-
-    const fallbackTLs = Object.values(TRAINER_ROLE_ACCOUNTS)
-      .filter((a) => a.trainerRole === 'tl')
-      .map((a) => ({
-        id: a.leaderId || a.id,
-        leaderId: a.leaderId || a.id,
-        name: a.name,
-        userName: a.name,
-        email: a.email,
-        phone: a.phone || '',
-        role: a.role || 'Trainer Team Lead',
-        trainerRole: 'tl',
-        branch: a.branch || '',
-        branches: a.branches || (a.branch ? [a.branch] : []),
-        zone: a.zone || a.branch || 'Pod Operations',
-        zoneLabel: a.zoneLabel || (a.branch ? `${a.branch} Pod` : 'Assigned Pod'),
-        managerId: a.managerId || '',
-        managerName: a.managerName || '',
-        status: 'Active',
-        color: a.color || '#16a34a'
-      }));
-
-    const finalTLs = teamLeads.map((tl) => {
-      const match = fallbackTLs.find((f) => f.name.toLowerCase() === tl.name.toLowerCase() || f.email.toLowerCase() === tl.email.toLowerCase());
-      return {
-        ...tl,
-        managerId: tl.managerId || match?.managerId || '',
-        managerName: tl.managerName || match?.managerName || ''
-      };
-    });
-    fallbackTLs.forEach((ftl) => {
-      const exists = finalTLs.some((tl) => tl.name.toLowerCase() === ftl.name.toLowerCase() || tl.email.toLowerCase() === ftl.email.toLowerCase());
-      if (!exists) finalTLs.push(ftl);
-    });
-
     res.json({
       head,
-      managers: finalManagers,
-      teamLeads: finalTLs,
+      managers,
+      teamLeads,
       faculty
     });
   } catch (err) {
     res.status(500).json({ error: err.message, head: [], managers: [], teamLeads: [], faculty: [] });
+  }
+});
+
+// Head of Trainer assigns the training org chart: which Manager a Team Lead
+// reports to (managerId/managerName), and the zone/state they're responsible
+// for. Trainer -> Team Lead assignment is handled by the existing
+// PUT /trainer/settings/:id endpoint (it already accepts teamLeadId etc).
+router.put('/trainer/role-accounts/:id', async (req, res) => {
+  try {
+    const authorized = await isHeadOfTrainerUser(req);
+    if (!authorized) {
+      return res.status(403).json({
+        error: 'Access denied: Only the Head of Trainer has the authority to reassign the training team structure.'
+      });
+    }
+
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        error: 'This record is not a real account yet — ask an admin to create a login for them first before assigning a reporting manager.'
+      });
+    }
+
+    const { managerId, managerName, zone, zoneLabel } = req.body || {};
+    const update = {};
+    if (managerId !== undefined) update.managerId = managerId;
+    if (managerName !== undefined) update.managerName = managerName;
+    if (zone !== undefined) update.zone = zone;
+    if (zoneLabel !== undefined) update.zoneLabel = zoneLabel;
+
+    const user = await User.findByIdAndUpdate(id, { $set: update }, { new: true }).select('-password');
+    if (!user) {
+      return res.status(404).json({ error: 'Team member not found' });
+    }
+    res.json(user);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 
@@ -5613,98 +5365,7 @@ router.post('/auth/login', async (req, res) => {
   const dropUndefined = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined));
 
   try {
-    // 0a. Organization Accounts for Trainer Department Roles (Head, Manager, TL)
-    let roleTrainerAcc = TRAINER_ROLE_ACCOUNTS[normalizedEmail];
-    if (!roleTrainerAcc) {
-      roleTrainerAcc = Object.values(TRAINER_ROLE_ACCOUNTS).find((acc) =>
-        acc.email.toLowerCase() === normalizedEmail ||
-        (acc.aliases || []).some((a) => a.toLowerCase() === normalizedEmail)
-      );
-    }
-    // Head of Trainer must be created in Admin Management Dashboard — no default/hardcoded head login allowed
-    if (roleTrainerAcc && roleTrainerAcc.trainerRole !== 'head') {
-      const expectedPass = process.env[roleTrainerAcc.envKey] || roleTrainerAcc.defaultPass;
-      const fallbacks = roleTrainerAcc.fallbackPasses || [];
-      let ok = (await checkPassword(password, expectedPass)).ok;
-      if (!ok) {
-        for (const fb of fallbacks) {
-          if ((await checkPassword(password, fb)).ok) {
-            ok = true;
-            break;
-          }
-        }
-      }
-      if (!ok) return deny(`Invalid password for ${roleTrainerAcc.name} (${roleTrainerAcc.role}).`);
-
-      return grant({
-        id: roleTrainerAcc.id,
-        name: roleTrainerAcc.name,
-        userName: roleTrainerAcc.name,
-        email: roleTrainerAcc.email,
-        role: roleTrainerAcc.role,
-        trainerRole: roleTrainerAcc.trainerRole,
-        leaderId: roleTrainerAcc.leaderId,
-        department: 'training',
-        departmentCode: roleTrainerAcc.departmentCode || 'ACAD',
-        departmentName: roleTrainerAcc.departmentName,
-        branch: roleTrainerAcc.branch,
-        branches: roleTrainerAcc.branches,
-        supervisedTrainers: roleTrainerAcc.supervisedTrainers,
-        color: roleTrainerAcc.color
-      }, `Welcome ${roleTrainerAcc.name} (${roleTrainerAcc.role})`);
-    }
-
-    // 0b. Faculty & Trainer Individual Accounts (25 Faculty Members + Srithar)
-    const matchedFaculty = MASTER_FACULTY_ROSTER.find((fac) => {
-      const cleanInput = normalizedEmail.replace(/[^a-z0-9]/g, '');
-      const cleanEmail = fac.email.toLowerCase().replace(/[^a-z0-9]/g, '');
-      const cleanId = fac.id.toLowerCase().replace(/[^a-z0-9]/g, '');
-      const cleanName = fac.name.toLowerCase().replace(/[^a-z0-9]/g, '');
-      return (
-        fac.email.toLowerCase() === normalizedEmail ||
-        fac.id.toLowerCase() === normalizedEmail ||
-        cleanInput === cleanId ||
-        cleanInput === cleanEmail ||
-        cleanInput === cleanName
-      );
-    });
-    if (matchedFaculty) {
-      const envKey = `TRAINER_${matchedFaculty.id.replace(/\W/g, '_').toUpperCase()}_PASSWORD`;
-      const expectedPass = process.env[envKey] || matchedFaculty.pass || 'Trainer@123';
-      const { ok } = await checkPassword(password, expectedPass);
-      if (!ok) return deny(`Invalid password for faculty ${matchedFaculty.name}.`);
-      const roster = dropUndefined(await trainerRosterFields(matchedFaculty.email, matchedFaculty.name, matchedFaculty.id));
-      return grant({
-        id: matchedFaculty.id,
-        trainerId: matchedFaculty.id,
-        name: matchedFaculty.name,
-        userName: matchedFaculty.name,
-        email: matchedFaculty.email,
-        role: 'Trainer',
-        trainerRole: 'trainer',
-        department: 'training',
-        departmentCode: 'ACAD',
-        departmentName: 'Training & Faculty Department',
-        branch: matchedFaculty.branch,
-        courseKey: matchedFaculty.course,
-        course: matchedFaculty.course,
-        expertCourse: matchedFaculty.course,
-        specialization: `${matchedFaculty.course} Faculty`,
-        color: '#00897b',
-        ...roster
-      }, `Welcome Faculty ${matchedFaculty.name}`);
-    }
-
-    // 0. Built-in trainer accounts — password comes from the server environment
-    const trainerUser = TRAINER_ACCOUNTS[normalizedEmail];
-    const trainerEnvKey = trainerUser ? `TRAINER_${String(trainerUser.trainerId).replace(/\W/g, '_').toUpperCase()}_PASSWORD` : '';
-    if (trainerUser && process.env[trainerEnvKey]) {
-      if (!(await checkPassword(password, process.env[trainerEnvKey])).ok) return deny();
-      const roster = dropUndefined(await trainerRosterFields(normalizedEmail, trainerUser.name, trainerUser.trainerId));
-      return grant({ ...trainerUser, ...roster, department: 'training' }, `Welcome ${trainerUser.name}`);
-    }
-
-    // 0b. Dedicated Branch Manager Accounts per Branch (static or dynamic matching)
+    // 0. Dedicated Branch Manager Accounts per Branch (static or dynamic matching)
     let branchAcc = BRANCH_ACCOUNTS[normalizedEmail];
     if (!branchAcc && normalizedEmail.endsWith('@thoughtflows.in')) {
       const emailPrefix = normalizedEmail.replace('@thoughtflows.in', '').replace(/^(cbe|hyd|ker|tnd|and|mah)\./i, '').trim().toLowerCase();
@@ -6743,6 +6404,887 @@ async function canonicalBatchName(name, trainerId) {
   const existing = await Student.distinct('batchName', trainerId ? { trainerId } : {});
   return existing.find((b) => b && batchMatchKey(b) === key) || clean;
 }
+
+// ==========================================
+// UTILIZATION DASHBOARD: HOURLY WORK PLANNING & REPORTING
+// ==========================================
+
+// Helper: Normalize date string to YYYY-MM-DD in IST
+function getTodayIST() {
+  const d = new Date();
+  const utc = d.getTime() + d.getTimezoneOffset() * 60000;
+  const istDate = new Date(utc + 3600000 * 5.5);
+  const y = istDate.getFullYear();
+  const m = String(istDate.getMonth() + 1).padStart(2, '0');
+  const day = String(istDate.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+// Helper: Get user's effective role and identity for utilization
+function getUtilizationUserIdentity(req) {
+  const u = req.user || {};
+  const query = req.query || {};
+  const body = req.body || {};
+
+  const id = u.trainerId || u.leaderId || u.id || u._id || query.callerId || body.callerId || '';
+  const name = u.name || u.userName || query.callerName || body.callerName || '';
+  let role = u.trainerRole || query.callerRole || body.callerRole || '';
+
+  if (!role) {
+    const rawRole = String(u.role || '').toLowerCase();
+    if (/head of trainer|chief trainer|chief faculty|training head/i.test(rawRole) || u.department === 'leadership') role = 'head';
+    else if (/manager/i.test(rawRole)) role = 'manager';
+    else if (/team lead|\btl\b/i.test(rawRole)) role = 'tl';
+    else if (/trainer|faculty/i.test(rawRole) || u.trainerId) role = 'trainer';
+    else role = 'head'; // default for admin/leadership
+  }
+
+  return {
+    id: String(id).trim(),
+    name: String(name).trim(),
+    role: String(role).trim().toLowerCase(),
+    leaderId: u.leaderId || '',
+    branch: u.branch || '',
+    branches: u.branches || []
+  };
+}
+
+// 1. GET /trainer/utilization — Retrieve live hourly work records and metrics
+router.get('/trainer/utilization', async (req, res) => {
+  try {
+    const targetDate = req.query.date || getTodayIST();
+    const startDate = req.query.startDate;
+    const endDate = req.query.endDate;
+    const filterUserId = req.query.userId;
+    const filterRole = req.query.role;
+    const filterTL = req.query.teamLeadId;
+    const filterManager = req.query.managerId;
+
+    const caller = getUtilizationUserIdentity(req);
+
+    // Build base query
+    const dbQuery = {};
+    if (startDate && endDate) {
+      dbQuery.date = { $gte: startDate, $lte: endDate };
+    } else {
+      dbQuery.date = targetDate;
+    }
+
+    if (filterUserId) dbQuery.userId = filterUserId;
+    if (filterRole) dbQuery.userRole = filterRole;
+    if (filterTL) dbQuery.teamLeadId = filterTL;
+    if (filterManager) dbQuery.managerId = filterManager;
+
+    // Fetch stored records from live database
+    const storedLogs = await TrainerHourlyWork.find(dbQuery).lean();
+    const storedMap = new Map();
+    storedLogs.forEach((log) => {
+      storedMap.set(`${log.userId}_${log.date}`, log);
+    });
+
+    // Determine relevant staff roster for today's view based on hierarchy
+    // Only real credentialed accounts from the database are tracked.
+    let roster = [];
+
+    const dbTrainerUsers = await User.find({
+      $or: [
+        { role: /trainer|training|faculty/i },
+        { department: /training|faculty/i }
+      ]
+    }).select('-password').lean();
+
+    const realHeads = dbTrainerUsers.filter((u) => /head/i.test(u.role || '')).map((u) => ({
+      userId: String(u._id),
+      userName: u.name,
+      userRole: 'head',
+      teamLeadId: '',
+      teamLeadName: '',
+      managerId: '',
+      managerName: '',
+      branchName: u.branch || 'Head Office',
+      zone: u.branch || 'Pan-India Operations'
+    }));
+
+    const managersList = dbTrainerUsers.filter((u) => /manager/i.test(u.role || '')).map((m) => ({
+      userId: String(m._id),
+      userName: m.name,
+      userRole: 'manager',
+      teamLeadId: '',
+      teamLeadName: '',
+      managerId: String(m._id),
+      managerName: m.name,
+      branchName: m.branch || 'Regional Operations',
+      zone: m.branch || 'Regional Operations'
+    }));
+
+    const tlList = dbTrainerUsers.filter((u) => /tl|lead/i.test(u.role || '')).map((tl) => ({
+      userId: String(tl._id),
+      userName: tl.name,
+      userRole: 'tl',
+      teamLeadId: String(tl._id),
+      teamLeadName: tl.name,
+      managerId: tl.managerId || '',
+      managerName: tl.managerName || '',
+      branchName: tl.branch || 'Pod Operations',
+      zone: tl.branch || 'Pod Operations'
+    }));
+
+    // Trainer-tier roster: ONLY real, credentialed trainers from the database
+    let trainerList = [];
+    try {
+      const dbTrainers = await Trainer.find({ active: { $ne: false } }).lean();
+      trainerList = dbTrainers.map((dt) => {
+        const id = dt.trainerId || String(dt._id);
+        return {
+          userId: id,
+          userName: dt.trainerName || dt.name,
+          userRole: 'trainer',
+          teamLeadId: dt.teamLeadId || '',
+          teamLeadName: dt.teamLeadName || '',
+          managerId: dt.managerId || '',
+          managerName: dt.managerName || '',
+          branchName: dt.branchName || dt.branch || '',
+          zone: dt.zone || '',
+          course: dt.expertCourse || dt.courseKey || dt.specialization || ''
+        };
+      });
+    } catch (_) {}
+
+    roster = [...realHeads, ...managersList, ...tlList, ...trainerList];
+
+    // Apply role-based filtering on roster if caller has scoped visibility
+    if (caller.role === 'trainer' && caller.id) {
+      roster = roster.filter((r) => r.userId.toLowerCase() === caller.id.toLowerCase());
+    } else if (caller.role === 'tl' && caller.id) {
+      const myTlId = caller.leaderId || caller.id;
+      roster = roster.filter(
+        (r) => r.userId.toLowerCase() === myTlId.toLowerCase() ||
+               (r.teamLeadId && r.teamLeadId.toLowerCase() === myTlId.toLowerCase())
+      );
+    } else if (caller.role === 'manager' && caller.id) {
+      const myMgrId = caller.leaderId || caller.id;
+      roster = roster.filter(
+        (r) => r.userId.toLowerCase() === myMgrId.toLowerCase() ||
+               (r.managerId && r.managerId.toLowerCase() === myMgrId.toLowerCase())
+      );
+    }
+
+    if (filterUserId) {
+      roster = roster.filter((r) => r.userId.toLowerCase() === filterUserId.toLowerCase());
+    }
+    if (filterRole) {
+      roster = roster.filter((r) => r.userRole.toLowerCase() === filterRole.toLowerCase());
+    }
+    if (filterTL) {
+      roster = roster.filter((r) => r.teamLeadId.toLowerCase() === filterTL.toLowerCase());
+    }
+    if (filterManager) {
+      roster = roster.filter((r) => r.managerId.toLowerCase() === filterManager.toLowerCase());
+    }
+
+    // Merge or instantiate live work logs for the target date
+    const finalLogs = [];
+
+    for (const member of roster) {
+      const key = `${member.userId}_${targetDate}`;
+      let log = storedMap.get(key);
+
+      if (!log) {
+        // Instantiate live initial template for this user so it's ready to plan or update
+        const defaultSlots = DEFAULT_WORK_SLOTS.map((s) => ({
+          ...s,
+          plannedBy: member.userRole === 'trainer' ? member.teamLeadName : member.userName,
+          updatedBy: ''
+        }));
+
+        log = {
+          _id: `temp_${member.userId}_${targetDate}`,
+          userId: member.userId,
+          userName: member.userName,
+          userRole: member.userRole,
+          teamLeadId: member.teamLeadId || '',
+          teamLeadName: member.teamLeadName || '',
+          managerId: member.managerId || '',
+          managerName: member.managerName || '',
+          branchName: member.branchName || '',
+          zone: member.zone || '',
+          course: member.course || '',
+          employmentType: member.employmentType || 'Full Time',
+          date: targetDate,
+          isLeave: false,
+          leaveReason: '',
+          slots: defaultSlots,
+          totalPlannedHours: 8,
+          totalActualHours: 0,
+          utilizationPercentage: 0,
+          completedTasksCount: 0,
+          pendingTasksCount: 8,
+          inProgressTasksCount: 0,
+          delayedTasksCount: 0
+        };
+      }
+
+      finalLogs.push(log);
+    }
+
+    // Also include any stored logs for other dates if date range was queried
+    if (startDate && endDate) {
+      storedLogs.forEach((sl) => {
+        if (!finalLogs.some((fl) => fl._id.toString() === sl._id.toString())) {
+          finalLogs.push(sl);
+        }
+      });
+    }
+
+    // Calculate aggregated metrics
+    let totalPlannedHours = 0;
+    let totalActualHours = 0;
+    let totalCompleted = 0;
+    let totalPending = 0;
+    let totalInProgress = 0;
+    let totalDelayed = 0;
+    let leaveCount = 0;
+    const delayedActivities = [];
+
+    finalLogs.forEach((log) => {
+      if (log.isLeave) {
+        leaveCount += 1;
+        return;
+      }
+      totalPlannedHours += log.totalPlannedHours || 0;
+      totalActualHours += log.totalActualHours || 0;
+      totalCompleted += log.completedTasksCount || 0;
+      totalPending += log.pendingTasksCount || 0;
+      totalInProgress += log.inProgressTasksCount || 0;
+      totalDelayed += log.delayedTasksCount || 0;
+
+      (log.slots || []).forEach((slot) => {
+        if (slot.status === 'Delayed' || (slot.status === 'Pending' && slot.remarks)) {
+          delayedActivities.push({
+            userId: log.userId,
+            userName: log.userName,
+            userRole: log.userRole,
+            timeSlot: slot.timeSlot,
+            plannedTask: slot.plannedTask,
+            actualWork: slot.actualWork,
+            relatedEntity: slot.relatedEntity,
+            remarks: slot.remarks,
+            status: slot.status,
+            date: log.date
+          });
+        }
+      });
+    });
+
+    const overallUtilization = totalPlannedHours > 0
+      ? Math.round((totalActualHours / totalPlannedHours) * 1000) / 10
+      : 0;
+
+    // Team-wise summaries (grouped by real TLs)
+    const teamMap = new Map();
+    tlList.forEach((tl) => {
+      teamMap.set(tl.userId, {
+        teamLeadId: tl.userId,
+        teamLeadName: tl.userName,
+        zone: tl.zone,
+        zoneLabel: tl.branchName,
+        managerId: tl.managerId,
+        managerName: tl.managerName,
+        totalPlannedHours: 0,
+        totalActualHours: 0,
+        completedTasks: 0,
+        pendingTasks: 0,
+        inProgressTasks: 0,
+        delayedTasks: 0,
+        memberCount: 0,
+        members: []
+      });
+    });
+
+    finalLogs.forEach((log) => {
+      const tlId = log.teamLeadId || (log.userRole === 'tl' ? log.userId : '');
+      if (tlId && teamMap.has(tlId)) {
+        const team = teamMap.get(tlId);
+        team.memberCount += 1;
+        team.members.push({
+          userId: log.userId,
+          userName: log.userName,
+          userRole: log.userRole,
+          utilizationPercentage: log.utilizationPercentage,
+          totalPlannedHours: log.totalPlannedHours,
+          totalActualHours: log.totalActualHours,
+          isLeave: log.isLeave
+        });
+        if (!log.isLeave) {
+          team.totalPlannedHours += log.totalPlannedHours || 0;
+          team.totalActualHours += log.totalActualHours || 0;
+          team.completedTasks += log.completedTasksCount || 0;
+          team.pendingTasks += log.pendingTasksCount || 0;
+          team.inProgressTasks += log.inProgressTasksCount || 0;
+          team.delayedTasks += log.delayedTasksCount || 0;
+        }
+      }
+    });
+
+    const teamSummaries = Array.from(teamMap.values()).map((team) => ({
+      ...team,
+      utilizationPercentage: team.totalPlannedHours > 0
+        ? Math.round((team.totalActualHours / team.totalPlannedHours) * 1000) / 10
+        : 0
+    }));
+
+    // Manager-wise summaries (grouped by real Managers)
+    const managerMap = new Map();
+    managersList.forEach((m) => {
+      managerMap.set(m.userId, {
+        managerId: m.userId,
+        managerName: m.userName,
+        zone: m.zone,
+        zoneLabel: m.branchName,
+        totalPlannedHours: 0,
+        totalActualHours: 0,
+        completedTasks: 0,
+        pendingTasks: 0,
+        inProgressTasks: 0,
+        delayedTasks: 0,
+        staffCount: 0
+      });
+    });
+
+    finalLogs.forEach((log) => {
+      const mgrId = log.managerId || (log.userRole === 'manager' ? log.userId : '');
+      if (mgrId && managerMap.has(mgrId)) {
+        const mgr = managerMap.get(mgrId);
+        mgr.staffCount += 1;
+        if (!log.isLeave) {
+          mgr.totalPlannedHours += log.totalPlannedHours || 0;
+          mgr.totalActualHours += log.totalActualHours || 0;
+          mgr.completedTasks += log.completedTasksCount || 0;
+          mgr.pendingTasks += log.pendingTasksCount || 0;
+          mgr.inProgressTasks += log.inProgressTasksCount || 0;
+          mgr.delayedTasks += log.delayedTasksCount || 0;
+        }
+      }
+    });
+
+    const managerSummaries = Array.from(managerMap.values()).map((mgr) => ({
+      ...mgr,
+      utilizationPercentage: mgr.totalPlannedHours > 0
+        ? Math.round((mgr.totalActualHours / mgr.totalPlannedHours) * 1000) / 10
+        : 0
+    }));
+
+    res.json({
+      success: true,
+      date: targetDate,
+      count: finalLogs.length,
+      stats: {
+        totalPlannedHours,
+        totalActualHours,
+        overallUtilization,
+        totalCompleted,
+        totalPending,
+        totalInProgress,
+        totalDelayed,
+        leaveCount,
+        staffTracked: finalLogs.length
+      },
+      workLogs: finalLogs,
+      delayedActivities,
+      teamSummaries,
+      managerSummaries,
+      hierarchy: {
+        head: realHeads[0] || null,
+        managers: managersList,
+        teamLeads: tlList
+      }
+    });
+  } catch (err) {
+    console.error('Error in GET /trainer/utilization:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 2. POST /trainer/utilization/plan — Create or update hour-by-hour work plan
+// TL plans for assigned trainers or self; Managers/Head plan for self or subordinates
+router.post('/trainer/utilization/plan', async (req, res) => {
+  try {
+    const {
+      userId,
+      userName,
+      userRole,
+      teamLeadId,
+      teamLeadName,
+      managerId,
+      managerName,
+      branchName,
+      zone,
+      date,
+      slots,
+      isLeave = false,
+      leaveReason = ''
+    } = req.body || {};
+
+    if (!userId || !date) {
+      return res.status(400).json({ success: false, error: 'userId and date are required.' });
+    }
+
+    const caller = getUtilizationUserIdentity(req);
+
+    // Permission Verification:
+    // - Self can always plan own slots
+    // - TL can plan for trainers reporting to them
+    // - Manager can plan for TLs and trainers in their zone
+    // - Head / Admin can plan for any trainer department member
+    let isAuthorized = false;
+    const isSelf = caller.id && caller.id.toLowerCase() === String(userId).toLowerCase();
+
+    if (isSelf) {
+      isAuthorized = true;
+    } else if (caller.role === 'head' || caller.role === 'admin' || caller.role === 'leadership') {
+      isAuthorized = true;
+    } else if (caller.role === 'manager') {
+      const myMgrId = caller.leaderId || caller.id;
+      if (managerId && managerId.toLowerCase() === myMgrId.toLowerCase()) isAuthorized = true;
+    } else if (caller.role === 'tl') {
+      const myTlId = caller.leaderId || caller.id;
+      if (teamLeadId && teamLeadId.toLowerCase() === myTlId.toLowerCase()) isAuthorized = true;
+      if (!isAuthorized) {
+        const trMatch = await Trainer.findOne({ trainerId: new RegExp(`^${escapeRegex(String(userId))}$`, 'i') }).lean();
+        if (trMatch && trMatch.teamLeadId && trMatch.teamLeadId.toLowerCase() === myTlId.toLowerCase()) isAuthorized = true;
+      }
+    }
+
+    if (!isAuthorized) {
+      return res.status(403).json({
+        success: false,
+        error: 'Permission denied: You can only create or manage work plans for your own desk or assigned trainers.'
+      });
+    }
+
+    // Find or create document
+    let workDoc = await TrainerHourlyWork.findOne({ userId, date });
+    if (!workDoc) {
+      workDoc = new TrainerHourlyWork({
+        userId,
+        userName: userName || userId,
+        userRole: userRole || 'trainer',
+        teamLeadId: teamLeadId || '',
+        teamLeadName: teamLeadName || '',
+        managerId: managerId || '',
+        managerName: managerName || '',
+        branchName: branchName || '',
+        zone: zone || '',
+        date,
+        isLeave,
+        leaveReason,
+        slots: []
+      });
+    }
+
+    workDoc.isLeave = Boolean(isLeave);
+    workDoc.leaveReason = leaveReason || '';
+    if (userName) workDoc.userName = userName;
+    if (userRole) workDoc.userRole = userRole;
+    if (teamLeadId) workDoc.teamLeadId = teamLeadId;
+    if (teamLeadName) workDoc.teamLeadName = teamLeadName;
+    if (managerId) workDoc.managerId = managerId;
+    if (managerName) workDoc.managerName = managerName;
+    if (branchName) workDoc.branchName = branchName;
+    if (zone) workDoc.zone = zone;
+
+    if (Array.isArray(slots) && slots.length > 0) {
+      workDoc.slots = slots.map((s, idx) => ({
+        slotIndex: typeof s.slotIndex === 'number' ? s.slotIndex : idx,
+        timeSlot: s.timeSlot || DEFAULT_WORK_SLOTS[idx]?.timeSlot || `Slot ${idx + 1}`,
+        slotType: s.slotType || (idx === 4 ? 'break' : 'working'),
+        plannedTask: s.plannedTask || '',
+        actualWork: s.actualWork || '',
+        relatedEntity: s.relatedEntity || '',
+        relatedEntityType: s.relatedEntityType || 'general',
+        status: s.status || (s.slotType === 'break' ? 'Break' : 'Pending'),
+        remarks: s.remarks || '',
+        plannedHours: s.slotType === 'break' ? 0 : (typeof s.plannedHours === 'number' ? s.plannedHours : 1),
+        actualHours: s.status === 'Completed' ? 1 : (s.status === 'In Progress' ? 0.5 : 0),
+        plannedBy: caller.name || caller.id,
+        updatedBy: s.updatedBy || ''
+      }));
+    } else if (!workDoc.slots || workDoc.slots.length === 0) {
+      workDoc.slots = DEFAULT_WORK_SLOTS.map((s) => ({
+        ...s,
+        plannedBy: caller.name || caller.id
+      }));
+    }
+
+    workDoc.recalculateMetrics();
+    await workDoc.save();
+
+    res.json({
+      success: true,
+      message: `Hourly work plan for ${workDoc.userName} saved successfully for date ${date}.`,
+      workLog: workDoc
+    });
+  } catch (err) {
+    console.error('Error in POST /trainer/utilization/plan:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 3. PUT /trainer/utilization/actual — Update actual work progress for a specific slot
+// Every user updates their own actual work; TL can also manage progress for their assigned trainers
+router.put('/trainer/utilization/actual', async (req, res) => {
+  try {
+    const {
+      userId,
+      date,
+      slotIndex,
+      actualWork,
+      status,
+      remarks,
+      relatedEntity,
+      relatedEntityType
+    } = req.body || {};
+
+    if (!userId || !date || typeof slotIndex !== 'number') {
+      return res.status(400).json({ success: false, error: 'userId, date, and slotIndex are required.' });
+    }
+
+    const caller = getUtilizationUserIdentity(req);
+
+    // Permission Verification:
+    // Allow each user to update only their own work, except the TL, who can create and manage work plans for their assigned trainers.
+    let isAuthorized = false;
+    const isSelf = caller.id && caller.id.toLowerCase() === String(userId).toLowerCase();
+
+    if (isSelf) {
+      isAuthorized = true;
+    } else if (caller.role === 'head' || caller.role === 'admin' || caller.role === 'leadership') {
+      isAuthorized = true;
+    } else if (caller.role === 'tl') {
+      const myTlId = caller.leaderId || caller.id;
+      const trMatch = await Trainer.findOne({ trainerId: new RegExp(`^${escapeRegex(String(userId))}$`, 'i') }).lean();
+      if (trMatch && trMatch.teamLeadId && trMatch.teamLeadId.toLowerCase() === myTlId.toLowerCase()) isAuthorized = true;
+    }
+
+    if (!isAuthorized) {
+      return res.status(403).json({
+        success: false,
+        error: 'Permission denied: Users may update only their own hourly work progress.'
+      });
+    }
+
+    let workDoc = await TrainerHourlyWork.findOne({ userId, date });
+    if (!workDoc) {
+      const dbTr = await Trainer.findOne({ trainerId: new RegExp(`^${escapeRegex(String(userId))}$`, 'i') }).lean();
+      const dbUsr = !dbTr ? await User.findOne({ $or: [{ _id: mongoose.Types.ObjectId.isValid(userId) ? userId : undefined }, { email: String(userId).toLowerCase() }] }).lean() : null;
+      const slots = DEFAULT_WORK_SLOTS.map((s) => ({ ...s }));
+      workDoc = new TrainerHourlyWork({
+        userId,
+        userName: dbTr?.trainerName || dbTr?.name || dbUsr?.name || userId,
+        userRole: dbTr ? 'trainer' : (dbUsr?.role || 'trainer'),
+        teamLeadId: dbTr?.teamLeadId || '',
+        teamLeadName: dbTr?.teamLeadName || '',
+        managerId: dbTr?.managerId || '',
+        managerName: dbTr?.managerName || '',
+        branchName: dbTr?.branchName || dbTr?.branch || dbUsr?.branch || '',
+        zone: dbTr?.zone || dbUsr?.branch || '',
+        date,
+        isLeave: false,
+        leaveReason: '',
+        slots
+      });
+    }
+
+    const targetSlot = workDoc.slots.find((s) => s.slotIndex === slotIndex);
+    if (!targetSlot) {
+      return res.status(404).json({ success: false, error: `Slot with index ${slotIndex} not found.` });
+    }
+
+    if (actualWork !== undefined) targetSlot.actualWork = String(actualWork);
+    if (status !== undefined) targetSlot.status = status;
+    if (remarks !== undefined) targetSlot.remarks = String(remarks);
+    if (relatedEntity !== undefined) targetSlot.relatedEntity = String(relatedEntity);
+    if (relatedEntityType !== undefined) targetSlot.relatedEntityType = relatedEntityType;
+
+    targetSlot.updatedBy = caller.name || caller.id;
+
+    if (targetSlot.status === 'Completed') {
+      targetSlot.completedAt = new Date();
+      targetSlot.actualHours = targetSlot.plannedHours || 1;
+    } else if (targetSlot.status === 'In Progress') {
+      targetSlot.actualHours = (targetSlot.plannedHours || 1) * 0.5;
+    } else {
+      // Pending, Delayed, Break
+      targetSlot.actualHours = 0;
+    }
+
+    workDoc.recalculateMetrics();
+    await workDoc.save();
+
+    res.json({
+      success: true,
+      message: `Slot ${slotIndex + 1} (${targetSlot.timeSlot}) updated to ${targetSlot.status}.`,
+      workLog: workDoc,
+      updatedSlot: targetSlot
+    });
+  } catch (err) {
+    console.error('Error in PUT /trainer/utilization/actual:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 4. POST /trainer/utilization/bulk-plan — TL creates next-day work plan for all trainers in squad
+router.post('/trainer/utilization/bulk-plan', async (req, res) => {
+  try {
+    const { date, plans } = req.body || {};
+    if (!date || !Array.isArray(plans) || plans.length === 0) {
+      return res.status(400).json({ success: false, error: 'date and plans array are required.' });
+    }
+
+    const caller = getUtilizationUserIdentity(req);
+    const results = [];
+
+    for (const plan of plans) {
+      const {
+        userId,
+        userName,
+        userRole = 'trainer',
+        teamLeadId,
+        teamLeadName,
+        managerId,
+        managerName,
+        branchName,
+        zone,
+        slots,
+        isLeave,
+        leaveReason
+      } = plan;
+
+      if (!userId) continue;
+
+      let workDoc = await TrainerHourlyWork.findOne({ userId, date });
+      if (!workDoc) {
+        workDoc = new TrainerHourlyWork({
+          userId,
+          userName: userName || userId,
+          userRole,
+          teamLeadId: teamLeadId || '',
+          teamLeadName: teamLeadName || '',
+          managerId: managerId || '',
+          managerName: managerName || '',
+          branchName: branchName || '',
+          zone: zone || '',
+          date,
+          slots: []
+        });
+      }
+
+      workDoc.isLeave = Boolean(isLeave);
+      workDoc.leaveReason = leaveReason || '';
+      if (userName) workDoc.userName = userName;
+      if (teamLeadId) workDoc.teamLeadId = teamLeadId;
+      if (teamLeadName) workDoc.teamLeadName = teamLeadName;
+
+      if (Array.isArray(slots) && slots.length > 0) {
+        workDoc.slots = slots.map((s, idx) => ({
+          slotIndex: typeof s.slotIndex === 'number' ? s.slotIndex : idx,
+          timeSlot: s.timeSlot || DEFAULT_WORK_SLOTS[idx]?.timeSlot || `Slot ${idx + 1}`,
+          slotType: s.slotType || (idx === 4 ? 'break' : 'working'),
+          plannedTask: s.plannedTask || '',
+          actualWork: s.actualWork || '',
+          relatedEntity: s.relatedEntity || '',
+          relatedEntityType: s.relatedEntityType || 'general',
+          status: s.status || (s.slotType === 'break' ? 'Break' : 'Pending'),
+          remarks: s.remarks || '',
+          plannedHours: s.slotType === 'break' ? 0 : 1,
+          actualHours: s.status === 'Completed' ? 1 : (s.status === 'In Progress' ? 0.5 : 0),
+          plannedBy: caller.name || caller.id,
+          updatedBy: s.updatedBy || ''
+        }));
+      }
+
+      workDoc.recalculateMetrics();
+      await workDoc.save();
+      results.push(workDoc);
+    }
+
+    res.json({
+      success: true,
+      message: `Successfully created/updated work plans for ${results.length} staff members on ${date}.`,
+      count: results.length,
+      plans: results
+    });
+  } catch (err) {
+    console.error('Error in POST /trainer/utilization/bulk-plan:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 5. POST /trainer/utilization/leave — Mark approved leave for a trainer or leader
+router.post('/trainer/utilization/leave', async (req, res) => {
+  try {
+    const { userId, date, leaveReason = 'Approved Leave', isLeave = true } = req.body || {};
+    if (!userId || !date) {
+      return res.status(400).json({ success: false, error: 'userId and date are required.' });
+    }
+
+    let workDoc = await TrainerHourlyWork.findOne({ userId, date });
+    if (!workDoc) {
+      const dbTr = await Trainer.findOne({ trainerId: new RegExp(`^${escapeRegex(String(userId))}$`, 'i') }).lean();
+      const dbUsr = !dbTr ? await User.findOne({ $or: [{ _id: mongoose.Types.ObjectId.isValid(userId) ? userId : undefined }, { email: String(userId).toLowerCase() }] }).lean() : null;
+      workDoc = new TrainerHourlyWork({
+        userId,
+        userName: dbTr?.trainerName || dbTr?.name || dbUsr?.name || userId,
+        userRole: dbTr ? 'trainer' : (dbUsr?.role || 'trainer'),
+        teamLeadId: dbTr?.teamLeadId || '',
+        teamLeadName: dbTr?.teamLeadName || '',
+        managerId: dbTr?.managerId || '',
+        managerName: dbTr?.managerName || '',
+        branchName: dbTr?.branchName || dbTr?.branch || dbUsr?.branch || '',
+        zone: dbTr?.zone || dbUsr?.branch || '',
+        date,
+        slots: []
+      });
+    }
+
+    workDoc.isLeave = Boolean(isLeave);
+    workDoc.leaveReason = leaveReason;
+    workDoc.recalculateMetrics();
+    await workDoc.save();
+
+    res.json({
+      success: true,
+      message: `Leave status updated for ${workDoc.userName} on ${date}.`,
+      workLog: workDoc
+    });
+  } catch (err) {
+    console.error('Error in POST /trainer/utilization/leave:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 6. GET /trainer/utilization/report — Historical Daily, Weekly & Monthly Report
+router.get('/trainer/utilization/report', async (req, res) => {
+  try {
+    const { startDate, endDate, teamLeadId, managerId, role, period = 'weekly' } = req.query;
+
+    const query = {};
+    if (startDate && endDate) {
+      query.date = { $gte: startDate, $lte: endDate };
+    } else {
+      // Default to last 7 days
+      const endD = new Date();
+      const startD = new Date();
+      startD.setDate(startD.getDate() - (period === 'monthly' ? 30 : 7));
+      query.date = {
+        $gte: startD.toISOString().split('T')[0],
+        $lte: endD.toISOString().split('T')[0]
+      };
+    }
+
+    if (teamLeadId) query.teamLeadId = teamLeadId;
+    if (managerId) query.managerId = managerId;
+    if (role) query.userRole = role;
+
+    const logs = await TrainerHourlyWork.find(query).sort({ date: 1, userName: 1 }).lean();
+
+    // Group by employee
+    const employeeMap = new Map();
+    // Group by date
+    const dateMap = new Map();
+
+    logs.forEach((log) => {
+      // By employee
+      if (!employeeMap.has(log.userId)) {
+        employeeMap.set(log.userId, {
+          userId: log.userId,
+          userName: log.userName,
+          userRole: log.userRole,
+          teamLeadName: log.teamLeadName,
+          managerName: log.managerName,
+          branchName: log.branchName,
+          totalPlannedHours: 0,
+          totalActualHours: 0,
+          totalCompletedTasks: 0,
+          totalPendingTasks: 0,
+          totalDelayedTasks: 0,
+          daysWorked: 0,
+          daysOnLeave: 0,
+          dailyLogs: []
+        });
+      }
+      const emp = employeeMap.get(log.userId);
+      emp.dailyLogs.push({
+        date: log.date,
+        plannedHours: log.totalPlannedHours,
+        actualHours: log.totalActualHours,
+        utilization: log.utilizationPercentage,
+        completed: log.completedTasksCount,
+        pending: log.pendingTasksCount,
+        isLeave: log.isLeave
+      });
+
+      if (log.isLeave) {
+        emp.daysOnLeave += 1;
+      } else {
+        emp.daysWorked += 1;
+        emp.totalPlannedHours += log.totalPlannedHours || 0;
+        emp.totalActualHours += log.totalActualHours || 0;
+        emp.totalCompletedTasks += log.completedTasksCount || 0;
+        emp.totalPendingTasks += log.pendingTasksCount || 0;
+        emp.totalDelayedTasks += log.delayedTasksCount || 0;
+      }
+
+      // By date
+      if (!dateMap.has(log.date)) {
+        dateMap.set(log.date, {
+          date: log.date,
+          plannedHours: 0,
+          actualHours: 0,
+          staffCount: 0,
+          leaveCount: 0
+        });
+      }
+      const dt = dateMap.get(log.date);
+      if (log.isLeave) {
+        dt.leaveCount += 1;
+      } else {
+        dt.staffCount += 1;
+        dt.plannedHours += log.totalPlannedHours || 0;
+        dt.actualHours += log.totalActualHours || 0;
+      }
+    });
+
+    const employeeReports = Array.from(employeeMap.values()).map((emp) => ({
+      ...emp,
+      averageUtilization: emp.totalPlannedHours > 0
+        ? Math.round((emp.totalActualHours / emp.totalPlannedHours) * 1000) / 10
+        : 0
+    }));
+
+    const dateReports = Array.from(dateMap.values()).map((d) => ({
+      ...d,
+      utilizationPercentage: d.plannedHours > 0
+        ? Math.round((d.actualHours / d.plannedHours) * 1000) / 10
+        : 0
+    }));
+
+    res.json({
+      success: true,
+      queryRange: {
+        startDate: query.date.$gte,
+        endDate: query.date.$lte
+      },
+      period,
+      employeeCount: employeeReports.length,
+      employeeReports,
+      dateReports
+    });
+  } catch (err) {
+    console.error('Error in GET /trainer/utilization/report:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 // Existing batches (optionally one trainer's) with their student counts — the handover pick-list
 router.get('/batches', async (req, res) => {

@@ -81,6 +81,15 @@ const trainerSchema = new mongoose.Schema(
       trim: true,
       lowercase: true
     },
+    // Org-chart assignment (Admin/Head settable via Trainer Settings) — lets the
+    // Utilization Sheet and reports group a real, credentialed trainer by
+    // state/zone and reporting line without relying on any hardcoded roster.
+    zone: { type: String, default: '' },
+    zoneLabel: { type: String, default: '' },
+    teamLeadId: { type: String, default: '' },
+    teamLeadName: { type: String, default: '' },
+    managerId: { type: String, default: '' },
+    managerName: { type: String, default: '' },
     role: { type: String, default: '' },
     responsibilities: { type: String, default: '' },
     // Recurring batch class link used in the Class Session Room

@@ -64,15 +64,17 @@ import {
   setDemoMeetingLink,
   rescheduleDemo,
   acknowledgeDemo,
-  getTeam
+  getTeam,
+  updateTrainerSettings,
+  updateTrainerRoleAccount
 } from '../services/api';
 import TrainerOrgHierarchyChart from './TrainerOrgHierarchyChart';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 import CourseSyllabusBoard from './CourseSyllabusBoard';
 import ClassSessionRoom from './ClassSessionRoom';
 import TeamRosterBoard from './TeamRosterBoard';
+import UtilizationDashboard from './UtilizationDashboard';
 import { getCurrentWeekScheduleDays, getWeekRangeString, localDateKey } from '../utils/dateUtils';
-import { ALL_HIERARCHY_TRAINERS, TRAINER_HIERARCHY } from '../constants/trainerHierarchy';
 
 export default function TrainerHeadDashboard({
   roleType = 'head', // 'head' | 'manager' | 'tl'
@@ -261,44 +263,11 @@ export default function TrainerHeadDashboard({
           }
         });
 
-        // Enrich trainers with hierarchy metadata (TL, Manager, Zone, Branch)
-        const enrichedTrainers = realTrainers.map((t) => {
-          const tId = String(t.trainerId || t.id || '').toLowerCase();
-          const tName = String(t.trainerName || t.name || '').toLowerCase();
-          const meta = ALL_HIERARCHY_TRAINERS.find(
-            (ht) => String(ht.id).toLowerCase() === tId || String(ht.name).toLowerCase() === tName
-          );
-          if (meta) {
-            return {
-              ...meta,
-              ...t,
-              teamLeadId: t.teamLeadId || meta.teamLeadId,
-              teamLeadName: t.teamLeadName || meta.teamLeadName,
-              managerId: t.managerId || meta.managerId,
-              managerName: t.managerName || meta.managerName,
-              zone: t.zone || meta.zone,
-              zoneLabel: t.zoneLabel || meta.zoneLabel,
-              branchName: t.branchName || t.branch || meta.branchName
-            };
-          }
-          return t;
-        });
-
-        // Supplement any missing hierarchy trainers
-        ALL_HIERARCHY_TRAINERS.forEach((ht) => {
-          const exists = enrichedTrainers.some(
-            (t) => String(t.trainerId || t.id || '').toLowerCase() === String(ht.id).toLowerCase() ||
-                   String(t.trainerName || t.name || '').toLowerCase() === String(ht.name).toLowerCase()
-          );
-          if (!exists) {
-            enrichedTrainers.push(ht);
-          }
-        });
-
+        // Use pure real trainers returned directly from database / API
         setStudents(Array.isArray(stData) ? stData : []);
         setBatches(Array.isArray(bData) ? bData : []);
         setBranches(Array.isArray(brData) ? brData : []);
-        setTrainers(enrichedTrainers);
+        setTrainers(realTrainers);
         setAttendanceRecords(Array.isArray(attData) ? attData : []);
         setDemos(Array.isArray(dData) ? dData : []);
         setDoubts(Array.isArray(dbtData) ? dbtData : []);
@@ -313,12 +282,58 @@ export default function TrainerHeadDashboard({
   useEffect(() => {
     loadDashboardData();
     const unsub = onDataUpdate((entity) => {
-      if (['students', 'batches', 'trainers', 'demos', 'doubts', 'trainer_attendance', 'team'].includes(entity)) {
+      if (['students', 'batches', 'trainers', 'demos', 'doubts', 'trainer_attendance', 'team', 'trainer_settings'].includes(entity)) {
         loadDashboardData();
       }
     });
     return () => unsub();
   }, [loadDashboardData]);
+
+  // ================= HEAD OF TRAINER: TEAM STRUCTURE ASSIGNMENT =================
+  const [savingAssignment, setSavingAssignment] = useState('');
+
+  // Reassign which Manager a Team Lead reports to
+  const handleAssignTlManager = async (tl, managerIdValue) => {
+    const manager = trainerManagersList.find((m) => String(m.id) === String(managerIdValue));
+    setSavingAssignment(`tl_${tl.id}`);
+    try {
+      await updateTrainerRoleAccount(tl.id, {
+        managerId: manager ? manager.id : '',
+        managerName: manager ? manager.name : '',
+        zone: manager ? manager.zone : tl.zone,
+        zoneLabel: manager ? manager.zoneLabel : tl.zoneLabel
+      });
+      flashToast(manager ? `${tl.name} now reports to ${manager.name}.` : `Removed ${tl.name}'s reporting manager.`);
+      loadDashboardData();
+    } catch (err) {
+      flashToast(err?.response?.data?.error || `Could not update ${tl.name}'s reporting manager.`);
+    } finally {
+      setSavingAssignment('');
+    }
+  };
+
+  // Reassign which Team Lead a Trainer reports to (manager/zone cascade from the TL)
+  const handleAssignTrainerTl = async (trainer, tlIdValue) => {
+    const tl = trainerTLsList.find((t) => String(t.id) === String(tlIdValue));
+    const trainerKey = trainer.trainerId || trainer.id;
+    setSavingAssignment(`trainer_${trainerKey}`);
+    try {
+      await updateTrainerSettings(trainerKey, {
+        teamLeadId: tl ? tl.id : '',
+        teamLeadName: tl ? tl.name : '',
+        managerId: tl ? tl.managerId : '',
+        managerName: tl ? tl.managerName : '',
+        zone: tl ? tl.zone : '',
+        zoneLabel: tl ? tl.zoneLabel : ''
+      });
+      flashToast(tl ? `${trainer.trainerName} now reports to ${tl.name}.` : `Removed ${trainer.trainerName}'s Team Lead.`);
+      loadDashboardData();
+    } catch (err) {
+      flashToast(err?.response?.data?.error || `Could not update ${trainer.trainerName}'s Team Lead.`);
+    } finally {
+      setSavingAssignment('');
+    }
+  };
 
   // ================= SCOPING LOGIC BASED ON ROLE =================
   // 1. Scoped Trainers
@@ -672,17 +687,15 @@ export default function TrainerHeadDashboard({
     };
   }, [scopedStudents]);
 
-  // Detailed Trainer Managers list (derived from user credentials or master hierarchy fallback)
+  // Detailed Trainer Managers list (derived strictly from real user credentials)
   const trainerManagersList = useMemo(() => {
-    const rawList = (trainerCredentials?.managers?.length)
-      ? trainerCredentials.managers
-      : TRAINER_HIERARCHY.managers;
+    const rawList = trainerCredentials?.managers?.length ? trainerCredentials.managers : [];
 
     const managers = rawList.map((m) => {
       const mBranches = (m.branches?.length ? m.branches : (m.branch ? [m.branch] : [])).map((b) => String(b).toLowerCase().trim());
       const mId = m.id || m.leaderId;
 
-      const reportingTLs = (trainerCredentials?.teamLeads?.length ? trainerCredentials.teamLeads : TRAINER_HIERARCHY.teamLeads).filter((tl) => {
+      const reportingTLs = (trainerCredentials?.teamLeads?.length ? trainerCredentials.teamLeads : []).filter((tl) => {
         if (tl.managerId && (tl.managerId === mId || tl.managerId === m.name)) return true;
         if (mBranches.length > 0 && tl.branches) {
           const tlBranches = tl.branches.map((b) => String(b).toLowerCase().trim());
@@ -740,11 +753,9 @@ export default function TrainerHeadDashboard({
     return managers;
   }, [trainers, batches, students, trainerCredentials]);
 
-  // Detailed Trainer Team Leads (TLs) list (derived from user credentials or master hierarchy fallback)
+  // Detailed Trainer Team Leads (TLs) list (derived strictly from real user credentials)
   const trainerTLsList = useMemo(() => {
-    const rawList = (trainerCredentials?.teamLeads?.length)
-      ? trainerCredentials.teamLeads
-      : TRAINER_HIERARCHY.teamLeads;
+    const rawList = trainerCredentials?.teamLeads?.length ? trainerCredentials.teamLeads : [];
 
     const tls = rawList.map((tl) => {
       const tlId = tl.id || tl.leaderId;
@@ -1404,6 +1415,7 @@ export default function TrainerHeadDashboard({
       case 'trainer_attendance': return 'Trainer Attendance & Shift Details';
       case 'demos': return 'Demo Sessions & Conversion Tracker';
       case 'doubts': return 'Student Doubt Box & Escalations';
+      case 'utilization': return 'Utilization & Hourly Work Planning Dashboard';
       default: return 'Trainer Portal';
     }
   };
@@ -1557,6 +1569,24 @@ export default function TrainerHeadDashboard({
               >
                 <Home className="w-4 h-4 shrink-0" />
                 <span>Executive Overview</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveTab('utilization')}
+                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
+                  activeTab === 'utilization'
+                    ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                    : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <Clock className="w-4 h-4 shrink-0 text-teal-400" />
+                  <span>Utilization Dashboard</span>
+                </div>
+                <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-teal-500/20 text-teal-300">
+                  Hourly
+                </span>
               </button>
 
               {isHeadRole && (
@@ -2033,7 +2063,18 @@ export default function TrainerHeadDashboard({
               </div>
 
               {/* Bottom Operational Row */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div
+                  onClick={() => setActiveTab('utilization')}
+                  className="bg-white p-4 rounded-2xl border border-teal-200/90 shadow-2xs hover:shadow-md transition-all cursor-pointer group bg-gradient-to-br from-white to-teal-50/40"
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[10.5px] font-bold text-teal-800 uppercase">Hourly Utilization</span>
+                    <Clock className="w-4 h-4 text-teal-600" />
+                  </div>
+                  <div className="text-xl font-black text-slate-900">8-Hour Workday</div>
+                  <div className="text-[11px] text-teal-700 font-semibold mt-0.5">Track Hour-by-Hour Progress →</div>
+                </div>
                 <div
                   onClick={() => setActiveTab('demos')}
                   className="bg-white p-4 rounded-2xl border border-slate-200/90 shadow-2xs hover:shadow-md transition-all cursor-pointer group"
@@ -2540,11 +2581,29 @@ export default function TrainerHeadDashboard({
                               </span>
                             </div>
 
-                            {/* Reporting Manager Pill */}
-                            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-teal-50 border border-teal-200 text-xs font-bold text-teal-900 w-full">
-                              <Briefcase className="w-3.5 h-3.5 text-teal-700 shrink-0" />
-                              <span>Reports to: <strong>{tl.managerName}</strong></span>
-                            </div>
+                            {/* Reporting Manager — Head of Trainer can reassign */}
+                            {isHeadRole ? (
+                              <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-teal-50 border border-teal-200 w-full">
+                                <Briefcase className="w-3.5 h-3.5 text-teal-700 shrink-0" />
+                                <span className="text-[10px] font-bold text-teal-900 shrink-0">Reports to:</span>
+                                <select
+                                  value={tl.managerId || ''}
+                                  disabled={savingAssignment === `tl_${tl.id}`}
+                                  onChange={(e) => handleAssignTlManager(tl, e.target.value)}
+                                  className="flex-1 min-w-0 text-xs font-bold text-teal-900 bg-white border border-teal-200 rounded-lg px-1.5 py-1 outline-none cursor-pointer disabled:opacity-50"
+                                >
+                                  <option value="">— Unassigned —</option>
+                                  {trainerManagersList.map((m) => (
+                                    <option key={m.id} value={m.id}>{m.name}</option>
+                                  ))}
+                                </select>
+                              </div>
+                            ) : (
+                              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-teal-50 border border-teal-200 text-xs font-bold text-teal-900 w-full">
+                                <Briefcase className="w-3.5 h-3.5 text-teal-700 shrink-0" />
+                                <span>Reports to: <strong>{tl.managerName}</strong></span>
+                              </div>
+                            )}
 
                             {/* Contact Info */}
                             <div className="space-y-1.5 text-xs bg-white/80 p-3 rounded-xl border border-emerald-100">
@@ -3676,7 +3735,10 @@ export default function TrainerHeadDashboard({
                     <h3 className="text-base font-extrabold text-slate-900">
                       Trainer and Batch Mapping Matrix ({filteredBatchMapping.length} of {trainerBatchMapping.length})
                     </h3>
-                    <p className="text-xs text-slate-400">Shows which trainer is assigned to which batch, reporting Team Lead, and managing Trainer Manager.</p>
+                    <p className="text-xs text-slate-400">
+                      Shows which trainer is assigned to which batch, reporting Team Lead, and managing Trainer Manager.
+                      {isHeadRole ? ' As Head of Trainer, change the Reporting TL dropdown to reassign a trainer — their Manager updates automatically.' : ''}
+                    </p>
                   </div>
                 </div>
 
@@ -3822,9 +3884,23 @@ export default function TrainerHeadDashboard({
                           </td>
                           <td className="py-3 px-3 font-black text-slate-900">{tr.studentsCount} Students</td>
                           <td className="py-3 px-3">
-                            <span className="inline-flex items-center gap-1 font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-                              {tr.teamLeadName || '—'}
-                            </span>
+                            {isHeadRole ? (
+                              <select
+                                value={tr.teamLeadId || ''}
+                                disabled={savingAssignment === `trainer_${tr.trainerId || tr.id}`}
+                                onChange={(e) => handleAssignTrainerTl(tr, e.target.value)}
+                                className="text-xs font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 rounded px-1.5 py-1 outline-none cursor-pointer disabled:opacity-50"
+                              >
+                                <option value="">— Unassigned —</option>
+                                {trainerTLsList.map((tl) => (
+                                  <option key={tl.id} value={tl.id}>{tl.name}</option>
+                                ))}
+                              </select>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                                {tr.teamLeadName || '—'}
+                              </span>
+                            )}
                           </td>
                           <td className="py-3 px-3">
                             <span className="inline-flex items-center gap-1 font-bold text-teal-800 bg-teal-50 px-2 py-0.5 rounded border border-teal-200">
@@ -4534,6 +4610,19 @@ export default function TrainerHeadDashboard({
                   )}
                 </div>
               </div>
+            </div>
+          )}
+          {/* ================= SECTION 9: UTILIZATION & HOURLY WORK TRACKER ================= */}
+          {activeTab === 'utilization' && (
+            <div className="space-y-6">
+              <UtilizationDashboard
+                roleType={roleType}
+                currentUser={currentUser}
+                currentLeader={currentLeader}
+                scopedTrainers={scopedTrainers}
+                batches={batches}
+                students={students}
+              />
             </div>
           )}
         </div>

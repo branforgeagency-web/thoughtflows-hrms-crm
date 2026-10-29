@@ -43,10 +43,7 @@ import TeamRosterBoard from './TeamRosterBoard';
 import CourseSyllabusBoard from './CourseSyllabusBoard';
 import TrainerOrgHierarchyChart from './TrainerOrgHierarchyChart';
 import {
-  TRAINER_HIERARCHY,
-  ALL_HIERARCHY_TRAINERS
-} from '../constants/trainerHierarchy';
-import {
+  getTrainerCredentials,
   getTrainerSettings,
   getBatches,
   getBranches,
@@ -89,24 +86,13 @@ export default function TrainerRoleDashboard({
   const [studentsList, setStudentsList] = useState([]);
   const [demosList, setDemosList] = useState([]);
   const [doubtsList, setDoubtsList] = useState([]);
+  const [trainerCredentials, setTrainerCredentials] = useState({ head: [], managers: [], teamLeads: [], faculty: [] });
   const [loading, setLoading] = useState(true);
 
   // Active Leader Selection
   const [activeLeaderId, setActiveLeaderId] = useState(() => {
     if (initialLeaderId) return initialLeaderId;
-    if (roleType === 'head') return 'manoj';
-    if (roleType === 'manager') {
-      const name = String(currentUser?.name || currentUser?.userName || '').toLowerCase();
-      if (name.includes('pavithra')) return 'pavithra';
-      return 'keerthi'; // Default to Keerthi (TN / KL)
-    }
-    if (roleType === 'tl') {
-      const name = String(currentUser?.name || currentUser?.userName || '').toLowerCase();
-      if (name.includes('vaishna')) return 'vaishna';
-      if (name.includes('mounika')) return 'mounika';
-      return 'ram_balaji'; // Default to Ram Balaji (TN)
-    }
-    return 'manoj';
+    return currentUser?._id || currentUser?.id || currentUser?.userName || currentUser?.name || 'leader';
   });
 
   const [selectedBranchFilter, setSelectedBranchFilter] = useState('all');
@@ -148,8 +134,9 @@ export default function TrainerRoleDashboard({
       getBranches().catch(() => []),
       getStudents().catch(() => []),
       getDemos().catch(() => []),
-      getTrainerDoubts().catch(() => [])
-    ]).then(([tData, bData, brData, sData, dData, dbtData]) => {
+      getTrainerDoubts().catch(() => []),
+      getTrainerCredentials().catch(() => ({ head: [], managers: [], teamLeads: [], faculty: [] }))
+    ]).then(([tData, bData, brData, sData, dData, dbtData, credData]) => {
       // Pure Real Data: Use trainers returned directly from database / API
       const realTrainers = [...(Array.isArray(tData) ? tData : [])];
       const knownNames = new Set(realTrainers.map((t) => String(t.trainerName || t.name || '').toLowerCase()).filter(Boolean));
@@ -174,6 +161,7 @@ export default function TrainerRoleDashboard({
       setStudentsList(Array.isArray(sData) ? sData : []);
       setDemosList(Array.isArray(dData) ? dData : []);
       setDoubtsList(Array.isArray(dbtData) ? dbtData : []);
+      if (credData) setTrainerCredentials(credData);
       setLoading(false);
     }).catch(() => {
       setLoading(false);
@@ -589,45 +577,57 @@ export default function TrainerRoleDashboard({
             {roleType === 'head' ? (
               <div className="flex items-center gap-2.5 bg-[#0c1921] border border-[#213a4d] rounded-xl p-2.5">
                 <div className="w-9 h-9 rounded-full bg-blue-600 text-white font-black text-sm flex items-center justify-center shadow-xs">
-                  M
+                  {(currentUser?.name || 'H').charAt(0).toUpperCase()}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="text-white text-xs font-bold truncate">Manoj</div>
-                  <div className="text-[#649297] text-[10px] font-medium truncate">Head of Training · 25 Faculty</div>
+                  <div className="text-white text-xs font-bold truncate">
+                    {currentUser?.name || 'Head of Training'}
+                  </div>
+                  <div className="text-[#649297] text-[10px] font-medium truncate">
+                    Head of Training · {trainersList.length} Faculty
+                  </div>
                 </div>
               </div>
             ) : roleType === 'manager' ? (
               <div className="space-y-2">
                 <div className="text-[#649297] text-[10px] leading-snug">
-                  Pick regional manager to switch TN/KL & AP/TS operations.
+                  Select active regional manager.
                 </div>
                 <select
                   value={activeLeaderId}
                   onChange={(e) => setActiveLeaderId(e.target.value)}
                   className="w-full bg-[#0c1921] border border-[#213a4d] text-white text-xs font-semibold rounded-xl px-2.5 py-2 outline-none focus:border-[#00897b] cursor-pointer"
                 >
-                  {TRAINER_HIERARCHY.managers.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name} · {m.zone} ({m.id === 'keerthi' ? '17 Faculty' : '8 Faculty'})
-                    </option>
-                  ))}
+                  {(trainerCredentials?.managers || []).length > 0 ? (
+                    trainerCredentials.managers.map((m) => (
+                      <option key={m.id || m.leaderId} value={m.id || m.leaderId}>
+                        {m.name} · {m.zone || m.branch || 'Region'}
+                      </option>
+                    ))
+                  ) : (
+                    <option value={activeLeaderId}>{currentUser?.name || 'Assigned Manager'}</option>
+                  )}
                 </select>
               </div>
             ) : (
               <div className="space-y-2">
                 <div className="text-[#649297] text-[10px] leading-snug">
-                  Pick team lead to switch pod trainers & daily schedule.
+                  Select active team lead.
                 </div>
                 <select
                   value={activeLeaderId}
                   onChange={(e) => setActiveLeaderId(e.target.value)}
                   className="w-full bg-[#0c1921] border border-[#213a4d] text-white text-xs font-semibold rounded-xl px-2.5 py-2 outline-none focus:border-[#00897b] cursor-pointer"
                 >
-                  {TRAINER_HIERARCHY.teamLeads.map((tl) => (
-                    <option key={tl.id} value={tl.id}>
-                      {tl.name} · {tl.zone} ({tl.trainerCount} Faculty)
-                    </option>
-                  ))}
+                  {(trainerCredentials?.teamLeads || []).length > 0 ? (
+                    trainerCredentials.teamLeads.map((tl) => (
+                      <option key={tl.id || tl.leaderId} value={tl.id || tl.leaderId}>
+                        {tl.name} · {tl.zone || tl.branch || 'Pod'}
+                      </option>
+                    ))
+                  ) : (
+                    <option value={activeLeaderId}>{currentUser?.name || 'Assigned Team Lead'}</option>
+                  )}
                 </select>
               </div>
             )}

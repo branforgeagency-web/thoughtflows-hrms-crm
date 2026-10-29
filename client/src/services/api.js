@@ -454,6 +454,13 @@ export const updateTrainerSettings = async (id, data) => {
   return res.data;
 };
 
+// Head of Trainer: reassign which Manager a Team Lead reports to (zone/state included)
+export const updateTrainerRoleAccount = async (id, data) => {
+  const res = await api.put(`/trainer/role-accounts/${id}`, data);
+  notifyDataUpdate('trainer_settings');
+  return res.data;
+};
+
 // Fees & Course Rates API
 export const getCourseFeeRates = async () => {
   const res = await api.get('/fees/rates');
@@ -1431,5 +1438,42 @@ export const followUpDoubt = async (id, text) => {
 export const resolveDoubt = async (id) => {
   const res = await api.post(`/student-portal/doubts/${id}/resolve`);
   notifyDataUpdate('doubts');
+  return res.data;
+};
+
+// ==========================================
+// UTILIZATION DASHBOARD & HOURLY WORK TRACKER
+// ==========================================
+export const getTrainerUtilization = async (params = {}) => {
+  const res = await api.get('/trainer/utilization', { params });
+  return res.data;
+};
+
+export const saveTrainerHourlyPlan = async (data) => {
+  const res = await api.post('/trainer/utilization/plan', data);
+  notifyDataUpdate('trainer_utilization');
+  return res.data;
+};
+
+export const updateTrainerSlotActual = async (data) => {
+  const res = await api.put('/trainer/utilization/actual', data);
+  notifyDataUpdate('trainer_utilization');
+  return res.data;
+};
+
+export const bulkSaveTrainerHourlyPlans = async (data) => {
+  const res = await api.post('/trainer/utilization/bulk-plan', data);
+  notifyDataUpdate('trainer_utilization');
+  return res.data;
+};
+
+export const setTrainerLeave = async (data) => {
+  const res = await api.post('/trainer/utilization/leave', data);
+  notifyDataUpdate('trainer_utilization');
+  return res.data;
+};
+
+export const getTrainerUtilizationReport = async (params = {}) => {
+  const res = await api.get('/trainer/utilization/report', { params });
   return res.data;
 };

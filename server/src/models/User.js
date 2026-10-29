@@ -32,6 +32,24 @@ const userSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  // Training org-chart assignment (Head of Trainer settable) — which zone a
+  // Trainer Manager/TL covers, and which Manager a Trainer TL reports to.
+  zone: {
+    type: String,
+    default: ''
+  },
+  zoneLabel: {
+    type: String,
+    default: ''
+  },
+  managerId: {
+    type: String,
+    default: ''
+  },
+  managerName: {
+    type: String,
+    default: ''
+  },
   status: {
     type: String,
     default: 'Active'
