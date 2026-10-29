@@ -1918,7 +1918,9 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
               </div>
             </div>
             <div className="text-3xl font-extrabold text-slate-900">{scopedDemos.length}</div>
-            <div className="text-xs text-slate-500 mt-1 font-medium">{scopedDemos.filter(d => String(d.status).toLowerCase() === 'booked').length} upcoming · {scopedDemos.filter(d => String(d.status).toLowerCase() === 'attended').length} attended</div>
+            <div className="text-xs text-slate-500 mt-1 font-medium">
+              {scopedDemos.filter(d => !d.trainer || d.trainer === 'Unassigned').length} pending faculty · {scopedDemos.filter(d => d.trainer && d.trainer !== 'Unassigned' && !['attended', 'completed', 'fee'].includes(String(d.status).toLowerCase())).length} assigned · {scopedDemos.filter(d => ['attended', 'completed', 'fee'].includes(String(d.status).toLowerCase())).length} attended
+            </div>
           </div>
 
           {/* Card 4 */}

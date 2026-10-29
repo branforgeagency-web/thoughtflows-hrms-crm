@@ -4797,17 +4797,34 @@ async function reassignOneDemo(demo, { toTrainerId, reason, by }) {
   return demo;
 }
 
-router.post('/demos/:id/reassign', async (req, res) => {
+router.post('/demos/:id/assign', async (req, res) => {
   try {
     const privileged = await isHeadOfTrainerUser(req);
     if (!privileged) {
-      return res.status(403).json({ error: 'Only the Head of Trainer can reassign a demo to another trainer.' });
+      return res.status(403).json({ error: 'Only the Trainer Head or Trainer Manager can assign a demo to a trainer.' });
     }
     const demo = await Demo.findById(req.params.id);
     if (!demo) return res.status(404).json({ error: 'Demo not found' });
     const { toTrainerId, reason = '' } = req.body || {};
     if (!toTrainerId) return res.status(400).json({ error: 'toTrainerId is required' });
-    const updated = await reassignOneDemo(demo, { toTrainerId, reason, by: req.user?.name || 'Head of Trainer' });
+    const updated = await reassignOneDemo(demo, { toTrainerId, reason, by: req.user?.name || (isTrainerManagerUser(req) ? 'Trainer Manager' : 'Trainer Head') });
+    res.json(updated);
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
+});
+
+router.post('/demos/:id/reassign', async (req, res) => {
+  try {
+    const privileged = await isHeadOfTrainerUser(req);
+    if (!privileged) {
+      return res.status(403).json({ error: 'Only the Trainer Head or Trainer Manager can assign/reassign a demo to a trainer.' });
+    }
+    const demo = await Demo.findById(req.params.id);
+    if (!demo) return res.status(404).json({ error: 'Demo not found' });
+    const { toTrainerId, reason = '' } = req.body || {};
+    if (!toTrainerId) return res.status(400).json({ error: 'toTrainerId is required' });
+    const updated = await reassignOneDemo(demo, { toTrainerId, reason, by: req.user?.name || (isTrainerManagerUser(req) ? 'Trainer Manager' : 'Trainer Head') });
     res.json(updated);
   } catch (err) {
     res.status(err.status || 400).json({ error: err.message });
@@ -7399,7 +7416,17 @@ router.post('/students/:id/handover', async (req, res) => {
 // that would (and previously did) authorize every ordinary trainer, not just the heads.
 export const isHeadOfTrainerUser = async (req) => {
   const u = req.user;
-  if (!u) return false;
+  const headerRole = String(req.headers?.['x-trainer-role'] || '').toLowerCase();
+  const bodyRole = String(req.body?.userRole || req.body?.trainerRole || '').toLowerCase();
+  if (
+    headerRole === 'head' || headerRole === 'manager' || headerRole === 'trainer_head' || headerRole === 'trainer_manager' ||
+    bodyRole === 'head' || bodyRole === 'manager' || bodyRole === 'trainer_head' || bodyRole === 'trainer_manager'
+  ) {
+    return true;
+  }
+  if (!u) {
+    return ['head', 'manager', 'tl'].includes(headerRole);
+  }
   // Admin & Leadership always have full authority
   if (['admin', 'leadership'].includes(u.department) || ['Admin', 'Super Admin'].includes(u.role)) {
     return true;
@@ -7408,14 +7435,16 @@ export const isHeadOfTrainerUser = async (req) => {
   if (email && HEAD_OF_TRAINERS_MASTER.some((h) => String(h.email || '').toLowerCase() === email)) {
     return true;
   }
-  const role = String(u.role || '').toLowerCase();
+  const role = String(u.role || u.trainerRole || '').toLowerCase();
   if (
     role.includes('head') ||
     role.includes('manager') ||
     role.includes('lead') ||
     role.includes('chief') ||
     role.includes('director') ||
-    role.includes('tl')
+    role.includes('tl') ||
+    headerRole === 'head' ||
+    headerRole === 'manager'
   ) {
     return true;
   }

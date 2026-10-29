@@ -55,6 +55,7 @@ import {
   getDemos,
   getTrainerDoubts,
   getTrainerCredentials,
+  assignDemo,
   reassignDemo,
   bulkReassignDemos,
   onDataUpdate,
@@ -899,17 +900,29 @@ export default function TrainerHeadDashboard({
   const scopedDemos = useMemo(() => {
     if (roleType === 'head') return demos;
     return demos.filter((d) => {
+      // Unassigned demos: Trainer Manager should see unassigned demos in their branches (or all if not branch restricted)
+      const isUnassigned = !d.trainer || d.trainer === 'Unassigned' || !d.trainerId;
+      const dBranch = String(d.branch || d.location || '').toLowerCase();
+      const matchesBranch = scopedBranchNames.length === 0 || scopedBranchNames.some((sbn) => sbn.toLowerCase() === dBranch || dBranch.includes(sbn.toLowerCase()) || sbn.toLowerCase().includes(dBranch));
+      if (isUnassigned && matchesBranch) return true;
+
       if (d.trainerId && scopedTrainerIds.includes(d.trainerId)) return true;
       const tName = String(d.trainer || d.trainerMapping || '').toLowerCase();
       if (scopedTrainerNames.some((stn) => tName.includes(stn.toLowerCase()))) return true;
-      const dBranch = String(d.branch || d.location || '').toLowerCase();
-      return scopedBranchNames.some((sbn) => sbn.toLowerCase() === dBranch);
+      return matchesBranch;
     });
   }, [demos, roleType, scopedTrainerIds, scopedTrainerNames, scopedBranchNames]);
 
+  const unassignedDemos = useMemo(() => {
+    return scopedDemos.filter((d) => !d.trainer || d.trainer === 'Unassigned' || !d.trainerId);
+  }, [scopedDemos]);
+
   const demoReport = useMemo(() => {
     const scheduled = scopedDemos.filter((d) =>
-      ['booked', 'confirmed', 'scheduled'].includes(String(d.status || '').toLowerCase())
+      ['booked', 'confirmed', 'scheduled'].includes(String(d.status || '').toLowerCase()) && d.trainer && d.trainer !== 'Unassigned'
+    );
+    const unassigned = scopedDemos.filter((d) =>
+      !d.trainer || d.trainer === 'Unassigned' || !d.trainerId
     );
     const completed = scopedDemos.filter((d) =>
       ['completed', 'converted', 'attended'].includes(String(d.status || '').toLowerCase())
@@ -921,6 +934,7 @@ export default function TrainerHeadDashboard({
     return {
       total: scopedDemos.length,
       scheduled,
+      unassigned,
       completed,
       missed,
       conversionRate: completed.length > 0 ? Math.round((completed.length / scopedDemos.length) * 100) : 74
@@ -1007,11 +1021,12 @@ export default function TrainerHeadDashboard({
   }, [scopedDemos, currentLeaderTrainerId, currentLeaderTrainerName]);
 
   const displayedDemos = useMemo(() => {
+    if (demoFilterTab === 'unassigned') return unassignedDemos;
     if (demoFilterTab === 'mine') return myAssignedDemos;
-    if (demoFilterTab === 'scheduled') return scopedDemos.filter((d) => ['booked', 'confirmed'].includes(String(d.status || '').toLowerCase()));
+    if (demoFilterTab === 'scheduled') return scopedDemos.filter((d) => ['booked', 'confirmed'].includes(String(d.status || '').toLowerCase()) && d.trainer && d.trainer !== 'Unassigned');
     if (demoFilterTab === 'completed') return scopedDemos.filter((d) => ['attended', 'completed', 'enrolled'].includes(String(d.status || '').toLowerCase()));
     return scopedDemos;
-  }, [demoFilterTab, myAssignedDemos, scopedDemos]);
+  }, [demoFilterTab, unassignedDemos, myAssignedDemos, scopedDemos]);
 
   const handleSelfAssignDemo = async (demoId) => {
     try {
@@ -1383,21 +1398,32 @@ export default function TrainerHeadDashboard({
     });
   }, [batchWiseReport, batchBranchFilter, batchCourseFilter, batchFacultyFilter, batchSearch]);
 
-  // Reassign demo handler
+  // Assign / Reassign demo handler
   const handleConfirmReassign = async () => {
     if (!reassignDemoTarget || !reassignForm.toTrainerId) return;
     setReassigning(true);
     try {
-      await reassignDemo(reassignDemoTarget._id, {
-        toTrainerId: reassignForm.toTrainerId,
-        reason: reassignForm.reason
-      });
-      const toTrainer = scopedTrainers.find((t) => (t.trainerId || t.id) === reassignForm.toTrainerId);
-      flashToast(`✓ Demo for ${reassignDemoTarget.candidateName} successfully reassigned to ${toTrainer?.trainerName || toTrainer?.name || 'Faculty'}`);
+      const isInitialAssign = !reassignDemoTarget.trainer || reassignDemoTarget.trainer === 'Unassigned' || !reassignDemoTarget.trainerId;
+      if (isInitialAssign) {
+        await assignDemo(reassignDemoTarget._id, {
+          toTrainerId: reassignForm.toTrainerId,
+          reason: reassignForm.reason
+        });
+      } else {
+        await reassignDemo(reassignDemoTarget._id, {
+          toTrainerId: reassignForm.toTrainerId,
+          reason: reassignForm.reason
+        });
+      }
+      const toTrainer = scopedTrainers.find((t) => (t.trainerId || t.id) === reassignForm.toTrainerId) || trainers.find((t) => (t.trainerId || t.id) === reassignForm.toTrainerId);
+      flashToast(isInitialAssign
+        ? `✓ Demo for ${reassignDemoTarget.candidateName} successfully assigned to ${toTrainer?.trainerName || toTrainer?.name || 'Faculty'}`
+        : `✓ Demo for ${reassignDemoTarget.candidateName} successfully reassigned to ${toTrainer?.trainerName || toTrainer?.name || 'Faculty'}`
+      );
       setReassignDemoTarget(null);
       loadDashboardData();
     } catch (err) {
-      flashToast(`⚠ Reassign failed: ${err?.response?.data?.error || err.message}`);
+      flashToast(`⚠ Assignment failed: ${err?.response?.data?.error || err.message}`);
     } finally {
       setReassigning(false);
     }
@@ -2062,6 +2088,33 @@ export default function TrainerHeadDashboard({
                 </div>
               </div>
 
+              {/* Unassigned Demos Alert for Trainer Head & Manager */}
+              {unassignedDemos.length > 0 && (
+                <div className="bg-amber-50 border-2 border-amber-300 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center font-black text-lg shrink-0">
+                      ⚠️
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-extrabold text-amber-950 flex items-center gap-2">
+                        <span>{unassignedDemos.length} Demo{unassignedDemos.length > 1 ? 's' : ''} Awaiting Trainer Assignment</span>
+                        <span className="px-2 py-0.2 rounded-full text-[10px] font-bold bg-amber-200 text-amber-900">Action Required</span>
+                      </h4>
+                      <p className="text-xs text-amber-800 font-medium mt-0.5">
+                        Booked by HR counselors and waiting for {roleType === 'manager' ? 'Trainer Manager' : 'Trainer Head'} to assign available faculty.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => { setActiveTab('demos'); setDemoFilterTab('unassigned'); }}
+                    className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-xs shadow-xs transition-all cursor-pointer shrink-0"
+                  >
+                    Assign Trainers Now ({unassignedDemos.length}) →
+                  </button>
+                </div>
+              )}
+
               {/* Bottom Operational Row */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div
@@ -2081,10 +2134,15 @@ export default function TrainerHeadDashboard({
                 >
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-[10.5px] font-bold text-slate-400 uppercase">Demos Tracked</span>
-                    <AtSign className="w-4 h-4 text-cyan-600" />
+                    <Video className="w-4 h-4 text-cyan-600" />
                   </div>
                   <div className="text-xl font-black text-slate-900">{scopedDemos.length} Total</div>
-                  <div className="text-[11px] text-cyan-700 font-medium mt-0.5">{demoReport.scheduled.length} Upcoming Demos →</div>
+                  <div className="text-[11px] text-cyan-700 font-medium mt-0.5">
+                    {unassignedDemos.length > 0 ? (
+                      <span className="text-amber-700 font-extrabold">⚠️ {unassignedDemos.length} Awaiting Assignment · </span>
+                    ) : null}
+                    {demoReport.scheduled.length} Scheduled →
+                  </div>
                 </div>
 
                 <div
@@ -4195,10 +4253,29 @@ export default function TrainerHeadDashboard({
           {activeTab === 'demos' && (
             <div className="space-y-6">
               {/* Demo KPI Summary Cards */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
                 <div className="bg-white p-4 rounded-2xl border border-slate-200/90 shadow-2xs">
                   <div className="text-[10.5px] font-bold text-slate-400 uppercase">Total Demos</div>
                   <div className="text-2xl font-black text-slate-900 mt-0.5">{scopedDemos.length}</div>
+                </div>
+                <div 
+                  onClick={() => setDemoFilterTab('unassigned')}
+                  className={`p-4 rounded-2xl border shadow-2xs transition-all cursor-pointer flex flex-col justify-between ${
+                    demoFilterTab === 'unassigned'
+                      ? 'bg-amber-50 border-amber-400 ring-2 ring-amber-300'
+                      : 'bg-white border-slate-200/90 hover:border-amber-300'
+                  } border-l-4 border-l-amber-500`}
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="text-[10.5px] font-bold text-amber-800 uppercase flex items-center gap-1">
+                      <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
+                      <span>Awaiting Faculty</span>
+                    </div>
+                    {unassignedDemos.length > 0 && (
+                      <span className="text-[9px] font-black px-1.5 py-0.2 rounded bg-amber-100 text-amber-800 animate-pulse">ACTION</span>
+                    )}
+                  </div>
+                  <div className="text-2xl font-black text-amber-700 mt-0.5">{unassignedDemos.length}</div>
                 </div>
                 <div className="bg-white p-4 rounded-2xl border border-slate-200/90 shadow-2xs">
                   <div className="text-[10.5px] font-bold text-emerald-600 uppercase flex items-center gap-1">
@@ -4217,6 +4294,33 @@ export default function TrainerHeadDashboard({
                 </div>
               </div>
 
+              {/* Alert: Demos Pending Assignment */}
+              {unassignedDemos.length > 0 && (
+                <div className="bg-amber-50 border-2 border-amber-300 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center font-black text-lg shrink-0">
+                      ⚠️
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-extrabold text-amber-950 flex items-center gap-2">
+                        <span>{unassignedDemos.length} Demo{unassignedDemos.length > 1 ? 's' : ''} Awaiting Trainer Assignment</span>
+                        <span className="px-2 py-0.2 rounded-full text-[10px] font-bold bg-amber-200 text-amber-900">Action Required</span>
+                      </h4>
+                      <p className="text-xs text-amber-800 font-medium mt-0.5">
+                        New demos booked by HR counselors have been routed to you for faculty assignment. Click below to assign available trainers.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setDemoFilterTab('unassigned')}
+                    className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-xs shadow-xs transition-all cursor-pointer shrink-0"
+                  >
+                    Assign Trainers Now ({unassignedDemos.length}) →
+                  </button>
+                </div>
+              )}
+
               {/* Demos Management Table & Actions */}
               <div className="bg-white rounded-2xl border border-slate-200/90 p-4 sm:p-6 shadow-xs space-y-4">
                 <div className="flex items-center justify-between flex-wrap gap-3 pb-3 border-b border-slate-100">
@@ -4226,12 +4330,12 @@ export default function TrainerHeadDashboard({
                       <span>Live Candidate Demos &amp; Conduction Desk</span>
                     </h3>
                     <p className="text-xs text-slate-400">
-                      Take sessions directly, self-assign demos to conduct, launch Zoom meeting rooms, and log candidate outcomes.
+                      Assign faculty to candidate demos, take sessions directly, launch Zoom meeting rooms, and log candidate outcomes.
                     </p>
                   </div>
 
                   {/* Filter Sub-Tabs */}
-                  <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl text-xs font-bold">
+                  <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl text-xs font-bold flex-wrap">
                     <button
                       type="button"
                       onClick={() => setDemoFilterTab('all')}
@@ -4242,6 +4346,20 @@ export default function TrainerHeadDashboard({
                       }`}
                     >
                       All Demos ({scopedDemos.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDemoFilterTab('unassigned')}
+                      className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
+                        demoFilterTab === 'unassigned'
+                          ? 'bg-amber-600 text-white shadow-2xs font-black'
+                          : 'text-amber-800 bg-amber-50 border border-amber-300 hover:bg-amber-100 font-bold'
+                      }`}
+                    >
+                      <span>⚠️ Awaiting Assignment</span>
+                      <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-white/20">
+                        {unassignedDemos.length}
+                      </span>
                     </button>
                     <button
                       type="button"
@@ -4418,9 +4536,17 @@ export default function TrainerHeadDashboard({
                               <span className="text-[10px] text-slate-400 block">{dm.timeSlot || 'General'}</span>
                             </td>
                             <td className="py-3 px-3">
-                              <div className="font-medium text-slate-900">
-                                {dm.trainer || dm.trainerMapping || 'Unassigned'}
-                              </div>
+                              {dm.trainer && dm.trainer !== 'Unassigned' && dm.trainerId ? (
+                                <div>
+                                  <div className="font-extrabold text-slate-900">{dm.trainer}</div>
+                                  <div className="text-[10px] text-slate-400 font-mono">{dm.trainerId}</div>
+                                </div>
+                              ) : (
+                                <span className="px-2.5 py-1 rounded-lg text-[10.5px] font-black bg-amber-100 text-amber-800 border border-amber-300 inline-flex items-center gap-1 animate-pulse">
+                                  <span>⚠️</span>
+                                  <span>Awaiting Assignment</span>
+                                </span>
+                              )}
                             </td>
                             <td className="py-3 px-3">
                               <span
@@ -4437,61 +4563,86 @@ export default function TrainerHeadDashboard({
                             </td>
                             <td className="py-3 px-3 text-right">
                               <div className="flex items-center justify-end gap-1.5 flex-wrap">
-                                {/* Start Demo Zoom Meeting Button */}
-                                <button
-                                  type="button"
-                                  onClick={() => handleStartDemoMeeting(dm)}
-                                  className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1 shadow-2xs transition-all cursor-pointer"
-                                  title="Launch demo call / Zoom room"
-                                >
-                                  <Video className="w-3 h-3" />
-                                  <span>Start Demo</span>
-                                </button>
+                                {(!dm.trainer || dm.trainer === 'Unassigned' || !dm.trainerId) ? (
+                                  <>
+                                    {/* Primary Action for Trainer Head & Manager: Assign Trainer */}
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setReassignDemoTarget(dm);
+                                        setReassignForm({ toTrainerId: '', reason: '' });
+                                      }}
+                                      className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs shadow-xs transition-all cursor-pointer flex items-center gap-1.5"
+                                      title="Assign an available trainer to this demo"
+                                    >
+                                      <UserCheck className="w-3.5 h-3.5" />
+                                      <span>Assign Trainer</span>
+                                    </button>
 
-                                {/* Self-assign button if not already assigned to leader */}
-                                {!isAssignedToMe && (
-                                  <button
-                                    type="button"
-                                    onClick={() => handleSelfAssignDemo(dm._id || dm.id)}
-                                    className="px-2.5 py-1 rounded-lg bg-teal-50 hover:bg-teal-100 text-teal-700 font-bold text-xs border border-teal-200 transition-all cursor-pointer"
-                                    title="Take this demo session personally"
-                                  >
-                                    Take Demo
-                                  </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleSelfAssignDemo(dm._id || dm.id)}
+                                      className="px-2.5 py-1.5 rounded-lg bg-teal-50 hover:bg-teal-100 text-teal-700 font-bold text-xs border border-teal-200 transition-all cursor-pointer"
+                                      title="Take this demo session personally"
+                                    >
+                                      Take Demo
+                                    </button>
+                                  </>
+                                ) : (
+                                  <>
+                                    {/* Start Demo Zoom Meeting Button */}
+                                    <button
+                                      type="button"
+                                      onClick={() => handleStartDemoMeeting(dm)}
+                                      className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1 shadow-2xs transition-all cursor-pointer"
+                                      title="Launch demo call / Zoom room"
+                                    >
+                                      <Video className="w-3 h-3" />
+                                      <span>Start Demo</span>
+                                    </button>
+
+                                    {/* Self-assign button if not already assigned to leader */}
+                                    {!isAssignedToMe && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleSelfAssignDemo(dm._id || dm.id)}
+                                        className="px-2.5 py-1 rounded-lg bg-teal-50 hover:bg-teal-100 text-teal-700 font-bold text-xs border border-teal-200 transition-all cursor-pointer"
+                                        title="Take this demo session personally"
+                                      >
+                                        Take Demo
+                                      </button>
+                                    )}
+
+                                    {/* Mark outcome button */}
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setDemoOutcomeTarget(dm);
+                                        setDemoOutcomeForm({
+                                          status: dm.status || 'attended',
+                                          notes: dm.trainerNotes || ''
+                                        });
+                                      }}
+                                      className="px-2.5 py-1 rounded-lg bg-purple-50 hover:bg-purple-100 text-purple-700 font-bold text-xs border border-purple-200 transition-all cursor-pointer"
+                                      title="Record completion status and feedback notes"
+                                    >
+                                      Outcome
+                                    </button>
+
+                                    {/* Reassign button */}
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setReassignDemoTarget(dm);
+                                        setReassignForm({ toTrainerId: '', reason: '' });
+                                      }}
+                                      className="px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 font-bold text-xs border border-blue-200 transition-all cursor-pointer"
+                                      title="Reassign to another faculty"
+                                    >
+                                      Reassign
+                                    </button>
+                                  </>
                                 )}
-
-                                {/* Mark outcome button */}
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setDemoOutcomeTarget(dm);
-                                    setDemoOutcomeForm({
-                                      status: dm.status || 'attended',
-                                      notes: dm.trainerNotes || ''
-                                    });
-                                  }}
-                                  className="px-2.5 py-1 rounded-lg bg-purple-50 hover:bg-purple-100 text-purple-700 font-bold text-xs border border-purple-200 transition-all cursor-pointer"
-                                  title="Record completion status and feedback notes"
-                                >
-                                  Outcome
-                                </button>
-
-                                {/* Assign / Reassign button */}
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setReassignDemoTarget(dm);
-                                    setReassignForm({ toTrainerId: '', reason: '' });
-                                  }}
-                                  className={`px-2.5 py-1 rounded-lg font-bold text-xs border transition-all cursor-pointer ${
-                                    dm.trainer
-                                      ? 'bg-blue-50 hover:bg-blue-100 text-blue-700 border-blue-200'
-                                      : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-300 font-extrabold'
-                                  }`}
-                                  title={dm.trainer ? "Reassign to another faculty" : "Assign to available faculty"}
-                                >
-                                  {dm.trainer ? 'Reassign' : 'Assign Faculty'}
-                                </button>
                               </div>
                             </td>
                           </tr>
@@ -4697,54 +4848,97 @@ export default function TrainerHeadDashboard({
         </div>
       )}
 
-      {/* ================= MODAL: REASSIGN DEMO ================= */}
+      {/* ================= MODAL: ASSIGN / REASSIGN DEMO ================= */}
       {reassignDemoTarget && (
-        <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full p-6 text-slate-800 space-y-4">
+        <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full p-6 text-slate-800 space-y-4 animate-in zoom-in-95">
             <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-              <h3 className="text-sm font-extrabold text-slate-900">
-                {reassignDemoTarget.trainer ? 'Reassign Demo Session' : 'Assign Demo to Available Trainer'}
+              <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-1.5">
+                <UserCheck className="w-4 h-4 text-[#00897b]" />
+                <span>
+                  {reassignDemoTarget.trainer && reassignDemoTarget.trainer !== 'Unassigned'
+                    ? 'Reassign Demo Session'
+                    : 'Assign Demo to Available Trainer'}
+                </span>
               </h3>
               <button
                 type="button"
                 onClick={() => setReassignDemoTarget(null)}
-                className="p-1 rounded-lg text-slate-400 hover:text-slate-600"
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <div className="text-xs text-slate-600 space-y-1">
-              <div><strong>Candidate:</strong> {reassignDemoTarget.candidateName}</div>
-              <div><strong>Course:</strong> {reassignDemoTarget.course}</div>
-              <div><strong>Current Faculty:</strong> {reassignDemoTarget.trainer || 'Unassigned (Pending Assignment)'}</div>
+
+            {/* Candidate & Demo Details Summary */}
+            <div className="text-xs text-slate-700 space-y-1.5 bg-slate-50 p-3.5 rounded-xl border border-slate-200">
+              <div className="flex items-center justify-between">
+                <div><strong>Candidate:</strong> <span className="font-bold text-slate-900">{reassignDemoTarget.candidateName}</span></div>
+                <span className="font-mono text-[11px] text-slate-500">{reassignDemoTarget.phone || 'N/A'}</span>
+              </div>
+              <div><strong>Course:</strong> <span className="font-semibold text-teal-800">{reassignDemoTarget.course}</span></div>
+              <div className="flex items-center justify-between">
+                <div><strong>Scheduled Slot:</strong> {reassignDemoTarget.preferredDate} · {reassignDemoTarget.timeSlot || reassignDemoTarget.time || 'General'}</div>
+                <span className="text-[10px] text-slate-500">{reassignDemoTarget.mode || 'Online'}</span>
+              </div>
+              <div><strong>Branch &amp; Language:</strong> {reassignDemoTarget.branch || reassignDemoTarget.location || 'All Branches'} · {reassignDemoTarget.language || 'English'}</div>
+              <div className="pt-1 border-t border-slate-200/80 flex items-center justify-between">
+                <span className="font-medium text-slate-500">Current Faculty:</span>
+                {reassignDemoTarget.trainer && reassignDemoTarget.trainer !== 'Unassigned' ? (
+                  <span className="font-extrabold text-slate-900">{reassignDemoTarget.trainer}</span>
+                ) : (
+                  <span className="px-2 py-0.5 rounded text-[10px] font-black bg-amber-100 text-amber-800 border border-amber-300">
+                    ⚠️ Unassigned (Pending Allocation)
+                  </span>
+                )}
+              </div>
             </div>
+
+            {/* Smart Matching Recommendation Tip */}
+            <div className="bg-teal-50 border border-teal-200 rounded-xl p-2.5 text-[11px] text-teal-900 flex items-start gap-2">
+              <span className="text-xs shrink-0 mt-0.5">💡</span>
+              <div className="leading-tight">
+                <strong>Allocation tip:</strong> Preferred Branch is <b>{reassignDemoTarget.branch || reassignDemoTarget.location || 'Any Branch'}</b> &amp; Language is <b>{reassignDemoTarget.language || 'Tamil'}</b>. Selecting an active faculty available for this time slot is recommended.
+              </div>
+            </div>
+
+            {/* Faculty Selection Dropdown */}
             <div className="space-y-1.5">
-              <label className="text-xs font-bold text-slate-700">
-                {reassignDemoTarget.trainer ? 'Assign to New Faculty' : 'Select Faculty / Trainer'}
+              <label className="text-xs font-bold text-slate-700 flex items-center justify-between">
+                <span>{reassignDemoTarget.trainer && reassignDemoTarget.trainer !== 'Unassigned' ? 'Reassign to Faculty' : 'Select Faculty to Assign *'}</span>
+                <span className="text-[10px] text-slate-400 font-normal">Active faculty only</span>
               </label>
               <select
                 value={reassignForm.toTrainerId}
                 onChange={(e) => setReassignForm((p) => ({ ...p, toTrainerId: e.target.value }))}
-                className="w-full bg-slate-50 border border-slate-200 text-xs font-semibold rounded-xl px-3 py-2 outline-none focus:border-[#00897b]"
+                className="w-full bg-slate-50 border border-slate-200 text-xs font-semibold rounded-xl px-3 py-2 outline-none focus:border-[#00897b] cursor-pointer"
               >
-                <option value="">Select faculty...</option>
-                {scopedTrainers.map((tr) => (
-                  <option key={tr.trainerId || tr.id} value={tr.trainerId || tr.id}>
-                    {tr.trainerName || tr.name}{tr.branchName || tr.branch ? ` (${tr.branchName || tr.branch})` : ''}
-                  </option>
-                ))}
+                <option value="">Select available faculty...</option>
+                {((scopedTrainers && scopedTrainers.length > 0) ? scopedTrainers : trainers)
+                  .filter((tr) => tr.status !== 'Inactive')
+                  .map((tr) => (
+                    <option key={tr.trainerId || tr.id} value={tr.trainerId || tr.id}>
+                      {tr.trainerName || tr.name}{tr.branchName || tr.branch ? ` — ${tr.branchName || tr.branch}` : ''}{tr.specialization || tr.expertCourse ? ` (${tr.specialization || tr.expertCourse})` : ''}
+                    </option>
+                  ))}
               </select>
             </div>
+
+            {/* Optional Reason Input */}
             <div className="space-y-1.5">
-              <label className="text-xs font-bold text-slate-700">Reason</label>
+              <label className="text-xs font-bold text-slate-700">
+                {reassignDemoTarget.trainer && reassignDemoTarget.trainer !== 'Unassigned' ? 'Reason for Reassignment' : 'Assignment Note (Optional)'}
+              </label>
               <input
                 type="text"
                 value={reassignForm.reason}
                 onChange={(e) => setReassignForm((p) => ({ ...p, reason: e.target.value }))}
-                placeholder="e.g. Schedule conflict / Faculty leave"
+                placeholder={reassignDemoTarget.trainer && reassignDemoTarget.trainer !== 'Unassigned' ? 'e.g. Schedule conflict / Faculty leave' : 'e.g. Subject matter expert / Available slot'}
                 className="w-full bg-slate-50 border border-slate-200 text-xs rounded-xl px-3 py-2 outline-none focus:border-[#00897b]"
               />
             </div>
+
+            {/* Modal Action Buttons */}
             <div className="pt-2 flex items-center justify-end gap-2">
               <button
                 type="button"
@@ -4757,9 +4951,13 @@ export default function TrainerHeadDashboard({
                 type="button"
                 disabled={reassigning || !reassignForm.toTrainerId}
                 onClick={handleConfirmReassign}
-                className="px-4 py-2 rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white text-xs font-bold shadow-xs disabled:opacity-50 cursor-pointer"
+                className="px-5 py-2 rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white text-xs font-bold shadow-xs disabled:opacity-50 cursor-pointer"
               >
-                {reassigning ? 'Assigning...' : (reassignDemoTarget.trainer ? 'Confirm Reassign' : 'Assign Faculty')}
+                {reassigning 
+                  ? 'Assigning...' 
+                  : (reassignDemoTarget.trainer && reassignDemoTarget.trainer !== 'Unassigned' 
+                    ? 'Confirm Reassign' 
+                    : 'Confirm & Assign Trainer')}
               </button>
             </div>
           </div>

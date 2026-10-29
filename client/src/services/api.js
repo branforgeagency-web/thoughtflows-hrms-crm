@@ -258,7 +258,14 @@ export const getDemos = async (params) => {
   const res = await api.get('/demos', { params });
   return res.data;
 };
-// Head of Trainer only — move one demo (or every upcoming demo of a trainer,
+// Trainer Head & Trainer Manager — assign an unassigned demo to a faculty member
+export const assignDemo = async (id, { toTrainerId, reason }) => {
+  const res = await api.post(`/demos/${id}/assign`, { toTrainerId, reason });
+  notifyDataUpdate('demos');
+  return res.data;
+};
+
+// Trainer Head & Trainer Manager — move one demo (or every upcoming demo of a trainer,
 // optionally scoped to one date) to a different trainer, e.g. on leave.
 export const reassignDemo = async (id, { toTrainerId, reason }) => {
   const res = await api.post(`/demos/${id}/reassign`, { toTrainerId, reason });
