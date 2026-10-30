@@ -544,7 +544,7 @@ export default function UtilizationDashboard({
                   8-Hour Working Day Tracking
                 </span>
                 <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
-                  {roleType === 'head' ? 'Trainer Head Command' : roleType === 'manager' ? 'Trainer Manager Desk' : roleType === 'tl' ? 'Trainer TL Command' : 'Faculty Work Desk'}
+                  {roleType === 'head' ? 'Department Head Command' : roleType === 'manager' ? 'Trainer Manager Desk' : roleType === 'tl' ? 'Training Team Lead Command' : 'Faculty Work Desk'}
                 </span>
               </div>
               <h1 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight mt-0.5">
@@ -812,7 +812,7 @@ export default function UtilizationDashboard({
                 }`}
               >
                 <UserCheck className="w-4 h-4" />
-                <span>My Head of Trainer Hourly Work</span>
+                <span>My Department Head Hourly Work</span>
               </button>
               <button
                 type="button"
@@ -1007,7 +1007,7 @@ export default function UtilizationDashboard({
       )}
 
       {/* ========================================================================= */}
-      {/* VIEW 2: TEAM TRAINERS WORK PLANNER (FOR TRAINER TL)                       */}
+      {/* VIEW 2: TEAM TRAINERS WORK PLANNER (FOR TRAINING TEAM LEAD)             */}
       {/* ========================================================================= */}
       {roleType === 'tl' && activeSubTab === 'team_planner' && (
         <div className="space-y-6">

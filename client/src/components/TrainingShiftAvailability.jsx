@@ -175,7 +175,7 @@ export default function TrainingShiftAvailability({ trainer, demos = [], batches
             </div>
             {rosterMatched ? (
               <span className="text-[10px] font-mono font-bold bg-amber-50 text-amber-900 border border-amber-300/80 px-2.5 py-1 rounded-full flex items-center gap-1">
-                <Lock className="w-3 h-3 text-amber-700" /> Read-Only &middot; Managed by Head of Trainer
+                <Lock className="w-3 h-3 text-amber-700" /> Read-Only &middot; Managed by Department Head of Training
               </span>
             ) : (
               <span className="text-[10px] font-mono font-bold bg-slate-100 text-slate-500 border border-slate-300/80 px-2.5 py-1 rounded-full flex items-center gap-1">
@@ -185,7 +185,7 @@ export default function TrainingShiftAvailability({ trainer, demos = [], batches
           </div>
           <p className="text-[11px] text-slate-400 font-mono mt-1">
             {rosterMatched
-              ? <>Updated by Head of Trainer &middot; Week of {getWeekRangeString()}</>
+              ? <>Updated by Department Head of Training &middot; Week of {getWeekRangeString()}</>
               : <>No roster set for your account yet &middot; showing a default week &middot; {getWeekRangeString()}</>}
           </p>
         </div>

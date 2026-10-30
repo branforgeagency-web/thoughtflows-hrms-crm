@@ -71,8 +71,8 @@ export default function TrainerOrgHierarchyChart({
 
   const primaryHead = headList[0] || {
     id: 'head',
-    name: 'Head of Trainer',
-    role: 'Head of Training Department',
+    name: 'Department Head of Training',
+    role: 'Department Head of Training',
     branch: 'Pan-India Operations'
   };
 
@@ -131,7 +131,7 @@ export default function TrainerOrgHierarchyChart({
               <AlertCircle className="w-6 h-6 text-amber-600 mx-auto" />
               <h4 className="text-sm font-bold text-amber-900">No Regional Managers or Team Leads Configured</h4>
               <p className="text-xs text-amber-700 leading-relaxed">
-                Admins can create users with the roles <strong className="font-semibold">&quot;TRAINING TEAM MANAGER&quot;</strong> and <strong className="font-semibold">&quot;TRAINING TL&quot;</strong> in the Admin Management dashboard. Once created, they will automatically appear here.
+                Admins can create users with the roles <strong className="font-semibold">&quot;TRAINING TEAM MANAGER&quot;</strong> and <strong className="font-semibold">&quot;TRAINING TEAM LEAD&quot;</strong> in the Admin Management dashboard. Once created, they will automatically appear here.
               </p>
             </div>
           )}

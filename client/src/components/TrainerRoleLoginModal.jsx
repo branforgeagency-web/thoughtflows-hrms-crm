@@ -18,8 +18,8 @@ const ROLE_META = {
   head: {
     key: 'head',
     tier: 'EXECUTIVE LEADERSHIP',
-    title: 'Head of Trainer Sign In',
-    subtitle: 'Sign in with your Admin-created Head of Trainer account',
+    title: 'Department Head of Training Sign In',
+    subtitle: 'Sign in with your Admin-created Department Head of Training account',
     icon: Crown,
     gradient: 'linear-gradient(135deg, #005a9c, #0284c7)',
     badgeBg: 'bg-blue-50 text-blue-700 border-blue-200',
@@ -38,12 +38,22 @@ const ROLE_META = {
   tl: {
     key: 'tl',
     tier: 'TEAM LEADERSHIP',
-    title: 'Trainer Team Lead (TL) Sign In',
+    title: 'Training Team Lead Sign In',
     subtitle: 'Faculty Squad Leaders · Tamil Nadu, Kerala & AP/TS',
     icon: Users,
     gradient: 'linear-gradient(135deg, #2e7d32, #16a34a)',
     badgeBg: 'bg-emerald-50 text-emerald-700 border-emerald-200',
     color: '#16a34a'
+  },
+  part_time: {
+    key: 'part_time',
+    tier: 'FACULTY DESK',
+    title: 'Part Time Trainer Sign In',
+    subtitle: 'Part-Time & Visiting Faculty Desks Across 12 Branches',
+    icon: GraduationCap,
+    gradient: 'linear-gradient(135deg, #8B5CF6, #6366F1)',
+    badgeBg: 'bg-purple-50 text-purple-700 border-purple-200',
+    color: '#7c3aed'
   },
   trainer: {
     key: 'trainer',
@@ -187,13 +197,13 @@ export default function TrainerRoleLoginModal({
           <div>
             <label className="block text-[11px] font-extrabold uppercase tracking-wider text-slate-700 mb-1.5 flex items-center gap-1.5">
               <Mail className="w-3.5 h-3.5 text-slate-400" />
-              {roleKey === 'head' ? 'Head of Trainer Email' : roleKey === 'trainer' ? 'Email Address or Trainer ID' : 'Account Email'}
+              {roleKey === 'head' ? 'Department Head of Training Email' : (roleKey === 'trainer' || roleKey === 'part_time') ? 'Email Address or Trainer ID' : 'Account Email'}
             </label>
             <input
               type="text"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder={roleKey === 'head' ? 'Enter Head of Trainer email' : roleKey === 'trainer' ? 'Enter email address or Trainer ID' : 'Enter email address'}
+              placeholder={roleKey === 'head' ? 'Enter Department Head of Training email' : (roleKey === 'trainer' || roleKey === 'part_time') ? 'Enter email address or Trainer ID' : 'Enter email address'}
               required
               autoFocus
               autoComplete="username"

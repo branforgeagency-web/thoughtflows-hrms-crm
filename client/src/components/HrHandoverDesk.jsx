@@ -21,7 +21,7 @@ export const DEFAULT_HEADS_OF_TRAINER = [
   {
     id: 'HOT_MANOJ',
     name: 'Manoj',
-    role: 'Head of Trainer · Tamil Nadu',
+    role: 'Department Head of Training · Tamil Nadu',
     zone: 'Tamil Nadu',
     branch: 'Tamil Nadu (Coimbatore, Salem, Trichy, Theni)',
     branches: ['Tamil Nadu', 'Coimbatore', 'Saravanampatti', 'Gandhipuram', 'Hopes', 'Salem', 'Trichy', 'Theni', 'Madurai', 'Erode', 'Tiruppur']
@@ -29,7 +29,7 @@ export const DEFAULT_HEADS_OF_TRAINER = [
   {
     id: 'HOT_KEERTHIKA',
     name: 'Keerthika',
-    role: 'Head of Trainer · Online',
+    role: 'Department Head of Training · Online',
     zone: 'Online',
     branch: 'Online / Virtual Batches',
     branches: ['Online', 'Virtual', 'All Branches', 'Remote']
@@ -37,7 +37,7 @@ export const DEFAULT_HEADS_OF_TRAINER = [
   {
     id: 'HOT_VAISHNA',
     name: 'Vaishna',
-    role: 'Head of Trainer · Kerala',
+    role: 'Department Head of Training · Kerala',
     zone: 'Kerala',
     branch: 'Kerala (Kochi, Trivandrum)',
     branches: ['Kerala', 'Kochi', 'Trivandrum', 'Calicut', 'Kollam']
@@ -45,7 +45,7 @@ export const DEFAULT_HEADS_OF_TRAINER = [
   {
     id: 'HOT_PAVITHRA',
     name: 'Pavithra',
-    role: 'Head of Trainer · Telangana & Andhra',
+    role: 'Department Head of Training · Telangana & Andhra',
     zone: 'Telangana & Andhra',
     branch: 'Telangana & Andhra (Hyderabad, Ameerpet, Dilsukhnagar, Tirupati, Vizag)',
     branches: ['Telangana', 'Andhra', 'Telangana & Andhra', 'Hyderabad', 'Ameerpet', 'Dilsukhnagar', 'Tirupati', 'Vizag', 'Vijayawada']
@@ -187,11 +187,11 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
       });
       setStudents(prev => prev.map(s => (studentKey(s) === studentKey(assigning) ? { ...s, ...updated } : s)));
       if (onRefreshStudents) onRefreshStudents();
-      showToast(`✓ ${assigning.name} handed over to ${assignForm.headOfTrainer || 'Head of Trainer'} (${assignForm.headOfTrainerBranch || studentBranch || 'Branch'})`);
+      showToast(`✓ ${assigning.name} handed over to ${assignForm.headOfTrainer || 'Department Head of Training'} (${assignForm.headOfTrainerBranch || studentBranch || 'Branch'})`);
       setAssigning(null);
       setEditingStudent(null);
     } catch (err) {
-      showToast(err?.response?.data?.error || 'Error handing over student to Head of Trainer');
+      showToast(err?.response?.data?.error || 'Error handing over student to Department Head of Training');
     }
   };
 
@@ -254,7 +254,7 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
   };
 
   // Normalize status accessor
-  const isHandedOver = (s) => s.handoverStatus === 'Handed Over to Head of Trainer' || s.handoverStatus === 'Sent to Training';
+  const isHandedOver = (s) => s.handoverStatus === 'Handed Over to Department Head of Training' || s.handoverStatus === 'Handed Over to Head of Trainer' || s.handoverStatus === 'Sent to Training';
   const getStudentStatus = (s) => s.handoverStatus || 'Pending Handover';
   const allGreen = (s) => CHECKLIST_KEYS.every(k => Boolean((s?.checklist || {})[k.key] === true));
 
@@ -300,7 +300,7 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
           Student <span className="text-[#00897b]">Handover Desk</span>
         </h1>
         <p className="text-xs sm:text-[13px] text-slate-500 font-medium mt-1 font-mono">
-          Complete the student checklist to hand over admitted students to the Head of Trainer. The Head of Trainer will assign respective trainers and batches.
+          Complete the student checklist to hand over admitted students to the Department Head of Training. The Department Head of Training will assign respective trainers and batches.
         </p>
       </div>
 
@@ -519,10 +519,10 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
                         <>
                           <div className="inline-flex items-center gap-1.5 text-xs font-bold text-purple-700 bg-purple-50 px-4 py-2 rounded-xl border border-purple-200">
                             <Clock className="w-4 h-4 text-purple-600" />
-                            <span>Handed Over to Head of Trainer{stu.headOfTrainer ? ` (${stu.headOfTrainer})` : ''}</span>
+                            <span>Handed Over to Department Head of Training{stu.headOfTrainer ? ` (${stu.headOfTrainer})` : ''}</span>
                           </div>
                           <span className="text-[11px] font-semibold text-amber-800 bg-amber-50 px-3 py-1.5 rounded-xl border border-amber-200/70">
-                            Awaiting trainer allocation by Head of Trainer
+                            Awaiting trainer allocation by Department Head of Training
                           </span>
                         </>
                       )}
@@ -542,7 +542,7 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
                     onClick={() => openHandover(stu)}
                     className="bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs px-4 py-2 rounded-xl shadow-xs transition-all active:scale-[0.98] flex items-center gap-1.5"
                   >
-                    <span>Handover to Head of Trainer →</span>
+                    <span>Handover to Department Head of Training →</span>
                   </button>
                 ) : (
                   <button
@@ -644,7 +644,7 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
           <div className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl border border-slate-200 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div>
-                <h3 className="font-extrabold text-slate-900 text-base">Handover to Head of Trainer</h3>
+                <h3 className="font-extrabold text-slate-900 text-base">Handover to Department Head of Training</h3>
                 <p className="text-xs text-slate-400 font-mono mt-0.5">{assigning.name} · {assigning.studentId} · {assigning.course}</p>
               </div>
               <button onClick={() => setAssigning(null)} className="w-7 h-7 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 flex items-center justify-center text-xs font-bold">✕</button>

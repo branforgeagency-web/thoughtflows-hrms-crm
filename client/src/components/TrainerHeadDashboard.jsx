@@ -969,7 +969,7 @@ export default function TrainerHeadDashboard({
   }, [currentUser, activeLeaderId]);
 
   const currentLeaderTrainerName = useMemo(() => {
-    return currentUser?.userName || currentUser?.name || (roleType === 'head' ? 'Trainer Head' : roleType === 'manager' ? 'Trainer Manager' : 'Trainer Team Lead');
+    return currentUser?.userName || currentUser?.name || (roleType === 'head' ? 'Department Head of Training' : roleType === 'manager' ? 'Trainer Manager' : 'Training Team Lead');
   }, [currentUser, roleType]);
 
   const formattedBatchesForSessionRoom = useMemo(() => {
@@ -1514,7 +1514,7 @@ export default function TrainerHeadDashboard({
           <div className="bg-[#162734] border border-[#213a4d] rounded-2xl p-3">
             <div className="flex items-center justify-between mb-1.5">
               <span className="text-white text-[11px] font-bold">
-                {roleType === 'head' ? 'Trainer Head' : roleType === 'manager' ? 'Training Manager' : 'Team Lead'}
+                {roleType === 'head' ? 'Department Head of Training' : roleType === 'manager' ? 'Training Manager' : 'Training Team Lead'}
               </span>
               <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded-md bg-[#00897b]/20 text-[#00897b] border border-[#00897b]/30">
                 {roleType === 'head' ? 'EXECUTIVE' : roleType === 'manager' ? 'MANAGEMENT' : 'LEAD'}
@@ -1527,8 +1527,8 @@ export default function TrainerHeadDashboard({
                   {(currentUser?.name || 'H')[0].toUpperCase()}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="text-white text-xs font-bold truncate">{currentUser?.name || 'Head of Trainer'}</div>
-                  <div className="text-[#649297] text-[10px] font-medium truncate">{currentUser?.email || 'All 12 Branches · Head of Trainer'}</div>
+                  <div className="text-white text-xs font-bold truncate">{currentUser?.name || 'Department Head of Training'}</div>
+                  <div className="text-[#649297] text-[10px] font-medium truncate">{currentUser?.email || 'All 12 Branches · Department Head of Training'}</div>
                 </div>
               </div>
             ) : roleType === 'manager' ? (
@@ -2101,7 +2101,7 @@ export default function TrainerHeadDashboard({
                         <span className="px-2 py-0.2 rounded-full text-[10px] font-bold bg-amber-200 text-amber-900">Action Required</span>
                       </h4>
                       <p className="text-xs text-amber-800 font-medium mt-0.5">
-                        Booked by HR counselors and waiting for {roleType === 'manager' ? 'Trainer Manager' : 'Trainer Head'} to assign available faculty.
+                        Booked by HR counselors and waiting for {roleType === 'manager' ? 'Trainer Manager' : 'Department Head of Training'} to assign available faculty.
                       </p>
                     </div>
                   </div>
@@ -2365,7 +2365,7 @@ export default function TrainerHeadDashboard({
                       if (node?.roleType === 'manager') {
                         flashToast(`Filtered to Trainer Manager: ${node.name}`);
                       } else if (node?.roleType === 'tl') {
-                        flashToast(`Filtered to Trainer TL: ${node.name}`);
+                        flashToast(`Filtered to Training Team Lead: ${node.name}`);
                       }
                     }}
                   />
@@ -2599,9 +2599,9 @@ export default function TrainerHeadDashboard({
                       {trainerTLsList.length === 0 ? (
                         <div className="col-span-full p-8 text-center bg-slate-50 border border-dashed border-slate-200 rounded-2xl">
                           <Users className="w-8 h-8 text-slate-400 mx-auto mb-2" />
-                          <p className="text-sm font-bold text-slate-700">No Trainer Team Leads (TLs) Created Yet</p>
+                          <p className="text-sm font-bold text-slate-700">No Training Team Leads Created Yet</p>
                           <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
-                            User accounts created with the &quot;TRAINING TL&quot; or &quot;Trainer TL&quot; role in Admin Management will automatically populate here.
+                            User accounts created with the &quot;TRAINING TEAM LEAD&quot; or &quot;Training Team Lead&quot; role in Admin Management will automatically populate here.
                           </p>
                         </div>
                       ) : (
@@ -3795,7 +3795,7 @@ export default function TrainerHeadDashboard({
                     </h3>
                     <p className="text-xs text-slate-400">
                       Shows which trainer is assigned to which batch, reporting Team Lead, and managing Trainer Manager.
-                      {isHeadRole ? ' As Head of Trainer, change the Reporting TL dropdown to reassign a trainer — their Manager updates automatically.' : ''}
+                      {isHeadRole ? ' As Department Head of Training, change the Reporting Team Lead dropdown to reassign a trainer — their Manager updates automatically.' : ''}
                     </p>
                   </div>
                 </div>
@@ -3999,7 +3999,7 @@ export default function TrainerHeadDashboard({
                             ? 'bg-teal-500/20 text-teal-300 border-teal-500/40'
                             : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
                       }`}>
-                        {roleType === 'head' ? 'Head of Trainer' : roleType === 'manager' ? 'Trainer Manager' : 'Trainer Team Lead (TL)'}
+                        {roleType === 'head' ? 'Department Head of Training' : roleType === 'manager' ? 'Trainer Manager' : 'Training Team Lead'}
                       </span>
                     </div>
                     <p className="text-xs text-slate-300 font-medium font-mono">
@@ -4027,7 +4027,7 @@ export default function TrainerHeadDashboard({
                     ) : (
                       <span className="px-3 py-1.5 rounded-xl font-bold border bg-slate-800 text-slate-300 border-slate-600 flex items-center gap-1.5">
                         <Lock className="w-3.5 h-3.5 text-amber-400" />
-                        <span>Read-Only · All Rosters Updated by Head of Trainer Only</span>
+                        <span>Read-Only · All Rosters Updated by Department Head of Training Only</span>
                       </span>
                     )}
                   </div>
@@ -4043,8 +4043,8 @@ export default function TrainerHeadDashboard({
                       </h4>
                       <p className="text-[11px] text-slate-400 font-mono mt-0.5">
                         {isHeadRole
-                          ? 'Your personal executive shift. As Head of Trainer, you can allocate and update all rosters below.'
-                          : 'Weekly schedule set by Head of Trainer. All training rosters are updated exclusively by Head of Trainer.'}
+                          ? 'Your personal executive shift. As Department Head of Training, you can allocate and update all rosters below.'
+                          : 'Weekly schedule set by Department Head of Training. All training rosters are updated exclusively by Department Head of Training.'}
                       </p>
                     </div>
                   </div>
@@ -4090,9 +4090,9 @@ export default function TrainerHeadDashboard({
               {/* Training Roster Board */}
               <TeamRosterBoard
                 departmentCode="ACAD"
-                managerLabel="Head of Trainer"
+                managerLabel="Department Head of Training"
                 readOnly={!isHeadRole}
-                readOnlyNotice="All training shift rosters and availability are updated exclusively by the Head of Trainer."
+                readOnlyNotice="All training shift rosters and availability are updated exclusively by the Department Head of Training."
                 editorRole={roleType}
                 currentUser={currentUser}
                 showRoleFilter={true}

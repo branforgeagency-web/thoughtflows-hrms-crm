@@ -38,7 +38,7 @@ const TRAINER_ROLES = [
   {
     key: 'head',
     tier: 'EXECUTIVE LEADERSHIP',
-    name: 'Trainer Head',
+    name: 'Department Head of Training',
     desc: 'Zonal faculty command, demo reassignment, syllabus definition & multi-branch allocation.',
     scope: 'ALL REGIONS · TN, KL, AP & TS',
     icon: Crown,
@@ -62,7 +62,7 @@ const TRAINER_ROLES = [
   {
     key: 'tl',
     tier: 'TEAM LEADERSHIP',
-    name: 'Trainer Team Lead (TL)',
+    name: 'Training Team Lead',
     desc: 'Lead faculty squads, monitor daily class coverage, handle demo scheduling & student progress.',
     scope: '3 TEAMS · TN, KL & AP/TS SQUADS',
     icon: Users,
@@ -70,6 +70,18 @@ const TRAINER_ROLES = [
     accentText: 'text-emerald-700',
     ring: 'hover:border-emerald-400',
     accountHint: 'Admin-Created Staff Credentials'
+  },
+  {
+    key: 'part_time',
+    tier: 'FACULTY DESK',
+    name: 'Part Time Trainer',
+    desc: 'Visiting & part-time faculty desk, batch sessions, module delivery, doubt resolution & testing.',
+    scope: 'PART-TIME FACULTY · ALL BRANCHES',
+    icon: GraduationCap,
+    gradient: 'linear-gradient(135deg, #8B5CF6, #6366F1)',
+    accentText: 'text-purple-700',
+    ring: 'hover:border-purple-400',
+    accountHint: 'Admin-Created Faculty Credentials'
   },
   {
     key: 'trainer',
@@ -113,9 +125,10 @@ export default function TrainersDepartmentHub({
       if (trainerUser?.trainerRole) return trainerUser.trainerRole;
       if (trainerUser?.trainerId) return 'trainer';
       const roleStr = String(trainerUser?.role || '').toLowerCase();
-      if (/head of trainer|chief trainer|chief faculty|training head/i.test(roleStr)) return 'head';
+      if (/department head of training|head of trainer|chief trainer|chief faculty|training head|trainer head/i.test(roleStr)) return 'head';
       if (/manager/i.test(roleStr)) return 'manager';
-      if (/team lead|\btl\b/i.test(roleStr)) return 'tl';
+      if (/training team lead|trainer team lead|team lead|\btl\b/i.test(roleStr)) return 'tl';
+      if (/part.?time/i.test(roleStr)) return 'part_time';
       if (/trainer|faculty/i.test(roleStr)) return 'trainer';
     } catch (_) {}
     return null;
@@ -206,9 +219,10 @@ export default function TrainersDepartmentHub({
         }
         const roleStr = String(currentUser.role || '').toLowerCase();
         let inferred = null;
-        if (/head of trainer|chief trainer|chief faculty|training head/i.test(roleStr)) inferred = 'head';
+        if (/department head of training|head of trainer|chief trainer|chief faculty|training head|trainer head/i.test(roleStr)) inferred = 'head';
         else if (/manager/i.test(roleStr)) inferred = 'manager';
-        else if (/team lead|\btl\b/i.test(roleStr)) inferred = 'tl';
+        else if (/training team lead|trainer team lead|team lead|\btl\b/i.test(roleStr)) inferred = 'tl';
+        else if (/part.?time/i.test(roleStr)) inferred = 'part_time';
         else if (/trainer|faculty/i.test(roleStr)) inferred = 'trainer';
         if (inferred) {
           try { sessionStorage.setItem('thoughtflows_trainer_role', inferred); } catch (_) {}
@@ -370,9 +384,9 @@ export default function TrainersDepartmentHub({
     }
   };
 
-  // Render individual Trainer Dashboard (reusing existing component)
+  // Render individual Trainer or Part Time Trainer Dashboard (reusing existing component)
   // When logged in, no back button without logout (user stays on dashboard across refresh)
-  if (selectedRole === 'trainer') {
+  if (selectedRole === 'trainer' || selectedRole === 'part_time') {
     return (
       <TrainingDepartmentDashboard
         onClose={onClose}
@@ -509,7 +523,7 @@ export default function TrainersDepartmentHub({
               <span className="text-sky-300">Executive &amp; Faculty Portals</span>
             </h2>
             <p className="text-slate-300 text-sm mt-4 max-w-lg leading-relaxed">
-              Each role desk has a dedicated login flow. Authenticate as Trainer Head, Trainer Manager, Trainer TL, or Trainer to view your assigned branch &amp; faculty data.
+              Each role desk has a dedicated login flow. Authenticate as Department Head of Training, Trainer Manager, Training Team Lead, Part Time Trainer, or Trainer to view your assigned branch &amp; faculty data.
             </p>
 
             {/* View Switcher Tabs */}
@@ -523,7 +537,7 @@ export default function TrainersDepartmentHub({
                 }`}
               >
                 <LayoutGrid className="w-4 h-4" />
-                <span>4 Role Desks</span>
+                <span>Role Desks</span>
               </button>
               <button
                 onClick={() => setHubTab('org')}
@@ -576,7 +590,7 @@ export default function TrainersDepartmentHub({
               </span>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-5">
               {TRAINER_ROLES.map((role) => {
                 const Icon = role.icon;
                 const isCurrentActive = activeTrainerUser && (activeTrainerUser.trainerRole === role.key || (role.key === 'trainer' && activeTrainerUser.trainerId));

@@ -188,12 +188,12 @@ export default function TrainerRoleDashboard({
       return {
         id: currentUser?._id || currentUser?.id || 'head',
         name: rawName || 'Department Head',
-        roleTitle: 'Head of Training Department',
+        roleTitle: 'Department Head of Training',
         badge: initialBadge,
         scopeLabel: `Consolidated Academy · ${trainersList.length} Faculty`,
         zone: 'All Regions (Nationwide)',
         topBarGrad: 'linear-gradient(135deg, #005a9c, #0284c7)',
-        managerLabel: 'Head of Trainer'
+        managerLabel: 'Department Head of Training'
       };
     }
     if (roleType === 'manager') {
@@ -212,12 +212,12 @@ export default function TrainerRoleDashboard({
     return {
       id: currentUser?._id || currentUser?.id || 'tl',
       name: rawName || 'Team Lead',
-      roleTitle: userRole || 'Trainer Team Lead',
+      roleTitle: userRole || 'Training Team Lead',
       badge: initialBadge,
       scopeLabel: `Assigned Pod · ${trainersList.length} Faculty`,
       zone: currentUser?.zone || currentUser?.branch || 'Assigned Pod',
       topBarGrad: 'linear-gradient(135deg, #2e7d32, #16a34a)',
-      managerLabel: 'Trainer Team Lead'
+      managerLabel: 'Training Team Lead'
     };
   }, [roleType, currentUser, trainersList]);
 
@@ -537,7 +537,7 @@ export default function TrainerRoleDashboard({
             <div className="leading-tight">
               <div className="text-white text-xs font-black tracking-wider">THOUGHTFLOWS</div>
               <div className="text-[9.5px] text-[#00897b] font-bold tracking-widest uppercase">
-                {roleType === 'head' ? 'TRAINER HEAD' : roleType === 'manager' ? 'TRAINER MANAGER' : 'TRAINER TEAM LEAD'}
+                {roleType === 'head' ? 'DEPARTMENT HEAD OF TRAINING' : roleType === 'manager' ? 'TRAINER MANAGER' : 'TRAINING TEAM LEAD'}
               </div>
             </div>
           </div>

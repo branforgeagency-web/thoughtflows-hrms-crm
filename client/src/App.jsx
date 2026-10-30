@@ -52,7 +52,7 @@ export default function App() {
   // Department card reference
   const DEPT_CARDS = [
     { id: 'hr', title: 'HR Department', status: 'LIVE', description: 'Academic counsellors who turn enquiries into futures · lead capture, calls, follow-ups & admissions' },
-    { id: 'training', title: 'Trainers Department', status: '4 ROLES', description: 'Trainers across 12 branches · Trainer Head, Manager, TL & Faculty desks' },
+    { id: 'training', title: 'Trainers Department', status: '5 ROLES', description: 'Trainers across 12 branches · Department Head of Training, Manager, Team Lead, Part-Time & Full-Time Trainers' },
     { id: 'cccp', title: 'CCCP Dashboard', status: '8 TODAY', description: 'Placement Cell · Examination Cell · College & Company Cell — three cells, one career path' },
     { id: 'marketing', title: 'Marketing Department', status: 'ACTIVE', description: 'Digital, outdoor & campaigns driving 100+ lead sources every month across all branches' },
     { id: 'leadership', title: 'Leadership Hub', status: '4 ROLES', description: 'All the heads in one place — Operational, Department, Regional & Branch. Open to pick your role.' },
@@ -82,7 +82,7 @@ export default function App() {
     if (!u) return false;
     const role = String(u.role || '').toLowerCase();
     const dept = String(u.department || '').toLowerCase();
-    return /head of trainer|trainer head|training head|chief trainer|chief faculty/i.test(role) || (role.includes('head') && (role.includes('trainer') || dept.includes('training')));
+    return /department head of training|head of trainer|trainer head|training head|chief trainer|chief faculty/i.test(role) || (role.includes('head') && (role.includes('trainer') || dept.includes('training')));
   };
 
   const [selectedDashboard, setSelectedDashboard] = useState(() => {

@@ -1299,8 +1299,10 @@ const isTrainerHeadUser = (req) => {
   if (!u) return false;
   return (
     u.trainerRole === 'head' ||
+    u.role === 'Department Head of Training' ||
     u.role === 'Head of Training Department' ||
     u.role === 'Head of Trainer' ||
+    /department head of training|head of trainer|training head/i.test(u.role || '') ||
     u.leaderId === 'manoj' ||
     u.email === 'manoj.head@thoughtflows.in' ||
     u.email === 'manoj@thoughtflows.in' ||
@@ -1333,14 +1335,14 @@ const isTrainerManagerUser = (req) => {
 const isTrainerTLUser = (req) => {
   const u = req.user;
   if (!u) return false;
-  return u.trainerRole === 'tl' || /team lead|trainer tl/i.test(u.role || '');
+  return u.trainerRole === 'tl' || /training team lead|trainer team lead|team lead|trainer tl|training tl/i.test(u.role || '');
 };
 
 const isIndividualTrainerUser = (req) => {
   const u = req.user;
   if (!u) return false;
   return (
-    (u.trainerRole === 'trainer' || u.role === 'Trainer' || u.role === 'Faculty') &&
+    (u.trainerRole === 'trainer' || u.trainerRole === 'part_time' || /trainer|faculty/i.test(u.role || '')) &&
     Boolean(u.trainerId) &&
     !isTrainerHeadUser(req) &&
     !isTrainerManagerUser(req) &&
@@ -4168,12 +4170,12 @@ async function findEligibleTrainers({ language, location, preferredDate, timeSlo
   return { eligible, reason: '' };
 }
 
-// Head of Trainer list (Trainers with head/lead/chief roles + Branch Head of Trainers + Department Head)
+// Department Head of Training list (Trainers with head/lead/chief roles + Branch Head of Trainers + Department Head)
 export const HEAD_OF_TRAINERS_MASTER = [
   {
     id: 'HOT_MANOJ',
     name: 'Manoj',
-    role: 'Head of Trainer · Tamil Nadu',
+    role: 'Department Head of Training · Tamil Nadu',
     zone: 'Tamil Nadu',
     state: 'Tamil Nadu',
     branch: 'Tamil Nadu (Coimbatore, Salem, Trichy, Theni)',
@@ -4183,7 +4185,7 @@ export const HEAD_OF_TRAINERS_MASTER = [
   {
     id: 'HOT_KEERTHIKA',
     name: 'Keerthika',
-    role: 'Head of Trainer · Online',
+    role: 'Department Head of Training · Online',
     zone: 'Online',
     state: 'Online',
     branch: 'Online / Virtual Batches',
@@ -4193,7 +4195,7 @@ export const HEAD_OF_TRAINERS_MASTER = [
   {
     id: 'HOT_VAISHNA',
     name: 'Vaishna',
-    role: 'Head of Trainer · Kerala',
+    role: 'Department Head of Training · Kerala',
     zone: 'Kerala',
     state: 'Kerala',
     branch: 'Kerala (Kochi, Trivandrum)',
@@ -4203,7 +4205,7 @@ export const HEAD_OF_TRAINERS_MASTER = [
   {
     id: 'HOT_PAVITHRA',
     name: 'Pavithra',
-    role: 'Head of Trainer · Telangana & Andhra',
+    role: 'Department Head of Training · Telangana & Andhra',
     zone: 'Telangana & Andhra',
     state: 'Telangana & Andhra',
     branch: 'Telangana & Andhra (Hyderabad, Ameerpet, Dilsukhnagar, Tirupati, Vizag)',
@@ -5164,14 +5166,14 @@ router.get('/auth/trainer-credentials', async (req, res) => {
       ]
     }).select('-password').lean();
 
-    const head = dbUsers.filter((u) => /head of trainer|trainer head|training head|head of training|chief trainer|chief faculty/i.test(u.role || '')).map((u) => ({
+    const head = dbUsers.filter((u) => /department head of training|head of trainer|trainer head|training head|head of training|chief trainer|chief faculty/i.test(u.role || '')).map((u) => ({
       id: String(u._id),
       leaderId: String(u._id),
       name: u.name,
       userName: u.name,
       email: u.email,
       phone: u.phone || '',
-      role: u.role || 'Head of Trainer',
+      role: u.role || 'Department Head of Training',
       trainerRole: 'head',
       branch: u.branch || 'All Branches (HQ)',
       branches: u.branch ? [u.branch] : [],
@@ -5196,14 +5198,14 @@ router.get('/auth/trainer-credentials', async (req, res) => {
       color: '#0d9488'
     }));
 
-    const teamLeads = dbUsers.filter((u) => /training tl|trainer tl|trainer team lead|training team lead|\bteam lead\b/i.test(u.role || '')).map((u) => ({
+    const teamLeads = dbUsers.filter((u) => /training team lead|trainer team lead|training tl|trainer tl|\bteam lead\b/i.test(u.role || '')).map((u) => ({
       id: String(u._id),
       leaderId: String(u._id),
       name: u.name,
       userName: u.name,
       email: u.email,
       phone: u.phone || '',
-      role: u.role || 'Trainer Team Lead',
+      role: u.role || 'Training Team Lead',
       trainerRole: 'tl',
       branch: u.branch || '',
       branches: u.branch ? [u.branch] : [],
@@ -5452,6 +5454,7 @@ router.post('/auth/login', async (req, res) => {
           if (r.includes('head')) trainerRole = 'head';
           else if (r.includes('manager')) trainerRole = 'manager';
           else if (r.includes('tl') || r.includes('lead')) trainerRole = 'tl';
+          else if (r.includes('part')) trainerRole = 'part_time';
           else trainerRole = 'trainer';
         }
 
@@ -6446,9 +6449,10 @@ function getUtilizationUserIdentity(req) {
 
   if (!role) {
     const rawRole = String(u.role || '').toLowerCase();
-    if (/head of trainer|chief trainer|chief faculty|training head/i.test(rawRole) || u.department === 'leadership') role = 'head';
+    if (/department head of training|head of trainer|chief trainer|chief faculty|training head/i.test(rawRole) || u.department === 'leadership') role = 'head';
     else if (/manager/i.test(rawRole)) role = 'manager';
-    else if (/team lead|\btl\b/i.test(rawRole)) role = 'tl';
+    else if (/training team lead|trainer team lead|team lead|\btl\b/i.test(rawRole)) role = 'tl';
+    else if (/part.?time/i.test(rawRole)) role = 'part_time';
     else if (/trainer|faculty/i.test(rawRole) || u.trainerId) role = 'trainer';
     else role = 'head'; // default for admin/leadership
   }
@@ -11269,7 +11273,7 @@ const sameBatch = (a, b) => Boolean(batchMatchKey(a)) && batchMatchKey(a) === ba
 // Does the signed-in trainer teach this batch? (other departments: yes)
 async function trainerTeachesBatch(req, batch) {
   if (!isTrainerReq(req)) return true;
-  if (/head of trainer|chief trainer|faculty lead|trainer manager|training manager|trainer tl|training tl|team lead|admin|leadership/i.test(req.user?.role || '')) return true;
+  if (/department head of training|head of trainer|chief trainer|faculty lead|trainer manager|training manager|trainer tl|training tl|training team lead|trainer team lead|team lead|admin|leadership/i.test(req.user?.role || '')) return true;
   const me = myTrainerId(req);
   if (!me || !batch) return false;
   const rows = await Student.find({ trainerId: me }).select('batchName course');

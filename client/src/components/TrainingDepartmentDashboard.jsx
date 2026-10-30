@@ -145,6 +145,7 @@ export default function TrainingDepartmentDashboard({
   const trainerCourseKey = String(trainerProfile?.courseKey || currentUser?.courseKey || pickedIdentity?.courseKey || '').toUpperCase();
   // Head of Trainer (or Academic Leadership, Admin, or Branch Trainer/Faculty) has the authority to allocate/reassign students to trainers
   const isHeadOfTrainer = Boolean(
+    currentUser?.role === 'Department Head of Training' ||
     currentUser?.role === 'Head of Trainer' ||
     currentUser?.role === 'Faculty Lead & Chief Trainer' ||
     currentUser?.role === 'Admin' ||
@@ -152,8 +153,8 @@ export default function TrainingDepartmentDashboard({
     currentUser?.department === 'leadership' ||
     currentUser?.role === 'Branch Head' ||
     currentUser?.role === 'Centre Manager' ||
-    /head of trainer|training head|head of training|chief trainer|chief faculty|faculty lead|branch head/i.test(trainerRole || '') ||
-    /head of trainer|training head|head of training|chief trainer|chief faculty|faculty lead|branch head/i.test(currentUser?.role || '') ||
+    /department head of training|head of trainer|training head|head of training|chief trainer|chief faculty|faculty lead|branch head/i.test(trainerRole || '') ||
+    /department head of training|head of trainer|training head|head of training|chief trainer|chief faculty|faculty lead|branch head/i.test(currentUser?.role || '') ||
     (trainerCourseKey === 'ALL' && /head|chief|lead/i.test(trainerRole || currentUser?.role || ''))
   );
   const isChiefFaculty = isHeadOfTrainer;
@@ -457,7 +458,7 @@ export default function TrainingDepartmentDashboard({
   const branchPendingCounts = React.useMemo(() => {
     const counts = { ALL: 0 };
     (students || []).forEach(st => {
-      const isHandedOver = st.handoverStatus === 'Handed Over to Head of Trainer' || (st.handoverStatus === 'Sent to Training' && !st.trainerId);
+      const isHandedOver = st.handoverStatus === 'Handed Over to Department Head of Training' || st.handoverStatus === 'Handed Over to Head of Trainer' || (st.handoverStatus === 'Sent to Training' && !st.trainerId);
       if (isHandedOver && !st.trainerId) {
         counts.ALL = (counts.ALL || 0) + 1;
         const b = (st.branch || st.location || st.leadBranch || '').trim();
@@ -469,10 +470,10 @@ export default function TrainingDepartmentDashboard({
     return counts;
   }, [students]);
 
-  // Head of Trainer allocation datasets (filtered by selected branch)
+  // Department Head of Training allocation datasets (filtered by selected branch)
   const pendingAllocationStudents = React.useMemo(() => {
     return (students || []).filter(st => {
-      const isHandedOver = st.handoverStatus === 'Handed Over to Head of Trainer' || (st.handoverStatus === 'Sent to Training' && !st.trainerId);
+      const isHandedOver = st.handoverStatus === 'Handed Over to Department Head of Training' || st.handoverStatus === 'Handed Over to Head of Trainer' || (st.handoverStatus === 'Sent to Training' && !st.trainerId);
       return isHandedOver && !st.trainerId && studentMatchesBranch(st, allocationBranchFilter);
     });
   }, [students, allocationBranchFilter, studentMatchesBranch]);
@@ -483,7 +484,7 @@ export default function TrainingDepartmentDashboard({
 
   const allHandedOverStudents = React.useMemo(() => {
     return (students || []).filter(st => 
-      (st.handoverStatus === 'Handed Over to Head of Trainer' || st.handoverStatus === 'Sent to Training') &&
+      (st.handoverStatus === 'Handed Over to Department Head of Training' || st.handoverStatus === 'Handed Over to Head of Trainer' || st.handoverStatus === 'Sent to Training') &&
       studentMatchesBranch(st, allocationBranchFilter)
     );
   }, [students, allocationBranchFilter, studentMatchesBranch]);

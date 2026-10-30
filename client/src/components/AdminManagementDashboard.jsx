@@ -68,10 +68,11 @@ const ACADEMY_ROLES = [
   'BUSINESS LEAD',
   'DEPARTMENT HEAD',
   'OPERATIONAL HEAD',
-  'HEAD OF TRAINER',
-  'TRAINER',
-  'TRAINING TL',
+  'DEPARTMENT HEAD OF TRAINING',
   'TRAINING TEAM MANAGER',
+  'TRAINING TEAM LEAD',
+  'TRAINER',
+  'PART TIME TRAINER',
   'MIS',
   'OUTDOOR MARKETING',
   'Student',
@@ -94,8 +95,14 @@ const ROLE_TO_DEPARTMENT = {
   'HEAD OF TRAINER': 'Medical Coding Faculty',
   'Trainer Head': 'Medical Coding Faculty',
   'Head of Trainer': 'Medical Coding Faculty',
+  'DEPARTMENT HEAD OF TRAINING': 'Medical Coding Faculty',
+  'Department Head of Training': 'Medical Coding Faculty',
   'TRAINER': 'Medical Coding Faculty',
+  'PART TIME TRAINER': 'Medical Coding Faculty',
+  'Part Time Trainer': 'Medical Coding Faculty',
   'TRAINING TL': 'Medical Coding Faculty',
+  'TRAINING TEAM LEAD': 'Medical Coding Faculty',
+  'Training Team Lead': 'Medical Coding Faculty',
   'TRAINING TEAM MANAGER': 'Medical Coding Faculty',
   'MIS': 'Admin & Management',
   'OUTDOOR MARKETING': 'Growth & Marketing',
@@ -153,14 +160,14 @@ const dashboardOfUser = (u) => {
 };
 const initialsOf = (name) => String(name || '?').trim().split(/\s+/).map((p) => p[0]).join('').slice(0, 2).toUpperCase();
 
-// Training & Faculty role tiers — Head of Trainer > Trainer Manager > Trainer
-// TL > Trainers. Checked in this order so a Head of Trainer / Manager isn't
-// also counted as a plain Trainer; anything unmatched falls back to 'trainer'
-// so the four tiers always add up to the department's full headcount.
+// Training & Faculty role tiers — Department Head of Training > Trainer Manager >
+// Training Team Lead > Part Time Trainers > Trainers. Checked in this order so higher
+// tiers aren't counted as plain Trainers; anything unmatched falls back to 'trainer'.
 const TRAINER_TIER_CARDS = [
-  { key: 'head', label: 'Head of Trainer', icon: '\ud83e\udded', match: /head of trainer|trainer head|training head|head of training|chief trainer|chief faculty|faculty lead/i },
+  { key: 'head', label: 'Department Head of Training', icon: '\ud83e\udded', match: /department head of training|head of trainer|trainer head|training head|head of training|chief trainer|chief faculty|faculty lead/i },
   { key: 'manager', label: 'Trainer Manager', icon: '\ud83e\uddd1\u200d\ud83d\udcbc', match: /training team manager|trainer manager|\bteam manager\b/i },
-  { key: 'tl', label: 'Trainer TL', icon: '\ud83c\udfaf', match: /training tl|trainer tl|\bteam lead\b|\btl\b/i },
+  { key: 'tl', label: 'Training Team Lead', icon: '\ud83c\udfaf', match: /training team lead|trainer team lead|training tl|trainer tl|\bteam lead\b|\btl\b/i },
+  { key: 'part_time', label: 'Part Time Trainers', icon: '⏱️', match: /part.?time trainer/i },
   { key: 'trainer', label: 'Trainers', icon: '\ud83e\uddd1\u200d\ud83c\udfeb', match: null } // catch-all
 ];
 const trainerTierOf = (role) => {
@@ -468,7 +475,9 @@ export default function AdminManagementDashboard({
       return;
     }
 
-    if (newUserForm.role === 'TRAINER') {
+    const isTrainerAccount = newUserForm.role === 'TRAINER' || newUserForm.role === 'PART TIME TRAINER';
+
+    if (isTrainerAccount) {
       if (newUserForm.trainerLanguages.length === 0) {
         showToast('⚠️ Please select at least one language taught.');
         return;
@@ -512,7 +521,7 @@ export default function AdminManagementDashboard({
     // Trainer accounts also need a Trainer roster record (Demo Booking
     // eligibility engine matches on course/language/branch/shift — none of
     // which live on the generic User login).
-    if (newUserForm.role === 'TRAINER' && newUserForm.trainerId) {
+    if (isTrainerAccount && newUserForm.trainerId) {
       const courseLabel = TRAINER_COURSES.find((c) => c.key === newUserForm.expertCourse)?.label || newUserForm.expertCourse;
       const EXPERIENCE_MAP = {
         fresher_expert:   { demoTrainer: true,  isExperienced: true,  experienceLevel: 'fresher_expert',   role: 'Fresher Demo Expert', shiftStartMin: 0, shiftEndMin: 1440, shift: '00:00 – 23:59 (All Day)' },
@@ -1380,7 +1389,9 @@ export default function AdminManagementDashboard({
               u.branch?.toLowerCase().includes(q);
             const matchesRole = userRoleFilter === 'All' || 
               u.role === userRoleFilter ||
-              (userRoleFilter === 'HEAD OF TRAINER' && /head of trainer|trainer head/i.test(u.role || ''));
+              ((userRoleFilter === 'DEPARTMENT HEAD OF TRAINING' || userRoleFilter === 'HEAD OF TRAINER') && /department head of training|head of trainer|trainer head/i.test(u.role || '')) ||
+              ((userRoleFilter === 'TRAINING TEAM LEAD' || userRoleFilter === 'TRAINING TL') && /training team lead|trainer team lead|training tl|trainer tl/i.test(u.role || '')) ||
+              (userRoleFilter === 'PART TIME TRAINER' && /part.?time trainer/i.test(u.role || ''));
             return matchesSearch && matchesRole;
           });
 
@@ -1835,8 +1846,8 @@ export default function AdminManagementDashboard({
                           const activeTier = tiers.find((t) => t.key === expandedTrainerTier);
                           return (
                             <div className="space-y-3.5">
-                              {/* 4 Role-Tier Cards: Head of Trainer / Trainer Manager / Trainer TL / Trainers */}
-                              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
+                              {/* Role-Tier Cards: Department Head of Training / Trainer Manager / Training Team Lead / Part Time Trainers / Trainers */}
+                              <div className="grid grid-cols-2 lg:grid-cols-5 gap-3.5">
                                 {tiers.map((t) => (
                                   <div
                                     key={t.key}
@@ -2564,7 +2575,7 @@ export default function AdminManagementDashboard({
                               ...prev,
                               role,
                               department: ROLE_TO_DEPARTMENT[role] || 'Admissions & Counseling',
-                              trainerId: role === 'TRAINER' && !prev.trainerId
+                              trainerId: (role === 'TRAINER' || role === 'PART TIME TRAINER') && !prev.trainerId
                                 ? `TR-${Math.floor(100 + Math.random() * 900)}`
                                 : prev.trainerId
                             }));
@@ -2657,7 +2668,7 @@ export default function AdminManagementDashboard({
               <div>
                 <label className="text-[#2563eb] font-extrabold text-[11px] tracking-wider uppercase mb-1.5 block flex items-center justify-between">
                   <span>CAMPUS BRANCH</span>
-                  {newUserForm.role === 'TRAINER' && (
+                  {(newUserForm.role === 'TRAINER' || newUserForm.role === 'PART TIME TRAINER') && (
                     <span className="text-rose-500 font-bold text-[10px]">* REQUIRED</span>
                   )}
                 </label>
@@ -2687,10 +2698,10 @@ export default function AdminManagementDashboard({
                 </div>
               )}
 
-              {newUserForm.role === 'TRAINER' && (
+              {(newUserForm.role === 'TRAINER' || newUserForm.role === 'PART TIME TRAINER') && (
                 <div className="space-y-4 rounded-2xl border border-blue-100 bg-blue-50/50 p-4">
                   <p className="text-[11px] font-extrabold text-blue-700 uppercase tracking-wider flex items-center gap-1.5">
-                    <Award className="w-3.5 h-3.5" /> Trainer Details
+                    <Award className="w-3.5 h-3.5" /> Trainer Details {newUserForm.role === 'PART TIME TRAINER' ? '(Part Time)' : ''}
                   </p>
 
                   <div>
