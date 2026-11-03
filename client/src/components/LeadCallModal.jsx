@@ -917,7 +917,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                     {uploadedFileName || 'Click to select and upload call recording from your phone'}
                   </div>
                   <div className="text-[10px] text-slate-500 font-mono mt-0.5">
-                    Supports M4A, MP3, WAV, AAC, OPUS, WEBM · up to 75 MB
+                    Supports M4A, MP3, MP4, WAV, AAC, OPUS, WEBM · up to 75 MB
                   </div>
                 </div>
               </div>
@@ -936,7 +936,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="audio/*,.m4a,.mp3,.wav,.aac,.opus,.webm,.ogg"
+                accept="audio/*,video/*,.m4a,.mp3,.wav,.aac,.opus,.webm,.ogg,.mp4,.mov,.3gp,.mkv"
                 onChange={handleFileUpload}
                 className="hidden"
               />

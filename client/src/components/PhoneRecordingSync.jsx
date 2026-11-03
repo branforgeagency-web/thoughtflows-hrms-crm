@@ -2,7 +2,7 @@ import React, { useRef, useState } from 'react';
 import { Smartphone, UploadCloud, X, CheckCircle2, AlertCircle, Copy, Loader2 } from 'lucide-react';
 import { syncPhoneRecording } from '../services/api';
 
-const MAX_BYTES = 25 * 1024 * 1024;
+const MAX_BYTES = 50 * 1024 * 1024;
 
 const readAsDataUrl = (file) => new Promise((resolve, reject) => {
   const r = new FileReader();
@@ -53,7 +53,7 @@ export default function PhoneRecordingSync({ isOpen, onClose, onDone }) {
     for (let k = 0; k < files.length; k++) {
       const file = files[k];
       const i = start + k;
-      if (file.size > MAX_BYTES) { update(i, { status: 'error', detail: 'File larger than 25 MB' }); continue; }
+      if (file.size > MAX_BYTES) { update(i, { status: 'error', detail: 'File larger than 50 MB' }); continue; }
       update(i, { status: 'uploading', detail: 'Uploading…' });
       try {
         const [audioBase64, durationSeconds] = await Promise.all([readAsDataUrl(file), readDuration(file)]);
@@ -102,9 +102,9 @@ export default function PhoneRecordingSync({ isOpen, onClose, onDone }) {
           >
             <UploadCloud className="w-6 h-6" />
             <span>{busy ? 'Syncing…' : 'Choose recordings'}</span>
-            <span className="text-[10.5px] font-medium text-teal-700/70">m4a · mp3 · amr · aac · wav · ogg</span>
+            <span className="text-[10.5px] font-medium text-teal-700/70">m4a · mp3 · mp4 · amr · aac · wav · ogg</span>
           </button>
-          <input ref={inputRef} type="file" accept="audio/*,.m4a,.amr,.3gp,.aac" multiple className="hidden" onChange={handleFiles} />
+          <input ref={inputRef} type="file" accept="audio/*,video/*,.m4a,.amr,.3gp,.aac,.mp4,.mov,.mkv,.wav,.mp3,.webm,.ogg" multiple className="hidden" onChange={handleFiles} />
 
           {rows.length > 0 && (
             <>

@@ -578,7 +578,7 @@ export default function UploadStudentRecordingModal({
                 <span>2. Audio Recording File <span className="text-rose-500">*</span></span>
               </span>
               <span className="text-[10px] text-slate-400 font-normal">
-                Max 50MB (m4a, mp3, amr, wav, webm, ogg, aac)
+                Max 50MB (m4a, mp3, mp4, amr, wav, webm, ogg, aac)
               </span>
             </label>
 
@@ -662,7 +662,7 @@ export default function UploadStudentRecordingModal({
             <input
               ref={fileInputRef}
               type="file"
-              accept="audio/*,.m4a,.amr,.3gp,.aac,.wav,.mp3,.webm,.ogg,.flac"
+              accept="audio/*,video/*,.m4a,.amr,.3gp,.aac,.wav,.mp3,.webm,.ogg,.flac,.mp4,.mov,.mkv"
               className="hidden"
               onChange={handleFileChange}
             />
