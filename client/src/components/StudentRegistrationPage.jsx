@@ -24,6 +24,7 @@ import logoImg from '../assets/thoughtflows-logo.png';
 import { COURSE_CATEGORIES } from '../constants/courses';
 import { LEAD_SOURCE_GROUPS } from '../constants/leadSources';
 import { getAvailableTimingSlots, BATCH_SCHEDULE } from '../constants/batchTimings';
+import { ALL_BRANCH_OPTIONS } from '../constants/branches';
 import { createStudent, getNextStudentId, checkDuplicateStudent } from '../services/api';
 import { getCurrentMonthYear, getCurrentMonthName } from '../utils/dateUtils';
 import { copyToClipboard } from '../utils/clipboard';
@@ -67,6 +68,24 @@ export default function StudentRegistrationPage({ onBack }) {
   const availableSlots = useMemo(() => {
     return getAvailableTimingSlots({ course, mode: courseType, branch });
   }, [course, courseType, branch]);
+
+  const allBranchValues = useMemo(() => {
+    const set = new Set();
+    set.add('Not Mentioned');
+    Object.values(BRANCH_MAP).forEach((b) => set.add(b));
+    ALL_BRANCH_OPTIONS.forEach((b) => set.add(b.value));
+    return Array.from(set);
+  }, []);
+
+  const hasExactBatchTimingOption = useMemo(() => {
+    if (!preferredTimings) return true;
+    const standardOptions = [
+      'Not Mentioned',
+      ...availableSlots.map((s) => s.label),
+      ...BATCH_SCHEDULE.map((s) => s.label)
+    ];
+    return standardOptions.includes(preferredTimings);
+  }, [preferredTimings, availableSlots]);
 
   // Submission State
   const [submitting, setSubmitting] = useState(false);
@@ -707,18 +726,19 @@ export default function StudentRegistrationPage({ onBack }) {
                     className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-slate-900 outline-none focus:border-[#00796b] transition-all font-medium cursor-pointer"
                   >
                     <option value="">— Select timing slot —</option>
-                    {preferredTimings && !availableSlots.some(s => s.label === preferredTimings || s.value === preferredTimings || s.timing === preferredTimings) && (
+                    <option value="Not Mentioned">Not Mentioned</option>
+                    {preferredTimings && !hasExactBatchTimingOption && (
                       <option value={preferredTimings}>Current: {preferredTimings}</option>
                     )}
-                    <optgroup label={`🎯 Available for Selected Course & Branch (${availableSlots.length} Slots)`}>
-                      {availableSlots.map((s, idx) => (
+                    <optgroup label={`🎯 Available for Selected Course & Branch (${availableSlots.filter((s) => s.label !== 'Not Mentioned').length} Slots)`}>
+                      {availableSlots.filter((s) => s.label !== 'Not Mentioned').map((s, idx) => (
                         <option key={`avail-${idx}`} value={s.label}>
                           {s.label}
                         </option>
                       ))}
                     </optgroup>
                     <optgroup label="📋 All Other Schedule Slots">
-                      {BATCH_SCHEDULE.filter(s => !availableSlots.some(a => a.label === s.label)).map((s, idx) => (
+                      {BATCH_SCHEDULE.filter((s) => s.label !== 'Not Mentioned' && !availableSlots.some((a) => a.label === s.label)).map((s, idx) => (
                         <option key={`other-${idx}`} value={s.label}>
                           {s.label}
                         </option>
@@ -736,6 +756,9 @@ export default function StudentRegistrationPage({ onBack }) {
                     onChange={(e) => setSource(e.target.value)}
                     className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-slate-900 outline-none focus:border-[#00796b] transition-all font-medium cursor-pointer"
                   >
+                    {source && !LEAD_SOURCE_GROUPS.flatMap((g) => g.options).includes(source) && (
+                      <option value={source}>{source}</option>
+                    )}
                     {LEAD_SOURCE_GROUPS.map((grp) => (
                       <optgroup key={grp.group} label={grp.title}>
                         {grp.options.map((opt) => (
@@ -759,11 +782,25 @@ export default function StudentRegistrationPage({ onBack }) {
                   onChange={(e) => setBranch(e.target.value)}
                   className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-slate-900 outline-none focus:border-[#00796b] transition-all font-medium cursor-pointer"
                 >
-                  {Object.entries(BRANCH_MAP).map(([bCode, bName]) => (
-                    <option key={bCode} value={bName}>
-                      {bName} ({bCode})
-                    </option>
-                  ))}
+                  <option value="">— Select branch —</option>
+                  <option value="Not Mentioned">Not Mentioned</option>
+                  {branch && !allBranchValues.includes(branch) && (
+                    <option value={branch}>{branch}</option>
+                  )}
+                  <optgroup label="🏢 Centers & Branches">
+                    {ALL_BRANCH_OPTIONS.filter((b) => b.value !== 'Not Mentioned').map((b) => (
+                      <option key={b.value} value={b.value}>
+                        {b.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="📍 Master Branch Codes">
+                    {Object.entries(BRANCH_MAP).map(([bCode, bName]) => (
+                      <option key={bCode} value={bName}>
+                        {bName} ({bCode})
+                      </option>
+                    ))}
+                  </optgroup>
                 </select>
               </div>
 

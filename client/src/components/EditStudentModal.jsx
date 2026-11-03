@@ -366,6 +366,9 @@ export default function EditStudentModal({ isOpen, onClose, student, onSuccess, 
                   onChange={(e) => setCourse(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-200 focus:bg-white rounded-xl px-3.5 py-2 text-xs text-slate-900 font-semibold outline-none focus:border-[#00897b] transition-all cursor-pointer"
                 >
+                  {course && !COURSE_CATEGORIES.flatMap((c) => c.courses).some((c) => c.name === course || c.code === course || `${c.code} - ${c.name}` === course) && (
+                    <option value={course}>{course}</option>
+                  )}
                   {COURSE_CATEGORIES.map((cat) => (
                     <optgroup key={cat.category} label={cat.title}>
                       {cat.courses.map((c) => {
@@ -400,6 +403,9 @@ export default function EditStudentModal({ isOpen, onClose, student, onSuccess, 
                       : 'bg-slate-50 border-slate-200 focus:bg-white text-slate-900 focus:border-[#00897b] cursor-pointer'
                   }`}
                 >
+                  {mode && !['Online', 'Classroom'].includes(mode) && (
+                    <option value={mode}>{mode}</option>
+                  )}
                   <option value="Online">Online (Live Interactive)</option>
                   <option value="Classroom">Classroom (Branch Center)</option>
                 </select>
@@ -423,6 +429,9 @@ export default function EditStudentModal({ isOpen, onClose, student, onSuccess, 
                   onChange={(e) => setBranch(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-200 focus:bg-white rounded-xl px-3.5 py-2 text-xs text-slate-900 font-semibold outline-none focus:border-[#00897b] transition-all cursor-pointer"
                 >
+                  {branch && !BRANCH_OPTIONS.includes(branch) && (
+                    <option value={branch}>{branch}</option>
+                  )}
                   {BRANCH_OPTIONS.map((b) => (
                     <option key={b} value={b}>{b}</option>
                   ))}

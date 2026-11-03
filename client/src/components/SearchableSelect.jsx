@@ -26,12 +26,23 @@ export default function SearchableSelect({
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const [search, setSearch] = useState('');
+  const [dropUp, setDropUp] = useState(false);
   const containerRef = useRef(null);
   const searchInputRef = useRef(null);
 
-  // Focus search input on open
+  // Focus search input on open & detect available space to avoid dropdown hiding
   useEffect(() => {
     if (isOpen) {
+      if (containerRef.current) {
+        const rect = containerRef.current.getBoundingClientRect();
+        const spaceBelow = window.innerHeight - rect.bottom;
+        const spaceAbove = rect.top;
+        if (spaceBelow < 280 && spaceAbove > spaceBelow) {
+          setDropUp(true);
+        } else {
+          setDropUp(false);
+        }
+      }
       setTimeout(() => {
         searchInputRef.current?.focus();
       }, 50);
@@ -108,7 +119,7 @@ export default function SearchableSelect({
   };
 
   return (
-    <div className={`relative ${isOpen ? 'z-40' : 'z-10'}`} ref={containerRef}>
+    <div className={`relative ${isOpen ? 'z-50' : 'z-10'}`} ref={containerRef}>
       {/* Trigger Button */}
       <button
         type="button"
@@ -118,7 +129,10 @@ export default function SearchableSelect({
           isOpen ? 'border-[#0e6977] ring-2 ring-[#0e6977]/15 bg-white' : 'border-slate-200'
         } ${disabled ? 'opacity-60 cursor-not-allowed' : ''} ${className}`}
       >
-        <span className={`truncate ${value ? 'text-slate-900 font-medium' : 'text-slate-400'}`}>
+        <span
+          className={`truncate flex-1 min-w-0 ${value ? 'text-slate-900 font-semibold' : 'text-slate-400'}`}
+          title={value || placeholder}
+        >
           {value || placeholder}
         </span>
         <div className="flex items-center gap-1.5 flex-shrink-0 text-slate-400">
@@ -137,7 +151,11 @@ export default function SearchableSelect({
 
       {/* Dropdown Menu */}
       {isOpen && (
-        <div className="absolute left-0 right-0 top-full mt-1.5 bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden flex flex-col max-h-72 z-50 animate-in fade-in slide-in-from-top-1 duration-150">
+        <div
+          className={`absolute left-0 right-0 ${
+            dropUp ? 'bottom-full mb-1.5 shadow-2xl' : 'top-full mt-1.5 shadow-2xl'
+          } bg-white border border-slate-200 rounded-xl overflow-hidden flex flex-col max-h-64 sm:max-h-72 z-50 animate-in fade-in duration-150`}
+        >
           {/* Search Box Header */}
           <div className="p-2 border-b border-slate-100 bg-slate-50/90 flex items-center gap-2 sticky top-0 z-10">
             <Search className="w-4 h-4 text-slate-400 ml-1 flex-shrink-0" />
@@ -169,8 +187,12 @@ export default function SearchableSelect({
                   onClick={() => handleSelect(search.trim())}
                   className="w-full text-left px-3 py-2 rounded-lg text-xs font-bold text-teal-800 bg-teal-50 hover:bg-teal-100 flex items-center justify-between transition-colors cursor-pointer"
                 >
-                  <span className="truncate">+ Use custom: "{search.trim()}"</span>
-                  <span className="text-[10px] font-mono text-teal-600 bg-white/80 px-1.5 py-0.5 rounded border border-teal-200">Custom</span>
+                  <span className="flex-1 text-left whitespace-normal break-words leading-snug">
+                    + Use custom: "{search.trim()}"
+                  </span>
+                  <span className="text-[10px] font-mono text-teal-600 bg-white/80 px-1.5 py-0.5 rounded border border-teal-200 shrink-0 ml-1.5">
+                    Custom
+                  </span>
                 </button>
               </div>
             )}
@@ -198,8 +220,10 @@ export default function SearchableSelect({
                               : 'text-slate-700 hover:bg-slate-50 hover:text-slate-900'
                           }`}
                         >
-                          <span className="truncate">{opt}</span>
-                          {isSelected && <Check className="w-4 h-4 text-[#0e6977] flex-shrink-0" />}
+                          <span className="flex-1 text-left whitespace-normal break-words leading-snug">
+                            {opt}
+                          </span>
+                          {isSelected && <Check className="w-4 h-4 text-[#0e6977] flex-shrink-0 ml-1.5" />}
                         </button>
                       );
                     })}
@@ -220,8 +244,10 @@ export default function SearchableSelect({
                         : 'text-slate-700 hover:bg-slate-50 hover:text-slate-900'
                     }`}
                   >
-                    <span className="truncate">{opt}</span>
-                    {isSelected && <Check className="w-4 h-4 text-[#0e6977] flex-shrink-0" />}
+                    <span className="flex-1 text-left whitespace-normal break-words leading-snug">
+                      {opt}
+                    </span>
+                    {isSelected && <Check className="w-4 h-4 text-[#0e6977] flex-shrink-0 ml-1.5" />}
                   </button>
                 );
               })

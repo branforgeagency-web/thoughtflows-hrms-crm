@@ -4,6 +4,7 @@ import { COURSE_CATEGORIES } from '../constants/courses';
 import { QUALIFICATION_GROUPS } from '../constants/qualifications';
 import { LEAD_SOURCE_GROUPS } from '../constants/leadSources';
 import { getAvailableTimingSlots, BATCH_SCHEDULE, CANONICAL_TIMING_OPTIONS } from '../constants/batchTimings';
+import { ALL_BRANCH_OPTIONS } from '../constants/branches';
 import SearchableSelect from './SearchableSelect';
 import logoImg from '../assets/thoughtflows-logo.png';
 import { 
@@ -58,6 +59,92 @@ export default function CompleteRegistrationModal({
   const availableSlots = useMemo(() => {
     return getAvailableTimingSlots({ course, mode: courseType, branch });
   }, [course, courseType, branch]);
+
+  const allBranchValues = useMemo(() => {
+    const set = new Set();
+    set.add('Not Mentioned');
+    Object.values(BRANCH_MAP).forEach((b) => set.add(b));
+    ALL_BRANCH_OPTIONS.forEach((b) => set.add(b.value));
+    return Array.from(set);
+  }, []);
+
+  const allCourseValues = useMemo(() => {
+    const set = new Set();
+    [
+      'AMCT Beginner (Classroom)',
+      'AMCT Beginner (Online)',
+      'AMCT Intermediate (Classroom)',
+      'AMCT Intermediate (Online)',
+      'AMCT Advanced (Classroom)',
+      'AMCT Advanced (Online)',
+      'AMCT - Advanced Medical Coding',
+      'AMCT Beginner',
+      'AMCT Intermediate',
+      'AMCT Advanced',
+      'AMCT',
+      'CPC - Certified Professional Coder',
+      'CPC',
+      'CIC - Certified Inpatient Coder',
+      'CIC',
+      'CPMA - Certified Professional Medical Auditor',
+      'CPMA',
+      'COC - Certified Outpatient Coder',
+      'COC',
+      'CRC - Certified Risk Adjustment Coder',
+      'CRC',
+      'CPB - Certified Professional Biller',
+      'CPB',
+      'CEDC - Certified Emergency Department Coder',
+      'CEDC',
+      'CEMC - Certified Evaluation and Management Coder',
+      'CEMC',
+      'CDEO - Certified Documentation Expert Outpatient',
+      'CDEO',
+      'CDEI - Certified Documentation Expert Inpatient',
+      'CDEI',
+      'CPPM - Certified Physician Practice Manager',
+      'CPPM',
+      'Surgery - Specialty Surgery Coding',
+      'ED - Emergency Department Coding',
+      'EM - Evaluation and Management Coding',
+      'Radiology - Radiology Coding',
+      'Anesthesia - Anesthesia Coding',
+      'IP DRG - Inpatient DRG Coding',
+      'HCC - Risk Adjustment Coding',
+      'IVR - Interventional Radiology Coding',
+      'CDI - Clinical Documentation Improvement',
+      'CCS - Certified Coding Specialist',
+      'CCS-P - Certified Coding Specialist – Physician-based',
+      'RHIA - Registered Health Information Administrator',
+      'RHIT - Registered Health Information Technician',
+      'CCC - Certified Clinical Coder',
+      'HIM - Health Information Management',
+      'CPC Crash Course',
+      'CPT Coding',
+      'ICD-10 Coding',
+      'Anatomy & Physiology'
+    ].forEach((c) => set.add(c));
+
+    COURSE_CATEGORIES.forEach((cat) => {
+      cat.courses.forEach((c) => {
+        set.add(c.name);
+        set.add(c.code);
+        set.add(c.code === c.name ? c.name : `${c.code} - ${c.name}`);
+      });
+    });
+
+    return Array.from(set);
+  }, []);
+
+  const hasExactBatchTimingOption = useMemo(() => {
+    if (!batchTiming) return true;
+    const standardOptions = [
+      'Not Mentioned',
+      ...availableSlots.map((s) => s.label),
+      ...BATCH_SCHEDULE.map((s) => s.label)
+    ];
+    return standardOptions.includes(batchTiming);
+  }, [batchTiming, availableSlots]);
 
   // Fee Payment
   const [totalCourseFee, setTotalCourseFee] = useState(initialData?.courseFee ? String(initialData.courseFee) : '');
@@ -441,8 +528,8 @@ export default function CompleteRegistrationModal({
               </h3>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-              <div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 relative z-30">
+              <div className="relative z-30">
                 <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-500 uppercase mb-1">
                   HIGHEST QUALIFICATION
                 </label>
@@ -475,7 +562,7 @@ export default function CompleteRegistrationModal({
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 relative z-20">
               <div>
                 <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-500 uppercase mb-1">
                   COLLEGE / COMPANY
@@ -489,7 +576,7 @@ export default function CompleteRegistrationModal({
                 />
               </div>
 
-              <div>
+              <div className="relative z-20">
                 <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-500 uppercase mb-1">
                   MODE OF SOURCE
                 </label>
@@ -513,6 +600,9 @@ export default function CompleteRegistrationModal({
                 onChange={(e) => setLeadCameFor(e.target.value)}
                 className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer"
               >
+                {leadCameFor && !['Admission', 'Demo Class', 'Course Enquiry', 'Placement Support'].includes(leadCameFor) && (
+                  <option value={leadCameFor}>{leadCameFor}</option>
+                )}
                 <option value="Admission">Admission</option>
                 <option value="Demo Class">Demo Class</option>
                 <option value="Course Enquiry">Course Enquiry</option>
@@ -538,9 +628,19 @@ export default function CompleteRegistrationModal({
                 <select
                   value={course}
                   onChange={(e) => setCourse(e.target.value)}
-                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer"
+                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer font-medium"
                 >
                   <option value="">— Select course —</option>
+                  {course && !allCourseValues.includes(course) && (
+                    <option value={course}>{course}</option>
+                  )}
+                  <optgroup label="Popular Quick Picks">
+                    <option value="CPC - Certified Professional Coder">CPC - Certified Professional Coder (C)</option>
+                    <option value="CPC">CPC</option>
+                    <option value="AMCT Beginner (Classroom)">AMCT Beginner (Classroom)</option>
+                    <option value="AMCT Beginner (Online)">AMCT Beginner (Online)</option>
+                    <option value="AMCT">AMCT</option>
+                  </optgroup>
                   <optgroup label="AMCT Certification Programmes">
                     <option value="AMCT Beginner (Classroom)">AMCT Beginner (Classroom)</option>
                     <option value="AMCT Beginner (Online)">AMCT Beginner (Online)</option>
@@ -613,15 +713,27 @@ export default function CompleteRegistrationModal({
                 <select
                   value={branch}
                   onChange={(e) => setBranch(e.target.value)}
-                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer"
+                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer font-medium"
                 >
                   <option value="">— Select branch —</option>
                   <option value="Not Mentioned">Not Mentioned</option>
-                  {Object.entries(BRANCH_MAP).map(([bCode, bName]) => (
-                    <option key={bCode} value={bName}>
-                      {bName} ({bCode})
-                    </option>
-                  ))}
+                  {branch && !allBranchValues.includes(branch) && (
+                    <option value={branch}>{branch}</option>
+                  )}
+                  <optgroup label="🏢 Centers & Branches">
+                    {ALL_BRANCH_OPTIONS.filter((b) => b.value !== 'Not Mentioned').map((b) => (
+                      <option key={b.value} value={b.value}>
+                        {b.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="📍 Master Branch Codes">
+                    {Object.entries(BRANCH_MAP).map(([bCode, bName]) => (
+                      <option key={bCode} value={bName}>
+                        {bName} ({bCode})
+                      </option>
+                    ))}
+                  </optgroup>
                 </select>
               </div>
             </div>
@@ -634,10 +746,14 @@ export default function CompleteRegistrationModal({
                 <select
                   value={courseType}
                   onChange={(e) => setCourseType(e.target.value)}
-                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer"
+                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer font-medium"
                 >
+                  {courseType && !['Online', 'Classroom', 'Offline', 'Hybrid'].includes(courseType) && (
+                    <option value={courseType}>{courseType}</option>
+                  )}
                   <option value="Online">Online (O)</option>
                   <option value="Classroom">Classroom (C)</option>
+                  <option value="Offline">Offline / Classroom (C)</option>
                   <option value="Hybrid">Hybrid (H)</option>
                 </select>
               </div>
@@ -649,23 +765,22 @@ export default function CompleteRegistrationModal({
                 <select
                   value={batchTiming}
                   onChange={(e) => setBatchTiming(e.target.value)}
-                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer"
+                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer font-medium"
                 >
                   <option value="">— Select timing slot —</option>
                   <option value="Not Mentioned">Not Mentioned</option>
-                  {/* Preserve existing custom/legacy value if not matched */}
-                  {batchTiming && !availableSlots.some(s => s.label === batchTiming || s.value === batchTiming || s.timing === batchTiming) && (
+                  {batchTiming && !hasExactBatchTimingOption && (
                     <option value={batchTiming}>Current: {batchTiming}</option>
                   )}
-                  <optgroup label={`🎯 Available for Selected Course & Branch (${availableSlots.filter(s => s.label !== 'Not Mentioned').length} Slots)`}>
-                    {availableSlots.filter(s => s.label !== 'Not Mentioned').map((s, idx) => (
+                  <optgroup label={`🎯 Available for Selected Course & Branch (${availableSlots.filter((s) => s.label !== 'Not Mentioned').length} Slots)`}>
+                    {availableSlots.filter((s) => s.label !== 'Not Mentioned').map((s, idx) => (
                       <option key={`avail-${idx}`} value={s.label}>
                         {s.label}
                       </option>
                     ))}
                   </optgroup>
                   <optgroup label="📋 All Other Schedule Slots">
-                    {BATCH_SCHEDULE.filter(s => s.label !== 'Not Mentioned' && !availableSlots.some(a => a.label === s.label)).map((s, idx) => (
+                    {BATCH_SCHEDULE.filter((s) => s.label !== 'Not Mentioned' && !availableSlots.some((a) => a.label === s.label)).map((s, idx) => (
                       <option key={`other-${idx}`} value={s.label}>
                         {s.label}
                       </option>
@@ -683,10 +798,14 @@ export default function CompleteRegistrationModal({
                 <select
                   value={batchType}
                   onChange={(e) => setBatchType(e.target.value)}
-                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer"
+                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer font-medium"
                 >
+                  {batchType && !['Weekdays', 'Weekends', 'Both'].includes(batchType) && (
+                    <option value={batchType}>{batchType}</option>
+                  )}
                   <option value="Weekdays">Weekdays</option>
                   <option value="Weekends">Weekends</option>
+                  <option value="Both">Both (Flexible)</option>
                 </select>
               </div>
 
@@ -775,8 +894,11 @@ export default function CompleteRegistrationModal({
                 <select
                   value={paymentPlan}
                   onChange={(e) => setPaymentPlan(e.target.value)}
-                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer"
+                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer font-medium"
                 >
+                  {paymentPlan && !['Full Payment', '2 Instalments', '3 Instalments', 'Monthly Plan'].includes(paymentPlan) && (
+                    <option value={paymentPlan}>{paymentPlan}</option>
+                  )}
                   <option value="Full Payment">Full Payment</option>
                   <option value="2 Instalments">2 Instalments</option>
                   <option value="3 Instalments">3 Instalments</option>
@@ -805,8 +927,11 @@ export default function CompleteRegistrationModal({
                 <select
                   value={examBooked}
                   onChange={(e) => setExamBooked(e.target.value)}
-                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer"
+                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer font-medium"
                 >
+                  {examBooked && !['Not Booked', 'AAPC CPC Booked', 'Exam Scheduled'].includes(examBooked) && (
+                    <option value={examBooked}>{examBooked}</option>
+                  )}
                   <option value="Not Booked">Not Booked</option>
                   <option value="AAPC CPC Booked">AAPC CPC Booked</option>
                   <option value="Exam Scheduled">Exam Scheduled</option>
@@ -869,8 +994,11 @@ export default function CompleteRegistrationModal({
                 <select
                   value={paymentMethod}
                   onChange={(e) => setPaymentMethod(e.target.value)}
-                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer"
+                  className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all cursor-pointer font-medium"
                 >
+                  {paymentMethod && !['UPI / GPay / PhonePe', 'Net Banking / NEFT', 'Credit / Debit Card', 'Cash at Branch'].includes(paymentMethod) && (
+                    <option value={paymentMethod}>{paymentMethod}</option>
+                  )}
                   <option value="UPI / GPay / PhonePe">UPI / GPay / PhonePe</option>
                   <option value="Net Banking / NEFT">Net Banking / NEFT</option>
                   <option value="Credit / Debit Card">Credit / Debit Card</option>
