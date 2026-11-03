@@ -734,6 +734,16 @@ export const updateEscalationStatus = async (id, action, response) => {
   return res.data;
 };
 
+export const getHrMyTeam = async () => {
+  const res = await api.get('/hr/my-team');
+  return res.data;
+};
+
+export const getHrHubSummary = async () => {
+  const res = await api.get('/hr/hub-summary');
+  return res.data;
+};
+
 export const getTeam = async (params) => {
   const res = await api.get('/leadership/team', { params });
   return res.data;

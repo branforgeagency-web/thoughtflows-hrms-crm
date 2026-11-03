@@ -28,7 +28,10 @@ export default function TeamRosterBoard({
   readOnlyNotice = '',
   editorRole = 'head',
   currentUser = null,
-  showRoleFilter = false
+  showRoleFilter = false,
+  readOnlyTitle = 'Training Department Roster & Shifts',
+  staffLabel = 'Faculty Trainers',
+  editorLabel = 'Head of Trainer'
 }) {
   const [members, setMembers] = useState(customMembers || []);
   const allowedNamesKey = useMemo(
@@ -215,7 +218,7 @@ export default function TeamRosterBoard({
   // Toggle Availability (Head of Trainer only)
   const handleToggleStatus = async (id, currentStatus) => {
     if (readOnly) {
-      showToast('🔒 Read-Only: Availability and rosters can only be updated by the Head of Trainer.');
+      showToast(`🔒 Read-Only: Availability and rosters can only be updated by the ${editorLabel}.`);
       return;
     }
 
@@ -291,7 +294,7 @@ export default function TeamRosterBoard({
           <div className="flex items-center gap-2.5">
             <span className="text-xl sm:text-2xl select-none">📅</span>
             <h3 className="text-xl sm:text-2xl font-bold text-[#0f172a] tracking-tight">
-              {readOnly ? 'Training Department Roster & Shifts' : 'Team Roster & Weekly Schedule Allocator'}
+              {readOnly ? readOnlyTitle : 'Team Roster & Weekly Schedule Allocator'}
             </h3>
           </div>
           <p className="text-xs sm:text-sm text-slate-400 font-mono mt-1 font-medium pl-0.5">
@@ -392,7 +395,7 @@ export default function TeamRosterBoard({
             }`}
           >
             <Users className="w-3.5 h-3.5" />
-            <span>Faculty Trainers ({trainersCount})</span>
+            <span>{staffLabel} ({trainersCount})</span>
           </button>
         </div>
       )}

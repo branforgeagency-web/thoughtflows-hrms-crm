@@ -2430,8 +2430,21 @@ function DepartmentHeadsView({ departments = [], onBack, onSelectHead, onSwitchD
   );
 }
 
-function HeadOfHrDashboard({ department, onBack, currentUser, onChanged, onSwitchDepartment }) {
+export function HeadOfHrDashboard({
+  department,
+  onBack,
+  currentUser,
+  onChanged,
+  onSwitchDepartment,
+  title = 'Head of HR',
+  roleLabel = 'Department Head',
+  headName = '',
+  allowedTabs = null,
+  backLabel = 'Departments'
+}) {
   const [tab, setTab] = useState('desk');
+  // Optional tab whitelist (HR Team Lead sees a reduced set of the Head of HR desk)
+  const isAllowed = (key) => !allowedTabs || allowedTabs.includes(key);
   const counts = useDeskCounts({ departmentCode: 'DEP-HR-001' });
 
   const [approvalsList, setApprovalsList] = useState([]);
@@ -2501,7 +2514,7 @@ function HeadOfHrDashboard({ department, onBack, currentUser, onChanged, onSwitc
     : null;
   const show = (v) => (v === null || v === undefined ? '…' : String(v));
 
-  const HR_TABS = [
+  const HR_TABS_ALL = [
     { key: 'desk', label: 'My Desk', icon: LayoutDashboard },
     { key: 'team', label: 'Team Performance', icon: Users, iconColor: 'text-blue-500' },
     { key: 'approvals', label: 'Approvals', icon: CheckCircle2, iconColor: 'text-emerald-500', badge: pendingApprovalsCount > 0 ? String(pendingApprovalsCount) : null, badgeColor: 'bg-amber-500' },
@@ -2513,8 +2526,9 @@ function HeadOfHrDashboard({ department, onBack, currentUser, onChanged, onSwitc
     { key: 'sop', label: 'SOP Hub', icon: BookOpen, iconColor: 'text-emerald-600' },
     { key: 'mgmt', label: 'Mgmt Summary', icon: TrendingUp, iconColor: 'text-blue-600' }
   ];
+  const HR_TABS = HR_TABS_ALL.filter((t) => isAllowed(t.key));
 
-  const HR_STATS = [
+  const HR_STATS_ALL = [
     {
       value: String(pendingApprovalsCount),
       color: 'text-amber-500',
@@ -2564,19 +2578,22 @@ function HeadOfHrDashboard({ department, onBack, currentUser, onChanged, onSwitc
       targetTab: 'team'
     }
   ];
+  const HR_STATS = HR_STATS_ALL.filter((st) => isAllowed(st.targetTab));
 
   return (
     <div className="w-full space-y-5">
       {/* Top back button */}
-      <div>
-        <button
-          onClick={onBack}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 bg-white border border-slate-200/90 shadow-2xs hover:bg-slate-50 hover:text-slate-900 transition-all cursor-pointer"
-        >
-          <ChevronLeft className="w-3.5 h-3.5 text-slate-500" />
-          Departments
-        </button>
-      </div>
+      {onBack && (
+        <div>
+          <button
+            onClick={onBack}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 bg-white border border-slate-200/90 shadow-2xs hover:bg-slate-50 hover:text-slate-900 transition-all cursor-pointer"
+          >
+            <ChevronLeft className="w-3.5 h-3.5 text-slate-500" />
+            {backLabel}
+          </button>
+        </div>
+      )}
 
       {/* Header Banner */}
       <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-2xs relative overflow-hidden flex items-center justify-between">
@@ -2588,10 +2605,10 @@ function HeadOfHrDashboard({ department, onBack, currentUser, onChanged, onSwitc
           </div>
           <div>
             <h2 className="text-lg font-extrabold text-slate-900 tracking-tight leading-tight">
-              Head of HR
+              {title}
             </h2>
             <p className="text-xs text-slate-400 font-mono mt-0.5">
-              {department?.head || 'Head not assigned'} <span className="mx-1 text-slate-300">·</span> Department Head <span className="mx-1 text-slate-300">·</span> DEP-HR-001
+              {headName || department?.head || 'Head not assigned'} <span className="mx-1 text-slate-300">·</span> {roleLabel} <span className="mx-1 text-slate-300">·</span> DEP-HR-001
             </p>
           </div>
         </div>
@@ -2677,7 +2694,7 @@ function HeadOfHrDashboard({ department, onBack, currentUser, onChanged, onSwitc
             </p>
 
             <div className="space-y-2.5">
-              {approvalsList.filter(a => (a.status || '').toLowerCase() === 'pending').slice(0, 3).map(item => (
+              {(isAllowed('approvals') ? approvalsList : []).filter(a => (a.status || '').toLowerCase() === 'pending').slice(0, 3).map(item => (
                 <button
                   key={item.id}
                   onClick={() => setTab('approvals')}
@@ -2713,7 +2730,7 @@ function HeadOfHrDashboard({ department, onBack, currentUser, onChanged, onSwitc
                 </button>
               ))}
 
-              {pendingApprovalsCount === 0 && openEscalations.length === 0 && (
+              {(isAllowed('approvals') ? pendingApprovalsCount : 0) === 0 && openEscalations.length === 0 && (
                 <div className="text-center py-6 text-xs text-slate-400">Nothing waiting on you — all approvals and escalations are cleared.</div>
               )}
             </div>

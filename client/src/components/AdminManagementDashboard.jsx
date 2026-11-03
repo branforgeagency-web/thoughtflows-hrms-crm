@@ -64,6 +64,7 @@ const ACADEMY_ROLES = [
   'HR',
   'HR TL',
   'BRANCH HEAD',
+  'HR DEPARTMENT HEAD',
   'PROCESS COACH',
   'BUSINESS LEAD',
   'DEPARTMENT HEAD',
@@ -86,6 +87,7 @@ const ACADEMY_ROLES = [
 const ROLE_TO_DEPARTMENT = {
   'HR': 'Admissions & Counseling',
   'HR TL': 'Admissions & Counseling',
+  'HR DEPARTMENT HEAD': 'Admissions & Counseling',
   'BRANCH HEAD': 'Leadership & Operations',
   'PROCESS COACH': 'Medical Coding Faculty',
   'BUSINESS LEAD': 'Growth & Marketing',
@@ -316,6 +318,7 @@ export default function AdminManagementDashboard({
     role: 'HR',
     department: 'Admissions & Counseling',
     branch: '',
+    managerName: '', // HR only: the HR TL this counsellor reports to
     password: '',
     // Trainer-only fields — shown when role === 'Trainer' and used to
     // seed the Trainer roster (Demo Booking eligibility engine)
@@ -339,6 +342,7 @@ export default function AdminManagementDashboard({
     role: 'HR',
     department: 'Admissions & Counseling',
     branch: '',
+    managerName: '',
     password: '',
     status: 'Active'
   });
@@ -501,6 +505,7 @@ export default function AdminManagementDashboard({
       role: newUserForm.role,
       department: newUserForm.department,
       branch: newUserForm.branch,
+      managerName: newUserForm.role === 'HR' ? (newUserForm.managerName || '') : '',
       status: 'Active',
       lastLogin: 'Never',
       avatarBg: 'bg-indigo-600'
@@ -642,6 +647,7 @@ export default function AdminManagementDashboard({
       role: u.role || 'HR',
       department: u.department || ROLE_TO_DEPARTMENT[u.role] || 'Leadership & Operations',
       branch: u.branch || '',
+      managerName: u.managerName || '',
       password: '',
       status: u.status || 'Active'
     });
@@ -665,6 +671,7 @@ export default function AdminManagementDashboard({
         role: editUserForm.role,
         department: editUserForm.department || ROLE_TO_DEPARTMENT[editUserForm.role] || 'Leadership & Operations',
         branch: editUserForm.branch || '',
+        managerName: editUserForm.role === 'HR' ? (editUserForm.managerName || '') : '',
         status: editUserForm.status || 'Active'
       };
       if (editUserForm.password && editUserForm.password.trim()) {
@@ -2687,6 +2694,27 @@ export default function AdminManagementDashboard({
                 </div>
               </div>
 
+              {newUserForm.role === 'HR' && (
+                <div>
+                  <label className="text-[#2563eb] font-extrabold text-[11px] tracking-wider uppercase mb-1.5 block">
+                    REPORTS TO (HR TEAM LEAD)
+                  </label>
+                  <div className="relative">
+                    <select
+                      value={newUserForm.managerName}
+                      onChange={(e) => setNewUserForm({ ...newUserForm, managerName: e.target.value })}
+                      className="w-full px-4 py-2.5 pr-10 rounded-xl border border-slate-200 hover:border-slate-300 focus:border-blue-500 bg-white text-slate-800 focus:outline-none text-sm shadow-2xs font-medium appearance-none cursor-pointer transition-all"
+                    >
+                      <option value="">No Team Lead</option>
+                      {users.filter((x) => /\btl\b|team\s*lead/i.test(x.role || '') && /\bhr\b/i.test(x.role || '')).map((x) => (
+                        <option key={x._id || x.id || x.email} value={x.name}>{x.name}{x.branch ? ` · ${x.branch}` : ''}</option>
+                      ))}
+                    </select>
+                    <ChevronDown className="w-4 h-4 text-slate-500 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none stroke-[2.5]" />
+                  </div>
+                </div>
+              )}
+
               {(newUserForm.role === 'HR' || newUserForm.role === 'HR TL' || newUserForm.role === 'Dept Head · HR') && (
                 <div className="rounded-2xl border border-rose-100 bg-rose-50/50 p-3.5">
                   <p className="text-[11px] font-extrabold text-rose-700 uppercase tracking-wider flex items-center gap-1.5 mb-1">
@@ -3027,6 +3055,24 @@ export default function AdminManagementDashboard({
                   </select>
                 </div>
               </div>
+
+              {editUserForm.role === 'HR' && (
+                <div>
+                  <label className="text-[#2563eb] font-extrabold text-[11px] tracking-wider uppercase mb-1.5 block">
+                    REPORTS TO (HR TEAM LEAD)
+                  </label>
+                  <select
+                    value={editUserForm.managerName}
+                    onChange={(e) => setEditUserForm({ ...editUserForm, managerName: e.target.value })}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-[#2563eb] text-xs font-medium text-slate-800 focus:outline-none transition-colors bg-white"
+                  >
+                    <option value="">No Team Lead</option>
+                    {users.filter((x) => /\btl\b|team\s*lead/i.test(x.role || '') && /\bhr\b/i.test(x.role || '')).map((x) => (
+                      <option key={x._id || x.id || x.email} value={x.name}>{x.name}{x.branch ? ` · ${x.branch}` : ''}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               {/* PASSWORD & STATUS */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

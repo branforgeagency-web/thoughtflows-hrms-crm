@@ -72,6 +72,7 @@ const PUBLIC_ROUTES = [
   ['GET', /^\/auth\/departments$/],
   ['GET', /^\/auth\/trainer-credentials$/],
   ['GET', /^\/departments$/],
+  ['GET', /^\/hr\/hub-summary$/],
   ['POST', /^\/calls\/knowlarity\/webhook$/],
   ['GET', /^\/calls\/knowlarity\/webhook$/],
   ['POST', /^\/calls\/edesy\/webhook$/],

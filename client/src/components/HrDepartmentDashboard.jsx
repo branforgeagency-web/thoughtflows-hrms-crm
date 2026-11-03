@@ -49,6 +49,8 @@ import HrReportsView from './HrReportsView';
 import HrCallRecordingsTable from './HrCallRecordingsTable';
 import HrStudentRequestsDesk from './HrStudentRequestsDesk';
 import TrainerQualityBoard from './TrainerQualityBoard';
+import HrTeamDataSection from './HrTeamDataSection';
+import HrWeeklyRoster from './HrWeeklyRoster';
 import { Inbox as InboxIcon } from 'lucide-react';
 import LeadCallModal from './LeadCallModal';
 import BookNewDemoModal from './BookNewDemoModal';
@@ -58,7 +60,11 @@ import { getStudents, getLeads, createLead, updateLead, updateStudent, getDemos,
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 import { useIncentivePolicy, progressiveIncentive } from '../utils/incentive';
 
-export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, onSwitchDepartment, theme = 'classic' }) {
+// viewScope (optional, set by the HR hub for leadership desks):
+//   { mode: 'team', names: [...], label }  — HR Team Lead: their HRs' data
+//   { mode: 'branch', branch, label }       — Branch Head: the whole branch (server scopes by branch)
+//   { mode: 'all', label }                  — HR Department Head: every HR, every branch
+export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, onSwitchDepartment, theme = 'classic', viewScope = null }) {
   // Persist active tab across browser refresh within this session
   const [activeTab, setActiveTab] = useState(() => {
     try {
@@ -450,6 +456,15 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     currentUser?.department === 'leadership';
 
   const [scopeMode, setScopeMode] = useState('mine'); // 'mine' | 'all'
+  const scopeKind = viewScope?.mode || null; // 'team' | 'branch' | 'all' | null (own desk)
+  const teamNamesKey = (viewScope?.names || []).join('|');
+  const teamNames = useMemo(
+    () => (scopeKind === 'team' ? Array.from(new Set([currentUser?.name, ...(viewScope?.names || [])].filter(Boolean))) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [scopeKind, currentUser?.name, teamNamesKey]
+  );
+  // true = show every record the server returned (Department Head / Branch Head / Admin "All")
+  const viewAll = scopeKind ? scopeKind !== 'team' : (scopeMode === 'all' && isElevatedUser);
 
   const showToast = (msg) => {
     setToastMsg(msg);
@@ -468,7 +483,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     try {
       if (!silent) setLoading(true);
       const counselorFilter = currentUser?.name?.trim();
-      const shouldFilterOnServer = counselorFilter && (!isElevatedUser || scopeMode === 'mine');
+      const shouldFilterOnServer = counselorFilter && !scopeKind && (!isElevatedUser || scopeMode === 'mine');
       const dKey = localDateKey();
 
       const [stRes, ldRes, dmRes, recRes, closureRes] = await Promise.all([
@@ -539,7 +554,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       }
     });
     return unsub;
-  }, [scopeMode, currentUser?.name, todayKey]);
+  }, [scopeMode, currentUser?.name, todayKey, scopeKind]);
 
   const handleAddLeadSubmit = async (leadData) => {
     try {
@@ -614,27 +629,32 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     return false;
   };
 
+  // Does a record owner belong to this desk's scope? (own name, or any HR in the Team Lead's team)
+  const ownerMatch = (candidateName) => (
+    teamNames ? teamNames.some((n) => matchesMyName(candidateName, n)) : matchesMyName(candidateName, myName)
+  );
+
   const rawScopedStudents = useMemo(() => {
-    if (scopeMode === 'all' && isElevatedUser) return students;
-    if (!myName) return students;
+    if (viewAll) return students;
+    if (!myName && !teamNames) return students;
     return students.filter(s => 
-      matchesMyName(s.hrName, myName) || 
-      matchesMyName(s.counselor, myName) || 
-      matchesMyName(s.counselorName, myName) || 
-      matchesMyName(s.allocatedTo, myName)
+      ownerMatch(s.hrName) || 
+      ownerMatch(s.counselor) || 
+      ownerMatch(s.counselorName) || 
+      ownerMatch(s.allocatedTo)
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [students, scopeMode, isElevatedUser, myName]);
+  }, [students, viewAll, teamNames, myName]);
 
   const scopedLeads = useMemo(() => {
     let baseLeads = leads;
-    if (scopeMode === 'all' && isElevatedUser) {
+    if (viewAll) {
       baseLeads = leads;
-    } else if (myName) {
+    } else if (myName || teamNames) {
       baseLeads = leads.filter(l => 
-        matchesMyName(l.counselorAssigned, myName) ||
-        matchesMyName(l.allocatedTo, myName) ||
-        matchesMyName(l.spokenBy, myName)
+        ownerMatch(l.counselorAssigned) ||
+        ownerMatch(l.allocatedTo) ||
+        ownerMatch(l.spokenBy)
       );
     }
 
@@ -683,31 +703,49 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
 
     return [...baseLeads, ...syntheticAdmittedLeads];
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [leads, rawScopedStudents, scopeMode, isElevatedUser, myName, currentUser?.name]);
+  }, [leads, rawScopedStudents, viewAll, teamNames, myName, currentUser?.name]);
 
   // Scoped students directly from verified records
   const scopedStudents = rawScopedStudents;
 
   const scopedDemos = useMemo(() => {
-    if (scopeMode === 'all' && isElevatedUser) return demos;
-    if (!myName) return demos;
+    if (viewAll) return demos;
+    if (!myName && !teamNames) return demos;
     const leadPhones = new Set(
       scopedLeads.map(l => (l.phone || '').replace(/\D/g, '').slice(-10)).filter(Boolean)
     );
     return demos.filter(d => {
       const ph = (d.phone || '').replace(/\D/g, '').slice(-10);
       const isLeadCandidate = ph.length === 10 && leadPhones.has(ph);
-      const isMine = myName && (
-        matchesMyName(d.counselor, myName) || 
-        matchesMyName(d.bookedBy, myName) || 
-        matchesMyName(d.hrName, myName) ||
-        matchesMyName(d.counselorAssigned, myName) ||
-        matchesMyName(d.allocatedTo, myName)
+      const isMine = (
+        ownerMatch(d.counselor) || 
+        ownerMatch(d.bookedBy) || 
+        ownerMatch(d.hrName) ||
+        ownerMatch(d.counselorAssigned) ||
+        ownerMatch(d.allocatedTo)
       );
       return isMine || isLeadCandidate;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [demos, scopedLeads, scopeMode, isElevatedUser, myName]);
+  }, [demos, scopedLeads, viewAll, teamNames, myName]);
+
+  // Call recordings in this desk's scope (the server already pins a counsellor to their own)
+  // Branch Head: recordings of the counsellors who own this branch's leads / admissions
+  const branchOwnerNames = useMemo(() => (
+    scopeKind === 'branch'
+      ? Array.from(new Set([
+        ...scopedLeads.map((l) => l.counselorAssigned || l.allocatedTo),
+        ...scopedStudents.map((st) => st.hrName)
+      ].filter(Boolean)))
+      : null
+  ), [scopeKind, scopedLeads, scopedStudents]);
+  const recordingScopeNames = teamNames || branchOwnerNames;
+  const scopedRecordings = useMemo(() => (
+    recordingScopeNames
+      ? callRecordings.filter((r) => recordingScopeNames.some((n) => matchesMyName(r.counselorName, n)))
+      : callRecordings
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  ), [callRecordings, recordingScopeNames]);
 
   // Monthly admissions target: the Head of HR's target for this counsellor (or
   // "All HR"), otherwise Admin's default target from the incentive policy
@@ -734,11 +772,11 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
 
   const monthPrefix = todayKey.slice(0, 7);
   const admissionsThisMonth = useMemo(() => scopedStudents.filter(s => {
-    if (myName && normName(s.hrName) !== myName) return false;
+    if (!viewAll && myName && !ownerMatch(s.hrName)) return false;
     const d = new Date(s.admissionDate || s.createdAt);
     return !isNaN(d.getTime()) && localDateKey(d).slice(0, 7) === monthPrefix;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }).length, [scopedStudents, monthPrefix, myName]);
+  }).length, [scopedStudents, monthPrefix, myName, viewAll, teamNames]);
 
   // Dynamic priorities for tomorrow
   const overdueCount = useMemo(() => {
@@ -754,7 +792,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     // 1. Calls made TODAY — the server call log is the record (every call saved
     //    from the call modal writes one row). Uploaded recordings only count if
     //    they outnumber it, e.g. calls made outside the modal.
-    const recordingsToday = callRecordings.filter(r => isToday(r.createdAt));
+    const recordingsToday = scopedRecordings.filter(r => isToday(r.createdAt));
     const callsMadeToday = Math.max(todayCallLogs.length, recordingsToday.length);
 
     // 2. Connected calls TODAY (same sources, same rule)
@@ -768,7 +806,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
 
     // 4. Admissions TODAY (strictly admissions closed by this counselor)
     const todayAdmissions = scopedStudents.filter(s => {
-      if (myName && normName(s.hrName) !== myName) return false;
+      if (!viewAll && myName && !ownerMatch(s.hrName)) return false;
       return isToday(s.createdAt) || isToday(s.admissionDate);
     });
     const admissionsToday = todayAdmissions.length;
@@ -799,7 +837,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       feesCollected: `₹${feesTodayNum.toLocaleString('en-IN')}`,
       pendingFus: pendingToday
     };
-  }, [scopedLeads, scopedStudents, scopedDemos, callRecordings, todayCallLogs, todayKey]);
+  }, [scopedLeads, scopedStudents, scopedDemos, scopedRecordings, todayCallLogs, todayKey]);
 
   // If user corrected/edited numbers, use customMetrics; otherwise use live computed daily metrics
   const closureMetrics = useMemo(() => {
@@ -935,10 +973,14 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
 
     return [
       { name: 'Home', badge: null, icon: Home, iconBg: 'bg-[#0e6977]', color: 'teal' },
+      // Team Lead / Branch Head / Department Head: HR-wise data + weekly roster
+      ...(scopeKind ? [
+        { name: 'HR-wise Data', badge: null, icon: Users, iconBg: 'bg-indigo-600', color: 'indigo' }
+      ] : []),
       { name: 'Pipeline & Follow-ups', badge: pipelineCount, icon: Filter, iconBg: 'bg-[#7c3aed]', badgeBg: 'bg-rose-500', color: 'purple' },
       { name: 'Demo Desk', badge: scopedDemos.length > 0 ? scopedDemos.length.toString() : null, icon: Monitor, iconBg: 'bg-cyan-600', color: 'cyan' },
       { name: 'Admitted Students', badge: admittedCount, icon: GraduationCap, iconBg: 'bg-emerald-600', badgeBg: 'bg-emerald-500', color: 'emerald' },
-      { name: 'Call Recordings', badge: callRecordings.length > 0 ? String(callRecordings.length) : null, icon: PhoneCall, iconBg: 'bg-sky-600', badgeBg: 'bg-sky-500', color: 'sky' },
+      { name: 'Call Recordings', badge: scopedRecordings.length > 0 ? String(scopedRecordings.length) : null, icon: PhoneCall, iconBg: 'bg-sky-600', badgeBg: 'bg-sky-500', color: 'sky' },
       { name: 'My Targets', badge: null, icon: Target, iconBg: 'bg-rose-500', color: 'pink' },
       { name: 'My Schedule', badge: null, icon: Calendar, iconBg: 'bg-blue-500', color: 'blue' },
       { name: 'EOD Report', badge: closureSubmitted ? 'Done ✓' : 'Due', icon: FileText, iconBg: 'bg-[#0e6977]', badgeBg: closureSubmitted ? 'bg-emerald-500' : 'bg-amber-500', color: 'teal' },
@@ -947,7 +989,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       { name: 'Handover', badge: handoverCount, icon: Repeat, iconBg: 'bg-orange-600', badgeBg: 'bg-orange-500', color: 'orange' },
       { name: 'Student Requests', badge: studentInboxCount > 0 ? String(studentInboxCount) : null, icon: InboxIcon, iconBg: 'bg-indigo-600', badgeBg: 'bg-rose-500', color: 'indigo' },
     ];
-  }, [scopedLeads, scopedStudents, scopedDemos, studentInboxCount, pendingFeesStats.count, callRecordings.length]);
+  }, [scopedLeads, scopedStudents, scopedDemos, studentInboxCount, pendingFeesStats.count, scopedRecordings.length, scopeKind]);
 
   // Today's Priority Queue: overdue follow-ups first, then today's, then
   // fee-due admitted students, then fee-stage leads, then brand-new leads.
@@ -1596,7 +1638,20 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
 
       {/* Main Content Body */}
       <main className="w-full px-4 sm:px-6 lg:px-8 py-5 space-y-5">
-        {activeTab === 'My Schedule' ? (
+        {scopeKind && activeTab === 'HR-wise Data' ? (
+          <HrTeamDataSection
+            leads={scopedLeads}
+            students={scopedStudents}
+            demos={scopedDemos}
+            recordings={scopedRecordings}
+            scopeKind={scopeKind}
+            scopeNames={teamNames}
+            branch={viewScope?.branch || ''}
+            scopeLabel={viewScope?.label || ''}
+            matchesName={matchesMyName}
+          />
+) : activeTab === 'My Schedule' ? (
+          <div className="space-y-6">
           <HrMySchedule 
             isOnBreak={isOnBreak} 
             setIsOnBreak={setIsOnBreak} 
@@ -1605,6 +1660,14 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             handleToggleBreak={handleToggleBreak} 
             currentUser={currentUser} 
           />
+          {(scopeKind === 'all' || scopeKind === 'branch') && (
+            <HrWeeklyRoster
+              canEdit
+              scopeKind={scopeKind}
+              branch={viewScope?.branch || ''}
+            />
+          )}
+          </div>
         ) : activeTab === 'My Targets' ? (
           <HrMyTargets currentUser={currentUser} students={scopedStudents} />
         ) : activeTab === 'Admitted Students' ? (
@@ -1618,6 +1681,8 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         ) : activeTab === 'Call Recordings' ? (
           <HrCallRecordingsTable
             currentUser={currentUser}
+            viewAll={viewAll && !recordingScopeNames}
+            scopeNames={recordingScopeNames}
             students={scopedStudents}
             allStudents={students}
             leads={scopedLeads}
@@ -1700,7 +1765,12 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             </div>
             {/* Scoping status pill */}
             <div className="flex items-center gap-2">
-              {isElevatedUser ? (
+              {scopeKind ? (
+                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-800 text-xs font-bold shadow-xs">
+                  <span className="w-2 h-2 rounded-full bg-indigo-500" />
+                  <span>{viewScope?.label || 'Scoped view'}: {scopedLeads.length} Leads • {scopedStudents.length} Students</span>
+                </div>
+              ) : isElevatedUser ? (
                 <div className="flex items-center bg-white p-1 rounded-xl border border-slate-200 shadow-xs text-xs font-bold">
                   <button
                     onClick={() => setScopeMode('mine')}

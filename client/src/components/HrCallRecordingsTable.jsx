@@ -23,7 +23,7 @@ import RecordingAudio from './RecordingAudio';
 import PhoneRecordingSync from './PhoneRecordingSync';
 import UploadStudentRecordingModal from './UploadStudentRecordingModal';
 
-export default function HrCallRecordingsTable({ currentUser, students = [], allStudents = [], leads = [] }) {
+export default function HrCallRecordingsTable({ currentUser, students = [], allStudents = [], leads = [], viewAll = false, scopeNames = null }) {
   useFileToken(); // keeps file links (downloads / audio) signed with a fresh short-lived token
   const [recordings, setRecordings] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -92,7 +92,7 @@ export default function HrCallRecordingsTable({ currentUser, students = [], allS
 
   // Filter recordings
   const filteredRecordings = useMemo(() => {
-    const isElevated = currentUser?.role === 'Super Admin' ||
+    const isElevated = viewAll || currentUser?.role === 'Super Admin' ||
       currentUser?.role === 'Admin' ||
       currentUser?.department === 'admin' ||
       currentUser?.department === 'leadership';
@@ -112,13 +112,13 @@ export default function HrCallRecordingsTable({ currentUser, students = [], allS
         (rec.outcome || '').toLowerCase().includes(selectedOutcomeFilter.toLowerCase());
 
       const recCounselor = (rec.counselorName || '').trim().toLowerCase();
-      const matchesCounselor = isElevated || !myName ||
-        recCounselor.includes(myName) ||
-        myName.includes(recCounselor);
+      const names = scopeNames && scopeNames.length ? scopeNames.map((n) => String(n).trim().toLowerCase()).filter(Boolean) : [myName];
+      const matchesCounselor = (isElevated && !(scopeNames && scopeNames.length)) || !myName ||
+        names.some((n) => recCounselor.includes(n) || n.includes(recCounselor));
 
       return matchesSearch && matchesOutcome && matchesCounselor;
     });
-  }, [recordings, searchQuery, selectedOutcomeFilter, currentUser]);
+  }, [recordings, searchQuery, selectedOutcomeFilter, currentUser, viewAll, scopeNames]);
 
   // Aggregate Metrics
   const { totalCalls, totalDurationSec, uniqueLeads } = useMemo(() => {

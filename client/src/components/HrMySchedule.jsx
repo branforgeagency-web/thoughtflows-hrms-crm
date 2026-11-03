@@ -76,7 +76,10 @@ export default function HrMySchedule({
     try {
       const [aData, tData] = await Promise.all([
         userName ? getApprovals({ departmentCode: 'DEP-HR-001', requestedBy: userName }).catch(() => []) : Promise.resolve([]),
-        getTeam({ departmentCode: 'DEP-HR-001' }).catch(() => [])
+        Promise.all([
+          getTeam({ departmentCode: 'DEP-HR-001' }).catch(() => []),
+          getTeam({ departmentCode: 'LEAD' }).catch(() => [])
+        ]).then(([hr, lead]) => [...(Array.isArray(hr) ? hr : []), ...(Array.isArray(lead) ? lead : [])])
       ]);
 
       if (Array.isArray(aData)) {

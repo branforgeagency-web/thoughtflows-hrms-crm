@@ -1290,7 +1290,7 @@ function matchBranch(value, list) {
 }
 const studentBranchText = (s) => s?.branch || s?.leadBranch || s?.location || '';
 const branchShort = (v) => String(v || '').replace(/\s*(branch|\(.*\)|hq)\b/gi, '').trim();
-const isScopedBranchManager = (req) => (req.user?.role === 'Branch Manager' || /branch manager/i.test(req.user?.role || '')) && Boolean(req.user?.branch);
+const isScopedBranchManager = (req) => (req.user?.role === 'Branch Manager' || /branch\s*(manager|head)/i.test(req.user?.role || '')) && Boolean(req.user?.branch);
 const getBranchManagerBranch = (req) => branchShort(req.user?.branch || '');
 
 // Trainer Role Scoping Helpers
@@ -1858,6 +1858,54 @@ router.get('/leadership/team', async (req, res) => {
   }
 });
 
+// HR hub landing KPIs — counts only (no names / contact data), so the
+// HR role-desk page can show live numbers before anyone signs in
+router.get('/hr/hub-summary', async (req, res) => {
+  try {
+    await syncTeamFromUsers().catch(() => {});
+    const istOffset = 330 * 60000;
+    const istMidnight = new Date(Math.floor((Date.now() + istOffset) / 86400000) * 86400000 - istOffset);
+    const teamQuery = deptCodeQuery('DEP-HR-001');
+    const [team, available, leadsToday, demos, branches] = await Promise.all([
+      TeamMember.countDocuments(teamQuery),
+      TeamMember.countDocuments({ $and: [teamQuery, { available: { $ne: false } }] }),
+      StudentLead.countDocuments({ createdAt: { $gte: istMidnight } }),
+      Demo.countDocuments({ status: { $regex: /^(booked|confirmed)$/i } }),
+      branchList().then((l) => l.length).catch(() => null)
+    ]);
+    res.json({ team, available, leadsToday, demos, branches });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// HR Team Lead's counsellors: HR users whose "Reports to" (managerName/managerId)
+// is this Team Lead. With nobody assigned yet, falls back to the HR counsellors
+// of the Team Lead's branch so the dashboard is never empty.
+router.get('/hr/my-team', async (req, res) => {
+  try {
+    const me = req.user || {};
+    const myName = String(me.name || '').trim();
+    if (!myName) return res.json({ members: [], source: 'none' });
+    const hrUser = { $or: [{ role: /^hr$/i }, { department: /counsel|admission|^hr$/i }] };
+    const or = [{ managerName: exactNameRx(myName) }];
+    if (me.id) or.push({ managerId: String(me.id) });
+    let users = await User.find({ $and: [{ $or: or }, { status: { $not: /inactive|disabled|suspended/i } }] }).select('name branch role email').lean();
+    let source = 'assigned';
+    if (!users.length && me.branch) {
+      const bRx = new RegExp(escapeRegex(branchShort(me.branch)), 'i');
+      users = await User.find({ $and: [hrUser, { role: /^hr$/i }, { branch: bRx }, { status: { $not: /inactive|disabled|suspended/i } }] }).select('name branch role email').lean();
+      source = 'branch';
+    }
+    res.json({
+      members: users.filter((u) => u.name && u.name.trim().toLowerCase() !== myName.toLowerCase()).map((u) => ({ name: u.name, branch: u.branch || '', role: u.role || '', email: u.email || '' })),
+      source
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.patch('/leadership/team/:id/shift', async (req, res) => {
   try {
     const { shift, weeklySchedule, available, name, editorRole } = req.body || {};
@@ -1874,6 +1922,22 @@ router.patch('/leadership/team/:id/shift', async (req, res) => {
       target = await TeamMember.findOne({ name: exactNameRx(name) });
     }
     if (!target) return res.status(404).json({ error: 'Team member not found — staff appear here once Admin creates their account.' });
+
+    // HR & managers' weekly roster is set by the HR Department Head or the
+    // Branch Head (own branch only) — Admin / Leadership keep access
+    if (/^(DEP-HR-001|HR|LEAD)?$/i.test(String(target.departmentCode || ''))) {
+      const role = String(req.user?.role || '');
+      if (isScopedHr(req) || (isHrLeaderUser(req) && !/\bhead\b|\bhod\b/i.test(role))) {
+        return res.status(403).json({ error: 'The weekly roster can only be updated by the HR Department Head or your Branch Head.' });
+      }
+      if (isScopedBranchManager(req)) {
+        const mine = bClean(getBranchManagerBranch(req));
+        const theirs = bClean(target.branchName || '');
+        if (!theirs || !(theirs.includes(mine) || mine.includes(theirs))) {
+          return res.status(403).json({ error: 'Branch Heads can only update the roster of their own branch.' });
+        }
+      }
+    }
 
     // Training department roster permission check:
     // All training department rosters are updated by Head of Trainer only
@@ -2337,10 +2401,16 @@ const isScopedHr = (req) => {
   const dept = String(req.user?.department || '').toLowerCase();
   const role = String(req.user?.role || '').toLowerCase();
   // Admins, Leadership, Managers, Team Leads and Heads are NEVER restricted as individual counsellors
-  if (/admin|leadership|head|manager|lead|director|super admin/i.test(role) || /admin|leadership/i.test(dept)) {
+  if (/admin|leadership|head|manager|lead|director|super admin|\btl\b/i.test(role) || /admin|leadership/i.test(dept)) {
     return false;
   }
   return dept === 'hr' || role === 'hr' || dept.includes('counsel') || dept.includes('admission');
+};
+// HR Team Lead / HR Department Head — read across counsellors (TL dashboards filter to their own team)
+const isHrLeaderUser = (req) => {
+  const role = String(req.user?.role || '');
+  const dept = String(req.user?.department || '').toLowerCase();
+  return (dept === 'hr' || /\bhr\b/i.test(role)) && /\btl\b|team\s*lead|\bhead\b|\bhod\b/i.test(role);
 };
 const leadOwner = (l) => l?.counselorAssigned || l?.allocatedTo || l?.spokenBy || l?.counselor || l?.hrName || '';
 const leadOwnerQuery = (name) => {
@@ -2482,7 +2552,7 @@ router.get('/students', async (req, res) => {
     const hrName = isScopedHr(req) ? req.user?.name : req.query.hrName;
     const isBM = isScopedBranchManager(req);
     const requestedBranch = (req.query.branch && req.query.branch !== 'all') ? branchShort(req.query.branch) : '';
-    const isLeadershipOrHead = isTrainerHeadUser(req) || ['admin', 'leadership'].includes(req.user?.department) || ['Admin', 'Super Admin'].includes(req.user?.role);
+    const isLeadershipOrHead = isTrainerHeadUser(req) || isHrLeaderUser(req) || ['admin', 'leadership'].includes(req.user?.department) || ['Admin', 'Super Admin'].includes(req.user?.role);
     const userBranch = isBM 
       ? getBranchManagerBranch(req) 
       : (requestedBranch || (!isLeadershipOrHead && !isTrainerTLUser(req) && !isTrainerManagerUser(req) && !isIndividualTrainerUser(req) ? branchShort(req.user?.branch) : ''));
@@ -5681,7 +5751,8 @@ router.get('/admin/users', async (req, res) => {
       branch: u.branch,
       status: u.status || 'Active',
       lastLogin: u.lastLogin || 'Never',
-      avatarBg: u.avatarBg || 'bg-indigo-600'
+      avatarBg: u.avatarBg || 'bg-indigo-600',
+      managerName: u.managerName || ''
     }));
     res.json(formatted);
   } catch (err) {
@@ -5691,7 +5762,7 @@ router.get('/admin/users', async (req, res) => {
 
 router.post('/admin/users', async (req, res) => {
   try {
-    const { name, email, phone, password, role, department, branch, status, avatarBg } = req.body;
+    const { name, email, phone, password, role, department, branch, status, avatarBg, managerId, managerName } = req.body;
     if (!email) {
       return res.status(400).json({ error: 'Email is required' });
     }
@@ -5716,7 +5787,9 @@ router.post('/admin/users', async (req, res) => {
       branch: branch || '',
       status: status || 'Active',
       lastLogin: 'Never',
-      avatarBg: avatarBg || 'bg-indigo-600'
+      avatarBg: avatarBg || 'bg-indigo-600',
+      managerId: managerId || '',
+      managerName: managerName || ''
     });
     await user.save();
     res.status(201).json({

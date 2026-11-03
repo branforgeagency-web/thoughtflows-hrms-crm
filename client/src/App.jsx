@@ -87,6 +87,11 @@ export default function App() {
 
   const [selectedDashboard, setSelectedDashboard] = useState(() => {
     try {
+      // A session opened from the HR hub (HR / HR TL / Branch Head / HR Dept Head) reopens the HR hub
+      if (sessionStorage.getItem('thoughtflows_hr_role')) {
+        const hrCard = DEPT_CARDS.find(c => c.id === 'hr');
+        if (hrCard) return hrCard;
+      }
       const userSaved = sessionStorage.getItem('thoughtflows_user');
       if (userSaved) {
         const u = JSON.parse(userSaved);
@@ -122,6 +127,11 @@ export default function App() {
     }
   });
 
+  // Which HR hub desk is open ('hr' | 'tl' | 'branch' | 'head' | null)
+  const [hrRole, setHrRole] = useState(() => {
+    try { return sessionStorage.getItem('thoughtflows_hr_role') || null; } catch { return null; }
+  });
+
   // Clay 3D theme removed – the classic flat theme is the only theme
   const theme = 'classic';
   const handleToggleTheme = () => {};
@@ -145,9 +155,9 @@ export default function App() {
     // If user is already authenticated in this session, grant immediate access
     if (currentUser) {
       setIsDashboardOpen(true);
-    } else if (card.id === 'training') {
-      // Training Department needs no login — open straight into the dashboard.
-      // It asks the trainer to pick their name from the roster instead of a password.
+    } else if (card.id === 'training' || card.id === 'hr') {
+      // Training & HR open straight into their role-desk hub;
+      // each role card there has its own login.
       setIsDashboardOpen(true);
     } else {
       // Require department-specific login
@@ -193,6 +203,10 @@ export default function App() {
     sessionStorage.removeItem('thoughtflows_trainer_tab_manager');
     sessionStorage.removeItem('thoughtflows_trainer_tab_tl');
     sessionStorage.removeItem('tf_picked_trainer_identity');
+    sessionStorage.removeItem('thoughtflows_hr_user');
+    sessionStorage.removeItem('thoughtflows_hr_role');
+    sessionStorage.removeItem('thoughtflows_hr_active_tab');
+    setHrRole(null);
     try {
       localStorage.removeItem('thoughtflows_user');
       localStorage.removeItem('thoughtflows_dashboard');
@@ -363,6 +377,11 @@ export default function App() {
         onSwitchDepartment={handleSwitchDepartment}
         onSignOut={handleSignOut}
         onTrainerLogout={() => setCurrentUser(null)}
+        onHrAuth={(user, role) => {
+          setCurrentUser(user || null);
+          setHrRole(role || null);
+        }}
+        onHrRoleChange={(role) => setHrRole(role || null)}
         theme={theme}
       />
 
@@ -381,7 +400,8 @@ export default function App() {
       <CourseCatalogWidget
         hidden={
           !isDashboardOpen ||
-          (selectedDashboard?.id !== 'hr' && selectedDashboard !== 'hr')
+          (selectedDashboard?.id !== 'hr' && selectedDashboard !== 'hr') ||
+          hrRole !== 'hr'
         }
       />
     </div>

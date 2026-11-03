@@ -24,7 +24,7 @@ import {
 } from 'lucide-react';
 import axios from 'axios';
 
-import HrDepartmentDashboard from './HrDepartmentDashboard';
+import HrDepartmentHub from './HrDepartmentHub';
 import StudentPortalDashboard from './StudentPortalDashboard';
 import AdminManagementDashboard from './AdminManagementDashboard';
 import TrainingDepartmentDashboard from './TrainingDepartmentDashboard';
@@ -41,6 +41,8 @@ export default function DashboardModal({
   onSwitchDepartment,
   onSignOut,
   onTrainerLogout,
+  onHrAuth,
+  onHrRoleChange,
   theme = 'classic'
 }) {
   const isClay = theme === 'clay';
@@ -96,10 +98,12 @@ export default function DashboardModal({
 
   if (deptId === 'hr') {
     return (
-      <HrDepartmentDashboard
+      <HrDepartmentHub
         onClose={onClose}
         currentUser={currentUser}
         onLogout={handleSignOutAction}
+        onHrAuth={onHrAuth}
+        onHrRoleChange={onHrRoleChange}
         onSwitchDepartment={onSwitchDepartment}
         theme={theme}
       />
