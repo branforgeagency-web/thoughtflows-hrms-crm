@@ -23,11 +23,12 @@ import {
   ArrowRight,
   Check,
   User,
-  MessageSquare
+  MessageSquare,
+  Trash2
 } from 'lucide-react';
 import BookNewDemoModal from './BookNewDemoModal';
 
-import { getDemos, createDemo, updateDemo } from '../services/api';
+import { getDemos, createDemo, updateDemo, deleteDemo } from '../services/api';
 import { isSpecialtyCourse } from '../constants/courses';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 
@@ -218,6 +219,23 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
       missed: 'Flagged as Missed / No-Show'
     };
     showToast(`✓ ${candidateName}: ${labelMap[newStatus] || newStatus}`);
+  };
+
+  const handleDeleteDemo = async (demo) => {
+    const id = demo._id || demo.id;
+    const name = demo.candidateName || 'this candidate';
+    if (!window.confirm(`Are you sure you want to delete the booked demo for "${name}"? This action cannot be undone.`)) {
+      return;
+    }
+    try {
+      await deleteDemo(id);
+      setDemos(prev => prev.filter(d => (d._id || d.id) !== id));
+      if (onRefreshDemos) onRefreshDemos();
+      showToast(`✓ Deleted demo for ${name}`);
+    } catch (err) {
+      console.error('Failed to delete demo:', err);
+      showToast(err?.response?.data?.error || `Could not delete demo: ${err.message || 'Server error'}`);
+    }
   };
 
   // Status normaliser
@@ -637,10 +655,21 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
                         </div>
                       </div>
 
-                      {/* Active Stage Badge */}
-                      <span className={`text-[10px] font-extrabold uppercase px-2.5 py-1 rounded-lg border shrink-0 ${stage.badgeClass}`}>
-                        {stage.stageTag}
-                      </span>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {/* Active Stage Badge */}
+                        <span className={`text-[10px] font-extrabold uppercase px-2.5 py-1 rounded-lg border shrink-0 ${stage.badgeClass}`}>
+                          {stage.stageTag}
+                        </span>
+                        {/* Delete Demo Option */}
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteDemo(demo)}
+                          title="Delete booked demo"
+                          className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 border border-transparent hover:border-rose-200 transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
 
                     {/* Course & Timing Info */}
@@ -811,11 +840,11 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
                   </div>
 
                   {/* Card Actions Footer */}
-                  <div className="grid grid-cols-3 gap-1.5 pt-2 border-t border-slate-100 text-[10px] font-bold">
+                  <div className="flex items-center gap-1.5 pt-2 border-t border-slate-100 text-[10px] font-bold">
                     {st(demo) === 'booked' && (
                       <button
                         onClick={() => updateStatus(demo._id || demo.id, 'confirmed', demo.candidateName)}
-                        className="col-span-2 bg-[#0e6977] hover:bg-[#0a4f5a] text-white py-1.5 rounded-lg flex items-center justify-center gap-1 transition-all cursor-pointer"
+                        className="flex-1 bg-[#0e6977] hover:bg-[#0a4f5a] text-white py-1.5 rounded-lg flex items-center justify-center gap-1 transition-all cursor-pointer"
                       >
                         <CheckCircle2 className="w-3 h-3" />
                         <span>Confirm &amp; Link</span>
@@ -825,7 +854,7 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
                     {st(demo) === 'confirmed' && (
                       <button
                         onClick={() => updateStatus(demo._id || demo.id, 'attended', demo.candidateName)}
-                        className="col-span-2 bg-emerald-600 hover:bg-emerald-700 text-white py-1.5 rounded-lg flex items-center justify-center gap-1 transition-all cursor-pointer"
+                        className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-1.5 rounded-lg flex items-center justify-center gap-1 transition-all cursor-pointer"
                       >
                         <UserCheck className="w-3 h-3" />
                         <span>Mark Attended</span>
@@ -835,7 +864,7 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
                     {st(demo) === 'attended' && (
                       <button
                         onClick={() => updateStatus(demo._id || demo.id, 'fee', demo.candidateName)}
-                        className="col-span-2 bg-purple-600 hover:bg-purple-700 text-white py-1.5 rounded-lg flex items-center justify-center gap-1 transition-all cursor-pointer"
+                        className="flex-1 bg-purple-600 hover:bg-purple-700 text-white py-1.5 rounded-lg flex items-center justify-center gap-1 transition-all cursor-pointer"
                       >
                         <Sparkles className="w-3 h-3" />
                         <span>Move to Fee Talk</span>
@@ -845,7 +874,7 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
                     {(st(demo) === 'fee' || st(demo) === 'missed') && (
                       <button
                         onClick={() => updateStatus(demo._id || demo.id, 'confirmed', demo.candidateName)}
-                        className="col-span-2 bg-slate-800 hover:bg-slate-900 text-white py-1.5 rounded-lg flex items-center justify-center gap-1 transition-all cursor-pointer"
+                        className="flex-1 bg-slate-800 hover:bg-slate-900 text-white py-1.5 rounded-lg flex items-center justify-center gap-1 transition-all cursor-pointer"
                       >
                         <span>Re-Schedule Demo</span>
                       </button>
@@ -853,9 +882,18 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
 
                     <button
                       onClick={() => updateStatus(demo._id || demo.id, 'missed', demo.candidateName)}
-                      className="bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 py-1.5 rounded-lg flex items-center justify-center gap-1 transition-all cursor-pointer"
+                      className="px-2.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 py-1.5 rounded-lg flex items-center justify-center gap-1 transition-all cursor-pointer shrink-0"
                     >
                       <span>No-Show</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteDemo(demo)}
+                      title="Delete booked demo"
+                      className="p-1.5 bg-slate-50 hover:bg-rose-50 text-slate-400 hover:text-rose-600 border border-slate-200 hover:border-rose-200 rounded-lg flex items-center justify-center transition-all cursor-pointer shrink-0"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
                     </button>
                   </div>
                 </div>
@@ -994,6 +1032,14 @@ export default function HrDemoDesk({ demos: propDemos, onRefreshDemos, onBookDem
                               Reschedule
                             </button>
                           )}
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteDemo(demo)}
+                            title="Delete booked demo"
+                            className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 border border-slate-200 hover:border-rose-200 transition-colors cursor-pointer ml-1"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
                         </div>
                       </td>
                     </tr>

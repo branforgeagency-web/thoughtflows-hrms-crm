@@ -44,7 +44,8 @@ import {
   CalendarCheck,
   PhoneCall,
   UserPlus,
-  Lock
+  Lock,
+  Trash2
 } from 'lucide-react';
 import {
   getStudents,
@@ -61,6 +62,7 @@ import {
   onDataUpdate,
   getTrainingMaterials,
   updateDemo,
+  deleteDemo,
   createDemoMeeting,
   setDemoMeetingLink,
   rescheduleDemo,
@@ -4640,6 +4642,25 @@ export default function TrainerHeadDashboard({
                                       title="Reassign to another faculty"
                                     >
                                       Reassign
+                                    </button>
+
+                                    {/* Delete Demo */}
+                                    <button
+                                      type="button"
+                                      onClick={async () => {
+                                        if (!window.confirm(`Delete demo booking for "${dm.candidateName}"? This action cannot be undone.`)) return;
+                                        try {
+                                          await deleteDemo(dm._id || dm.id);
+                                          setDemos((prev) => prev.filter((d) => (d._id || d.id) !== (dm._id || dm.id)));
+                                        } catch (e) {
+                                          console.error('Delete demo failed:', e);
+                                          alert(e?.response?.data?.error || 'Failed to delete demo');
+                                        }
+                                      }}
+                                      className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 border border-slate-200 hover:border-rose-200 transition-all cursor-pointer"
+                                      title="Delete demo booking"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
                                     </button>
                                   </>
                                 )}

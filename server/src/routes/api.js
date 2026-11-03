@@ -2032,7 +2032,7 @@ router.post('/leadership/attendance/clock-in', async (req, res) => {
     const { employeeName } = req.body;
     const branchName = isScopedBranchManager(req) ? req.user.branch : req.body.branchName;
     const date = todayStr();
-    const checkIn = new Date().toTimeString().slice(0, 5);
+    const checkIn = new Date(Date.now() + 330 * 60000).toISOString().slice(11, 16); // IST wall-clock HH:MM, independent of server TZ
     const updated = await Attendance.findOneAndUpdate(
       { branchName, employeeName, date },
       { branchName, employeeName, date, checkIn, status: 'in' },
@@ -2050,7 +2050,7 @@ router.post('/leadership/attendance/clock-out', async (req, res) => {
     const branchName = isScopedBranchManager(req) ? req.user.branch : req.body.branchName;
     const date = todayStr();
     const record = await Attendance.findOne({ branchName, employeeName, date });
-    const checkOut = new Date().toTimeString().slice(0, 5);
+    const checkOut = new Date(Date.now() + 330 * 60000).toISOString().slice(11, 16); // IST wall-clock HH:MM, independent of server TZ
     let hoursWorked = 0;
     if (record && record.checkIn) {
       const [inH, inM] = record.checkIn.split(':').map(Number);
@@ -2201,7 +2201,7 @@ router.post('/attendance/me', async (req, res) => {
     if (!employeeName) return res.status(400).json({ error: 'No staff name on this login' });
     const date = todayStr();
     const now = new Date();
-    const hhmmFormatted = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+    const hhmmFormatted = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
     const hhmm = now.toTimeString().slice(0, 5);
 
     let rec = await Attendance.findOne({ employeeName: exactNameRx(employeeName), date });
@@ -4939,8 +4939,37 @@ router.post('/demos/:id/reschedule', async (req, res) => {
 
 router.delete('/demos/:id', async (req, res) => {
   try {
+    const demo = await Demo.findById(req.params.id);
+    if (!demo) {
+      return res.status(404).json({ error: 'Demo not found' });
+    }
     await Demo.findByIdAndDelete(req.params.id);
-    res.json({ message: 'Demo deleted' });
+
+    // If candidate had a lead in 'demo_booked', and no other demos exist for this contact, revert lead stage to 'contacted'
+    try {
+      const remainingConditions = [];
+      if (demo.email) remainingConditions.push({ email: String(demo.email).trim().toLowerCase() });
+      if (demo.phone) remainingConditions.push({ phone: demo.phone });
+
+      if (remainingConditions.length > 0) {
+        const remainingDemos = await Demo.countDocuments({
+          _id: { $ne: demo._id },
+          $or: remainingConditions
+        });
+        if (remainingDemos === 0) {
+          const lead = await findLeadByContact({ email: demo.email, phone: demo.phone }, 'demo_booked');
+          if (lead) {
+            lead.stage = 'contacted';
+            lead.demoBookedDate = '';
+            await lead.save();
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Reverting lead stage on demo deletion notice:', e.message);
+    }
+
+    res.json({ message: 'Demo deleted', id: req.params.id });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
