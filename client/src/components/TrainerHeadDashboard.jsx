@@ -59,6 +59,7 @@ import {
   assignDemo,
   reassignDemo,
   bulkReassignDemos,
+  allocateTrainerToStudent,
   onDataUpdate,
   getTrainingMaterials,
   updateDemo,
@@ -162,6 +163,18 @@ export default function TrainerHeadDashboard({
   const [studentSyllabusFilter, setStudentSyllabusFilter] = useState('all'); // 'all' | 'completed' | 'pending'
   const [studentCertifiedFilter, setStudentCertifiedFilter] = useState('all'); // 'all' | 'certified' | 'uncertified'
   const [studentPlacementFilter, setStudentPlacementFilter] = useState('all'); // 'all' | 'placed' | 'in_course'
+  const [studentHandoverFilter, setStudentHandoverFilter] = useState('all'); // 'all' | 'pending' | 'allocated'
+
+  // Allocation Desk State & Filters
+  const [allocationTabFilter, setAllocationTabFilter] = useState('pending'); // 'pending' | 'allocated' | 'all'
+  const [allocationBranchFilter, setAllocationBranchFilter] = useState('all');
+  const [allocationSearch, setAllocationSearch] = useState('');
+  const [allocatingStudent, setAllocatingStudent] = useState(null);
+  const [allocationTargetTrainer, setAllocationTargetTrainer] = useState('');
+  const [allocationTargetBatch, setAllocationTargetBatch] = useState('');
+  const [allocationTargetTiming, setAllocationTargetTiming] = useState('');
+  const [allocationNote, setAllocationNote] = useState('');
+  const [allocationSaving, setAllocationSaving] = useState(false);
 
   // 2. Trainer Attendance & Shift Records Filters
   const [attBranchFilter, setAttBranchFilter] = useState('all');
@@ -524,6 +537,91 @@ export default function TrainerHeadDashboard({
     if (['discontinued', 'dropped', 'inactive', 'cancelled', 'withdrawn'].includes(st)) return false;
     return true;
   }, [isStudentPlaced]);
+
+  const isStudentHandedOver = useCallback((st) => {
+    if (!st) return false;
+    const h = String(st.handoverStatus || '');
+    return (
+      h === 'Handed Over to Department Head of Training' ||
+      h === 'Handed Over to Head of Trainer' ||
+      (h === 'Sent to Training' && !st.trainerId) ||
+      Boolean(st.headOfTrainer && !st.trainerId)
+    );
+  }, []);
+
+  const pendingAllocationStudents = useMemo(() => {
+    return scopedStudents.filter((st) => isStudentHandedOver(st) && !st.trainerId);
+  }, [scopedStudents, isStudentHandedOver]);
+
+  const allocatedStudents = useMemo(() => {
+    return scopedStudents.filter((st) => Boolean(st.trainerId || st.trainer || st.faculty));
+  }, [scopedStudents]);
+
+  const allHandedOverStudents = useMemo(() => {
+    return scopedStudents.filter((st) => isStudentHandedOver(st) || st.handoverStatus === 'Sent to Training' || Boolean(st.headOfTrainer));
+  }, [scopedStudents, isStudentHandedOver]);
+
+  const displayedAllocationList = useMemo(() => {
+    let list = [];
+    if (allocationTabFilter === 'pending') {
+      list = pendingAllocationStudents;
+    } else if (allocationTabFilter === 'allocated') {
+      list = allocatedStudents;
+    } else {
+      list = allHandedOverStudents;
+    }
+
+    if (allocationBranchFilter !== 'all') {
+      const bFilter = allocationBranchFilter.toLowerCase();
+      list = list.filter((st) => {
+        const b = String(st.branch || st.location || st.leadBranch || '').toLowerCase();
+        return b === bFilter || b.includes(bFilter) || bFilter.includes(b);
+      });
+    }
+
+    if (allocationSearch.trim()) {
+      const q = allocationSearch.toLowerCase();
+      list = list.filter((st) => {
+        return (
+          String(st.name || '').toLowerCase().includes(q) ||
+          String(st.studentId || '').toLowerCase().includes(q) ||
+          String(st.phone || '').includes(q) ||
+          String(st.course || '').toLowerCase().includes(q) ||
+          String(st.trainerNote || st.handoverNote || '').toLowerCase().includes(q)
+        );
+      });
+    }
+
+    return list;
+  }, [allocationTabFilter, pendingAllocationStudents, allocatedStudents, allHandedOverStudents, allocationBranchFilter, allocationSearch]);
+
+  const handleConfirmAllocation = async () => {
+    if (!allocatingStudent || !allocationTargetTrainer) return;
+    setAllocationSaving(true);
+    try {
+      const tr = scopedTrainers.find((t) => (t.trainerId || t.id) === allocationTargetTrainer);
+      const studentId = allocatingStudent.studentId || allocatingStudent._id;
+      await allocateTrainerToStudent(studentId, {
+        trainerId: allocationTargetTrainer,
+        trainerName: tr?.trainerName || tr?.name || 'Faculty',
+        batchName: allocationTargetBatch || allocatingStudent.batch || `${allocatingStudent.course || 'Medical Coding'} Regular`,
+        batchTiming: allocationTargetTiming || allocatingStudent.batchTiming || '',
+        trainerNote: allocationNote || allocatingStudent.trainerNote || '',
+        allocatedBy: currentUserName || 'Department Head of Training'
+      });
+      flashToast(`✓ ${allocatingStudent.name} allocated to ${tr?.trainerName || tr?.name || 'Faculty'}`);
+      setAllocatingStudent(null);
+      setAllocationTargetTrainer('');
+      setAllocationTargetBatch('');
+      setAllocationTargetTiming('');
+      setAllocationNote('');
+      loadDashboardData();
+    } catch (err) {
+      flashToast(err?.response?.data?.error || `Allocation failed: ${err.message}`);
+    } finally {
+      setAllocationSaving(false);
+    }
+  };
 
   // Scoped Overall 5 Milestone Metrics (Head: all branches; Manager: their branches; TL: their branches)
   const studentMilestoneStats = useMemo(() => {
@@ -1155,6 +1253,11 @@ export default function TrainerHeadDashboard({
         if (studentPlacementFilter === 'placed' && !isPlaced) return false;
         if (studentPlacementFilter === 'in_course' && isPlaced) return false;
       }
+      if (studentHandoverFilter !== 'all') {
+        const isPending = isStudentHandedOver(s) && !s.trainerId;
+        if (studentHandoverFilter === 'pending' && !isPending) return false;
+        if (studentHandoverFilter === 'allocated' && !s.trainerId) return false;
+      }
       if (searchQuery) {
         const q = searchQuery.toLowerCase();
         const matchesName = String(s.name || '').toLowerCase().includes(q);
@@ -1171,7 +1274,8 @@ export default function TrainerHeadDashboard({
   }, [
     scopedStudents, selectedBranch, selectedBatch, selectedTrainer, 
     studentCourseFilter, studentAttendanceFilter, studentSyllabusFilter, 
-    studentCertifiedFilter, studentPlacementFilter, searchQuery
+    studentCertifiedFilter, studentPlacementFilter, studentHandoverFilter,
+    isStudentHandedOver, searchQuery
   ]);
 
   // Filtered Trainer Attendance Report
@@ -1435,6 +1539,7 @@ export default function TrainerHeadDashboard({
   const getNavTitle = () => {
     switch (activeTab) {
       case 'overview': return `${currentLeader.roleCategory} · Executive Overview`;
+      case 'allocation': return 'Student Handover & Trainer Allocation Desk';
       case 'branches': return 'Branch-Wise Student Details';
       case 'batches': return 'Batch-Wise Details & Performance';
       case 'weak_students': return 'Weak Students Report & Intervention Desk';
@@ -1598,6 +1703,32 @@ export default function TrainerHeadDashboard({
                 <Home className="w-4 h-4 shrink-0" />
                 <span>Executive Overview</span>
               </button>
+
+              {isHeadRole && (
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('allocation')}
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
+                    activeTab === 'allocation'
+                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <UserPlus className="w-4 h-4 shrink-0 text-amber-400" />
+                    <span>Student Handover &amp; Allocation</span>
+                  </div>
+                  {pendingAllocationStudents.length > 0 ? (
+                    <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-500 text-slate-900 animate-pulse">
+                      {pendingAllocationStudents.length}
+                    </span>
+                  ) : (
+                    <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-white/10 text-slate-300">
+                      {scopedStudents.length}
+                    </span>
+                  )}
+                </button>
+              )}
 
               <button
                 type="button"
@@ -2014,6 +2145,50 @@ export default function TrainerHeadDashboard({
                   </div>
                 </div>
               </div>
+
+              {/* Handover & Allocation Alert for Department Head */}
+              {isHeadRole && (
+                <div
+                  onClick={() => setActiveTab('allocation')}
+                  className={`border-2 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs transition-all cursor-pointer ${
+                    pendingAllocationStudents.length > 0
+                      ? 'bg-amber-50/90 border-amber-300 hover:bg-amber-100/80'
+                      : 'bg-emerald-50/70 border-emerald-200 hover:bg-emerald-100/60'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-black text-lg shrink-0 ${
+                      pendingAllocationStudents.length > 0 ? 'bg-amber-500 text-white' : 'bg-emerald-500 text-white'
+                    }`}>
+                      {pendingAllocationStudents.length > 0 ? '⏳' : '✓'}
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+                        <span>
+                          {pendingAllocationStudents.length > 0
+                            ? `${pendingAllocationStudents.length} Student${pendingAllocationStudents.length > 1 ? 's' : ''} Handed Over — Pending Faculty Allocation`
+                            : 'All Handed Over Students Allocated to Faculty'}
+                        </span>
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                          pendingAllocationStudents.length > 0 ? 'bg-amber-200 text-amber-900' : 'bg-emerald-200 text-emerald-900'
+                        }`}>
+                          {pendingAllocationStudents.length > 0 ? 'Action Required' : 'Up to date'}
+                        </span>
+                      </h4>
+                      <p className="text-xs text-slate-600 font-medium mt-0.5">
+                        {pendingAllocationStudents.length > 0
+                          ? 'Admitted students received from HR counsellors awaiting faculty & batch assignment.'
+                          : `${allocatedStudents.length} total students actively assigned across training batches.`}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="px-3.5 py-1.5 rounded-xl bg-white border border-slate-200 text-xs font-bold text-slate-800 shadow-2xs hover:bg-[#00897b] hover:text-white transition-colors">
+                      Open Handover &amp; Allocation Desk →
+                    </span>
+                  </div>
+                </div>
+              )}
 
               {/* Operational KPI Summary Cards */}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
@@ -3148,7 +3323,17 @@ export default function TrainerHeadDashboard({
                       <option value="uncertified">Not Certified</option>
                     </select>
 
-                    {(selectedBranch !== 'all' || selectedBatch !== 'all' || selectedTrainer !== 'all' || studentCourseFilter !== 'all' || studentAttendanceFilter !== 'all' || studentSyllabusFilter !== 'all' || studentCertifiedFilter !== 'all' || studentPlacementFilter !== 'all' || searchQuery) && (
+                    <select
+                      value={studentHandoverFilter}
+                      onChange={(e) => setStudentHandoverFilter(e.target.value)}
+                      className="text-xs bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 font-bold text-slate-700 outline-none focus:border-teal-500"
+                    >
+                      <option value="all">Handover: All</option>
+                      <option value="pending">⏳ Handover Pending ({pendingAllocationStudents.length})</option>
+                      <option value="allocated">✓ Allocated to Faculty</option>
+                    </select>
+
+                    {(selectedBranch !== 'all' || selectedBatch !== 'all' || selectedTrainer !== 'all' || studentCourseFilter !== 'all' || studentAttendanceFilter !== 'all' || studentSyllabusFilter !== 'all' || studentCertifiedFilter !== 'all' || studentPlacementFilter !== 'all' || studentHandoverFilter !== 'all' || searchQuery) && (
                       <button
                         type="button"
                         onClick={() => {
@@ -3160,6 +3345,7 @@ export default function TrainerHeadDashboard({
                           setStudentSyllabusFilter('all');
                           setStudentCertifiedFilter('all');
                           setStudentPlacementFilter('all');
+                          setStudentHandoverFilter('all');
                           setSearchQuery('');
                         }}
                         className="px-2.5 py-1.5 rounded-lg text-xs font-bold text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200 transition-all cursor-pointer"
@@ -3194,12 +3380,46 @@ export default function TrainerHeadDashboard({
                         return (
                           <tr key={st.studentId || st._id} className="hover:bg-slate-50">
                             <td className="py-3 px-3 font-mono font-bold text-[#00897b]">{st.studentId || 'ID-N/A'}</td>
-                            <td className="py-3 px-3 font-extrabold text-slate-900">{st.name}</td>
+                            <td className="py-3 px-3">
+                              <div className="font-extrabold text-slate-900">{st.name}</div>
+                              {(st.trainerNote || st.handoverNote) && (
+                                <div className="text-[10px] text-amber-800 font-medium bg-amber-50 border border-amber-200/60 rounded px-1.5 py-0.5 mt-0.5 inline-block">
+                                  HR Note: {st.trainerNote || st.handoverNote}
+                                </div>
+                              )}
+                            </td>
                             <td className="py-3 px-3 font-mono text-[11px] text-slate-500">{st.phone || 'N/A'}</td>
                             <td className="py-3 px-3">{st.branch || st.location || st.leadBranch || '—'}</td>
                             <td className="py-3 px-3 font-semibold text-teal-700">{st.course || '—'}</td>
                             <td className="py-3 px-3">{st.batch || st.batchName || 'General'}</td>
-                            <td className="py-3 px-3 font-medium text-slate-900">{st.trainer || st.faculty || 'Faculty'}</td>
+                            <td className="py-3 px-3">
+                              {st.trainer || st.faculty ? (
+                                <span className="font-medium text-slate-900">{st.trainer || st.faculty}</span>
+                              ) : isStudentHandedOver(st) ? (
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-bold text-[10px] bg-amber-100 text-amber-800 border border-amber-200">
+                                    ⏳ Handover Pending
+                                  </span>
+                                  {isHeadRole && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setAllocatingStudent(st);
+                                        setAllocationTargetTrainer(scopedTrainers[0]?.trainerId || scopedTrainers[0]?.id || '');
+                                        setAllocationTargetBatch(st.batch || st.batchName || '');
+                                        setAllocationTargetTiming(st.batchTiming || '');
+                                        setAllocationNote(st.trainerNote || st.handoverNote || '');
+                                      }}
+                                      className="px-2 py-0.5 rounded-md bg-[#00897b] hover:bg-[#00796b] text-white text-[10px] font-bold shadow-2xs cursor-pointer"
+                                    >
+                                      Allocate
+                                    </button>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="text-slate-400 italic">Faculty</span>
+                              )}
+                            </td>
                             <td className="py-3 px-3">
                               <span
                                 className={`px-2 py-0.5 rounded-md font-bold text-[10px] ${
@@ -4801,6 +5021,236 @@ export default function TrainerHeadDashboard({
               />
             </div>
           )}
+
+          {/* ================= SECTION: STUDENT HANDOVER & TRAINER ALLOCATION ================= */}
+          {activeTab === 'allocation' && (
+            <div className="space-y-6">
+              {/* Metric Overview Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+                <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-2xs">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-amber-700">Awaiting Allocation</span>
+                    <span className="w-8 h-8 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center font-bold text-sm">⏳</span>
+                  </div>
+                  <div className="text-3xl font-black text-slate-900 mt-2">{pendingAllocationStudents.length}</div>
+                  <div className="text-xs text-slate-500 font-medium mt-1">Handed over by HR counselors</div>
+                </div>
+
+                <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-2xs">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-700">Allocated to Faculty</span>
+                    <span className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold text-sm">✓</span>
+                  </div>
+                  <div className="text-3xl font-black text-slate-900 mt-2">{allocatedStudents.length}</div>
+                  <div className="text-xs text-slate-500 font-medium mt-1">Active in faculty batches</div>
+                </div>
+
+                <div className="bg-white rounded-2xl border border-teal-200 p-5 shadow-2xs bg-gradient-to-br from-white to-teal-50/30">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-teal-800">Total Handed Over</span>
+                    <span className="w-8 h-8 rounded-xl bg-teal-50 text-teal-700 flex items-center justify-center font-bold text-sm">📋</span>
+                  </div>
+                  <div className="text-3xl font-black text-teal-950 mt-2">{allHandedOverStudents.length}</div>
+                  <div className="text-xs text-teal-700 font-medium mt-1">Total student handovers received</div>
+                </div>
+
+                <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-2xs">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-slate-700">Available Faculty</span>
+                    <span className="w-8 h-8 rounded-xl bg-slate-100 text-slate-700 flex items-center justify-center font-bold text-sm">👥</span>
+                  </div>
+                  <div className="text-3xl font-black text-slate-900 mt-2">{scopedTrainers.filter(t => t.active !== false).length}</div>
+                  <div className="text-xs text-slate-500 font-medium mt-1">Trainers ready for batch assignment</div>
+                </div>
+              </div>
+
+              {/* Main Container Card */}
+              <div className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-xs space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <UserPlus className="w-5 h-5 text-teal-700" />
+                      <h2 className="text-base font-extrabold text-slate-900">Student Handover &amp; Trainer Allocation Desk</h2>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Review admitted students handed over by HR counsellors, check HR notes, and assign respective faculty and batches.
+                    </p>
+                  </div>
+
+                  {/* Filter Tabs: Pending vs Allocated vs All */}
+                  <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl">
+                    <button
+                      type="button"
+                      onClick={() => setAllocationTabFilter('pending')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                        allocationTabFilter === 'pending'
+                          ? 'bg-white text-slate-900 shadow-2xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Pending ({pendingAllocationStudents.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAllocationTabFilter('allocated')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                        allocationTabFilter === 'allocated'
+                          ? 'bg-white text-slate-900 shadow-2xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Allocated ({allocatedStudents.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAllocationTabFilter('all')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                        allocationTabFilter === 'all'
+                          ? 'bg-white text-slate-900 shadow-2xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      All ({allHandedOverStudents.length})
+                    </button>
+                  </div>
+                </div>
+
+                {/* Filters Row: Branch selector & Search */}
+                <div className="flex items-center gap-3 flex-wrap">
+                  <div className="flex-1 min-w-[240px] relative">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={allocationSearch}
+                      onChange={(e) => setAllocationSearch(e.target.value)}
+                      placeholder="Search student by name, ID, phone, course..."
+                      className="w-full bg-slate-50 border border-slate-200 text-xs rounded-xl pl-8 pr-3 py-2 outline-none focus:border-[#00897b]"
+                    />
+                  </div>
+
+                  <select
+                    value={allocationBranchFilter}
+                    onChange={(e) => setAllocationBranchFilter(e.target.value)}
+                    className="bg-slate-50 border border-slate-200 text-xs font-bold text-slate-700 rounded-xl px-3 py-2 outline-none focus:border-[#00897b]"
+                  >
+                    <option value="all">All Branches</option>
+                    {scopedBranchNames.map((b) => (
+                      <option key={b} value={b}>{b}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Table of Handover Students */}
+                <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-50 text-slate-600 font-bold border-b border-slate-200">
+                      <tr>
+                        <th className="py-3 px-3">Student ID</th>
+                        <th className="py-3 px-3">Student Name</th>
+                        <th className="py-3 px-3">Course</th>
+                        <th className="py-3 px-3">Branch</th>
+                        <th className="py-3 px-3">Handover Info</th>
+                        <th className="py-3 px-3">HR Handover Note</th>
+                        <th className="py-3 px-3">Assigned Faculty</th>
+                        <th className="py-3 px-3">Batch</th>
+                        <th className="py-3 px-3 text-right">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-slate-700">
+                      {displayedAllocationList.map((st) => {
+                        const isPending = isStudentHandedOver(st) && !st.trainerId;
+                        const hrNote = st.trainerNote || st.handoverNote || '';
+                        return (
+                          <tr key={st.studentId || st._id} className="hover:bg-slate-50/80">
+                            <td className="py-3 px-3 font-mono font-bold text-[#00897b]">
+                              {st.studentId || 'ID-N/A'}
+                            </td>
+                            <td className="py-3 px-3">
+                              <div className="font-extrabold text-slate-900">{st.name}</div>
+                              <div className="text-[11px] font-mono text-slate-400">{st.phone || 'No phone'}</div>
+                            </td>
+                            <td className="py-3 px-3 font-semibold text-teal-700">
+                              {st.course || 'Medical Coding'}
+                            </td>
+                            <td className="py-3 px-3">
+                              {st.branch || st.location || st.leadBranch || '—'}
+                            </td>
+                            <td className="py-3 px-3">
+                              <div className="text-[11px] text-slate-600">
+                                {st.headOfTrainer ? (
+                                  <span>To: <strong>{st.headOfTrainer}</strong></span>
+                                ) : (
+                                  <span>Head of Trainer</span>
+                                )}
+                              </div>
+                              <div className="text-[10px] text-slate-400">
+                                {st.handedOverBy ? `By: ${st.handedOverBy}` : 'By HR'}
+                                {st.handedOverAt ? ` · ${new Date(st.handedOverAt).toLocaleDateString()}` : ''}
+                              </div>
+                            </td>
+                            <td className="py-3 px-3 max-w-[220px]">
+                              {hrNote ? (
+                                <div className="p-2 rounded-lg bg-amber-50 border border-amber-200/70 text-[11px] text-amber-900 leading-snug">
+                                  {hrNote}
+                                </div>
+                              ) : (
+                                <span className="text-slate-400 italic text-[11px]">—</span>
+                              )}
+                            </td>
+                            <td className="py-3 px-3">
+                              {st.trainerName || st.trainer || st.faculty ? (
+                                <span className="inline-flex items-center gap-1 font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                                  ✓ {st.trainerName || st.trainer || st.faculty}
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 font-bold text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                                  ⏳ Awaiting Allocation
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-3 px-3">
+                              <span className="font-medium text-slate-800">
+                                {st.batchName || st.batch || '—'}
+                              </span>
+                              {st.batchTiming ? (
+                                <div className="text-[10px] text-slate-400 font-mono">{st.batchTiming}</div>
+                              ) : null}
+                            </td>
+                            <td className="py-3 px-3 text-right">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setAllocatingStudent(st);
+                                  setAllocationTargetTrainer(st.trainerId || scopedTrainers[0]?.trainerId || scopedTrainers[0]?.id || '');
+                                  setAllocationTargetBatch(st.batchName || st.batch || '');
+                                  setAllocationTargetTiming(st.batchTiming || '');
+                                  setAllocationNote(st.trainerNote || st.handoverNote || '');
+                                }}
+                                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer ${
+                                  isPending
+                                    ? 'bg-[#00897b] hover:bg-[#00796b] text-white'
+                                    : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                                }`}
+                              >
+                                {isPending ? 'Allocate Trainer' : 'Reassign'}
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {displayedAllocationList.length === 0 && (
+                        <tr>
+                          <td colSpan={9} className="py-10 text-center text-slate-400">
+                            No students match the selected allocation filters.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </main>
 
@@ -4979,6 +5429,115 @@ export default function TrainerHeadDashboard({
                   : (reassignDemoTarget.trainer && reassignDemoTarget.trainer !== 'Unassigned' 
                     ? 'Confirm Reassign' 
                     : 'Confirm & Assign Trainer')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* ================= MODAL: ALLOCATE STUDENT TO TRAINER ================= */}
+      {allocatingStudent && (
+        <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-lg w-full p-6 text-slate-800 space-y-4 animate-in zoom-in-95">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <UserPlus className="w-5 h-5 text-teal-700" />
+                <h3 className="text-sm font-extrabold text-slate-900">Allocate Faculty &amp; Batch</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAllocatingStudent(null)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Student Summary Card */}
+            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="font-extrabold text-slate-900 text-sm">{allocatingStudent.name}</span>
+                <span className="font-mono font-bold text-[#00897b]">{allocatingStudent.studentId || 'ID-N/A'}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-slate-600 pt-1">
+                <div><strong>Course:</strong> {allocatingStudent.course || 'Medical Coding'}</div>
+                <div><strong>Branch:</strong> {allocatingStudent.branch || allocatingStudent.location || 'Coimbatore'}</div>
+                <div><strong>Phone:</strong> {allocatingStudent.phone || 'N/A'}</div>
+                <div><strong>Handed Over By:</strong> {allocatingStudent.handedOverBy || 'HR'}</div>
+              </div>
+              {(allocatingStudent.trainerNote || allocatingStudent.handoverNote) && (
+                <div className="pt-1.5 border-t border-slate-200/80 mt-1.5 text-amber-800">
+                  <strong>HR Handover Note:</strong> {allocatingStudent.trainerNote || allocatingStudent.handoverNote}
+                </div>
+              )}
+            </div>
+
+            {/* Form Fields */}
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-700">Assign to Faculty *</label>
+                <select
+                  value={allocationTargetTrainer}
+                  onChange={(e) => setAllocationTargetTrainer(e.target.value)}
+                  className="w-full bg-white border border-slate-200 text-xs font-semibold rounded-xl px-3 py-2 outline-none focus:border-[#00897b]"
+                >
+                  <option value="">Select a trainer...</option>
+                  {scopedTrainers.map((tr) => (
+                    <option key={tr.trainerId || tr.id} value={tr.trainerId || tr.id}>
+                      {tr.trainerName || tr.name} ({tr.courseKey || tr.course || 'CPC'} · {tr.branchName || tr.branch || 'TN'})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-700">Batch Name</label>
+                <input
+                  type="text"
+                  value={allocationTargetBatch}
+                  onChange={(e) => setAllocationTargetBatch(e.target.value)}
+                  placeholder="e.g. AMCT Regular - Morning Batch"
+                  className="w-full bg-white border border-slate-200 text-xs rounded-xl px-3 py-2 outline-none focus:border-[#00897b]"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-700">Batch Timing</label>
+                <input
+                  type="text"
+                  value={allocationTargetTiming}
+                  onChange={(e) => setAllocationTargetTiming(e.target.value)}
+                  placeholder="e.g. 09:30 AM - 01:30 PM"
+                  className="w-full bg-white border border-slate-200 text-xs rounded-xl px-3 py-2 outline-none focus:border-[#00897b]"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-700">Allocation Note (Optional)</label>
+                <input
+                  type="text"
+                  value={allocationNote}
+                  onChange={(e) => setAllocationNote(e.target.value)}
+                  placeholder="Instructions for faculty trainer..."
+                  className="w-full bg-white border border-slate-200 text-xs rounded-xl px-3 py-2 outline-none focus:border-[#00897b]"
+                />
+              </div>
+            </div>
+
+            <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setAllocatingStudent(null)}
+                className="px-4 py-2 rounded-xl bg-slate-100 text-slate-700 text-xs font-bold hover:bg-slate-200 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={allocationSaving || !allocationTargetTrainer}
+                onClick={handleConfirmAllocation}
+                className="px-4 py-2 rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white text-xs font-bold shadow-xs disabled:opacity-50 cursor-pointer"
+              >
+                {allocationSaving ? 'Allocating...' : 'Confirm Allocation'}
               </button>
             </div>
           </div>

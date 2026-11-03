@@ -60,6 +60,22 @@ const getInitials = (name = '') => {
 };
 
 const normName = (str = '') => String(str || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+// A lead's counselorAssigned sometimes carries only ONE part of a
+// multi-word account name (e.g. "Poojitha" for the account "Kota
+// Poojitha" -- surname-first naming), so a strict normName() equality
+// used to miss those rows entirely, showing 0 for a counsellor who
+// actually had records in the DB. Accept a 4+ character whole
+// prefix/suffix match either way as well.
+const namesLooselyMatch = (a, b) => {
+  const x = normName(a);
+  const y = normName(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  const shorter = x.length <= y.length ? x : y;
+  const longer = x.length <= y.length ? y : x;
+  if (shorter.length >= 4 && (longer.startsWith(shorter) || longer.endsWith(shorter))) return true;
+  return false;
+};
 
 export default function BranchManagerDashboard({
   branch = null,
@@ -297,8 +313,8 @@ export default function BranchManagerDashboard({
     return teamMembers.map((m, idx) => {
       const initials = getInitials(m.name);
       const bg = COLOR_PALETTE[idx % COLOR_PALETTE.length];
-      const calls = typeof m.assigned === 'number' ? m.assigned : leadsList.filter((l) => normName(l.counselorAssigned) === normName(m.name)).length;
-      const closed = typeof m.completed === 'number' ? m.completed : leadsList.filter((l) => normName(l.counselorAssigned) === normName(m.name) && ['admitted', 'closed_won', 'converted'].includes(l.stage || l.status)).length;
+      const calls = typeof m.assigned === 'number' ? m.assigned : leadsList.filter((l) => namesLooselyMatch(l.counselorAssigned, m.name)).length;
+      const closed = typeof m.completed === 'number' ? m.completed : leadsList.filter((l) => namesLooselyMatch(l.counselorAssigned, m.name) && ['admitted', 'closed_won', 'converted'].includes(l.stage || l.status)).length;
       const pickupVal = typeof m.quality === 'number' ? m.quality : (calls > 0 ? Math.min(100, Math.round((closed / calls) * 100)) : 0);
       const pickupRate = `${pickupVal}%`;
       const barWidth = `${pickupVal}%`;

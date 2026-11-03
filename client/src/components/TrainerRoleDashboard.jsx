@@ -305,7 +305,11 @@ export default function TrainerRoleDashboard({
   // Pending Allocation Students
   const pendingAllocationStudents = useMemo(() => {
     const list = studentsList.filter((st) => {
-      const isHandedOver = st.handoverStatus === 'Handed Over to Head of Trainer' || (st.handoverStatus === 'Sent to Training' && !st.trainerId);
+      const isHandedOver =
+        st.handoverStatus === 'Handed Over to Department Head of Training' ||
+        st.handoverStatus === 'Handed Over to Head of Trainer' ||
+        (st.handoverStatus === 'Sent to Training' && !st.trainerId) ||
+        Boolean(st.headOfTrainer && !st.trainerId);
       return isHandedOver && !st.trainerId;
     });
     if (roleType === 'head') return list;

@@ -603,6 +603,14 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     // matching an unrelated person.
     if (c.length >= 4 && m.startsWith(c)) return true;
     if (m.length >= 4 && c.startsWith(m)) return true;
+    // A sheet/record sometimes carries only ONE part of a multi-word
+    // account name (e.g. "Poojitha" alone for the account "Kota
+    // Poojitha" -- surname-first naming) -- check whether the shorter
+    // name is a WHOLE word inside the longer name, not just a prefix.
+    const cWords = c.split(' ');
+    const mWords = m.split(' ');
+    if (cWords.length === 1 && cWords[0].length >= 3 && mWords.includes(cWords[0])) return true;
+    if (mWords.length === 1 && mWords[0].length >= 3 && cWords.includes(mWords[0])) return true;
     return false;
   };
 

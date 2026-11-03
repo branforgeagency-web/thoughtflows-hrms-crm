@@ -1296,13 +1296,16 @@ const getBranchManagerBranch = (req) => branchShort(req.user?.branch || '');
 // Trainer Role Scoping Helpers
 const isTrainerHeadUser = (req) => {
   const u = req.user;
+  const headerRole = String(req.headers?.['x-trainer-role'] || '').toLowerCase();
+  const bodyRole = String(req.body?.userRole || req.body?.trainerRole || '').toLowerCase();
+  if (headerRole === 'head' || headerRole === 'trainer_head' || bodyRole === 'head' || bodyRole === 'trainer_head') return true;
   if (!u) return false;
   return (
     u.trainerRole === 'head' ||
     u.role === 'Department Head of Training' ||
     u.role === 'Head of Training Department' ||
     u.role === 'Head of Trainer' ||
-    /department head of training|head of trainer|training head/i.test(u.role || '') ||
+    /department head of training|head of trainer|trainer head|training head|chief trainer|chief faculty/i.test(u.role || '') ||
     u.leaderId === 'manoj' ||
     u.email === 'manoj.head@thoughtflows.in' ||
     u.email === 'manoj@thoughtflows.in' ||
@@ -2315,6 +2318,19 @@ const counselorNameRx = (name) => {
       rxParts.push(`^\\s*${escapeRegex(firstName.slice(0, len))}\\s*$`);
     }
   }
+  // A sheet/record sometimes carries only ONE part of a multi-word
+  // account name -- e.g. "Poojitha" alone for the account "Kota
+  // Poojitha" (surname-first naming) -- which used to match neither the
+  // full-name nor the firstName+anything alternative above, silently
+  // hiding that counsellor's own records from their dashboard even
+  // though the DB had them. Any individual word of the account name
+  // (3+ letters, to avoid a short/coincidental match) is now also
+  // accepted as a WHOLE stored value on its own.
+  if (nameWords.length > 1) {
+    nameWords.forEach((w) => {
+      if (w.length >= 3) rxParts.push(`^\\s*${escapeRegex(w)}\\s*$`);
+    });
+  }
   return new RegExp(rxParts.join('|'), 'i');
 };
 const isScopedHr = (req) => {
@@ -2465,7 +2481,11 @@ router.get('/students', async (req, res) => {
     const { statusGroup, search, trainerId, handoverStatus } = req.query;
     const hrName = isScopedHr(req) ? req.user?.name : req.query.hrName;
     const isBM = isScopedBranchManager(req);
-    const userBranch = isBM ? getBranchManagerBranch(req) : branchShort(req.query.branch || req.user?.branch);
+    const requestedBranch = (req.query.branch && req.query.branch !== 'all') ? branchShort(req.query.branch) : '';
+    const isLeadershipOrHead = isTrainerHeadUser(req) || ['admin', 'leadership'].includes(req.user?.department) || ['Admin', 'Super Admin'].includes(req.user?.role);
+    const userBranch = isBM 
+      ? getBranchManagerBranch(req) 
+      : (requestedBranch || (!isLeadershipOrHead && !isTrainerTLUser(req) && !isTrainerManagerUser(req) && !isIndividualTrainerUser(req) ? branchShort(req.user?.branch) : ''));
 
     const andConditions = [];
     if (trainerId) andConditions.push({ trainerId });
@@ -2521,7 +2541,7 @@ router.get('/students', async (req, res) => {
           { spokenBy: rx }
         ]
       });
-    } else if (userBranch) {
+    } else if (userBranch && !/^all/i.test(userBranch)) {
       const bRx = new RegExp(escapeRegex(userBranch), 'i');
       andConditions.push({ $or: [{ branch: bRx }, { location: bRx }, { leadBranch: bRx }] });
     }
@@ -2543,25 +2563,41 @@ router.get('/students', async (req, res) => {
     const query = andConditions.length > 0 ? { $and: andConditions } : {};
     const students = await Student.find(query).sort({ createdAt: -1 });
     // Trainers get full records only for their own students (and handed-over,
-    // not-yet-allocated ones they may pick up). Everyone else: just enough to
-    // match demo conversions — no fees, documents or contact history.
+    // not-yet-allocated ones they may pick up). Leadership, Head of Trainer,
+    // Managers, and Team Leads get all their scoped students (with financial fields
+    // removed for training staff).
     if (req.user?.department === 'training') {
-      const me = req.user.trainerId || '';
       const FIN = ['feeStatus', 'feeAmount', 'courseFee', 'paidAmount', 'pendingBalance', 'paymentPlan', 'nextDueDate', 'examFee', 'paymentMethod', 'receipts', 'rewardPoints', 'documents'];
-      // Other students are returned only when they were admitted from a demo this
-      // trainer delivered (needed for the incentive ledger) — nothing else.
-      const myDemos = me
-        ? await Demo.find({ status: /^attended$/i, $or: [{ trainerId: me }, { notifiedTrainerIds: me }, { notificationSentTo: me }] }).select('phone email')
-        : [];
-      const demoPhones = new Set(myDemos.map((d) => phoneDigits(d.phone)).filter((p) => p.length === 10));
-      const demoEmails = new Set(myDemos.map((d) => String(d.email || '').trim().toLowerCase()).filter(Boolean));
-      const out = [];
-      students.forEach((s) => {
+      if (isIndividualTrainerUser(req)) {
+        const me = req.user.trainerId || '';
+        // Other students are returned only when they were admitted from a demo this
+        // trainer delivered (needed for the incentive ledger) — nothing else.
+        const myDemos = me
+          ? await Demo.find({ status: /^attended$/i, $or: [{ trainerId: me }, { notifiedTrainerIds: me }, { notificationSentTo: me }] }).select('phone email')
+          : [];
+        const demoPhones = new Set(myDemos.map((d) => phoneDigits(d.phone)).filter((p) => p.length === 10));
+        const demoEmails = new Set(myDemos.map((d) => String(d.email || '').trim().toLowerCase()).filter(Boolean));
+        const out = [];
+        students.forEach((s) => {
+          const o = s.toObject();
+          const isHandedOver = !o.trainerId && (
+            o.handoverStatus === 'Sent to Training' ||
+            o.handoverStatus === 'Handed Over to Head of Trainer' ||
+            o.handoverStatus === 'Handed Over to Department Head of Training' ||
+            Boolean(o.headOfTrainer && !o.trainerId)
+          );
+          const mine = (me && o.trainerId === me) || isHandedOver;
+          if (mine) { FIN.forEach((k) => delete o[k]); out.push(o); return; }
+          const fromMyDemo = demoPhones.has(phoneDigits(o.phone)) || (o.email && demoEmails.has(String(o.email).trim().toLowerCase()));
+          if (fromMyDemo) out.push({ _id: o._id, studentId: o.studentId, name: o.name, phone: o.phone, email: o.email, course: o.course, createdAt: o.createdAt, statusGroup: o.statusGroup });
+        });
+        return res.json(out);
+      }
+      // For Department Head of Training, Managers, and Team Leads: return all scoped students with FIN stripped
+      const out = students.map((s) => {
         const o = s.toObject();
-        const mine = (me && o.trainerId === me) || (!o.trainerId && o.handoverStatus === 'Sent to Training');
-        if (mine) { FIN.forEach((k) => delete o[k]); out.push(o); return; }
-        const fromMyDemo = demoPhones.has(phoneDigits(o.phone)) || (o.email && demoEmails.has(String(o.email).trim().toLowerCase()));
-        if (fromMyDemo) out.push({ _id: o._id, studentId: o.studentId, name: o.name, phone: o.phone, email: o.email, course: o.course, createdAt: o.createdAt, statusGroup: o.statusGroup });
+        FIN.forEach((k) => delete o[k]);
+        return o;
       });
       return res.json(out);
     }

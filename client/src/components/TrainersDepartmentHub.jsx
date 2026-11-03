@@ -291,7 +291,11 @@ export default function TrainersDepartmentHub({
 
   const pendingAllocationCount = useMemo(() => {
     return students.filter((st) => {
-      const isHandedOver = st.handoverStatus === 'Handed Over to Head of Trainer' || (st.handoverStatus === 'Sent to Training' && !st.trainerId);
+      const isHandedOver =
+        st.handoverStatus === 'Handed Over to Department Head of Training' ||
+        st.handoverStatus === 'Handed Over to Head of Trainer' ||
+        (st.handoverStatus === 'Sent to Training' && !st.trainerId) ||
+        Boolean(st.headOfTrainer && !st.trainerId);
       return isHandedOver && !st.trainerId;
     }).length;
   }, [students]);

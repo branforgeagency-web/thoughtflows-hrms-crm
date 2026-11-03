@@ -458,7 +458,7 @@ export default function TrainingDepartmentDashboard({
   const branchPendingCounts = React.useMemo(() => {
     const counts = { ALL: 0 };
     (students || []).forEach(st => {
-      const isHandedOver = st.handoverStatus === 'Handed Over to Department Head of Training' || st.handoverStatus === 'Handed Over to Head of Trainer' || (st.handoverStatus === 'Sent to Training' && !st.trainerId);
+      const isHandedOver = st.handoverStatus === 'Handed Over to Department Head of Training' || st.handoverStatus === 'Handed Over to Head of Trainer' || (st.handoverStatus === 'Sent to Training' && !st.trainerId) || Boolean(st.headOfTrainer && !st.trainerId);
       if (isHandedOver && !st.trainerId) {
         counts.ALL = (counts.ALL || 0) + 1;
         const b = (st.branch || st.location || st.leadBranch || '').trim();
@@ -473,7 +473,7 @@ export default function TrainingDepartmentDashboard({
   // Department Head of Training allocation datasets (filtered by selected branch)
   const pendingAllocationStudents = React.useMemo(() => {
     return (students || []).filter(st => {
-      const isHandedOver = st.handoverStatus === 'Handed Over to Department Head of Training' || st.handoverStatus === 'Handed Over to Head of Trainer' || (st.handoverStatus === 'Sent to Training' && !st.trainerId);
+      const isHandedOver = st.handoverStatus === 'Handed Over to Department Head of Training' || st.handoverStatus === 'Handed Over to Head of Trainer' || (st.handoverStatus === 'Sent to Training' && !st.trainerId) || Boolean(st.headOfTrainer && !st.trainerId);
       return isHandedOver && !st.trainerId && studentMatchesBranch(st, allocationBranchFilter);
     });
   }, [students, allocationBranchFilter, studentMatchesBranch]);
@@ -484,7 +484,7 @@ export default function TrainingDepartmentDashboard({
 
   const allHandedOverStudents = React.useMemo(() => {
     return (students || []).filter(st => 
-      (st.handoverStatus === 'Handed Over to Department Head of Training' || st.handoverStatus === 'Handed Over to Head of Trainer' || st.handoverStatus === 'Sent to Training') &&
+      (st.handoverStatus === 'Handed Over to Department Head of Training' || st.handoverStatus === 'Handed Over to Head of Trainer' || st.handoverStatus === 'Sent to Training' || Boolean(st.headOfTrainer)) &&
       studentMatchesBranch(st, allocationBranchFilter)
     );
   }, [students, allocationBranchFilter, studentMatchesBranch]);
