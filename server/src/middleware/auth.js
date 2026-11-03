@@ -136,7 +136,9 @@ const STAFF_RULES = [
   ['PUT', /^\/trainer\/assessments\/[^/]+\/questions$/, ['training']],
   ['POST', /^\/trainer\/live-class\/[^/]+\/recording$/, ['training']],
   ['*', /^\/trainer\/live-class\/(start|end|[^/]+\/(notes|attendance-saved))$/, ['training']],
-  ['PUT', /^\/trainer\/settings\/[^/]+$/, []],
+  ['PUT', /^\/trainer\/settings\/[^/]+$/, ['training']],
+  ['PUT', /^\/trainer\/role-accounts\/[^/]+$/, ['training']],
+  ['*', /^\/trainer\/utilization(\/|$)/, ['training']],
   ['*', /^\/trainer\/settings\/[^/]+\/leaves/, ['training']], // own-record check is in the route
   // Student requests: trainer answers academic ones, HR the admin ones
   ['PUT', /^\/student-portal\/requests\/[^/]+$/, ['training', 'hr']],

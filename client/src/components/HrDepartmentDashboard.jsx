@@ -586,6 +586,14 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     const c = normName(candidateName);
     const m = normName(loggedInName);
     if (c === m) return true;
+    // Bulk-uploaded sheets sometimes run a counsellor's full name together
+    // with no space at all (e.g. "guruvignesh" for "Guru Vignesh") — that
+    // used to fail every check below and silently hide those rows from
+    // this counsellor's own dashboard. Compare with all spaces stripped
+    // too, so a missing space never breaks the match.
+    const cNoSpace = c.replace(/\s+/g, '');
+    const mNoSpace = m.replace(/\s+/g, '');
+    if (cNoSpace === mNoSpace) return true;
     const cFirst = c.split(' ')[0];
     const mFirst = m.split(' ')[0];
     if (cFirst.length >= 3 && mFirst.length >= 3 && cFirst === mFirst) return true;

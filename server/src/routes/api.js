@@ -2289,8 +2289,14 @@ const counselorNameRx = (name) => {
   const clean = String(name || '').trim();
   if (!clean) return /^$/;
   const firstName = clean.split(/\s+/)[0];
+  // Bulk-uploaded sheets sometimes run a counsellor's full name together
+  // with no space at all (e.g. "guruvignesh" for "Guru Vignesh"), which
+  // used to never match this user's own name and silently hid those rows
+  // from their dashboard. Spacing between name parts is now OPTIONAL
+  // (\s* instead of \s+) in the full-name alternative, so "Guru Vignesh",
+  // "Guru  Vignesh" and "guruvignesh" all match the same person.
   const rxParts = [
-    `^\\s*${escapeRegex(clean).replace(/\s+/g, '\\s+')}\\s*$`,
+    `^\\s*${escapeRegex(clean).replace(/\s+/g, '\\s*')}\\s*$`,
     `^\\s*${escapeRegex(firstName)}(\\s+.*)?$`
   ];
   return new RegExp(rxParts.join('|'), 'i');
@@ -4248,14 +4254,21 @@ router.put('/trainer/settings/:id', async (req, res) => {
     const u = req.user || {};
     const isSelf = u.trainerId && String(u.trainerId) === String(id);
     if (!isSelf) {
-      const privileged = await isHeadOfTrainerUser(req);
+      const privileged = isTrainerHeadUser(req) || isTrainerManagerUser(req) || (await isHeadOfTrainerUser(req));
       if (!privileged) {
         return res.status(403).json({ error: 'You do not have permission to edit this trainer record.' });
       }
     }
+    const filter = mongoose.isValidObjectId(id)
+      ? { $or: [{ trainerId: id }, { _id: id }] }
+      : { trainerId: id };
+
+    const existing = await Trainer.findOne(filter);
+    const trainerIdToUse = existing?.trainerId || req.body.trainerId || id;
+
     const updated = await Trainer.findOneAndUpdate(
-      { trainerId: id },
-      { $set: { trainerId: id, ...req.body } },
+      filter,
+      { $set: { trainerId: trainerIdToUse, ...req.body } },
       { new: true, upsert: true, setDefaultsOnInsert: true }
     );
     res.json(updated);
@@ -7468,7 +7481,7 @@ export const isHeadOfTrainerUser = async (req) => {
   if (email && HEAD_OF_TRAINERS_MASTER.some((h) => String(h.email || '').toLowerCase() === email)) {
     return true;
   }
-  const role = String(u.role || u.trainerRole || '').toLowerCase();
+  const role = String(u.role || u.trainerRole || u.designation || u.title || '').toLowerCase();
   if (
     role.includes('head') ||
     role.includes('manager') ||

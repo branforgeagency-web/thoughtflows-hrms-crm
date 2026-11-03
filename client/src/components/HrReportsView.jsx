@@ -32,6 +32,20 @@ function daysAgo(dateStr) {
   return Math.max(0, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
 }
 
+// Loose "is this record mine" compare — case/spacing-insensitive, and also
+// tolerant of a bulk-uploaded sheet that ran a counsellor's name together
+// with no space at all (e.g. "guruvignesh" for "Guru Vignesh"), which used
+// to fail a plain === compare and silently drop those rows from this
+// report.
+const sameOwnerName = (a, b) => {
+  const norm = (v) => String(v || '').trim().replace(/\s+/g, ' ').toLowerCase();
+  const nA = norm(a);
+  const nB = norm(b);
+  if (!nA || !nB) return false;
+  if (nA === nB) return true;
+  return nA.replace(/\s+/g, '') === nB.replace(/\s+/g, '');
+};
+
 export default function HrReportsView({ leads = [], students = [], demos = [], currentUser }) {
   const hrName = currentUser?.name || '';
 
@@ -39,11 +53,11 @@ export default function HrReportsView({ leads = [], students = [], demos = [], c
   // owns, so the report reflects real work done by the signed-in person
   // rather than the whole branch's pipeline.
   const myLeads = useMemo(
-    () => leads.filter((l) => (l.counselorAssigned || '').trim() === hrName.trim()),
+    () => leads.filter((l) => sameOwnerName(l.counselorAssigned, hrName)),
     [leads, hrName]
   );
   const myStudents = useMemo(
-    () => students.filter((s) => (s.hrName || '').trim() === hrName.trim()),
+    () => students.filter((s) => sameOwnerName(s.hrName, hrName)),
     [students, hrName]
   );
   const myLeadPhones = useMemo(
