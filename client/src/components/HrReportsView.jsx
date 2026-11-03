@@ -43,7 +43,14 @@ const sameOwnerName = (a, b) => {
   const nB = norm(b);
   if (!nA || !nB) return false;
   if (nA === nB) return true;
-  return nA.replace(/\s+/g, '') === nB.replace(/\s+/g, '');
+  if (nA.replace(/\s+/g, '') === nB.replace(/\s+/g, '')) return true;
+  // A single-word (compound) account name — e.g. "guruvignesh" — has no
+  // first/last split, so a sheet that used a short nickname for it
+  // ("Guru") never matched above. Allow a >=4-char whole-string prefix
+  // match too, same as the dashboard's own matcher.
+  if (nA.length >= 4 && nB.startsWith(nA)) return true;
+  if (nB.length >= 4 && nA.startsWith(nB)) return true;
+  return false;
 };
 
 export default function HrReportsView({ leads = [], students = [], demos = [], currentUser }) {

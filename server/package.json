@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "sync:placement": "node scripts/sync-placement-stages.js"
+    "sync:placement": "node scripts/sync-placement-stages.js",
+    "fix:guru-vignesh-names": "node scripts/fix-guru-vignesh-owner-names.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

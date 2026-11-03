@@ -597,7 +597,12 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     const cFirst = c.split(' ')[0];
     const mFirst = m.split(' ')[0];
     if (cFirst.length >= 3 && mFirst.length >= 3 && cFirst === mFirst) return true;
-    if (c.startsWith(m) || m.startsWith(c)) return true;
+    // Require at least 4 characters before letting one name be treated as
+    // a nickname/prefix of the other (e.g. "Guru" for account "Guruvignesh")
+    // — guards against a short, coincidental prefix (like a single letter)
+    // matching an unrelated person.
+    if (c.length >= 4 && m.startsWith(c)) return true;
+    if (m.length >= 4 && c.startsWith(m)) return true;
     return false;
   };
 

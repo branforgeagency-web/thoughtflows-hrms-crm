@@ -2288,7 +2288,8 @@ const exactNameRx = (v) => new RegExp(`^\\s*${escapeRegex(String(v || '').trim()
 const counselorNameRx = (name) => {
   const clean = String(name || '').trim();
   if (!clean) return /^$/;
-  const firstName = clean.split(/\s+/)[0];
+  const nameWords = clean.split(/\s+/);
+  const firstName = nameWords[0];
   // Bulk-uploaded sheets sometimes run a counsellor's full name together
   // with no space at all (e.g. "guruvignesh" for "Guru Vignesh"), which
   // used to never match this user's own name and silently hid those rows
@@ -2299,6 +2300,21 @@ const counselorNameRx = (name) => {
     `^\\s*${escapeRegex(clean).replace(/\s+/g, '\\s*')}\\s*$`,
     `^\\s*${escapeRegex(firstName)}(\\s+.*)?$`
   ];
+  // A single-word (compound) account name — e.g. "Guruvignesh" with no
+  // internal space at all — has no real first/last split, so the
+  // firstName alternative above only ever matched the full 11-letter
+  // string. A sheet that used a short nickname for it ("Guru") never
+  // matched anything and silently vanished from that counsellor's own
+  // dashboard. Allow any whole-string prefix of at least 4 characters to
+  // match too — same idea as the startsWith() check the dashboard's own
+  // client-side matcher already uses — but ONLY when the account name is
+  // a single word, so a real two-word name like "Ram Kumar" still never
+  // lets "Ram" match an unrelated "Ramesh".
+  if (nameWords.length === 1 && firstName.length > 4) {
+    for (let len = firstName.length - 1; len >= 4; len--) {
+      rxParts.push(`^\\s*${escapeRegex(firstName.slice(0, len))}\\s*$`);
+    }
+  }
   return new RegExp(rxParts.join('|'), 'i');
 };
 const isScopedHr = (req) => {
