@@ -9,6 +9,10 @@ frontend:
   phases:
     preBuild:
       commands:
+        # The backend phase above just wrote the real amplify_outputs.json (bucket
+        # name, region, etc.) to the repo root. Copy it into client/ so the Vite
+        # build can pick it up (see client/src/services/amplifyStorage.js).
+        - cp amplify_outputs.json client/amplify_outputs.json
         - npm install --prefix client --legacy-peer-deps
     build:
       commands:
