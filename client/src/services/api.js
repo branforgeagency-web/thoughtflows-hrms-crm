@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { isAmplifyStorageConfigured, uploadRecordingFile } from './amplifyStorage';
 
 const RAW_API_URL = import.meta.env.VITE_API_URL || '';
 const API_BASE = RAW_API_URL 
@@ -327,8 +328,43 @@ export const getRecordings = async (params) => {
   return res.data;
 };
 
+// Recordings saved on the server's local disk don't survive a redeploy/restart
+// (Render's filesystem is ephemeral), so whenever Amplify S3 Storage is configured
+// we upload the audio straight to S3 from the browser and send only the resulting
+// storage key/URL — never the raw base64 — to the server. If Amplify isn't
+// configured (or the upload fails), we fall back to the original base64-to-disk path.
+const offloadAudioToS3 = async (payload, prefix) => {
+  if (!payload.audioBase64 || !isAmplifyStorageConfigured()) return payload;
+  try {
+    const file = base64ToAudioFile(payload.audioBase64, payload.fileName);
+    const uploaded = await uploadRecordingFile(file, prefix || 'general');
+    const { audioBase64, ...rest } = payload;
+    return {
+      ...rest,
+      fileName: payload.fileName || file.name,
+      storageKey: uploaded.storageKey,
+      storageUrl: uploaded.storageUrl,
+      storageProvider: 'amplify'
+    };
+  } catch (err) {
+    console.warn('S3 recording upload failed, falling back to server storage:', err?.message || err);
+    return payload;
+  }
+};
+
+const base64ToAudioFile = (dataUrl, fileName) => {
+  const [header, data] = String(dataUrl).split(',');
+  const mime = (String(header).match(/data:([^;]+)/) || [])[1] || 'audio/webm';
+  const ext = (fileName && fileName.split('.').pop()) || mime.split('/')[1] || 'webm';
+  const binary = atob(data);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return new File([bytes], fileName || `call_${Date.now()}.${ext}`, { type: mime });
+};
+
 export const saveRecording = async (recordingData) => {
-  const res = await api.post('/recordings', recordingData);
+  const payload = await offloadAudioToS3(recordingData, recordingData.leadPhone || recordingData.studentId);
+  const res = await api.post('/recordings', payload);
   notifyDataUpdate('recordings');
   return res.data;
 };
@@ -336,7 +372,8 @@ export const saveRecording = async (recordingData) => {
 // Phone-sync: upload one call recording from the counsellor's phone; the server
 // matches it to a lead by the number in the file name
 export const syncPhoneRecording = async (data) => {
-  const res = await api.post('/recordings/phone-sync', data);
+  const payload = await offloadAudioToS3(data, 'phone-sync');
+  const res = await api.post('/recordings/phone-sync', payload);
   notifyDataUpdate('recordings');
   return res.data;
 };

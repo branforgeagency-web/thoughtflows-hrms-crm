@@ -836,17 +836,24 @@ router.post('/recordings', async (req, res) => {
       audioUrl: directAudioUrl,
       fileName,
       source,
-      recordedAt
+      recordedAt,
+      storageKey,
+      storageUrl: s3StorageUrl,
+      storageProvider: reqStorageProvider
     } = req.body;
 
     if (!leadName || !leadPhone) {
       return res.status(400).json({ error: 'leadName and leadPhone are required' });
     }
 
-    let audioUrl = directAudioUrl || '';
+    let audioUrl = s3StorageUrl || directAudioUrl || '';
+    const storageProvider = s3StorageUrl ? 'amplify' : 'local';
 
-    // If an audioBase64 string was sent (in-browser MediaRecorder or a file uploaded from the phone)
-    if (audioBase64) {
+    // Already uploaded to S3 (Amplify Storage) by the client — nothing to write to local disk.
+    // If an audioBase64 string was sent instead (Amplify not configured), fall back to local disk
+    // (uploads/recordings on this server — note this does NOT survive a redeploy/restart on Render
+    // unless a persistent disk is attached).
+    if (!s3StorageUrl && audioBase64) {
       const AUDIO_EXTS = ['webm', 'mp3', 'wav', 'ogg', 'opus', 'm4a', 'mp4', 'aac', 'amr', '3gp', 'flac'];
       const MIME_EXT = { mpeg: 'mp3', 'x-m4a': 'm4a', mp4: 'm4a', 'x-wav': 'wav', wave: 'wav', '3gpp': '3gp', 'x-aac': 'aac', 'x-flac': 'flac' };
       const mime = (audioBase64.match(/^data:audio\/([\w.+-]+)(?:;[^,]*)?;base64,/i) || [])[1]?.toLowerCase();
@@ -923,6 +930,8 @@ router.post('/recordings', async (req, res) => {
       counselorName: counselorName || req.user?.name || '',
       counselorPhone: counselorPhone || '',
       callSid: callSid || '',
+      storageKey: storageKey || '',
+      storageProvider: reqStorageProvider || storageProvider,
       durationSeconds: Number(durationSeconds) || 0,
       outcome: outcome || 'Follow-up Needed',
       notes: notes || '',
@@ -999,8 +1008,11 @@ const digitsLooseRx = (digits) => new RegExp(digits.split('').join('\\D*') + '$'
 
 router.post('/recordings/phone-sync', async (req, res) => {
   try {
-    const { fileName, audioBase64, durationSeconds, lastModified, leadId: forcedLeadId } = req.body || {};
-    if (!fileName || !audioBase64) return res.status(400).json({ error: 'fileName and audioBase64 are required' });
+    const {
+      fileName, audioBase64, durationSeconds, lastModified, leadId: forcedLeadId,
+      storageKey, storageUrl: s3StorageUrl, storageProvider: reqStorageProvider
+    } = req.body || {};
+    if (!fileName || (!audioBase64 && !s3StorageUrl)) return res.status(400).json({ error: 'fileName and audioBase64 are required' });
 
     const counselorName = req.user?.name || '';
     const ext = path.extname(String(fileName)).slice(1).toLowerCase();
@@ -1024,11 +1036,18 @@ router.post('/recordings/phone-sync', async (req, res) => {
       lead = await StudentLead.findOne({ fullName: exactNameRx(parsed.name) }).sort({ updatedAt: -1 });
     }
 
-    const buffer = Buffer.from(String(audioBase64).replace(/^data:[^,]*,/, ''), 'base64');
-    const filename = `phone_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.${ext}`;
-    const uploadsDir = path.join(process.cwd(), 'uploads/recordings');
-    if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-    fs.writeFileSync(path.join(uploadsDir, filename), buffer);
+    // Already uploaded to S3 (Amplify Storage) by the client — nothing to write to local disk.
+    // Otherwise fall back to local disk (does NOT survive a Render redeploy/restart unless a
+    // persistent disk is attached).
+    let audioUrl = s3StorageUrl || '';
+    if (!s3StorageUrl) {
+      const buffer = Buffer.from(String(audioBase64).replace(/^data:[^,]*,/, ''), 'base64');
+      const filename = `phone_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.${ext}`;
+      const uploadsDir = path.join(process.cwd(), 'uploads/recordings');
+      if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+      fs.writeFileSync(path.join(uploadsDir, filename), buffer);
+      audioUrl = `/recordings/${filename}`;
+    }
 
     const recording = await CallRecording.create({
       leadId: lead?._id,
@@ -1039,7 +1058,9 @@ router.post('/recordings/phone-sync', async (req, res) => {
       durationSeconds: Number(durationSeconds) || 0,
       outcome: 'Phone Call',
       notes: '',
-      audioUrl: `/recordings/${filename}`,
+      audioUrl,
+      storageKey: storageKey || '',
+      storageProvider: reqStorageProvider || (s3StorageUrl ? 'amplify' : 'local'),
       source: 'phone_sync',
       originalFileName: fileName,
       recordedAt: recordedAt || undefined

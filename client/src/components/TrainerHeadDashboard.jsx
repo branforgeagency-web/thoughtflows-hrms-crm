@@ -530,14 +530,6 @@ export default function TrainerHeadDashboard({
     return sys === 'completed' || sys === 'done';
   }, []);
 
-  const isStudentActive = useCallback((s) => {
-    if (!s) return false;
-    if (isStudentPlaced(s)) return false;
-    const st = String(s.status || s.statusGroup || '').toLowerCase();
-    if (['discontinued', 'dropped', 'inactive', 'cancelled', 'withdrawn'].includes(st)) return false;
-    return true;
-  }, [isStudentPlaced]);
-
   const isStudentHandedOver = useCallback((st) => {
     if (!st) return false;
     const h = String(st.handoverStatus || '');
@@ -548,6 +540,17 @@ export default function TrainerHeadDashboard({
       Boolean(st.headOfTrainer && !st.trainerId)
     );
   }, []);
+
+  // "Active" = currently in training, which only applies once HR has actually
+  // handed the student over to the Training department (not just admitted/enrolled).
+  const isStudentActive = useCallback((s) => {
+    if (!s) return false;
+    if (isStudentPlaced(s)) return false;
+    const st = String(s.status || s.statusGroup || '').toLowerCase();
+    if (['discontinued', 'dropped', 'inactive', 'cancelled', 'withdrawn'].includes(st)) return false;
+    const handedOverToTraining = isStudentHandedOver(s) || s.handoverStatus === 'Sent to Training' || Boolean(s.headOfTrainer);
+    return handedOverToTraining;
+  }, [isStudentPlaced, isStudentHandedOver]);
 
   const pendingAllocationStudents = useMemo(() => {
     return scopedStudents.filter((st) => isStudentHandedOver(st) && !st.trainerId);

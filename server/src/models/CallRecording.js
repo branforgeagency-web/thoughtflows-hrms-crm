@@ -50,6 +50,22 @@ const callRecordingSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  // When the audio lives in S3 (via Amplify Storage) rather than the server's
+  // own (ephemeral) local disk. storageProvider 'local' means audioUrl points
+  // at our own /recordings/<file> static route.
+  storageKey: {
+    type: String,
+    default: ''
+  },
+  storageUrl: {
+    type: String,
+    default: ''
+  },
+  storageProvider: {
+    type: String,
+    enum: ['amplify', 'local'],
+    default: 'local'
+  },
   isDeleted: {
     type: Boolean,
     default: false,
