@@ -97,7 +97,9 @@ export default function HrDepartmentHub({ onClose, currentUser, onLogout, onHrAu
     const unsub = onDataUpdate((entity) => {
       if (['team', 'leads', 'demos', 'branches'].includes(entity)) loadStats();
     });
-    const t = setInterval(loadStats, 60000);
+    const t = setInterval(() => {
+      if (typeof document === 'undefined' || !document.hidden) loadStats();
+    }, 60000);
     return () => { unsub(); clearInterval(t); };
   }, [loadStats, selectedRole]);
 

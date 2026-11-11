@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Users, Search, ChevronLeft, ChevronRight, Phone, Monitor, GraduationCap, AlertTriangle, PhoneCall, Clock, Calendar } from 'lucide-react';
 import { getHrStaffAttendance, getTeam, onDataUpdate } from '../services/api';
 import { localDateKey } from '../utils/dateUtils';
+import { matchesHrOwnerName } from '../utils/hrNameMatch';
 
 // HR-wise breakdown for HR Team Lead, Branch Head & HR Department Head.
 // Works on the records the HR dashboard already loaded for that desk's scope,
@@ -44,7 +45,7 @@ export default function HrTeamDataSection({
 }) {
   const todayKey = localDateKey();
   const monthKey = todayKey.slice(0, 7);
-  const same = matchesName || ((a, b) => norm(a) === norm(b));
+  const same = matchesName || matchesHrOwnerName;
 
   // HR roster for this scope, so counsellors with zero records still show up
   const [roster, setRoster] = useState([]);
@@ -69,8 +70,9 @@ export default function HrTeamDataSection({
     const list = [];
     const add = (name, extra = {}) => {
       if (!name || !String(name).trim()) return;
-      if (list.some((m) => same(name, m.name) || same(m.name, name))) return;
-      list.push({ name: String(name).trim(), role: extra.role || 'HR', branch: extra.branch || '' });
+      const b = extra.branch || '';
+      if (list.some((m) => same(name, m.name, b, m.branch) || same(m.name, name, m.branch, b))) return;
+      list.push({ name: String(name).trim(), role: extra.role || 'HR', branch: b });
     };
     if (scopeKind === 'team') {
       (scopeNames || []).forEach((n) => {
@@ -80,17 +82,19 @@ export default function HrTeamDataSection({
     } else {
       roster.filter((r) => !/head/i.test(r.role || '')).forEach((r) => add(r.name, { role: r.role, branch: r.branchName }));
       // Owners present in the data but not on the roster (older / bulk-uploaded names)
-      [...leads.map(leadOwner), ...students.map(studentOwner), ...demos.map(demoOwner)].forEach((n) => add(n));
+      leads.forEach((l) => add(leadOwner(l), { branch: l.branch || l.location || '' }));
+      students.forEach((s) => add(studentOwner(s), { branch: s.branch || s.leadBranch || s.location || '' }));
+      demos.forEach((d) => add(demoOwner(d), { branch: d.branch || d.location || '' }));
     }
     return list;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roster, scopeKind, (scopeNames || []).join('|'), leads, students, demos]);
 
   const rows = useMemo(() => members.map((m) => {
-    const own = (owner) => owner && same(owner, m.name);
-    const myLeads = leads.filter((l) => own(leadOwner(l)));
-    const myStudents = students.filter((s) => own(studentOwner(s)));
-    const myDemos = demos.filter((d) => own(demoOwner(d)));
+    const own = (owner, recBranch = '') => owner && same(owner, m.name, recBranch, m.branch);
+    const myLeads = leads.filter((l) => own(leadOwner(l), l.branch || l.location || ''));
+    const myStudents = students.filter((s) => own(studentOwner(s), s.branch || s.leadBranch || s.location || ''));
+    const myDemos = demos.filter((d) => own(demoOwner(d), d.branch || d.location || ''));
     const myCalls = recordings.filter((r) => own(r.counselorName));
     const open = myLeads.filter(isOpenLead);
     const feesMonth = myStudents.reduce((acc, s) => {

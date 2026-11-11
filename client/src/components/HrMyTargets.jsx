@@ -7,25 +7,8 @@ import {
 } from 'lucide-react';
 import { getStudents, getHrTargets, onDataUpdate } from '../services/api';
 import { useIncentivePolicy, progressiveIncentive } from '../utils/incentive';
+import { matchesHrOwnerName, normHrName as normName } from '../utils/hrNameMatch';
 
-const normName = (v) => String(v || '').trim().replace(/\s+/g, ' ').toLowerCase();
-// A record's name field (e.g. Student.hrName) sometimes carries only ONE
-// part of a multi-word account name -- e.g. "Poojitha" alone for the
-// account "Kota Poojitha" (surname-first naming). A strict === on the
-// normalized strings used to miss those rows entirely, silently hiding
-// that counsellor's own admissions/targets even though the DB had them.
-// This checks exact match first, then whole-word containment either way
-// (3+ letters, so a short/coincidental word never matches an unrelated
-// person).
-const matchesName = (a, b) => {
-  if (!a || !b) return false;
-  if (a === b) return true;
-  const aWords = a.split(' ');
-  const bWords = b.split(' ');
-  if (aWords.length === 1 && aWords[0].length >= 3 && bWords.includes(aWords[0])) return true;
-  if (bWords.length === 1 && bWords[0].length >= 3 && aWords.includes(bWords[0])) return true;
-  return false;
-};
 const monthKey = (d) => {
   const x = new Date(d);
   return isNaN(x.getTime()) ? '' : `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}`;
@@ -40,6 +23,7 @@ export default function HrMyTargets({ students: propStudents, currentUser }) {
   const [headTarget, setHeadTarget] = useState(null);
   const policy = useIncentivePolicy();
   const myName = normName(currentUser?.name);
+  const myBranch = currentUser?.branch || '';
 
   useEffect(() => {
     if (propStudents !== undefined) { setAllStudents(propStudents); return undefined; }
@@ -52,7 +36,7 @@ export default function HrMyTargets({ students: propStudents, currentUser }) {
     const load = () => getHrTargets({ period: 'month' })
       .then((rows) => {
         const admissionRows = (Array.isArray(rows) ? rows : []).filter((t) => /admission|enrol/i.test(t.title || ''));
-        const pick = admissionRows.find((t) => normName(t.assignedTo) === myName)
+        const pick = admissionRows.find((t) => matchesHrOwnerName(t.assignedTo, myName))
           || admissionRows.find((t) => /^all\b/i.test(String(t.assignedTo || '').trim()));
         setHeadTarget(pick && Number(pick.target) > 0 ? Number(pick.target) : null);
       })
@@ -66,7 +50,10 @@ export default function HrMyTargets({ students: propStudents, currentUser }) {
   const lastMonth = monthKey(new Date(now.getFullYear(), now.getMonth() - 1, 1));
   const admittedOn = (s) => monthKey(s.admissionDate || s.createdAt);
 
-  const mine = useMemo(() => allStudents.filter((s) => myName && matchesName(normName(s.hrName), myName)), [allStudents, myName]);
+  const mine = useMemo(
+    () => allStudents.filter((s) => myName && matchesHrOwnerName(s.hrName, myName, s.branch || s.leadBranch || s.location || '', myBranch)),
+    [allStudents, myName, myBranch]
+  );
   const admissionsThisMonth = mine.filter((s) => admittedOn(s) === thisMonth).length;
   const admissionsLastMonth = mine.filter((s) => admittedOn(s) === lastMonth).length;
   const collectedThisMonth = mine.reduce((sum, s) => sum + (s.receipts || [])
@@ -75,14 +62,16 @@ export default function HrMyTargets({ students: propStudents, currentUser }) {
 
   // Rank among counsellors whose students share my branch (this month)
   const branchRank = useMemo(() => {
-    const myBranch = normName(currentUser?.branch);
-    if (!myBranch) return null;
+    const myBranchNorm = normName(myBranch);
+    if (!myBranchNorm) return null;
     const tally = new Map();
     allStudents.forEach((s) => {
       if (admittedOn(s) !== thisMonth || !s.hrName) return;
-      const b = normName(s.branch || s.leadBranch || s.location);
-      if (!b.includes(myBranch) && !myBranch.includes(b)) return;
-      tally.set(normName(s.hrName), (tally.get(normName(s.hrName)) || 0) + 1);
+      const recBranch = s.branch || s.leadBranch || s.location || '';
+      const b = normName(recBranch);
+      if (!b.includes(myBranchNorm) && !myBranchNorm.includes(b)) return;
+      const bucket = matchesHrOwnerName(s.hrName, myName, recBranch, myBranch) ? myName : normName(s.hrName);
+      tally.set(bucket, (tally.get(bucket) || 0) + 1);
     });
     if (!tally.has(myName)) tally.set(myName, admissionsThisMonth);
     const ranked = [...tally.entries()].sort((a, b) => b[1] - a[1]);

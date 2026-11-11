@@ -41,20 +41,27 @@ export const authHeaders = () => {
 // every 10 minutes (it lives 15).
 let fileToken = { value: '', at: 0, session: '' };
 let fileTokenPromise = null;
+let fileTokenFailUntil = 0;
 const FILE_TOKEN_REFRESH_MS = 10 * 60 * 1000;
 export const ensureFileToken = () => {
   const session = getAuthToken();
   if (!session) return Promise.resolve('');
   const fresh = fileToken.value && fileToken.session === session && Date.now() - fileToken.at < FILE_TOKEN_REFRESH_MS;
   if (fresh) return Promise.resolve(fileToken.value);
+  if (Date.now() < fileTokenFailUntil) return Promise.resolve(fileToken.value || '');
   if (!fileTokenPromise) {
     fileTokenPromise = axios.post(`${API_BASE}/auth/file-token`, {}, { headers: { Authorization: `Bearer ${session}` } })
       .then((r) => {
         fileToken = { value: r.data?.token || '', at: Date.now(), session };
+        fileTokenFailUntil = 0;
         if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('thoughtflows_file_token'));
         return fileToken.value;
       })
-      .catch(() => '')
+      .catch((err) => {
+        const cooldown = err?.response?.status === 429 ? 60000 : 30000;
+        fileTokenFailUntil = Date.now() + cooldown;
+        return '';
+      })
       .finally(() => { fileTokenPromise = null; });
   }
   return fileTokenPromise;
@@ -81,9 +88,152 @@ const attachToken = (config) => {
     config.headers = config.headers || {};
     config.headers.Authorization = `Bearer ${t}`;
   }
-  // Keep the short-lived file-link token warm while the user is active
-  if (t && !String(config.url || '').includes('/auth/file-token')) setTimeout(() => ensureFileToken(), 0);
+  // Warm the short-lived file-link token once per session instead of spamming on every request
+  if (
+    t &&
+    !String(config.url || '').includes('/auth/file-token') &&
+    (fileToken.session !== t || !fileToken.value) &&
+    Date.now() > fileTokenFailUntil
+  ) {
+    setTimeout(() => ensureFileToken(), 150);
+  }
   return config;
+};
+
+// ---------------------------------------------------------------------------
+// GET deduplication, short-TTL cache, concurrency pacer & 429 backoff
+// Prevents dashboard mounts from firing 15+ simultaneous requests that trip
+// upstream edge rate limits (HTTP 429 Too Many Requests).
+// ---------------------------------------------------------------------------
+const MAX_CONCURRENT_GETS = 3;
+const MIN_DISPATCH_GAP_MS = 45;
+const inFlightGets = new Map();
+const getResponseCache = new Map();
+const getQueue = [];
+let activeGets = 0;
+let lastDispatchAt = 0;
+let rateLimitedUntil = 0;
+let pumpTimer = null;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const clearApiGetCache = () => {
+  getResponseCache.clear();
+};
+
+const getCacheTtlMs = (url, config) => {
+  if (config?.responseType || config?.skipCache) return 0;
+  const u = String(url || '').toLowerCase();
+  if (u.startsWith('/auth/')) return 0;
+  if (['/branches', '/departments', '/settings', '/trainer/heads'].some((p) => u.startsWith(p))) return 30000;
+  if (['/stats', '/hr/hub-summary', '/hr/targets', '/leadership/team', '/hr/staff-attendance', '/notifications', '/student-requests', '/student-tickets'].some((p) => u.startsWith(p))) {
+    return 12000;
+  }
+  return 2500;
+};
+
+const buildGetCacheKey = (url, config) => {
+  const params = config?.params;
+  let paramStr = '';
+  if (params && typeof params === 'object') {
+    const sorted = Object.keys(params)
+      .filter((k) => params[k] !== undefined)
+      .sort()
+      .reduce((acc, k) => { acc[k] = params[k]; return acc; }, {});
+    paramStr = JSON.stringify(sorted);
+  }
+  return `${url}|${paramStr}|${getAuthToken().slice(-12)}`;
+};
+
+const parseRetryAfterMs = (err, attempt) => {
+  const ra = err?.response?.headers?.['retry-after'];
+  if (ra !== undefined && ra !== null && String(ra).trim() !== '') {
+    const secs = Number(ra);
+    if (!Number.isNaN(secs) && secs >= 0) {
+      return Math.min(15000, Math.max(1000, Math.round(secs * 1000)));
+    }
+  }
+  return Math.min(12000, 2000 * Math.pow(2, attempt) + Math.floor(Math.random() * 400));
+};
+
+const pumpGetQueue = () => {
+  if (pumpTimer) {
+    clearTimeout(pumpTimer);
+    pumpTimer = null;
+  }
+  while (activeGets < MAX_CONCURRENT_GETS && getQueue.length > 0) {
+    const now = Date.now();
+    const waitMs = Math.max(rateLimitedUntil - now, lastDispatchAt + MIN_DISPATCH_GAP_MS - now);
+    if (waitMs > 0) {
+      pumpTimer = setTimeout(() => {
+        pumpTimer = null;
+        pumpGetQueue();
+      }, waitMs);
+      return;
+    }
+    const task = getQueue.shift();
+    if (!task) return;
+    activeGets += 1;
+    lastDispatchAt = Date.now();
+    task();
+  }
+};
+
+const enqueueGet = (fn) => new Promise((resolve, reject) => {
+  getQueue.push(() => {
+    Promise.resolve()
+      .then(fn)
+      .then(resolve, reject)
+      .finally(() => {
+        activeGets = Math.max(0, activeGets - 1);
+        pumpGetQueue();
+      });
+  });
+  pumpGetQueue();
+});
+
+const rawApiGet = api.get.bind(api);
+api.get = (url, config = {}) => {
+  const ttl = getCacheTtlMs(url, config);
+  const key = buildGetCacheKey(url, config);
+
+  if (ttl > 0 && getResponseCache.has(key)) {
+    const cached = getResponseCache.get(key);
+    if (Date.now() - cached.at < ttl) {
+      return Promise.resolve(cached.res);
+    }
+    getResponseCache.delete(key);
+  }
+
+  if (inFlightGets.has(key)) {
+    return inFlightGets.get(key);
+  }
+
+  const reqPromise = (async () => {
+    for (let attempt = 0; attempt <= 2; attempt++) {
+      try {
+        const res = await enqueueGet(() => rawApiGet(url, config));
+        if (ttl > 0) {
+          if (getResponseCache.size >= 200) getResponseCache.clear();
+          getResponseCache.set(key, { at: Date.now(), res });
+        }
+        return res;
+      } catch (err) {
+        if (err?.response?.status === 429 && attempt < 2) {
+          const waitMs = parseRetryAfterMs(err, attempt);
+          rateLimitedUntil = Math.max(rateLimitedUntil, Date.now() + waitMs);
+          await sleep(waitMs);
+          continue;
+        }
+        throw err;
+      }
+    }
+  })().finally(() => {
+    inFlightGets.delete(key);
+  });
+
+  inFlightGets.set(key, reqPromise);
+  return reqPromise;
 };
 
 let sessionExpiredHandled = false;
@@ -113,12 +263,17 @@ const handleAuthError = (error) => {
 };
 
 api.interceptors.request.use(attachToken);
-api.interceptors.response.use((r) => r, handleAuthError);
+api.interceptors.response.use((r) => {
+  const method = String(r?.config?.method || 'get').toLowerCase();
+  if (!['get', 'head', 'options'].includes(method)) clearApiGetCache();
+  return r;
+}, handleAuthError);
 axios.interceptors.request.use(attachToken);
 axios.interceptors.response.use((r) => r, handleAuthError);
 
 // Real-Time Cross-Dashboard Sync Event Bus (in-tab + multi-tab)
 export const notifyDataUpdate = (entity) => {
+  clearApiGetCache();
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('thoughtflows_data_updated', { detail: { entity } }));
     try {

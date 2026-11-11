@@ -49,8 +49,12 @@ export default function HrStudentRequestsDesk({ currentUser, onCountChange }) {
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 60000);
-    const off = onDataUpdate(load);
+    const t = setInterval(() => {
+      if (typeof document === 'undefined' || !document.hidden) load();
+    }, 60000);
+    const off = onDataUpdate((entity) => {
+      if (!entity || ['student_requests', 'tickets', 'students'].includes(entity)) load();
+    });
     return () => { clearInterval(t); off(); };
   }, [load]);
 

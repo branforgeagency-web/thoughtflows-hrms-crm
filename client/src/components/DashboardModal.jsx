@@ -52,10 +52,20 @@ export default function DashboardModal({
   const [activeTab, setActiveTab] = useState('dept-view');
   const [loading, setLoading] = useState(true);
 
+  let userDept = currentUser?.department;
+  if (!userDept || userDept === 'Medical Coding Faculty') userDept = 'training';
+
+  const deptId = selectedDashboard?.id || userDept || 'hr';
+  const usesLegacyFallbackView = !['training', 'hr', 'student', 'admin', 'cccp', 'marketing', 'leadership', 'wiseapp'].includes(deptId);
+
   useEffect(() => {
     if (!isOpen) return;
-    setLoading(true);
     setActiveTab('dept-view');
+    if (!usesLegacyFallbackView) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
     Promise.all([
       axios.get('/api/branches'),
       axios.get('/api/leads/pipeline')
@@ -67,7 +77,7 @@ export default function DashboardModal({
       console.warn('Dashboard data fetch error', err);
       setLoading(false);
     });
-  }, [isOpen, selectedDashboard]);
+  }, [isOpen, selectedDashboard, usesLegacyFallbackView]);
 
   if (!isOpen) return null;
 
@@ -78,11 +88,6 @@ export default function DashboardModal({
       onClose();
     }
   };
-
-  let userDept = currentUser?.department;
-  if (!userDept || userDept === 'Medical Coding Faculty') userDept = 'training';
-
-  const deptId = selectedDashboard?.id || userDept || 'hr';
 
   if (deptId === 'training') {
     return (

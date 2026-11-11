@@ -803,6 +803,7 @@ router.post('/calls/:callSid/hangup', async (req, res) => {
 
 router.get('/recordings', async (req, res) => {
   try {
+    await ensureStaffNamesLoaded();
     const { leadPhone, leadId, studentId, search } = req.query;
     // Counsellors only hear their own calls; managers may filter by name
     const counselorName = isScopedHr(req) ? req.user?.name : (req.query.counselorName || req.query.counselor);
@@ -1880,7 +1881,7 @@ async function syncTeamFromUsers(force = false) {
 async function teamMetrics(members) {
   const today = todayStr();
   const [leads, students, doubts, feedback] = await Promise.all([
-    StudentLead.find().select('counselorAssigned allocatedTo stage followUpDate callCount').lean(),
+    StudentLead.find().select('counselorAssigned allocatedTo spokenBy branch location stage followUpDate callCount').lean(),
     Student.find().select('trainerName syllabusCompleted').lean(),
     TrainerDoubt.find({ status: { $ne: 'Replied' } }).select('trainerName').lean(),
     ClassFeedback.aggregate([{ $group: { _id: { $toLower: '$trainerName' }, avg: { $avg: '$rating' }, count: { $sum: 1 } } }])
@@ -1902,7 +1903,7 @@ async function teamMetrics(members) {
         workLabel: { assigned: 'students', completed: 'syllabus done', pending: 'open doubts' }
       };
     }
-    const mine = leads.filter((l) => normName(leadOwner(l)) === name);
+    const mine = leads.filter((l) => namesMatch(m.name, leadOwner(l), m.branchName, l.branch || l.location));
     const open = mine.filter((l) => !['admitted', 'closed'].includes(l.stage));
     const worked = mine.filter((l) => l.stage !== 'new' || (l.callCount || 0) > 0).length;
     return {
@@ -2643,75 +2644,188 @@ router.post('/attendance/me', async (req, res) => {
 // (case / spacing ignored) so "Ram" never matches "Ramesh".
 const normName = (v) => String(v || '').trim().replace(/\s+/g, ' ').toLowerCase();
 const exactNameRx = (v) => new RegExp(`^\\s*${escapeRegex(String(v || '').trim()).replace(/\s+/g, '\\s+')}\\s*$`, 'i');
-// ---- Staff name registry (for safe loose name matching) ----
-// Loose matches (first name only, one word of the name, a nickname prefix)
-// are only safe when no OTHER staff member could own the same short form.
-// Two counsellors called "Priya Sharma" and "Priya Kumar" must never see
-// each other's records just because both start with "Priya".
-let staffNameCache = { at: 0, loaded: false, names: [], loading: null };
+const ACTIVE_USER = { status: { $not: /inactive|disabled|suspended/i } };
+const HR_STAFF = { $or: [{ role: /\bhr\b|counsel/i }, { department: /counsel|admission|^hr$/i }] };
+const bClean = (v) => String(v || '').toLowerCase().replace(/\s*(branch|\(.*\)|hq)\b/gi, '').replace(/[^a-z0-9]/g, '');
+
+// ---- Staff name registry (for safe loose name + branch matching) ----
+// Only active HR / Counselling / Admission staff are indexed here (never
+// students or trainers, so a student or trainer named "Pavithra" never blocks
+// HR counsellor "Pavithra N"). When two HR staff share a short name across
+// different branches, records matching the short name are disambiguated by
+// their branch.
+let staffNameCache = { at: 0, loaded: false, staff: [], branches: BRANCH_MASTER, loading: null };
 const STAFF_NAME_TTL = 2 * 60 * 1000;
-const normStaffName = (v) => String(v || '').trim().replace(/\s+/g, ' ').toLowerCase();
+const normStaffName = (v) => String(v || '').replace(/[.\-_]+/g, ' ').trim().replace(/\s+/g, ' ').toLowerCase();
+
+const resolveStaffBranchKey = (v, branches = staffNameCache.branches) => {
+  const s = String(v || '').trim();
+  if (!s || /^not\s*mentioned$/i.test(s)) return '';
+  if (Array.isArray(branches) && branches.length) {
+    const matched = matchBranch(s, branches);
+    if (matched) return bClean(matched.name);
+  }
+  return bClean(s);
+};
+
+const findSelfBranch = (selfNorm, explicitBranch = '') => {
+  if (resolveStaffBranchKey(explicitBranch)) return explicitBranch;
+  const selfCompact = String(selfNorm || '').replace(/\s+/g, '');
+  const found = staffNameCache.staff.find((s) => s.compact === selfCompact && s.branch);
+  return found ? found.branch : '';
+};
+
+const branchMatchRx = (branch) => {
+  const s = String(branch || '').trim();
+  if (!s || /^not\s*mentioned$/i.test(s)) return null;
+  const branches = staffNameCache.branches || BRANCH_MASTER;
+  const matched = matchBranch(s, branches);
+  const terms = new Set();
+  if (matched) {
+    if (matched.name) terms.add(matched.name);
+    if (matched.code) {
+      terms.add(matched.code);
+      const codeSuffix = String(matched.code).split('-')[1];
+      if (codeSuffix && codeSuffix.length >= 2) terms.add(codeSuffix);
+    }
+    if (matched.city) terms.add(matched.city);
+    (matched.aliases || []).forEach((a) => { if (a) terms.add(a); });
+  }
+  const shortVal = branchShort(s);
+  if (shortVal) terms.add(shortVal);
+  const cleanTerms = Array.from(terms).map((t) => String(t).trim()).filter((t) => t.length >= 2);
+  if (!cleanTerms.length) return null;
+  const joined = cleanTerms.map(escapeRegex).join('|');
+  return new RegExp(`(^|[^a-z0-9])(${joined})([^a-z0-9]|$)`, 'i');
+};
+
 function refreshStaffNames() {
   if (staffNameCache.loading) return staffNameCache.loading;
-  staffNameCache.loading = User.find({ status: { $not: /inactive|disabled|suspended/i } })
-    .select('name').lean()
-    .then((rows) => {
-      const names = Array.from(new Set(rows.map((r) => normStaffName(r.name)).filter(Boolean)));
-      staffNameCache = { at: Date.now(), loaded: true, names, loading: null };
+  staffNameCache.loading = Promise.all([
+    User.find({ $and: [HR_STAFF, ACTIVE_USER] }).select('name branch role department').lean(),
+    branchList().catch(() => BRANCH_MASTER)
+  ])
+    .then(([rows, branches]) => {
+      const branchDocs = Array.isArray(branches) && branches.length ? branches : BRANCH_MASTER;
+      const seen = new Set();
+      const staff = [];
+      rows.forEach((r) => {
+        const norm = normStaffName(r.name);
+        if (!norm) return;
+        const bKey = resolveStaffBranchKey(r.branch, branchDocs);
+        const dedupKey = `${norm.replace(/\s+/g, '')}::${bKey}`;
+        if (seen.has(dedupKey)) return;
+        seen.add(dedupKey);
+        staff.push({
+          raw: String(r.name || '').trim(),
+          norm,
+          compact: norm.replace(/\s+/g, ''),
+          words: norm.split(' ').filter(Boolean),
+          branch: String(r.branch || '').trim(),
+          branchKey: bKey
+        });
+      });
+      staffNameCache = { at: Date.now(), loaded: true, staff, branches: branchDocs, loading: null };
     })
     .catch(() => { staffNameCache.loading = null; });
   return staffNameCache.loading;
 }
+async function ensureStaffNamesLoaded() {
+  if (!staffNameCache.loaded || Date.now() - staffNameCache.at > STAFF_NAME_TTL) {
+    await refreshStaffNames();
+  }
+}
 const invalidateStaffNames = () => { staffNameCache.at = 0; refreshStaffNames(); };
 refreshStaffNames();
-// Does any staff member OTHER than `self` own this loose form?
-//   kind 'first'  — their first word equals token
-//   kind 'word'   — any word of their name equals token
-//   kind 'prefix' — their first word starts with token
-function looseFormTaken(token, self, kind) {
+
+// Check whether any OTHER HR staff member owns a loose token:
+//   'free'   — nobody else in HR shares it (safe without branch check)
+//   'branch' — another HR shares it ONLY in a DIFFERENT branch (detect by branch)
+//   'taken'  — shared in the same branch or branch unknown → stay strict
+function looseTokenScope(token, self, kind, selfBranch = '') {
   if (Date.now() - staffNameCache.at > STAFF_NAME_TTL) refreshStaffNames();
-  if (!staffNameCache.loaded) return true; // registry not ready → stay strict
+  if (!staffNameCache.loaded) return 'taken';
   const t = normStaffName(token);
-  const me = normStaffName(self).replace(/\s+/g, '');
-  return staffNameCache.names.some((n) => {
-    if (n.replace(/\s+/g, '') === me) return false;
-    const words = n.split(' ');
-    if (kind === 'first') return words[0] === t;
-    if (kind === 'word') return words.includes(t);
-    return words[0].startsWith(t);
+  const selfNorm = normStaffName(self);
+  const meCompact = selfNorm.replace(/\s+/g, '');
+  const effBranch = findSelfBranch(selfNorm, selfBranch);
+  const myBranchKey = resolveStaffBranchKey(effBranch);
+
+  const conflicts = staffNameCache.staff.filter((s) => {
+    if (s.compact === meCompact) {
+      return Boolean(myBranchKey && s.branchKey && s.branchKey !== myBranchKey);
+    }
+    if (kind === 'first') return s.words[0] === t;
+    if (kind === 'word') return s.words.includes(t);
+    return Boolean(s.words[0] && s.words[0].startsWith(t));
   });
+
+  if (conflicts.length === 0) return 'free';
+  if (!myBranchKey) return 'taken';
+  const sameOrUnknown = conflicts.some((s) => !s.branchKey || s.branchKey === myBranchKey);
+  return sameOrUnknown ? 'taken' : 'branch';
 }
-const counselorNameRx = (name) => {
-  const clean = String(name || '').trim();
-  if (!clean) return /^$/;
-  const nameWords = clean.split(/\s+/);
+
+const analyzeCounselorName = (name, branch = '') => {
+  const clean = String(name || '').replace(/[.\-_]+/g, ' ').trim().replace(/\s+/g, ' ');
+  if (!clean) return { strictRx: /^$/, unconditionalRx: /^$/, branchScopedRx: null, strictIsBranchScoped: false, branchRx: null };
+  const effBranch = findSelfBranch(clean.toLowerCase(), branch);
+  const bRx = branchMatchRx(effBranch);
+  const nameWords = clean.split(/\s+/).filter(Boolean);
   const firstName = nameWords[0];
-  // Full name, spacing optional ("Guru Vignesh" = "guruvignesh")
-  const rxParts = [
-    `^\\s*${escapeRegex(clean).replace(/\s+/g, '\\s*')}\\s*$`
-  ];
-  // First name + anything ("Vishnupriya DSNR" for "Vishnupriya") — only when
-  // no other staff member shares that first name
-  if (firstName.length >= 3 && !looseFormTaken(firstName, clean, 'first')) {
-    rxParts.push(`^\\s*${escapeRegex(firstName)}(\\s+.*)?$`);
+  const sep = '[\\s.\\-_]*';
+
+  const strictPattern = `^\\s*${nameWords.map(escapeRegex).join(sep)}\\s*$`;
+  const strictRx = new RegExp(strictPattern, 'i');
+
+  // Even a 1-word exact account name ("Pavithra") can collide with another HR ("Pavithra N")
+  // in a different branch — detect by branch when possible.
+  const strictIsBranchScoped = Boolean(
+    bRx && nameWords.length === 1 && looseTokenScope(firstName, clean, 'first', effBranch) === 'branch'
+  );
+
+  const unconditionalParts = strictIsBranchScoped ? [] : [strictPattern];
+  const branchScopedParts = strictIsBranchScoped ? [strictPattern] : [];
+
+  const pushPart = (pattern, scope) => {
+    if (scope === 'free') unconditionalParts.push(pattern);
+    else if (scope === 'branch' && bRx) branchScopedParts.push(pattern);
+  };
+
+  if (firstName.length >= 3) {
+    const scope = looseTokenScope(firstName, clean, 'first', effBranch);
+    pushPart(`^\\s*${escapeRegex(firstName)}(\\s+.*)?$`, scope);
   }
-  // Nickname prefix of a single-word account name ("Guru" for "Guruvignesh")
-  // — only when no other staff member's first name starts with it
   if (nameWords.length === 1 && firstName.length > 4) {
     for (let len = firstName.length - 1; len >= 4; len--) {
       const pre = firstName.slice(0, len);
-      if (!looseFormTaken(pre, clean, 'prefix')) rxParts.push(`^\\s*${escapeRegex(pre)}\\s*$`);
+      const scope = looseTokenScope(pre, clean, 'prefix', effBranch);
+      pushPart(`^\\s*${escapeRegex(pre)}\\s*$`, scope);
     }
   }
-  // One word of a multi-word name on its own ("Poojitha" for "Kota Poojitha")
-  // — only when no other staff member has that word in their name
   if (nameWords.length > 1) {
     nameWords.forEach((w) => {
-      if (w.length >= 3 && !looseFormTaken(w, clean, 'word')) rxParts.push(`^\\s*${escapeRegex(w)}\\s*$`);
+      if (w.length >= 3) {
+        const scope = looseTokenScope(w, clean, 'word', effBranch);
+        pushPart(`^\\s*${escapeRegex(w)}\\s*$`, scope);
+      }
     });
   }
-  return new RegExp(rxParts.join('|'), 'i');
+
+  return {
+    strictRx,
+    unconditionalRx: unconditionalParts.length ? new RegExp(unconditionalParts.join('|'), 'i') : null,
+    branchScopedRx: branchScopedParts.length ? new RegExp(branchScopedParts.join('|'), 'i') : null,
+    strictIsBranchScoped,
+    branchRx: bRx
+  };
 };
+
+const counselorNameRx = (name, branch = '') => {
+  const { strictRx, unconditionalRx } = analyzeCounselorName(name, branch);
+  return unconditionalRx || strictRx;
+};
+
 const isScopedHr = (req) => {
   const dept = String(req.user?.department || '').toLowerCase();
   const role = String(req.user?.role || '').toLowerCase();
@@ -2731,8 +2845,6 @@ const isHrLeaderUser = (req) => {
 const isHrTeamLeadUser = (req) => isHrLeaderUser(req)
   && !/\bhead\b|\bhod\b/i.test(String(req.user?.role || ''))
   && !isScopedBranchManager(req);
-const ACTIVE_USER = { status: { $not: /inactive|disabled|suspended/i } };
-const HR_STAFF = { $or: [{ role: /\bhr\b|counsel/i }, { department: /counsel|admission|^hr$/i }] };
 // The counsellors who report to this Team Lead ("Reports to" = managerName /
 // managerId). With nobody assigned yet, the HR counsellors of their branch.
 async function findHrTeam(me) {
@@ -2765,9 +2877,35 @@ async function hrTeamScopeNames(req) {
   hrTeamCache.set(key, { at: Date.now(), names });
   return names;
 }
-// Records owned by any of these names (each name matched like counselorNameRx)
-const ownerAnyQuery = (names, fields) => ({
-  $or: names.flatMap((n) => { const rx = counselorNameRx(n); return fields.map((f) => ({ [f]: rx })); })
+const BRANCH_FIELDS_LEAD = ['branch', 'location'];
+const BRANCH_FIELDS_STUDENT = ['branch', 'leadBranch', 'location'];
+const ownerSingleBranchConditions = (name, branch, ownerFields, branchFields) => {
+  const { strictRx, unconditionalRx, branchScopedRx, strictIsBranchScoped, branchRx } = analyzeCounselorName(name, branch);
+  const conds = [];
+  if (unconditionalRx) {
+    conds.push({ $or: ownerFields.map((f) => ({ [f]: unconditionalRx })) });
+  } else if (!strictIsBranchScoped) {
+    conds.push({ $or: ownerFields.map((f) => ({ [f]: strictRx })) });
+  }
+  if (branchScopedRx && branchRx && branchFields.length) {
+    conds.push({
+      $and: [
+        { $or: ownerFields.map((f) => ({ [f]: branchScopedRx })) },
+        { $or: branchFields.map((f) => ({ [f]: branchRx })) }
+      ]
+    });
+  } else if (branchScopedRx && !conds.length) {
+    conds.push({ $or: ownerFields.map((f) => ({ [f]: strictRx })) });
+  }
+  return conds;
+};
+const ownerQueryWithBranch = (name, branch, ownerFields, branchFields) => {
+  const conds = ownerSingleBranchConditions(name, branch, ownerFields, branchFields);
+  return conds.length === 1 ? conds[0] : { $or: conds };
+};
+// Records owned by any of these names (each name matched with optional branch disambiguation)
+const ownerAnyQuery = (names, fields, branchFields = []) => ({
+  $or: names.flatMap((n) => ownerSingleBranchConditions(n, '', fields, branchFields))
 });
 const LEAD_OWNER_FIELDS = ['counselorAssigned', 'allocatedTo', 'spokenBy', 'counselor', 'counselorName', 'hrName'];
 const STUDENT_OWNER_FIELDS = ['hrName', 'counselorAssigned', 'counselor', 'counselorName', 'allocatedTo', 'spokenBy'];
@@ -2780,29 +2918,24 @@ const pickTeamNames = (team, requested) => {
 };
 
 const leadOwner = (l) => l?.counselorAssigned || l?.allocatedTo || l?.spokenBy || l?.counselor || l?.hrName || '';
-const leadOwnerQuery = (name) => {
-  const rx = counselorNameRx(name);
-  return {
-    $or: [
-      { counselorAssigned: rx },
-      { allocatedTo: rx },
-      { spokenBy: rx },
-      { counselor: rx },
-      { counselorName: rx },
-      { hrName: rx }
-    ]
-  };
-};
-const bClean = (v) => String(v || '').toLowerCase().replace(/\s*(branch|\(.*\)|hq)\b/gi, '').replace(/[^a-z0-9]/g, '');
+const leadOwnerQuery = (name, branch = '') => ownerQueryWithBranch(name, branch, LEAD_OWNER_FIELDS, BRANCH_FIELDS_LEAD);
 
-const namesMatch = (a, b) => {
+const namesMatch = (a, b, aBranch = '', bBranch = '') => {
   if (!a || !b) return false;
-  const clean = (v) => String(v).replace(/\([^)]*\)/g, '').replace(/[\.\-_]/g, ' ').replace(/\s+/g, ' ').trim();
+  const clean = (v) => String(v).replace(/\([^)]*\)/g, '').replace(/[.\-_]/g, ' ').replace(/\s+/g, ' ').trim();
   const cA = clean(a);
   const cB = clean(b);
   if (!cA || !cB) return false;
-  // a = the signed-in user's name, b = the name stored on the record
-  return counselorNameRx(cA).test(cB);
+  // a = the signed-in / roster user's name, b = the name stored on the record
+  const { unconditionalRx, branchScopedRx, strictRx } = analyzeCounselorName(cA, aBranch);
+  if (unconditionalRx && unconditionalRx.test(cB)) return true;
+  if (branchScopedRx && branchScopedRx.test(cB)) {
+    const kA = resolveStaffBranchKey(findSelfBranch(normStaffName(cA), aBranch));
+    const kB = resolveStaffBranchKey(bBranch);
+    if (!kA || !kB) return !kA || kA === kB;
+    return kA === kB;
+  }
+  return strictRx.test(cB);
 };
 
 const leadHasCounselor = (lead, user) => {
@@ -2830,9 +2963,10 @@ const leadHasCounselor = (lead, user) => {
   // If no counsellor has been assigned yet, any counsellor can view / edit / manage it
   if (candidateLeadOwners.length === 0) return true;
 
+  const recBranch = lead.branch || lead.leadBranch || lead.location || '';
   for (const uName of candidateUserNames) {
     for (const lName of candidateLeadOwners) {
-      if (namesMatch(uName, lName)) return true;
+      if (namesMatch(uName, lName, user.branch || '', recBranch)) return true;
     }
   }
 
@@ -2852,7 +2986,8 @@ const recordOwnerNames = (r) => [
 const teamOwnsRecord = (req, rec) => {
   const owners = recordOwnerNames(rec);
   if (!owners.length) return true;
-  return req.hrTeamNames.some((n) => owners.some((o) => namesMatch(n, o)));
+  const recBranch = rec?.branch || rec?.leadBranch || rec?.location || '';
+  return req.hrTeamNames.some((n) => owners.some((o) => namesMatch(n, o, '', recBranch)));
 };
 const branchOwnsRecord = (req, rec) => {
   const ub = bClean(getBranchManagerBranch(req));
@@ -2902,6 +3037,7 @@ const findLeadForAdmission = (p) => findLeadByContact({ leadId: p.leadId, email:
 // ==========================================
 router.get('/students', async (req, res) => {
   try {
+    await ensureStaffNamesLoaded();
     const { statusGroup, search, trainerId, handoverStatus } = req.query;
     const hrName = isScopedHr(req) ? req.user?.name : req.query.hrName;
     const isBM = isScopedBranchManager(req);
@@ -2939,34 +3075,14 @@ router.get('/students', async (req, res) => {
       const bRx = new RegExp(escapeRegex(userBranch), 'i');
       andConditions.push({ $or: [{ branch: bRx }, { location: bRx }, { leadBranch: bRx }] });
     } else if (req.hrTeamNames) {
-      andConditions.push(ownerAnyQuery(pickTeamNames(req.hrTeamNames, req.query.hrName), STUDENT_OWNER_FIELDS));
+      andConditions.push(ownerAnyQuery(pickTeamNames(req.hrTeamNames, req.query.hrName), STUDENT_OWNER_FIELDS, BRANCH_FIELDS_STUDENT));
     } else if (isScopedHr(req)) {
       const counselor = req.user?.name || req.user?.userName;
       if (counselor) {
-        const rx = counselorNameRx(counselor);
-        andConditions.push({
-          $or: [
-            { hrName: rx },
-            { counselorAssigned: rx },
-            { counselor: rx },
-            { counselorName: rx },
-            { allocatedTo: rx },
-            { spokenBy: rx }
-          ]
-        });
+        andConditions.push(ownerQueryWithBranch(counselor, req.user?.branch || '', STUDENT_OWNER_FIELDS, BRANCH_FIELDS_STUDENT));
       }
     } else if (hrName && hrName !== 'all') {
-      const rx = counselorNameRx(hrName);
-      andConditions.push({
-        $or: [
-          { hrName: rx },
-          { counselorAssigned: rx },
-          { counselor: rx },
-          { counselorName: rx },
-          { allocatedTo: rx },
-          { spokenBy: rx }
-        ]
-      });
+      andConditions.push(ownerQueryWithBranch(hrName, req.query.branch || '', STUDENT_OWNER_FIELDS, BRANCH_FIELDS_STUDENT));
     } else if (userBranch && !/^all/i.test(userBranch)) {
       const bRx = new RegExp(escapeRegex(userBranch), 'i');
       andConditions.push({ $or: [{ branch: bRx }, { location: bRx }, { leadBranch: bRx }] });
@@ -3919,39 +4035,38 @@ router.delete('/students/:id', async (req, res) => {
 // ==========================================
 router.get('/leads', async (req, res) => {
   try {
+    await ensureStaffNamesLoaded();
     const { search, stage, branch } = req.query;
     // Counsellors are always pinned to their own leads; Branch Managers are pinned to their branch
     const counselor = isScopedHr(req) ? req.user?.name : req.query.counselor;
     const isBM = isScopedBranchManager(req);
     const targetBranch = isBM ? getBranchManagerBranch(req) : branch;
-    let query = {};
+    const andConditions = [];
     if (req.hrTeamNames) {
-      query.$or = ownerAnyQuery(pickTeamNames(req.hrTeamNames, req.query.counselor), LEAD_OWNER_FIELDS).$or;
+      andConditions.push(ownerAnyQuery(pickTeamNames(req.hrTeamNames, req.query.counselor), LEAD_OWNER_FIELDS, BRANCH_FIELDS_LEAD));
     } else if (counselor && counselor !== 'all') {
-      query.$or = leadOwnerQuery(counselor).$or;
+      const ownerBranch = isScopedHr(req) ? (req.user?.branch || '') : (branch && branch !== 'all' ? branch : '');
+      andConditions.push(leadOwnerQuery(counselor, ownerBranch));
     }
     if (stage && stage !== 'all') {
-      query.stage = stage;
+      andConditions.push({ stage });
     }
     if (targetBranch && targetBranch !== 'all') {
-      query.branch = { $regex: new RegExp(escapeRegex(targetBranch.trim()), 'i') };
+      andConditions.push({ branch: { $regex: new RegExp(escapeRegex(targetBranch.trim()), 'i') } });
     }
     if (search) {
       const searchRegex = { $regex: escapeRegex(String(search).trim()), $options: 'i' };
-      const searchOr = [
-        { fullName: searchRegex },
-        { phone: searchRegex },
-        { email: searchRegex },
-        { location: searchRegex },
-        { course: searchRegex }
-      ];
-      if (query.$or) {
-        query.$and = [{ $or: query.$or }, { $or: searchOr }];
-        delete query.$or;
-      } else {
-        query.$or = searchOr;
-      }
+      andConditions.push({
+        $or: [
+          { fullName: searchRegex },
+          { phone: searchRegex },
+          { email: searchRegex },
+          { location: searchRegex },
+          { course: searchRegex }
+        ]
+      });
     }
+    const query = andConditions.length > 0 ? { $and: andConditions } : {};
     const leads = await StudentLead.find(query).sort({ createdAt: -1 });
     
     // Group into pipeline counts
@@ -5034,6 +5149,7 @@ router.get('/demos/eligible-trainers', async (req, res) => {
 // ==========================================
 router.get('/demos', async (req, res) => {
   try {
+    await ensureStaffNamesLoaded();
     const { status, counselor: qCounselor, branch: qBranch } = req.query;
     const isBM = isScopedBranchManager(req);
     const targetBranch = isBM ? getBranchManagerBranch(req) : qBranch;
@@ -5063,76 +5179,24 @@ router.get('/demos', async (req, res) => {
     if (isBM && targetBranch) {
       const bRx = new RegExp(escapeRegex(targetBranch), 'i');
       andConditions.push({ $or: [{ location: bRx }, { branch: bRx }] });
-    } else if (isScopedHr(req)) {
-      const counselor = req.user?.name || req.user?.userName;
-      if (counselor) {
-        const rx = counselorNameRx(counselor);
-        const ownerConditions = [
-          { bookedBy: rx },
-          { counselor: rx },
-          { counselorName: rx },
-          { hrName: rx },
-          { allocatedTo: rx },
-          { counselorAssigned: rx }
-        ];
-        const myLeads = await StudentLead.find({
-          $or: [
-            { counselorAssigned: rx },
-            { allocatedTo: rx },
-            { spokenBy: rx },
-            { counselor: rx },
-            { counselorName: rx },
-            { hrName: rx }
-          ]
-        }).select('phone whatsappNumber').lean();
-        const myPhones = myLeads
-          .map((l) => phoneDigits(l.phone || l.whatsappNumber))
-          .filter((p) => p.length === 10);
+    } else if (isScopedHr(req) || req.hrTeamNames || (qCounselor && qCounselor !== 'all')) {
+      const names = req.hrTeamNames
+        ? pickTeamNames(req.hrTeamNames, qCounselor)
+        : [isScopedHr(req) ? (req.user?.name || req.user?.userName) : qCounselor].filter(Boolean);
+      if (names.length) {
+        const branchHint = isScopedHr(req) ? (req.user?.branch || '') : (qBranch && qBranch !== 'all' ? qBranch : '');
+        const demoConds = names.flatMap((n) => ownerSingleBranchConditions(n, branchHint, DEMO_OWNER_FIELDS, BRANCH_FIELDS_LEAD));
+        const leadConds = names.flatMap((n) => ownerSingleBranchConditions(n, branchHint, LEAD_OWNER_FIELDS, BRANCH_FIELDS_LEAD));
+        const myLeads = await StudentLead.find(leadConds.length === 1 ? leadConds[0] : { $or: leadConds })
+          .select('phone whatsappNumber').lean();
+        const myPhones = Array.from(new Set(
+          myLeads.map((l) => phoneDigits(l.phone || l.whatsappNumber)).filter((p) => p.length === 10)
+        ));
         if (myPhones.length > 0) {
-          ownerConditions.push({
-            phone: { $in: myPhones.map((p) => new RegExp(escapeRegex(p) + '$')) }
-          });
+          demoConds.push({ phone: { $in: myPhones.map((p) => new RegExp(escapeRegex(p) + '$')) } });
         }
-        andConditions.push({ $or: ownerConditions });
+        andConditions.push(demoConds.length === 1 ? demoConds[0] : { $or: demoConds });
       }
-    } else if (req.hrTeamNames) {
-      const names = pickTeamNames(req.hrTeamNames, qCounselor);
-      const ownerConditions = [...ownerAnyQuery(names, DEMO_OWNER_FIELDS).$or];
-      const teamLeads = await StudentLead.find(ownerAnyQuery(names, LEAD_OWNER_FIELDS)).select('phone whatsappNumber').lean();
-      const teamPhones = Array.from(new Set(teamLeads.map((l) => phoneDigits(l.phone || l.whatsappNumber)).filter((p) => p.length === 10)));
-      if (teamPhones.length > 0) {
-        ownerConditions.push({ phone: { $in: teamPhones.map((p) => new RegExp(escapeRegex(p) + '$')) } });
-      }
-      andConditions.push({ $or: ownerConditions });
-    } else if (qCounselor && qCounselor !== 'all') {
-      const rx = counselorNameRx(qCounselor);
-      const ownerConditions = [
-        { bookedBy: rx },
-        { counselor: rx },
-        { counselorName: rx },
-        { hrName: rx },
-        { allocatedTo: rx },
-        { counselorAssigned: rx }
-      ];
-      const myLeads = await StudentLead.find({
-        $or: [
-          { counselorAssigned: rx },
-          { allocatedTo: rx },
-          { spokenBy: rx },
-          { counselor: rx },
-          { counselorName: rx },
-          { hrName: rx }
-        ]
-      }).select('phone whatsappNumber').lean();
-      const myPhones = myLeads
-        .map((l) => phoneDigits(l.phone || l.whatsappNumber))
-        .filter((p) => p.length === 10);
-      if (myPhones.length > 0) {
-        ownerConditions.push({
-          phone: { $in: myPhones.map((p) => new RegExp(escapeRegex(p) + '$')) }
-        });
-      }
-      andConditions.push({ $or: ownerConditions });
     } else if (targetBranch && targetBranch !== 'all') {
       const userBranch = branchShort(targetBranch);
       if (userBranch) {

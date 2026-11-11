@@ -60,6 +60,7 @@ import CompleteRegistrationModal from './CompleteRegistrationModal';
 import { getStudents, getLeads, createLead, updateLead, updateStudent, getDemos, createDemo, createStudent, getRecordings, getTodayClosure, saveDailyClosure, onDataUpdate, getNotifications, markNotificationRead, markNotificationsRead, getStudentRequests, getStudentTickets, getMyAttendance, setMyAttendance, startMyWork, closeMyWork, logCall, getTodayCallLog, getHrTargets } from '../services/api';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 import { useIncentivePolicy, progressiveIncentive } from '../utils/incentive';
+import { matchesHrOwnerName } from '../utils/hrNameMatch';
 
 // viewScope (optional, set by the HR hub for leadership desks):
 //   { mode: 'team', names: [...], label }  — HR Team Lead: their HRs' data
@@ -407,7 +408,9 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       .then((r) => { if (alive && Array.isArray(r?.list)) setTodayCallLogs(r.list.map((c) => ({ id: c.leadId, time: c.createdAt, outcome: c.outcome, duration: c.durationSeconds, connected: c.connected, counselorName: c.counselorName || '' }))); })
       .catch(() => {});
     load();
-    const t = setInterval(load, 120000);
+    const t = setInterval(() => {
+      if (typeof document === 'undefined' || !document.hidden) load();
+    }, 120000);
     return () => { alive = false; clearInterval(t); };
   }, [userName, viewScope?.mode]);
 
@@ -464,7 +467,9 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     const unsub = onDataUpdate((entity) => {
       if (['notifications', 'students', 'demos', 'trainer_attendance'].includes(entity)) loadHrNotifications();
     });
-    const poll = setInterval(loadHrNotifications, 60000);
+    const poll = setInterval(() => {
+      if (typeof document === 'undefined' || !document.hidden) loadHrNotifications();
+    }, 60000);
     return () => { unsub(); clearInterval(poll); };
   }, [currentUser?.name]);
   const unreadHrNotifs = hrNotifications.filter(n => !n.read);
@@ -630,66 +635,45 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   const myName = normName(currentUser?.name);
 
   // Checks if a record owner (counselorAssigned, allocatedTo, spokenBy) matches the logged in counselor
-  // Handles first-name matches like "Vishnupriya" vs "Vishnupriya DSNR"
-  const matchesMyName = (candidateName, loggedInName) => {
-    if (!candidateName || !loggedInName) return false;
-    const c = normName(candidateName);
-    const m = normName(loggedInName);
-    if (c === m) return true;
-    // Bulk-uploaded sheets sometimes run a counsellor's full name together
-    // with no space at all (e.g. "guruvignesh" for "Guru Vignesh") — that
-    // used to fail every check below and silently hide those rows from
-    // this counsellor's own dashboard. Compare with all spaces stripped
-    // too, so a missing space never breaks the match.
-    const cNoSpace = c.replace(/\s+/g, '');
-    const mNoSpace = m.replace(/\s+/g, '');
-    if (cNoSpace === mNoSpace) return true;
-    // No first-name-only match: "Priya Sharma" must never pick up "Priya Kumar".
-    // (The server decides those loose matches, knowing every staff name.)
-    // Require at least 4 characters before letting one name be treated as
-    // a nickname/prefix of the other (e.g. "Guru" for account "Guruvignesh")
-    // — guards against a short, coincidental prefix (like a single letter)
-    // matching an unrelated person.
-    if (c.length >= 4 && m.startsWith(c)) return true;
-    if (m.length >= 4 && c.startsWith(m)) return true;
-    // A sheet/record sometimes carries only ONE part of a multi-word
-    // account name (e.g. "Poojitha" alone for the account "Kota
-    // Poojitha" -- surname-first naming) -- check whether the shorter
-    // name is a WHOLE word inside the longer name, not just a prefix.
-    const cWords = c.split(' ');
-    const mWords = m.split(' ');
-    if (cWords.length === 1 && cWords[0].length >= 3 && mWords.includes(cWords[0])) return true;
-    if (mWords.length === 1 && mWords[0].length >= 3 && cWords.includes(mWords[0])) return true;
-    return false;
-  };
+  // Disambiguates shared short names across branches using candidateBranch vs loggedInBranch.
+  const matchesMyName = (candidateName, loggedInName, candidateBranch = '', loggedInBranch = branchName) =>
+    matchesHrOwnerName(candidateName, loggedInName, candidateBranch, loggedInBranch);
 
   // Does a record owner belong to this desk's scope? (own name, or any HR in the Team Lead's team)
-  const ownerMatch = (candidateName) => (
-    teamNames ? teamNames.some((n) => matchesMyName(candidateName, n)) : matchesMyName(candidateName, myName)
+  const ownerMatch = (candidateName, candidateBranch = '') => (
+    teamNames
+      ? teamNames.some((n) => matchesMyName(candidateName, n, candidateBranch, ''))
+      : matchesMyName(candidateName, myName, candidateBranch, branchName)
   );
 
   const rawScopedStudents = useMemo(() => {
     if (viewAll || serverScoped) return students;
     if (!myName && !teamNames) return students;
-    return students.filter(s => 
-      ownerMatch(s.hrName) || 
-      ownerMatch(s.counselor) || 
-      ownerMatch(s.counselorName) || 
-      ownerMatch(s.allocatedTo)
-    );
+    return students.filter(s => {
+      const rb = s.branch || s.leadBranch || s.location || '';
+      return (
+        ownerMatch(s.hrName, rb) ||
+        ownerMatch(s.counselor, rb) ||
+        ownerMatch(s.counselorName, rb) ||
+        ownerMatch(s.allocatedTo, rb)
+      );
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [students, viewAll, serverScoped, teamNames, myName]);
+  }, [students, viewAll, serverScoped, teamNames, myName, branchName]);
 
   const scopedLeads = useMemo(() => {
     let baseLeads = leads;
     if (viewAll || serverScoped) {
       baseLeads = leads;
     } else if (myName || teamNames) {
-      baseLeads = leads.filter(l => 
-        ownerMatch(l.counselorAssigned) ||
-        ownerMatch(l.allocatedTo) ||
-        ownerMatch(l.spokenBy)
-      );
+      baseLeads = leads.filter(l => {
+        const rb = l.branch || l.location || '';
+        return (
+          ownerMatch(l.counselorAssigned, rb) ||
+          ownerMatch(l.allocatedTo, rb) ||
+          ownerMatch(l.spokenBy, rb)
+        );
+      });
     }
 
     // Ensure every admitted student belonging to this counselor is present in the pipeline
@@ -755,12 +739,13 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     return demos.filter(d => {
       const ph = (d.phone || '').replace(/\D/g, '').slice(-10);
       const isLeadCandidate = ph.length === 10 && leadPhones.has(ph);
+      const rb = d.branch || d.location || '';
       const isMine = (
-        ownerMatch(d.counselor) || 
-        ownerMatch(d.bookedBy) || 
-        ownerMatch(d.hrName) ||
-        ownerMatch(d.counselorAssigned) ||
-        ownerMatch(d.allocatedTo)
+        ownerMatch(d.counselor, rb) ||
+        ownerMatch(d.bookedBy, rb) ||
+        ownerMatch(d.hrName, rb) ||
+        ownerMatch(d.counselorAssigned, rb) ||
+        ownerMatch(d.allocatedTo, rb)
       );
       return isMine || isLeadCandidate;
     });
@@ -799,7 +784,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       .then((rows) => {
         if (!alive || !Array.isArray(rows)) return;
         const admissionRows = rows.filter(t => /admission|enrol/i.test(t.title || ''));
-        const pick = admissionRows.find(t => normName(t.assignedTo) === myName)
+        const pick = admissionRows.find(t => matchesMyName(t.assignedTo, myName))
           || admissionRows.find(t => /^all\b/i.test(String(t.assignedTo || '').trim()));
         setHeadTarget(pick && Number(pick.target) > 0 ? Number(pick.target) : null);
       })
@@ -814,11 +799,11 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
 
   const monthPrefix = todayKey.slice(0, 7);
   const admissionsThisMonth = useMemo(() => scopedStudents.filter(s => {
-    if (!viewAll && myName && !ownerMatch(s.hrName)) return false;
+    if (!viewAll && myName && !ownerMatch(s.hrName, s.branch || s.leadBranch || s.location || '')) return false;
     const d = new Date(s.admissionDate || s.createdAt);
     return !isNaN(d.getTime()) && localDateKey(d).slice(0, 7) === monthPrefix;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }).length, [scopedStudents, monthPrefix, myName, viewAll, teamNames]);
+  }).length, [scopedStudents, monthPrefix, myName, branchName, viewAll, teamNames]);
 
   // Dynamic priorities for tomorrow
   const overdueCount = useMemo(() => {
@@ -848,7 +833,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
 
     // 4. Admissions TODAY (strictly admissions closed by this counselor)
     const todayAdmissions = S.filter(s => {
-      if (admissionOwner && !admissionOwner(s.hrName)) return false;
+      if (admissionOwner && !admissionOwner(s.hrName, s.branch || s.leadBranch || s.location || '')) return false;
       return isToday(s.createdAt) || isToday(s.admissionDate);
     });
     const admissionsToday = todayAdmissions.length;
@@ -889,17 +874,20 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   // desk the dashboard shows team numbers, so the EOD uses only their own records.
   const eodDailyMetrics = useMemo(() => {
     if (!scopeKind) return computedDailyMetrics;
-    const mine = (...names) => names.some((n) => matchesMyName(n, myName));
+    const mine = (rec, ...names) => {
+      const rb = rec?.branch || rec?.leadBranch || rec?.location || '';
+      return names.some((n) => matchesMyName(n, myName, rb, branchName));
+    };
     return buildDailyMetrics(
-      scopedLeads.filter((l) => mine(l.counselorAssigned, l.allocatedTo, l.spokenBy)),
-      scopedStudents.filter((st) => mine(st.hrName, st.counselor, st.counselorName, st.allocatedTo)),
-      scopedDemos.filter((d) => mine(d.bookedBy, d.counselor, d.hrName, d.counselorAssigned, d.allocatedTo)),
-      scopedRecordings.filter((r) => mine(r.counselorName)),
-      todayCallLogs.filter((c) => !c.counselorName || mine(c.counselorName)),
-      (n) => matchesMyName(n, myName)
+      scopedLeads.filter((l) => mine(l, l.counselorAssigned, l.allocatedTo, l.spokenBy)),
+      scopedStudents.filter((st) => mine(st, st.hrName, st.counselor, st.counselorName, st.allocatedTo)),
+      scopedDemos.filter((d) => mine(d, d.bookedBy, d.counselor, d.hrName, d.counselorAssigned, d.allocatedTo)),
+      scopedRecordings.filter((r) => matchesMyName(r.counselorName, myName)),
+      todayCallLogs.filter((c) => !c.counselorName || matchesMyName(c.counselorName, myName)),
+      (n, rb = '') => matchesMyName(n, myName, rb, branchName)
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scopeKind, computedDailyMetrics, scopedLeads, scopedStudents, scopedDemos, scopedRecordings, todayCallLogs, myName]);
+  }, [scopeKind, computedDailyMetrics, scopedLeads, scopedStudents, scopedDemos, scopedRecordings, todayCallLogs, myName, branchName]);
 
   // If user corrected/edited numbers, use customMetrics; otherwise use live computed daily metrics
   const closureMetrics = useMemo(() => {
@@ -1008,8 +996,12 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       } catch (_) {}
     };
     load();
-    const t = setInterval(load, 60000);
-    const off = onDataUpdate(load);
+    const t = setInterval(() => {
+      if (typeof document === 'undefined' || !document.hidden) load();
+    }, 60000);
+    const off = onDataUpdate((entity) => {
+      if (!entity || ['student_requests', 'tickets', 'students'].includes(entity)) load();
+    });
     return () => { clearInterval(t); off(); };
   }, [userName]);
 

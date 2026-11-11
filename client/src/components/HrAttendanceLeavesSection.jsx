@@ -131,7 +131,9 @@ export default function HrAttendanceLeavesSection({
     const unsub = onDataUpdate((entity) => {
       if (entity === 'attendance' || entity === 'approvals') load();
     });
-    const timer = setInterval(load, 60000);
+    const timer = setInterval(() => {
+      if (typeof document === 'undefined' || !document.hidden) load();
+    }, 60000);
     return () => {
       unsub();
       clearInterval(timer);

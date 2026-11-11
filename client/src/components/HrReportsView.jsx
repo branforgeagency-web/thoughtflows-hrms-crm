@@ -9,6 +9,7 @@ import {
   BarChart2,
   PhoneOutgoing
 } from 'lucide-react';
+import { matchesHrOwnerName } from '../utils/hrNameMatch';
 
 // Same stage set + colors the backend uses when it groups /leads into a
 // pipeline (server: routes/api.js GET /leads), kept in sync so the report
@@ -32,40 +33,26 @@ function daysAgo(dateStr) {
   return Math.max(0, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
 }
 
-// Loose "is this record mine" compare — case/spacing-insensitive, and also
-// tolerant of a bulk-uploaded sheet that ran a counsellor's name together
-// with no space at all (e.g. "guruvignesh" for "Guru Vignesh"), which used
-// to fail a plain === compare and silently drop those rows from this
-// report.
-const sameOwnerName = (a, b) => {
-  const norm = (v) => String(v || '').trim().replace(/\s+/g, ' ').toLowerCase();
-  const nA = norm(a);
-  const nB = norm(b);
-  if (!nA || !nB) return false;
-  if (nA === nB) return true;
-  if (nA.replace(/\s+/g, '') === nB.replace(/\s+/g, '')) return true;
-  // A single-word (compound) account name — e.g. "guruvignesh" — has no
-  // first/last split, so a sheet that used a short nickname for it
-  // ("Guru") never matched above. Allow a >=4-char whole-string prefix
-  // match too, same as the dashboard's own matcher.
-  if (nA.length >= 4 && nB.startsWith(nA)) return true;
-  if (nB.length >= 4 && nA.startsWith(nB)) return true;
-  return false;
-};
-
 export default function HrReportsView({ leads = [], students = [], demos = [], currentUser }) {
   const hrName = currentUser?.name || '';
+  const hrBranch = currentUser?.branch || '';
 
   // Scope every number in this report to leads/admissions this HR actually
-  // owns, so the report reflects real work done by the signed-in person
-  // rather than the whole branch's pipeline.
+  // owns, matching short sheet names ("Pavithra" vs "Pavithra N") and
+  // separating HRs with the same name by their branch.
   const myLeads = useMemo(
-    () => leads.filter((l) => sameOwnerName(l.counselorAssigned, hrName)),
-    [leads, hrName]
+    () => leads.filter((l) => {
+      const owner = l.counselorAssigned || l.allocatedTo || l.spokenBy || '';
+      return matchesHrOwnerName(owner, hrName, l.branch || l.location || '', hrBranch);
+    }),
+    [leads, hrName, hrBranch]
   );
   const myStudents = useMemo(
-    () => students.filter((s) => sameOwnerName(s.hrName, hrName)),
-    [students, hrName]
+    () => students.filter((s) => {
+      const owner = s.hrName || s.counselor || s.counselorName || s.allocatedTo || '';
+      return matchesHrOwnerName(owner, hrName, s.branch || s.leadBranch || s.location || '', hrBranch);
+    }),
+    [students, hrName, hrBranch]
   );
   const myLeadPhones = useMemo(
     () => new Set(myLeads.map((l) => l.phone).filter(Boolean)),
