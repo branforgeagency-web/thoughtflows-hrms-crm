@@ -27,9 +27,12 @@ import StudentTimeline from './StudentTimeline';
 import EditStudentModal from './EditStudentModal';
 import { effectiveStage, autoStage, stageChecks, blockReason, PLACEMENT_EDITORS, ATTENDANCE_MIN, MOCK_PASS } from '../utils/placement';
 
-export default function StudentProfileModal({ isOpen, onClose, student: propStudent, onUpdateStudent, onDeleteStudent }) {
-  if (!isOpen || !propStudent) return null;
+export default function StudentProfileModal(props) {
+  if (!props.isOpen || !props.student) return null;
+  return <StudentProfileModalContent {...props} />;
+}
 
+function StudentProfileModalContent({ isOpen, onClose, student: propStudent, onUpdateStudent, onDeleteStudent }) {
   const [student, setStudent] = useState(propStudent);
   useEffect(() => {
     setStudent(propStudent);

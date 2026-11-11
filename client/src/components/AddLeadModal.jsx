@@ -39,11 +39,15 @@ import { parseGoogleSheetOrCsv, downloadSampleGoogleSheetTemplate } from '../uti
 const CURRENT_YEAR = new Date().getFullYear();
 const PASSOUT_YEARS = Array.from({ length: CURRENT_YEAR - 1980 + 1 }, (_, i) => String(CURRENT_YEAR - i));
 
-export default function AddLeadModal({ isOpen, onClose, onAddLead, onBulkImported, initialMode = 'single', currentUser, assignableCounsellors = null }) {
+export default function AddLeadModal(props) {
+  if (!props.isOpen) return null;
+  return <AddLeadModalContent {...props} />;
+}
+
+function AddLeadModalContent({ isOpen, onClose, onAddLead, onBulkImported, initialMode = 'single', currentUser, assignableCounsellors = null }) {
   // Leadership desks pick the counsellor; a counsellor's own leads stay theirs
   const [assignTo, setAssignTo] = useState(currentUser?.name || '');
   useEffect(() => { if (isOpen) setAssignTo(currentUser?.name || ''); }, [isOpen, currentUser?.name]);
-  if (!isOpen) return null;
 
   // Mode: 'single' (individual enquiry form) or 'bulk' (Google Sheet / CSV import)
   const [importMode, setImportMode] = useState(initialMode || 'single');
