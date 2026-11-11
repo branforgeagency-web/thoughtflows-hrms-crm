@@ -370,30 +370,26 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
   const sylPct = sylModules.length ? Math.round((sylDone / sylModules.length) * 100) : null;
 
   const displaySylModules = useMemo(() => {
-    const rawList = sylModules.length > 0 ? sylModules : [
-      { name: 'Module 1 — Foundations & Medical Terminology', done: Boolean(st?.syllabusModule && st.syllabusModule !== 'Module 1') || Boolean(st?.syllabusCompleted) },
-      { name: 'Module 2 — Anatomy, Physiology & Body Systems', done: Boolean(st?.syllabusCompleted) || ['Module 3', 'Module 4', 'Module 5'].includes(st?.syllabusModule) },
-      { name: 'Module 3 — Core Coding Guidelines & Classification', done: Boolean(st?.syllabusCompleted) || ['Module 4', 'Module 5'].includes(st?.syllabusModule) },
-      { name: 'Module 4 — Specialty Case Studies & Scenarios', done: Boolean(st?.syllabusCompleted) || st?.syllabusModule === 'Module 5' },
-      { name: 'Module 5 — Comprehensive Mock Exams & AAPC Review', done: Boolean(st?.syllabusCompleted) }
-    ];
+    if (sylModules.length === 0) return [];
 
-    return rawList.map((m, idx) => {
-      // Check if student has completed Anatomy foundation or completed modules
+    return sylModules.map((m, idx) => {
       const isAnatomyMod = idx < 2 || /anatomy|physiology|terminology|foundations/i.test(m.name);
       const isCompletedInRecord = Boolean(
         st?.anatomyCompleted ||
-        (st?.completedModules || []).some((cm) => cm.toLowerCase().includes(m.name.toLowerCase()) || (isAnatomyMod && (cm.includes('1') || cm.includes('2')))) ||
-        (isAnatomyMod && ['Module 3', 'Module 4', 'Module 5'].includes(st?.syllabusModule))
+        (st?.completedModules || []).some((cm) => cm.toLowerCase().includes(m.name.toLowerCase()) || (isAnatomyMod && (cm.includes('1') || cm.includes('2'))))
       );
       return {
         ...m,
         done: Boolean(m.done || isCompletedInRecord || st?.syllabusCompleted)
       };
     });
-  }, [sylModules, st?.syllabusModule, st?.syllabusCompleted, st?.anatomyCompleted, st?.completedModules]);
-  const effectiveSylDone = sylModules.length > 0 ? sylDone : displaySylModules.filter(m => m.done).length;
-  const effectiveSylPct = st?.syllabusCompleted ? 100 : (sylModules.length ? sylPct : Math.round((effectiveSylDone / displaySylModules.length) * 100));
+  }, [sylModules, st?.syllabusCompleted, st?.anatomyCompleted, st?.completedModules]);
+  const effectiveSylDone = sylModules.length > 0 ? displaySylModules.filter((m) => m.done).length : 0;
+  const effectiveSylPct = st?.syllabusCompleted
+    ? 100
+    : (sylModules.length > 0
+        ? Math.round((effectiveSylDone / sylModules.length) * 100)
+        : (typeof st?.syllabusProgressPct === 'number' ? st.syllabusProgressPct : 0));
 
   const sendFollowUp = async (q) => {
     const text = String(followText[q.id] || '').trim();
@@ -469,48 +465,65 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
     };
   }, [st, portal?.batch, attendance, assessments, referrals, submissions, requests, placements, currentUser?.name, sylModules, sylDone, effectiveSylPct, effectiveSylDone]);
 
-  // Weekly Star Rating (derived from backend sync or live 4-pillar computation)
+  // Weekly Star Rating (derived from backend sync or live 4-pillar computation — no fake defaults for fresh students)
   const weeklyRating = useMemo(() => {
-    if (portal?.weeklyRating?.stars) return portal.weeklyRating;
-    if (st?.weeklyRating?.stars) return st.weeklyRating;
+    if (portal?.weeklyRating && typeof portal.weeklyRating.stars === 'number') return portal.weeklyRating;
 
-    const attRate = d?.attendancePct ?? (attendance.length ? Math.round((d?.attended / attendance.length) * 100) : 85);
-    const attScore = attRate >= 95 ? 5.0 : attRate >= 85 ? 4.5 : attRate >= 75 ? 4.0 : attRate >= 60 ? 3.0 : 2.0;
-    const testRate = d?.testAvg ?? (assessments.length ? 80 : 75);
-    const assScore = testRate >= 90 ? 5.0 : testRate >= 80 ? 4.5 : testRate >= 70 ? 3.8 : testRate >= 55 ? 3.0 : 2.0;
-    const sylRate = d?.effectiveSylPct ?? (d?.isSyllabusDone ? 100 : 50);
-    const sylScore = d?.isSyllabusDone ? 5.0 : sylRate >= 80 ? 4.8 : sylRate >= 60 ? 4.2 : sylRate >= 40 ? 3.6 : 3.0;
-    const partScore = (doubts.length >= 2 && submissions.length >= 2) ? 5.0 : (doubts.length >= 1 || submissions.length >= 1) ? 4.4 : 3.6;
-    const overall = Number(((attScore + assScore + sylScore + partScore) / 4).toFixed(1));
+    const hasAttendance = typeof d?.attendancePct === 'number' || attendance.length > 0;
+    const attRate = typeof d?.attendancePct === 'number'
+      ? d.attendancePct
+      : (attendance.length ? Math.round((d?.attended / attendance.length) * 100) : null);
+    const attScore = attRate === null ? 0 : (attRate >= 95 ? 5.0 : attRate >= 85 ? 4.5 : attRate >= 75 ? 4.0 : attRate >= 60 ? 3.0 : attRate >= 40 ? 2.0 : 1.0);
+
+    const testRate = typeof d?.testAvg === 'number' ? d.testAvg : null;
+    const assScore = testRate === null ? 0 : (testRate >= 90 ? 5.0 : testRate >= 80 ? 4.5 : testRate >= 70 ? 3.8 : testRate >= 55 ? 3.0 : testRate >= 40 ? 2.0 : 1.5);
+
+    const hasSyl = Boolean(d?.isSyllabusDone) || (displaySylModules.length > 0 && d?.effectiveSylDone > 0);
+    const sylRate = d?.effectiveSylPct ?? 0;
+    const sylScore = d?.isSyllabusDone ? 5.0 : !hasSyl ? 0 : (sylRate >= 80 ? 4.8 : sylRate >= 60 ? 4.2 : sylRate >= 40 ? 3.6 : sylRate >= 20 ? 3.2 : 2.6);
+
+    const hasPart = doubts.length > 0 || submissions.length > 0 || (attendance.length > 0);
+    const partScore = !hasPart ? 0 : (doubts.length >= 2 && submissions.length >= 2) ? 5.0 : (doubts.length >= 1 || submissions.length >= 1) ? 4.4 : 3.2;
+
+    const active = [attScore, assScore, sylScore, partScore].filter((x) => x > 0);
+    const overall = active.length > 0 ? Number((active.reduce((a, b) => a + b, 0) / active.length).toFixed(1)) : 0;
     const roundedStars = Math.round(overall);
 
-    let tier = 'On-Track Learner';
-    if (overall >= 4.5) tier = 'Outstanding Star';
-    else if (overall >= 3.8) tier = 'High Performer';
-    else if (overall >= 3.0) tier = 'On-Track Learner';
-    else if (overall >= 2.0) tier = 'Needs Focus';
-    else tier = 'Action Required';
+    let tier = 'Not Evaluated Yet';
+    if (active.length > 0) {
+      if (overall >= 4.5) tier = 'Outstanding Star';
+      else if (overall >= 3.8) tier = 'High Performer';
+      else if (overall >= 3.0) tier = 'On-Track Learner';
+      else if (overall >= 2.0) tier = 'Needs Focus';
+      else tier = 'Action Required';
+    }
 
     return {
       stars: overall,
       roundedStars,
       tier,
       weekLabel: 'Current Academic Week',
-      weekNumber: 42,
-      year: 2026,
+      weekNumber: 0,
+      year: new Date().getFullYear(),
       attendanceScore: attScore,
-      attendanceDetail: `${attRate}% weekly attendance rate (target: 75%+)`,
+      attendanceDetail: attRate === null
+        ? (trainer ? 'No classes logged yet — starts with first session' : 'No classes yet — awaiting batch & trainer allocation')
+        : `${attRate}% weekly attendance rate (target: 75%+)`,
       assessmentScore: assScore,
-      assessmentDetail: `${testRate}% average score across evaluations`,
+      assessmentDetail: testRate === null ? 'No assessments conducted yet' : `${testRate}% average score across evaluations`,
       syllabusScore: sylScore,
-      syllabusDetail: `${d?.effectiveSylDone ?? 0} modules covered (${sylRate}% syllabus progress)`,
+      syllabusDetail: displaySylModules.length === 0
+        ? (trainer ? 'Batch syllabus not published yet (0 modules)' : '0% · Syllabus starts after batch allocation')
+        : `${d?.effectiveSylDone ?? 0}/${displaySylModules.length} modules completed (${sylRate}% syllabus progress)`,
       participationScore: partScore,
-      participationDetail: `${doubts.length} doubts · ${submissions.length} submissions uploaded`,
-      feedback: 'Maintain your consistent class attendance and syllabus pacing this week to secure high placement eligibility.',
+      participationDetail: !hasPart ? 'No sessions, doubts, or submissions recorded yet' : `${doubts.length} doubts · ${submissions.length} submissions uploaded`,
+      feedback: active.length === 0
+        ? (trainer ? 'Your weekly rating will appear automatically once classes, modules, and assessments are logged.' : 'Welcome! Your attendance, syllabus, and weekly evaluation will begin once your trainer and batch are allocated.')
+        : 'Strong effort on your active coursework — keep tracking attendance and module completion.',
       evaluatedBy: 'Automated Weekly Audit',
       history: []
     };
-  }, [portal?.weeklyRating, st?.weeklyRating, d, attendance, assessments, doubts, submissions]);
+  }, [portal?.weeklyRating, d, attendance, doubts, submissions, displaySylModules.length, trainer]);
 
   // --------------------------------------------------------------------------
   // Actions (all persisted to the server)
@@ -671,7 +684,9 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                   <span className="text-[10px] font-black uppercase tracking-widest text-amber-300 bg-amber-400/15 border border-amber-400/40 px-2.5 py-0.5 rounded-md">{trainer ? 'NO LIVE CLASS' : 'AWAITING ALLOCATION'}</span>
                 )}
                 <span className="text-white font-black text-base sm:text-lg tracking-tight">
-                  {live ? `${live.topic || d.batch} — ${live.trainerName} is live` : `${st.course}${st.syllabusModule ? ` — ${st.syllabusModule}` : ''}`}
+                  {live
+                    ? `${live.topic || d.batch} — ${live.trainerName} is live`
+                    : `${st.course}${d.batch ? ` — ${d.batch}` : (trainer && st.syllabusModule ? ` — ${st.syllabusModule}` : ' — Awaiting Trainer & Batch Allocation')}`}
                 </span>
               </div>
               <p className="text-xs text-slate-300 mt-1">
@@ -800,8 +815,8 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
             <div className="lg:col-span-5 bg-white/5 border border-white/10 rounded-2xl p-5 flex flex-col sm:flex-row items-center sm:items-start gap-4">
               <div className="text-center sm:text-left">
                 <div className="flex items-baseline justify-center sm:justify-start gap-2">
-                  <span className="text-4xl sm:text-5xl font-black text-amber-400 tracking-tight">
-                    {Number(weeklyRating.stars || 0).toFixed(1)}
+                  <span className={`text-4xl sm:text-5xl font-black tracking-tight ${Number(weeklyRating.stars || 0) > 0 ? 'text-amber-400' : 'text-slate-400'}`}>
+                    {Number(weeklyRating.stars || 0) > 0 ? Number(weeklyRating.stars).toFixed(1) : '—'}
                   </span>
                   <span className="text-indigo-300 font-bold text-sm">/ 5.0</span>
                 </div>
@@ -829,7 +844,9 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                 </div>
 
                 <div className="text-[11px] text-indigo-200 font-medium">
-                  Comprehensive Weekly Evaluation Score
+                  {Number(weeklyRating.stars || 0) > 0
+                    ? 'Comprehensive Weekly Evaluation Score'
+                    : 'Begins once classes & evaluations start'}
                 </div>
               </div>
             </div>
@@ -868,24 +885,24 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                     <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
                       <span>📋</span> Attendance
                     </span>
-                    <span className="text-xs font-black text-amber-400 flex items-center gap-0.5">
-                      {Number(weeklyRating.attendanceScore || 0).toFixed(1)} <span className="text-[10px] text-amber-300">★</span>
+                    <span className={`text-xs font-black flex items-center gap-0.5 ${Number(weeklyRating.attendanceScore || 0) > 0 ? 'text-amber-400' : 'text-slate-400'}`}>
+                      {Number(weeklyRating.attendanceScore || 0) > 0 ? Number(weeklyRating.attendanceScore).toFixed(1) : '—'} <span className="text-[10px] text-amber-300">★</span>
                     </span>
                   </div>
 
                   <div className="w-full bg-slate-700/60 rounded-full h-1.5 overflow-hidden my-2">
                     <div
                       className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-teal-400"
-                      style={{ width: `${Math.min(100, Math.max(10, ((weeklyRating.attendanceScore || 0) / 5) * 100))}%` }}
+                      style={{ width: `${Number(weeklyRating.attendanceScore || 0) > 0 ? Math.min(100, Math.max(8, ((weeklyRating.attendanceScore || 0) / 5) * 100)) : 0}%` }}
                     />
                   </div>
 
                   <p className="text-[11px] text-indigo-200 line-clamp-2 mt-1">
-                    {weeklyRating.attendanceDetail || 'Weekly class attendance'}
+                    {weeklyRating.attendanceDetail || 'No classes logged yet'}
                   </p>
                 </div>
                 <div className="text-[10px] text-indigo-400 pt-2 border-t border-white/5 mt-3 flex justify-between font-mono">
-                  <span>Target: 75%+</span>
+                  <span>{Number(weeklyRating.attendanceScore || 0) > 0 ? 'Target: 75%+' : 'Not started'}</span>
                   <span>25% Weight</span>
                 </div>
               </div>
@@ -897,24 +914,24 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                     <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
                       <span>📝</span> Assessments
                     </span>
-                    <span className="text-xs font-black text-amber-400 flex items-center gap-0.5">
-                      {Number(weeklyRating.assessmentScore || 0).toFixed(1)} <span className="text-[10px] text-amber-300">★</span>
+                    <span className={`text-xs font-black flex items-center gap-0.5 ${Number(weeklyRating.assessmentScore || 0) > 0 ? 'text-amber-400' : 'text-slate-400'}`}>
+                      {Number(weeklyRating.assessmentScore || 0) > 0 ? Number(weeklyRating.assessmentScore).toFixed(1) : '—'} <span className="text-[10px] text-amber-300">★</span>
                     </span>
                   </div>
 
                   <div className="w-full bg-slate-700/60 rounded-full h-1.5 overflow-hidden my-2">
                     <div
                       className="h-full rounded-full bg-gradient-to-r from-amber-400 to-orange-400"
-                      style={{ width: `${Math.min(100, Math.max(10, ((weeklyRating.assessmentScore || 0) / 5) * 100))}%` }}
+                      style={{ width: `${Number(weeklyRating.assessmentScore || 0) > 0 ? Math.min(100, Math.max(8, ((weeklyRating.assessmentScore || 0) / 5) * 100)) : 0}%` }}
                     />
                   </div>
 
                   <p className="text-[11px] text-indigo-200 line-clamp-2 mt-1">
-                    {weeklyRating.assessmentDetail || 'Evaluated tests and scores'}
+                    {weeklyRating.assessmentDetail || 'No assessments conducted yet'}
                   </p>
                 </div>
                 <div className="text-[10px] text-indigo-400 pt-2 border-t border-white/5 mt-3 flex justify-between font-mono">
-                  <span>Target: 70%+</span>
+                  <span>{Number(weeklyRating.assessmentScore || 0) > 0 ? 'Target: 70%+' : 'Not started'}</span>
                   <span>25% Weight</span>
                 </div>
               </div>
@@ -926,24 +943,24 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                     <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
                       <span>🧭</span> Syllabus Pace
                     </span>
-                    <span className="text-xs font-black text-amber-400 flex items-center gap-0.5">
-                      {Number(weeklyRating.syllabusScore || 0).toFixed(1)} <span className="text-[10px] text-amber-300">★</span>
+                    <span className={`text-xs font-black flex items-center gap-0.5 ${Number(weeklyRating.syllabusScore || 0) > 0 ? 'text-amber-400' : 'text-slate-400'}`}>
+                      {Number(weeklyRating.syllabusScore || 0) > 0 ? Number(weeklyRating.syllabusScore).toFixed(1) : '—'} <span className="text-[10px] text-amber-300">★</span>
                     </span>
                   </div>
 
                   <div className="w-full bg-slate-700/60 rounded-full h-1.5 overflow-hidden my-2">
                     <div
                       className="h-full rounded-full bg-gradient-to-r from-indigo-400 to-cyan-400"
-                      style={{ width: `${Math.min(100, Math.max(10, ((weeklyRating.syllabusScore || 0) / 5) * 100))}%` }}
+                      style={{ width: `${Number(weeklyRating.syllabusScore || 0) > 0 ? Math.min(100, Math.max(8, ((weeklyRating.syllabusScore || 0) / 5) * 100)) : 0}%` }}
                     />
                   </div>
 
                   <p className="text-[11px] text-indigo-200 line-clamp-2 mt-1">
-                    {weeklyRating.syllabusDetail || 'Module progression speed'}
+                    {weeklyRating.syllabusDetail || 'Not started yet'}
                   </p>
                 </div>
                 <div className="text-[10px] text-indigo-400 pt-2 border-t border-white/5 mt-3 flex justify-between font-mono">
-                  <span>On-track pacing</span>
+                  <span>{Number(weeklyRating.syllabusScore || 0) > 0 ? 'On-track pacing' : 'Pending modules'}</span>
                   <span>25% Weight</span>
                 </div>
               </div>
@@ -955,24 +972,24 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                     <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
                       <span>💬</span> Participation
                     </span>
-                    <span className="text-xs font-black text-amber-400 flex items-center gap-0.5">
-                      {Number(weeklyRating.participationScore || 0).toFixed(1)} <span className="text-[10px] text-amber-300">★</span>
+                    <span className={`text-xs font-black flex items-center gap-0.5 ${Number(weeklyRating.participationScore || 0) > 0 ? 'text-amber-400' : 'text-slate-400'}`}>
+                      {Number(weeklyRating.participationScore || 0) > 0 ? Number(weeklyRating.participationScore).toFixed(1) : '—'} <span className="text-[10px] text-amber-300">★</span>
                     </span>
                   </div>
 
                   <div className="w-full bg-slate-700/60 rounded-full h-1.5 overflow-hidden my-2">
                     <div
                       className="h-full rounded-full bg-gradient-to-r from-purple-400 to-pink-400"
-                      style={{ width: `${Math.min(100, Math.max(10, ((weeklyRating.participationScore || 0) / 5) * 100))}%` }}
+                      style={{ width: `${Number(weeklyRating.participationScore || 0) > 0 ? Math.min(100, Math.max(8, ((weeklyRating.participationScore || 0) / 5) * 100)) : 0}%` }}
                     />
                   </div>
 
                   <p className="text-[11px] text-indigo-200 line-clamp-2 mt-1">
-                    {weeklyRating.participationDetail || 'Doubts & assignments'}
+                    {weeklyRating.participationDetail || 'No participation recorded yet'}
                   </p>
                 </div>
                 <div className="text-[10px] text-indigo-400 pt-2 border-t border-white/5 mt-3 flex justify-between font-mono">
-                  <span>Interactive</span>
+                  <span>{Number(weeklyRating.participationScore || 0) > 0 ? 'Interactive' : 'Awaiting activity'}</span>
                   <span>25% Weight</span>
                 </div>
               </div>
@@ -1021,11 +1038,17 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                     <span>📋</span> Priority 1: Student Attendance
                   </span>
                   <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full border ${
-                    (d.attendancePct ?? 0) >= ATTENDANCE_TARGET
+                    d.attendancePct === null
+                      ? 'bg-slate-100 text-slate-600 border-slate-200'
+                      : d.attendancePct >= ATTENDANCE_TARGET
                       ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
                       : 'bg-amber-100 text-amber-800 border-amber-300'
                   }`}>
-                    {(d.attendancePct ?? 0) >= ATTENDANCE_TARGET ? '✓ Target Met (75%+)' : '⚠ Below 75% Target'}
+                    {d.attendancePct === null
+                      ? 'No Classes Yet'
+                      : d.attendancePct >= ATTENDANCE_TARGET
+                      ? '✓ Target Met (75%+)'
+                      : '⚠ Below 75% Target'}
                   </span>
                 </div>
 
@@ -1034,7 +1057,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                     {pct(d.attendancePct)}
                   </div>
                   <div className="text-xs text-slate-500 font-semibold">
-                    Overall Attendance Rate
+                    {d.attendancePct === null ? '0 classes conducted so far' : 'Overall Attendance Rate'}
                   </div>
                 </div>
 
@@ -1058,7 +1081,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                       </span>
                     ) : (
                       <span className="font-semibold text-slate-500 text-[11px]">
-                        Scheduled / Awaiting Today's Session
+                        {trainer || d.batch ? "Scheduled / Awaiting Today's Session" : 'Awaiting batch & trainer allocation'}
                       </span>
                     )}
                   </div>
@@ -1114,9 +1137,17 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                   <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full border ${
                     d.isSyllabusDone
                       ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                      : displaySylModules.length === 0
+                      ? 'bg-slate-100 text-slate-600 border-slate-200'
                       : 'bg-indigo-100 text-indigo-800 border-indigo-300'
                   }`}>
-                    {d.isSyllabusDone ? '✓ 100% Completed' : 'In Progress'}
+                    {d.isSyllabusDone
+                      ? '✓ 100% Completed'
+                      : displaySylModules.length === 0
+                      ? 'Not Started'
+                      : d.effectiveSylDone === 0
+                      ? 'Awaiting First Topic'
+                      : 'In Progress'}
                   </span>
                 </div>
 
@@ -1125,7 +1156,11 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                     {d.effectiveSylPct}%
                   </div>
                   <div className="text-xs text-slate-500 font-semibold">
-                    {d.isSyllabusDone ? 'Full Syllabus Cleared' : `${d.effectiveSylDone} of ${displaySylModules.length} Modules Covered`}
+                    {d.isSyllabusDone
+                      ? 'Full Syllabus Cleared'
+                      : displaySylModules.length === 0
+                      ? (trainer || d.batch ? 'No syllabus modules published yet' : 'Starts after batch allocation')
+                      : `${d.effectiveSylDone} of ${displaySylModules.length} Modules Covered`}
                   </div>
                 </div>
 
@@ -1133,7 +1168,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                 <div className="w-full bg-slate-200/70 rounded-full h-2.5 overflow-hidden my-2">
                   <div
                     className="h-full rounded-full bg-gradient-to-r from-[#483ec7] to-teal-500 transition-all duration-500"
-                    style={{ width: `${Math.min(100, Math.max(d.effectiveSylPct, 5))}%` }}
+                    style={{ width: `${Math.min(100, d.effectiveSylPct)}%` }}
                   />
                 </div>
 
@@ -1141,7 +1176,11 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                 <div className="p-3 bg-white/95 rounded-xl border border-indigo-200/70 text-xs space-y-1.5 shadow-2xs">
                   <div className="flex items-center justify-between">
                     <span className="text-slate-500 font-medium">Current Module:</span>
-                    <strong className="text-slate-900 font-bold">{st.syllabusModule || 'Module 1'}</strong>
+                    <strong className="text-slate-900 font-bold">
+                      {!trainer && !d.batch && d.effectiveSylDone === 0
+                        ? 'Not started yet'
+                        : (st.syllabusModule || 'Not started yet')}
+                    </strong>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-slate-500 font-medium">Placement Eligibility:</span>
@@ -1159,7 +1198,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
 
               <div className="pt-2 border-t border-indigo-100 flex items-center justify-between text-xs">
                 <span className="text-[11px] text-slate-500">
-                  Batch: <strong>{st.batchName || 'Allocated Batch'}</strong>
+                  Batch: <strong>{d.batch || st.batchName || 'Not allocated yet'}</strong>
                 </span>
                 <button
                   onClick={() => setActiveNav('classes')}
@@ -1193,20 +1232,40 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
             <Card>
               <CardTitle icon="🎓" title="My Batch" right={<button onClick={() => setActiveNav('classes')} className="text-xs font-bold text-[#483ec7] hover:underline cursor-pointer">Classes ›</button>} />
               <div className="divide-y divide-slate-100">
-                <Row label="Batch" value={st.batchName} />
-                <Row label="Course" value={st.course} />
+                <Row label="Batch" value={[portal?.batchInfo?.batchName || st.batchName, portal?.batchInfo?.batchCode ? `(${portal.batchInfo.batchCode})` : ''].filter(Boolean).join(' ')} />
+                <Row label="Course" value={portal?.batchInfo?.course || st.course} />
+                <Row label="Assigned Trainer" value={portal?.batchInfo?.trainerName || st.trainerName || trainer?.trainerName} />
+                <Row label="Scheduled Time" value={portal?.batchInfo?.scheduledTime || st.batchTiming} />
+                <Row
+                  label="Batch Group Size"
+                  value={
+                    portal?.batchInfo?.studentsCount
+                      ? `${portal.batchInfo.studentsCount} students (Batch cap ${portal.batchInfo.minStudents || 10}–${portal.batchInfo.maxStudents || 15})`
+                      : undefined
+                  }
+                />
                 <Row label="Batch start" value={st.batchDate} />
-                <Row label="Timing" value={st.batchTiming} />
-                <Row label="Mode · Branch" value={[st.mode, st.location].filter(Boolean).join(' · ')} />
-                <Row label="Current module" value={st.syllabusModule} />
+                <Row label="Mode · Branch" value={[portal?.batchInfo?.mode || st.mode, portal?.batchInfo?.branch || st.location].filter(Boolean).join(' · ')} />
+                <Row
+                  label="Current module"
+                  value={
+                    !trainer && !d.batch && d.effectiveSylDone === 0
+                      ? 'Not started yet'
+                      : (st.syllabusModule || 'Not started yet')
+                  }
+                />
               </div>
             </Card>
             <Card>
               <CardTitle
                 icon="🧭"
-                title="Syllabus Progress"
-                sub={`${d.effectiveSylDone} of ${displaySylModules.length} modules covered by your trainer`}
-                right={<Pill tone={d.effectiveSylPct === 100 ? 'green' : 'indigo'}>{d.effectiveSylPct}%</Pill>}
+                title="My Individual Syllabus Progress"
+                sub={
+                  displaySylModules.length > 0
+                    ? `${d.effectiveSylDone} of ${displaySylModules.length} modules credited individually to you`
+                    : (trainer || d.batch ? 'Batch syllabus has not been published yet' : 'Will appear once your batch is allocated')
+                }
+                right={<Pill tone={d.effectiveSylPct === 100 ? 'green' : displaySylModules.length === 0 ? 'slate' : 'indigo'}>{d.effectiveSylPct}%</Pill>}
               />
               <div className="w-full bg-slate-100 rounded-full h-2.5 overflow-hidden mb-4">
                 <div
@@ -1214,30 +1273,41 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                   style={{ width: bar(d.effectiveSylPct) }}
                 />
               </div>
+              {displaySylModules.length === 0 ? (
+                <Empty
+                  icon="📚"
+                  title={trainer || d.batch ? 'No syllabus modules yet' : 'Awaiting batch allocation'}
+                  text={trainer || d.batch ? 'Course modules will appear here as soon as your trainer or Head of Trainer publishes the batch syllabus.' : 'Your syllabus checklist and individual progress start once your trainer and batch are allocated.'}
+                />
+              ) : (
               <div className="space-y-1.5">
                 {displaySylModules.map((m, i) => {
                   const isNext = !m.done && displaySylModules.findIndex((x) => !x.done) === i;
+                  const missedBatchModule = !m.done && m.batchDone;
                   return (
                     <div
                       key={`${m.name}-${i}`}
                       className={`flex items-center justify-between gap-3 text-xs px-3 py-2 rounded-xl border ${
                         m.done
                           ? 'bg-emerald-50/60 border-emerald-100'
+                          : missedBatchModule
+                          ? 'bg-amber-50/80 border-amber-200'
                           : isNext
                           ? 'bg-indigo-50 border-indigo-200'
                           : 'bg-white border-slate-100'
                       }`}
                     >
-                      <span className={`font-semibold ${m.done ? 'text-emerald-800' : isNext ? 'text-[#483ec7]' : 'text-slate-500'}`}>
-                        {m.done ? '✓' : isNext ? '●' : '○'} {m.name}
+                      <span className={`font-semibold ${m.done ? 'text-emerald-800' : missedBatchModule ? 'text-amber-800' : isNext ? 'text-[#483ec7]' : 'text-slate-500'}`}>
+                        {m.done ? '✓' : missedBatchModule ? '!' : isNext ? '●' : '○'} {m.name}
                       </span>
                       <span className="text-[10px] text-slate-400 shrink-0">
-                        {m.done ? fmtDate(m.doneAt) : isNext ? 'Up next' : ''}
+                        {m.done ? fmtDate(m.doneAt) : missedBatchModule ? 'Covered in batch · Makeup needed' : isNext ? 'Up next' : ''}
                       </span>
                     </div>
                   );
                 })}
               </div>
+              )}
             </Card>
             <Card>
               <CardTitle icon="📍" title="Topics Covered in Class" sub="Logged by your trainer with each attendance" right={<button onClick={() => setActiveNav('progress')} className="text-xs font-bold text-[#483ec7] hover:underline cursor-pointer">Progress ›</button>} />
@@ -1485,7 +1555,18 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
   // ==========================================================================
   const renderClasses = () => (
     <div className="space-y-6 pb-12">
-      <PageHeader title="Classes" sub={[d.batch, st.batchTiming, st.mode].filter(Boolean).join(' · ') || 'Batch not allocated yet'} right={<HeaderStat label="Classes held" value={attendance.length} />} />
+      <PageHeader
+        title="Classes"
+        sub={[
+          portal?.batchInfo?.batchName || d.batch,
+          portal?.batchInfo?.course || st.course,
+          portal?.batchInfo?.trainerName ? `Trainer: ${portal.batchInfo.trainerName}` : (trainer?.trainerName ? `Trainer: ${trainer.trainerName}` : ''),
+          portal?.batchInfo?.scheduledTime || st.batchTiming,
+          portal?.batchInfo?.studentsCount ? `${portal.batchInfo.studentsCount} students` : '',
+          st.mode
+        ].filter(Boolean).join(' · ') || 'Batch not allocated yet'}
+        right={<HeaderStat label="Classes held" value={attendance.length} />}
+      />
       <Card>
         <CardTitle icon="🔴" title="Live Class" />
         {live ? (

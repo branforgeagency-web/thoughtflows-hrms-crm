@@ -224,6 +224,7 @@ const studentSchema = new mongoose.Schema({
   // ---- HR → Training handover & trainer allocation ----
   trainerId: { type: String, default: '' },
   trainerName: { type: String, default: '' },
+  batchId: { type: String, default: '' },
   batchName: { type: String, default: '' },
   trainerNote: { type: String, default: '' },
   handedOverBy: { type: String, default: '' },
@@ -259,6 +260,17 @@ const studentSchema = new mongoose.Schema({
   readinessEvaluatedAt: { type: Date, default: null },
   syllabusCompleted: { type: Boolean, default: false },
   syllabusCompletedAt: { type: Date, default: null },
+  syllabusProgressPct: { type: Number, default: 0 },
+  studentModuleProgress: {
+    type: [{
+      moduleName: { type: String, required: true },
+      done: { type: Boolean, default: false },
+      doneAt: { type: Date, default: null },
+      doneBy: { type: String, default: '' },
+      source: { type: String, default: 'attendance' } // 'attendance' | 'manual' | 'transition'
+    }],
+    default: []
+  },
   trainerRecommendation: { type: String, default: '' },
   trainerRecommendationAt: { type: Date, default: null },
   // ---- Weekly Star Rating (Attendance, Assessment, Syllabus, Participation) ----

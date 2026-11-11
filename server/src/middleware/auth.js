@@ -111,6 +111,8 @@ const STAFF_RULES = [
   ['PUT', /^\/students\/[^/]+$/, ['hr', 'cccp', 'training']],
   ['POST', /^\/students\/[^/]+\/handover(-to-head)?$/, ['hr']],
   ['POST', /^\/students\/[^/]+\/allocate-trainer$/, ['training']],
+  ['PUT', /^\/students\/[^/]+\/batch-progress$/, ['training']],
+  ['*', /^\/batches(\/|$)/, ['training']],
   ['POST', /^\/students\/[^/]+\/payments$/, ['hr']],
   ['POST', /^\/fees\/rates$/, ['hr']],
   ['POST', /^\/closures$/, ['hr']],

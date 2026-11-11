@@ -102,6 +102,7 @@ import {
 import { TRAINER_COURSES } from '../constants/courses';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 import StaffLoginAttendance from './StaffLoginAttendance';
+import { BatchDetailModal } from './BatchManagementModals';
 
 export default function TrainingDepartmentDashboard({
   onClose,
@@ -243,6 +244,7 @@ export default function TrainingDepartmentDashboard({
   const [trainerNotifications, setTrainerNotifications] = useState([]);
   const [myFeedback, setMyFeedback] = useState(null); // { avg, classAvg, trainerAvg, count } from student ratings
   const [showNotifPanel, setShowNotifPanel] = useState(false);
+  const [inspectBatchTarget, setInspectBatchTarget] = useState(null);
   const [attendanceBatchId, setAttendanceBatchId] = useState('');
   const [attendanceSavedToast, setAttendanceSavedToast] = useState(null);
   const [attendanceTopic, setAttendanceTopic] = useState('');
@@ -739,15 +741,19 @@ export default function TrainingDepartmentDashboard({
       if (!map[key]) {
         map[key] = {
           id: key.toLowerCase().replace(/[^a-z0-9]/g, '-'),
+          batchId: st.batchId || '',
           name: key,
           course: st.course || '',
           timing: st.batchTiming || '',
           mode: st.mode || '',
+          minStudents: 10,
+          maxStudents: 15,
           modules: {},
           zoomLink: trainerProfile?.classZoomLink || '',
           students: []
         };
       }
+      if (!map[key].batchId && st.batchId) map[key].batchId = st.batchId;
       map[key].students.push(st);
       if (st.syllabusModule) map[key].modules[st.syllabusModule] = (map[key].modules[st.syllabusModule] || 0) + 1;
     });
@@ -819,7 +825,8 @@ export default function TrainingDepartmentDashboard({
         canMarkPresent,
         joinedOnline: Boolean(j),
         status: todaysSession?.records?.[roll] || 'Unmarked',
-        attendancePct: typeof s.attendancePct === 'number' ? s.attendancePct : null
+        attendancePct: typeof s.attendancePct === 'number' ? s.attendancePct : null,
+        syllabusProgressPct: typeof s.syllabusProgressPct === 'number' ? s.syllabusProgressPct : null
       };
     })
   ), [attendanceBatch, todaysSession, isOnlineBatch, todayLiveJoins]);
@@ -3018,9 +3025,18 @@ export default function TrainingDepartmentDashboard({
                   </div>
                 ) : (
                   <div className="pt-2 space-y-4 animate-fadeIn">
-                    <div className="flex items-center justify-between text-xs text-slate-500 pb-1 border-b border-slate-100">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 pb-2 border-b border-slate-100">
                       <span className="font-bold text-slate-800">{attendanceBatch?.name} · {attendanceList.length} Students</span>
-                      <span>{[attendanceBatch?.module, attendanceBatch?.timing, attendanceBatch?.mode].filter(Boolean).join(' · ')}</span>
+                      <div className="flex items-center gap-3">
+                        <span>{[attendanceBatch?.module, attendanceBatch?.timing, attendanceBatch?.mode].filter(Boolean).join(' · ')}</span>
+                        <button
+                          type="button"
+                          onClick={() => setInspectBatchTarget(attendanceBatch?.batchId || attendanceBatch?.name)}
+                          className="px-2.5 py-1 rounded-lg bg-teal-50 hover:bg-teal-100 text-teal-700 border border-teal-200 font-bold text-[11px] cursor-pointer"
+                        >
+                          Individual Batch Progress
+                        </button>
+                      </div>
                     </div>
 
                     <div className="overflow-x-auto rounded-xl border border-slate-100">
@@ -3030,6 +3046,7 @@ export default function TrainingDepartmentDashboard({
                             <th className="py-3 px-4 font-bold">Student ID</th>
                             <th className="py-3 px-4 font-bold">Student Name</th>
                             <th className="py-3 px-4 font-bold">Cumulative Attendance</th>
+                            <th className="py-3 px-4 font-bold">Ind. Progress</th>
                             <th className="py-3 px-4 font-bold">Today</th>
                             <th className="py-3 px-4 font-bold text-right">Quick Mark</th>
                           </tr>
@@ -3049,6 +3066,13 @@ export default function TrainingDepartmentDashboard({
                                   <span className="text-slate-400">—</span>
                                 ) : (
                                   <span className={`font-bold ${s.attendancePct < 75 ? 'text-rose-600' : 'text-emerald-600'}`}>{s.attendancePct}%</span>
+                                )}
+                              </td>
+                              <td className="py-3 px-4">
+                                {s.syllabusProgressPct === null ? (
+                                  <span className="text-slate-400">—</span>
+                                ) : (
+                                  <span className="font-bold text-indigo-600">{s.syllabusProgressPct}%</span>
                                 )}
                               </td>
                               <td className="py-3 px-4">
@@ -4178,9 +4202,15 @@ export default function TrainingDepartmentDashboard({
                           </div>
                         </div>
 
-                        <div className="shrink-0 ml-3">
-                          <span className="px-3.5 py-1 rounded-full text-xs font-bold bg-[#eff6ff] text-[#3b82f6] border border-blue-100">
-                            {batch.students.length}
+                        <div className="shrink-0 ml-3 flex items-center gap-2">
+                          <span className={`px-3 py-1 rounded-full text-xs font-bold border ${
+                            batch.students.length > (batch.maxStudents || 15)
+                              ? 'bg-rose-50 text-rose-700 border-rose-200'
+                              : batch.students.length >= (batch.minStudents || 10)
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                              : 'bg-[#eff6ff] text-[#3b82f6] border-blue-100'
+                          }`}>
+                            {batch.students.length}/{batch.maxStudents || 15} students
                           </span>
                         </div>
                       </div>
@@ -4188,22 +4218,39 @@ export default function TrainingDepartmentDashboard({
                       {/* Batch Expanded Students Drawer (if tapped) */}
                       {selectedBatchDrilldown === batch.id && (
                         <div className="p-4 rounded-2xl bg-slate-50/80 border border-slate-200/80 space-y-3 animate-fadeIn">
-                          <div className="flex items-center justify-between text-xs">
-                            <span className="font-bold text-slate-800">Students in Your Module ({batch.name})</span>
-                            <span className="text-slate-500 font-mono text-[11px]">{batch.students.length} Enrolled</span>
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                            <span className="font-bold text-slate-800">
+                              Students in Batch ({batch.name}) · {[batch.course, batch.timing].filter(Boolean).join(' · ')}
+                            </span>
+                            <div className="flex items-center gap-2">
+                              <span className="text-slate-500 font-mono text-[11px]">{batch.students.length} Enrolled</span>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setInspectBatchTarget(batch.batchId || batch.name);
+                                }}
+                                className="px-3 py-1 rounded-lg bg-teal-600 hover:bg-teal-700 text-white text-[11px] font-bold cursor-pointer"
+                              >
+                                Track Individual Progress
+                              </button>
+                            </div>
                           </div>
                           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 text-xs">
                             {batch.students.map((s, idx) => (
-                              <div key={s._id || s.studentId || idx} className="p-2.5 rounded-xl bg-white border border-slate-200/70 flex items-center justify-between shadow-none">
-                                <div>
-                                  <div className="font-bold text-slate-900">{s.name}</div>
-                                  <div className="text-[11px] text-slate-400 font-mono">{studentKeyOf(s)}{s.syllabusModule ? ` · ${s.syllabusModule}` : ''}</div>
+                              <div key={s._id || s.studentId || idx} className="p-2.5 rounded-xl bg-white border border-slate-200/70 flex items-center justify-between gap-2 shadow-none">
+                                <div className="min-w-0">
+                                  <div className="font-bold text-slate-900 truncate">{s.name}</div>
+                                  <div className="text-[11px] text-slate-400 font-mono truncate">{studentKeyOf(s)}{s.syllabusModule ? ` · ${s.syllabusModule}` : ''}</div>
                                 </div>
-                                <div className="text-right">
-                                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                <div className="text-right shrink-0 space-y-1">
+                                  <span className={`block px-2 py-0.5 rounded text-[10px] font-bold ${
                                     typeof s.attendancePct !== 'number' ? 'bg-slate-50 text-slate-500 border border-slate-200' : s.attendancePct < 75 ? 'bg-rose-50 text-rose-700 border border-rose-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
                                   }`}>
-                                    {typeof s.attendancePct === 'number' ? `${s.attendancePct}%` : 'No classes yet'}
+                                    Att: {typeof s.attendancePct === 'number' ? `${s.attendancePct}%` : '—'}
+                                  </span>
+                                  <span className="block px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                                    Prog: {typeof s.syllabusProgressPct === 'number' ? `${s.syllabusProgressPct}%` : '0%'}
                                   </span>
                                 </div>
                               </div>
@@ -5920,6 +5967,17 @@ export default function TrainingDepartmentDashboard({
           </div>
         </div>
       )}
+
+      <BatchDetailModal
+        batchIdOrName={inspectBatchTarget}
+        isOpen={Boolean(inspectBatchTarget)}
+        onClose={() => setInspectBatchTarget(null)}
+        canManage={false}
+        trainers={trainerRoster}
+        allStudents={students}
+        onUpdated={loadRealData}
+        flashToast={flashDemoToast}
+      />
 
     </div>
   );

@@ -595,6 +595,56 @@ export const getBatches = async (params = {}) => {
   return res.data;
 };
 
+export const getBatchDetail = async (id) => {
+  const res = await api.get(`/batches/${encodeURIComponent(id)}`);
+  return res.data;
+};
+
+export const createBatch = async (data) => {
+  const res = await api.post('/batches', data);
+  notifyDataUpdate('batches');
+  notifyDataUpdate('students');
+  notifyDataUpdate('notifications');
+  return res.data;
+};
+
+export const updateBatch = async (id, data) => {
+  const res = await api.put(`/batches/${encodeURIComponent(id)}`, data);
+  notifyDataUpdate('batches');
+  notifyDataUpdate('students');
+  return res.data;
+};
+
+export const assignStudentsToBatch = async (id, data) => {
+  const res = await api.post(`/batches/${encodeURIComponent(id)}/assign-students`, data);
+  notifyDataUpdate('batches');
+  notifyDataUpdate('students');
+  notifyDataUpdate('notifications');
+  return res.data;
+};
+
+export const removeStudentFromBatch = async (batchId, studentId) => {
+  const res = await api.delete(`/batches/${encodeURIComponent(batchId)}/students/${encodeURIComponent(studentId)}`);
+  notifyDataUpdate('batches');
+  notifyDataUpdate('students');
+  return res.data;
+};
+
+export const autoGroupBatches = async (data) => {
+  const res = await api.post('/batches/auto-group', data);
+  notifyDataUpdate('batches');
+  notifyDataUpdate('students');
+  notifyDataUpdate('notifications');
+  return res.data;
+};
+
+export const updateStudentBatchProgress = async (studentId, data) => {
+  const res = await api.put(`/students/${encodeURIComponent(studentId)}/batch-progress`, data);
+  notifyDataUpdate('students');
+  notifyDataUpdate('syllabus');
+  return res.data;
+};
+
 // HR records a fee instalment — returns the updated student (receipt added, balance recomputed)
 export const recordStudentPayment = async (id, data) => {
   const res = await api.post(`/students/${encodeURIComponent(id)}/payments`, data);

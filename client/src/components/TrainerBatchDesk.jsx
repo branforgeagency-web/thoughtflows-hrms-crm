@@ -3,6 +3,8 @@ import { ListChecks, Megaphone, Video, RefreshCw, ExternalLink, Lock, Trash2 } f
 import {
   getBatchSyllabus,
   saveBatchSyllabus,
+  getBatchDetail,
+  updateStudentBatchProgress,
   getBatchAnnouncements,
   createBatchAnnouncement,
   deleteBatchAnnouncement,
@@ -44,24 +46,45 @@ export default function TrainerBatchDesk({ batches = [] }) {
   const [sessions, setSessions] = useState([]);
   const [recDrafts, setRecDrafts] = useState({});
 
+  // ---- individual student progress & attendance inside batch ----
+  const [batchDetail, setBatchDetail] = useState(null);
+  const [togglingCell, setTogglingCell] = useState('');
+
   const load = useCallback(async () => {
     if (!batch) return;
     try {
-      const [syl, ann, hist] = await Promise.all([
+      const [syl, ann, hist, detail] = await Promise.all([
         getBatchSyllabus(batch.name, batch.course).catch(() => ({ modules: [], hasCourseSyllabus: true })),
         getBatchAnnouncements({ batch: batch.name }).catch(() => []),
-        getLiveClassHistory({ batch: batch.name }).catch(() => [])
+        getLiveClassHistory({ batch: batch.name }).catch(() => []),
+        getBatchDetail(batch.batchId || batch.name).catch(() => null)
       ]);
       setModules((syl?.modules || []).map((m) => ({ _id: m._id, name: m.name, done: Boolean(m.done), doneAt: m.doneAt })));
       setDirty(false);
       setHasCourseSyllabus(syl?.hasCourseSyllabus !== false);
       setPosts(Array.isArray(ann) ? ann : []);
       setSessions(Array.isArray(hist) ? hist : []);
+      setBatchDetail(detail);
       setRecDrafts({});
     } catch (e) {
       flash(`⚠ ${errOf(e, 'Could not load this batch')}`);
     }
-  }, [batch?.name, batch?.course]);
+  }, [batch?.batchId, batch?.name, batch?.course]);
+
+  const handleToggleStudentModule = async (st, moduleName, currentDone) => {
+    const sid = st.studentId || st._id;
+    const key = `${sid}:${moduleName}`;
+    setTogglingCell(key);
+    try {
+      await updateStudentBatchProgress(sid, { moduleName, done: !currentDone });
+      await load();
+      flash(`✓ Updated "${moduleName}" for ${st.name}`);
+    } catch (e) {
+      flash(`⚠ ${errOf(e, 'Could not update student module')}`, 4500);
+    } finally {
+      setTogglingCell('');
+    }
+  };
 
   useEffect(() => { load(); }, [load]);
 
@@ -249,6 +272,102 @@ export default function TrainerBatchDesk({ batches = [] }) {
             ))}
           </div>
         </div>
+      </div>
+
+      {/* ---------------- Individual Student Attendance & Batch Progress ---------------- */}
+      <div className={`${card} space-y-4`}>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 className="text-sm font-bold text-slate-900">Individual Student Attendance &amp; Batch Progress</h3>
+            <p className="text-[11px] text-slate-500">
+              {batchDetail?.course || batch.course || 'Course'} · {batchDetail?.trainerName || 'Assigned Trainer'} · {batchDetail?.scheduledTime || batch.timing || 'Scheduled Time'} · {(batchDetail?.students || batch.students || []).length}/{batchDetail?.maxStudents || 15} students
+            </p>
+          </div>
+          <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-teal-50 text-teal-700 border border-teal-200">
+            Per-student tracking enabled
+          </span>
+        </div>
+
+        {(batchDetail?.students || batch.students || []).length === 0 ? (
+          <p className="text-xs text-slate-400 text-center py-4">No students assigned to this batch yet.</p>
+        ) : (
+          <div className="overflow-x-auto border border-slate-200 rounded-xl">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="bg-slate-50 text-slate-500 border-b border-slate-200 uppercase text-[10px]">
+                  <th className="py-2.5 px-3 font-bold">Student</th>
+                  <th className="py-2.5 px-3 font-bold">Attendance</th>
+                  <th className="py-2.5 px-3 font-bold">Ind. Progress</th>
+                  <th className="py-2.5 px-3 font-bold">Current Module</th>
+                  {modules.length > 0 && <th className="py-2.5 px-3 font-bold">Individual Module Checkoff</th>}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {(batchDetail?.students || batch.students || []).map((st, idx) => {
+                  const sid = st.studentId || st._id;
+                  const modMap = new Map((st.moduleProgress || []).map((m) => [String(m.moduleName || '').toLowerCase(), Boolean(m.done)]));
+                  const attPct = typeof st.attendancePct === 'number' ? st.attendancePct : null;
+                  const progPct = typeof st.syllabusProgressPct === 'number' ? st.syllabusProgressPct : 0;
+                  return (
+                    <tr key={sid || idx} className="hover:bg-slate-50/70">
+                      <td className="py-2.5 px-3">
+                        <div className="font-bold text-slate-900">{st.name}</div>
+                        <div className="text-[10px] font-mono text-slate-400">{sid}</div>
+                      </td>
+                      <td className="py-2.5 px-3">
+                        {attPct !== null ? (
+                          <div>
+                            <span className={`font-bold ${attPct < 75 ? 'text-rose-600' : 'text-emerald-600'}`}>{attPct}%</span>
+                            {typeof st.totalSessions === 'number' && st.totalSessions > 0 && (
+                              <span className="text-[10px] text-slate-400 ml-1">({st.attendedSessions || 0}/{st.totalSessions})</span>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-slate-400">—</span>
+                        )}
+                      </td>
+                      <td className="py-2.5 px-3">
+                        <div className="flex items-center gap-2">
+                          <div className="w-16 h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                            <div className="h-full bg-indigo-600" style={{ width: `${Math.min(100, Math.max(0, progPct))}%` }} />
+                          </div>
+                          <span className="font-bold text-indigo-700">{progPct}%</span>
+                        </div>
+                      </td>
+                      <td className="py-2.5 px-3 text-slate-600">{st.syllabusModule || '—'}</td>
+                      {modules.length > 0 && (
+                        <td className="py-2.5 px-3">
+                          <div className="flex flex-wrap gap-1 max-w-md">
+                            {modules.map((m, mi) => {
+                              const done = Boolean(modMap.get(String(m.name || '').toLowerCase()));
+                              const busy = togglingCell === `${sid}:${m.name}`;
+                              return (
+                                <button
+                                  key={`${sid}-${m.name}-${mi}`}
+                                  type="button"
+                                  disabled={busy}
+                                  onClick={() => handleToggleStudentModule(st, m.name, done)}
+                                  title={`${m.name}: click to mark ${done ? 'incomplete' : 'complete'} for ${st.name}`}
+                                  className={`px-2 py-0.5 rounded-md text-[10px] font-bold border transition-all cursor-pointer disabled:opacity-50 ${
+                                    done
+                                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                                      : 'bg-white text-slate-500 border-slate-200 hover:border-teal-300'
+                                  }`}
+                                >
+                                  {done ? '✓' : '○'} {m.name}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {/* ---------------- Recordings ---------------- */}

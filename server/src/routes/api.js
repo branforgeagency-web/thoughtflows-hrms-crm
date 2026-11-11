@@ -45,6 +45,7 @@ import StudentSubmission from '../models/StudentSubmission.js';
 import { PLACEMENT_EDITORS, autoStage, effectiveStage, blockReason, stageChecks } from '../constants/placement.js';
 import StudentRequest, { TRAINER_REQUEST_TYPES } from '../models/StudentRequest.js';
 import BatchSyllabus from '../models/BatchSyllabus.js';
+import Batch from '../models/Batch.js';
 import CourseSyllabus from '../models/CourseSyllabus.js';
 import BatchAnnouncement from '../models/BatchAnnouncement.js';
 import TestAttempt from '../models/TestAttempt.js';
@@ -6887,6 +6888,134 @@ router.get('/trainer/attendance', async (req, res) => {
 // classes, notifications), so "CPC · 7PM" and "cpc - 7 pm" must resolve to one.
 const batchMatchKey = (name = '') => String(name).toLowerCase().replace(/[^a-z0-9]/g, '');
 const tidyBatchName = (name = '') => String(name).replace(/\s+/g, ' ').trim();
+const courseKeyForSyllabus = (name = '') => String(name).toLowerCase().replace(/[^a-z0-9]/g, '');
+
+function parseTimeSlotMinutes(slot = '') {
+  const m = String(slot || '').match(/(\d{1,2})(?::(\d{2}))?\s*(AM|PM)?\s*[-–to]+\s*(\d{1,2})(?::(\d{2}))?\s*(AM|PM)?/i);
+  if (!m) return { startMin: null, endMin: null };
+  const toMin = (hStr, minStr, ampm) => {
+    let h = parseInt(hStr, 10);
+    const min = parseInt(minStr || '0', 10);
+    const ap = (ampm || '').toUpperCase();
+    if (ap === 'PM' && h < 12) h += 12;
+    if (ap === 'AM' && h === 12) h = 0;
+    return h * 60 + min;
+  };
+  const endAp = m[6] || m[3] || '';
+  const startAp = m[3] || (parseInt(m[1], 10) > parseInt(m[4], 10) ? 'AM' : endAp);
+  return {
+    startMin: toMin(m[1], m[2], startAp),
+    endMin: toMin(m[4], m[5], endAp)
+  };
+}
+
+async function syncTrainerScheduledClass(trainerDoc, { batchName, course, scheduledTime, days = 'Weekdays' }) {
+  if (!trainerDoc || !batchName || !scheduledTime) return;
+  const { startMin, endMin } = parseTimeSlotMinutes(scheduledTime);
+  const existing = Array.isArray(trainerDoc.scheduledClasses) ? trainerDoc.scheduledClasses : [];
+  const bKey = batchMatchKey(batchName);
+  const idx = existing.findIndex((c) => batchMatchKey(c.batch || '') === bKey);
+  const entry = {
+    name: course || existing[idx]?.name || 'Class',
+    timeSlot: scheduledTime,
+    startMin: startMin ?? existing[idx]?.startMin ?? 0,
+    endMin: endMin ?? existing[idx]?.endMin ?? 0,
+    batch: batchName,
+    days: days || existing[idx]?.days || trainerDoc.workingDays || 'Weekdays'
+  };
+  if (idx >= 0) {
+    trainerDoc.scheduledClasses[idx] = { ...(trainerDoc.scheduledClasses[idx]?.toObject?.() || trainerDoc.scheduledClasses[idx]), ...entry };
+  } else {
+    trainerDoc.scheduledClasses.push(entry);
+  }
+  await trainerDoc.save().catch(() => {});
+}
+
+async function ensureBatchSyllabusDoc(batchName, course, trainerId = '', trainerName = '') {
+  const cleanBatch = tidyBatchName(batchName);
+  if (!cleanBatch) return null;
+  const bKey = batchMatchKey(cleanBatch);
+  let doc = await BatchSyllabus.findOne({ batchKey: bKey });
+  if (doc) return doc;
+  const courseDoc = course ? await CourseSyllabus.findOne({ courseKey: courseKeyForSyllabus(course) }) : null;
+  const masterModules = (courseDoc?.modules || []).map((m) => ({
+    name: m.name,
+    done: false,
+    doneAt: null,
+    doneBy: ''
+  }));
+  doc = await BatchSyllabus.create({
+    batch: cleanBatch,
+    batchKey: bKey,
+    course: course || '',
+    trainerId: trainerId || '',
+    trainerName: trainerName || '',
+    modules: masterModules
+  });
+  return doc;
+}
+
+async function generateBatchCode(course = 'BATCH') {
+  const prefix = String(course || 'BATCH').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6) || 'BATCH';
+  const count = await Batch.countDocuments();
+  let seq = count + 1;
+  while (seq < count + 500) {
+    const code = `B-${prefix}-${String(seq).padStart(3, '0')}`;
+    const exists = await Batch.exists({ batchCode: code });
+    if (!exists) return code;
+    seq += 1;
+  }
+  return `B-${prefix}-${Date.now().toString().slice(-5)}`;
+}
+
+async function totalSyllabusModuleCount(batchName, course) {
+  const bKey = batchMatchKey(batchName || '');
+  const batchSyl = bKey ? await BatchSyllabus.findOne({ batchKey: bKey }).select('modules').lean() : null;
+  if (batchSyl?.modules?.length) return batchSyl.modules.length;
+  const cKey = courseKeyForSyllabus(course || '');
+  const courseSyl = cKey ? await CourseSyllabus.findOne({ courseKey: cKey }).select('modules').lean() : null;
+  if (courseSyl?.modules?.length) return courseSyl.modules.length;
+  return 5;
+}
+
+function applyStudentModuleProgress(st, { moduleName, done = true, doneBy = '', source = 'attendance', totalModules = 5 }) {
+  const cleanMod = String(moduleName || '').trim();
+  if (!cleanMod) return;
+  const list = Array.isArray(st.studentModuleProgress) ? [...st.studentModuleProgress] : [];
+  const norm = cleanMod.toLowerCase();
+  const idx = list.findIndex((m) => String(m.moduleName || '').trim().toLowerCase() === norm);
+  if (idx >= 0) {
+    list[idx].done = Boolean(done);
+    list[idx].doneAt = done ? (list[idx].doneAt || new Date()) : null;
+    list[idx].doneBy = done ? (doneBy || list[idx].doneBy || '') : '';
+    list[idx].source = source || list[idx].source || 'attendance';
+  } else {
+    list.push({
+      moduleName: cleanMod,
+      done: Boolean(done),
+      doneAt: done ? new Date() : null,
+      doneBy: done ? doneBy : '',
+      source
+    });
+  }
+  st.studentModuleProgress = list;
+
+  const completedSet = new Set(Array.isArray(st.completedModules) ? st.completedModules : []);
+  if (done) {
+    completedSet.add(cleanMod);
+    st.syllabusModule = cleanMod;
+  } else {
+    for (const item of completedSet) {
+      if (String(item).trim().toLowerCase() === norm) completedSet.delete(item);
+    }
+  }
+  st.completedModules = [...completedSet];
+
+  const denom = Math.max(1, Number(totalModules) || 5);
+  const doneCount = list.filter((m) => m.done).length;
+  const effectiveDone = Math.max(doneCount, st.completedModules.length);
+  st.syllabusProgressPct = st.syllabusCompleted ? 100 : Math.min(100, Math.round((effectiveDone / denom) * 100));
+}
 
 // POST Record Attendance — merges marks into that day's class record
 router.post('/trainer/attendance', async (req, res) => {
@@ -6946,10 +7075,8 @@ router.post('/trainer/attendance', async (req, res) => {
     await recomputeAttendance(Object.keys(records));
 
     // Syllabus Tracker: Automatically tick off the matching module (from the
-    // course's Head-of-Trainer-managed master list) for the corresponding session.
-    // A topic that doesn't match any existing module is logged on the session only —
-    // it is never auto-added as a new syllabus module (only the Head of Trainer adds
-    // modules; trainers, including via this auto-match, can only mark existing ones done).
+    // course's Head-of-Trainer-managed master list) for the corresponding session,
+    // and track batch progress INDIVIDUALLY for each student based on attendance.
     let updatedSyllabus = null;
     if (topic && String(topic).trim()) {
       const cleanTopic = String(topic).trim();
@@ -6961,7 +7088,9 @@ router.post('/trainer/attendance', async (req, res) => {
                m.name.toLowerCase().includes(cleanTopic.toLowerCase())
       ) : -1;
       const by = trainerName || req.user?.name || 'Trainer';
+      let matchedModuleName = cleanTopic;
       if (sylDoc && existingIndex >= 0) {
+        matchedModuleName = sylDoc.modules[existingIndex].name;
         sylDoc.modules[existingIndex].done = true;
         sylDoc.modules[existingIndex].doneAt = new Date();
         sylDoc.modules[existingIndex].doneBy = by;
@@ -6972,8 +7101,23 @@ router.post('/trainer/attendance', async (req, res) => {
         updatedSyllabus = sylDoc;
       }
 
-      // Update current syllabus module for all students in this batch
-      await Student.updateMany({ batchName: batch }, { $set: { syllabusModule: cleanTopic } });
+      // Track individual progress per student: Present/Late students get this module credited;
+      // Absent students do NOT get automatic credit until they catch up.
+      const totalMods = await totalSyllabusModuleCount(batch, sylDoc?.course);
+      for (const [k, status] of Object.entries(records)) {
+        const st = await findStudentByAnyId(k);
+        if (!st) continue;
+        if (status === 'Present' || status === 'Late') {
+          applyStudentModuleProgress(st, {
+            moduleName: matchedModuleName,
+            done: true,
+            doneBy: by,
+            source: 'attendance',
+            totalModules: totalMods
+          });
+          await st.save().catch(() => {});
+        }
+      }
 
       // Notify the batch about the syllabus update — only when the topic actually
       // matched a module on the course's master syllabus and progress was saved.
@@ -7006,6 +7150,8 @@ async function canonicalBatchName(name, trainerId) {
   const clean = tidyBatchName(name);
   if (!clean) return '';
   const key = batchMatchKey(clean);
+  const existingBatch = await Batch.findOne({ batchKey: key }).select('batchName').lean();
+  if (existingBatch?.batchName) return existingBatch.batchName;
   const existing = await Student.distinct('batchName', trainerId ? { trainerId } : {});
   return existing.find((b) => b && batchMatchKey(b) === key) || clean;
 }
@@ -7928,57 +8074,925 @@ router.get('/trainer/utilization/report', async (req, res) => {
   }
 });
 
-// Existing batches (optionally one trainer's) with their student counts — the handover pick-list
+// Helper: find a Batch document by _id, batchCode, or batchName/batchKey
+async function findBatchByAnyId(idOrName) {
+  const raw = String(idOrName || '').trim();
+  if (!raw) return null;
+  if (mongoose.isValidObjectId(raw)) {
+    const byId = await Batch.findById(raw);
+    if (byId) return byId;
+  }
+  const byCode = await Batch.findOne({ batchCode: raw });
+  if (byCode) return byCode;
+  const key = batchMatchKey(raw);
+  if (key) {
+    const byKey = await Batch.findOne({ batchKey: key });
+    if (byKey) return byKey;
+  }
+  return null;
+}
+
+// Helper: compute student individual attendance & progress snapshot for a batch
+async function buildBatchRosterStats(batchName, course, students) {
+  const cleanBatch = tidyBatchName(batchName);
+  const bKey = batchMatchKey(cleanBatch);
+  const [attDocs, sylDoc, courseDoc] = await Promise.all([
+    cleanBatch ? ClassAttendance.find({ batch: new RegExp(`^${escapeRegex(cleanBatch)}$`, 'i') }).sort({ date: -1 }).lean() : [],
+    bKey ? BatchSyllabus.findOne({ batchKey: bKey }).lean() : null,
+    course ? CourseSyllabus.findOne({ courseKey: courseKeyForSyllabus(course) }).lean() : null
+  ]);
+  const masterModules = (courseDoc?.modules?.length ? courseDoc.modules : sylDoc?.modules) || [];
+  const totalModules = masterModules.length || 5;
+  const batchDoneMap = new Map((sylDoc?.modules || []).map((m) => [String(m.name || '').trim().toLowerCase(), m]));
+
+  const studentRows = students.map((s) => {
+    const sObj = s?.toObject ? s.toObject() : s;
+    const key = studentKeyOf(sObj);
+    const altId = String(sObj._id || '');
+    let presentCount = 0;
+    let lateCount = 0;
+    let absentCount = 0;
+    const sessionMarks = [];
+    attDocs.forEach((doc) => {
+      const rec = doc.records instanceof Map ? Object.fromEntries(doc.records) : (doc.records || {});
+      const status = rec[key] || rec[altId] || rec[sObj.studentId];
+      if (!status) return;
+      if (status === 'Present') presentCount += 1;
+      else if (status === 'Late') lateCount += 1;
+      else if (status === 'Absent') absentCount += 1;
+      sessionMarks.push({ date: doc.date, topic: doc.topic || '', status });
+    });
+    const totalAttSessions = presentCount + lateCount + absentCount;
+    const attendancePct = typeof sObj.attendancePct === 'number'
+      ? sObj.attendancePct
+      : (totalAttSessions > 0 ? Math.round(((presentCount + lateCount) / totalAttSessions) * 100) : null);
+
+    // Individual module progress
+    const smp = Array.isArray(sObj.studentModuleProgress) ? sObj.studentModuleProgress : [];
+    const completedNames = new Set((sObj.completedModules || []).map((m) => String(m).trim().toLowerCase()));
+    const moduleStates = masterModules.map((mm) => {
+      const norm = String(mm.name || '').trim().toLowerCase();
+      const individual = smp.find((x) => String(x.moduleName || '').trim().toLowerCase() === norm);
+      const batchMod = batchDoneMap.get(norm);
+      const done = Boolean(sObj.syllabusCompleted || individual?.done || completedNames.has(norm));
+      return {
+        name: mm.name,
+        done,
+        doneAt: individual?.doneAt || (done ? batchMod?.doneAt : null) || null,
+        doneBy: individual?.doneBy || '',
+        source: individual?.source || (completedNames.has(norm) ? 'manual' : ''),
+        batchCovered: Boolean(batchMod?.done)
+      };
+    });
+    const doneModsCount = sObj.syllabusCompleted
+      ? totalModules
+      : (moduleStates.length > 0
+        ? moduleStates.filter((m) => m.done).length
+        : Math.min(totalModules, (sObj.completedModules || []).length));
+    const individualProgressPct = sObj.syllabusCompleted
+      ? 100
+      : (typeof sObj.syllabusProgressPct === 'number' && (smp.length > 0 || sObj.syllabusProgressPct > 0)
+        ? sObj.syllabusProgressPct
+        : Math.round((doneModsCount / Math.max(1, totalModules)) * 100));
+
+    return {
+      ...sObj,
+      id: sObj._id?.toString?.() || sObj.studentId,
+      presentCount,
+      lateCount,
+      absentCount,
+      totalAttSessions,
+      attendancePct,
+      sessionMarks: sessionMarks.slice(0, 30),
+      doneModulesCount,
+      totalModulesCount: totalModules,
+      individualProgressPct,
+      moduleStates
+    };
+  });
+
+  const withAtt = studentRows.filter((r) => typeof r.attendancePct === 'number');
+  const avgAttendance = withAtt.length ? Math.round(withAtt.reduce((a, r) => a + r.attendancePct, 0) / withAtt.length) : null;
+  const avgProgress = studentRows.length ? Math.round(studentRows.reduce((a, r) => a + r.individualProgressPct, 0) / studentRows.length) : 0;
+
+  return {
+    studentRows,
+    attDocs,
+    sylDoc,
+    masterModules,
+    totalModules,
+    avgAttendance,
+    avgProgress
+  };
+}
+
+// Helper: keep all students in a Batch linked to the exact same course, trainer, and scheduled time
+async function syncBatchStudentsConsistency(batchDoc) {
+  if (!batchDoc) return;
+  const bId = batchDoc._id.toString();
+  const bKey = batchDoc.batchKey || batchMatchKey(batchDoc.batchName);
+  const allCandidates = await Student.find({
+    $or: [
+      { batchId: bId },
+      { batchName: new RegExp(`^${escapeRegex(batchDoc.batchName)}$`, 'i') }
+    ]
+  });
+  for (const st of allCandidates) {
+    const matchesBatch = st.batchId === bId || batchMatchKey(st.batchName) === bKey;
+    if (!matchesBatch) continue;
+    st.batchId = bId;
+    st.batchName = batchDoc.batchName;
+    st.course = batchDoc.course;
+    st.trainerId = batchDoc.trainerId;
+    st.trainerName = batchDoc.trainerName;
+    st.batchTiming = batchDoc.scheduledTime;
+    if (batchDoc.mode) st.mode = batchDoc.mode;
+    if (batchDoc.branch) st.branch = batchDoc.branch;
+    await st.save().catch(() => {});
+  }
+}
+
+// Existing batches (optionally one trainer's) with capacity, schedule, and individual student metrics
 router.get('/batches', async (req, res) => {
   try {
-    const match = { batchName: { $nin: ['', null] } };
+    const batchQuery = {};
+    const studentMatch = { batchName: { $nin: ['', null] } };
     if (isIndividualTrainerUser(req)) {
-      match.trainerId = String(req.user.trainerId);
+      batchQuery.trainerId = String(req.user.trainerId);
+      studentMatch.trainerId = String(req.user.trainerId);
     } else if (isTrainerTLUser(req) || isTrainerManagerUser(req)) {
       const allowedTrainers = req.user.supervisedTrainers || [];
       if (allowedTrainers.length) {
-        match.trainerId = { $in: allowedTrainers.map(String) };
+        batchQuery.trainerId = { $in: allowedTrainers.map(String) };
+        studentMatch.trainerId = { $in: allowedTrainers.map(String) };
       }
     } else if (req.query.trainerId) {
-      match.trainerId = String(req.query.trainerId);
+      batchQuery.trainerId = String(req.query.trainerId);
+      studentMatch.trainerId = String(req.query.trainerId);
     }
-    const rows = await Student.aggregate([
-      { $match: match },
-      {
-        $group: {
-          _id: { batch: '$batchName', trainerId: '$trainerId' },
-          trainerName: { $first: '$trainerName' },
-          course: { $first: '$course' },
-          branch: { $first: '$branch' },
-          timing: { $first: '$batchTiming' },
-          mode: { $first: '$mode' },
-          students: { $sum: 1 }
-        }
-      },
-      {
-        $project: {
-          _id: 0,
-          id: '$_id.batch',
-          name: '$_id.batch',
-          batch: '$_id.batch',
-          batchName: '$_id.batch',
-          batchId: '$_id.batch',
-          trainerId: '$_id.trainerId',
-          trainerName: 1,
-          trainer: '$trainerName',
-          faculty: '$trainerName',
-          course: 1,
-          branch: 1,
-          timing: 1,
-          mode: 1,
-          students: 1
-        }
-      },
-      { $sort: { batch: 1 } }
+
+    const [batchDocs, allStudents, allBatchSyllabi] = await Promise.all([
+      Batch.find(batchQuery).sort({ createdAt: -1 }).lean(),
+      Student.find(studentMatch).lean(),
+      BatchSyllabus.find().lean()
     ]);
-    res.json(rows);
+
+    const sylByKey = new Map(allBatchSyllabi.map((s) => [s.batchKey, s]));
+    const studentsByBatchKey = new Map();
+    const studentsByBatchId = new Map();
+    allStudents.forEach((st) => {
+      const bId = st.batchId ? String(st.batchId) : '';
+      const bKey = batchMatchKey(st.batchName || '');
+      if (bId) {
+        if (!studentsByBatchId.has(bId)) studentsByBatchId.set(bId, []);
+        studentsByBatchId.get(bId).push(st);
+      }
+      if (bKey) {
+        if (!studentsByBatchKey.has(bKey)) studentsByBatchKey.set(bKey, []);
+        studentsByBatchKey.get(bKey).push(st);
+      }
+    });
+
+    const includeStudents = req.query.includeStudents === '1' || req.query.includeStudents === 'true';
+    const seenKeys = new Set();
+    const results = [];
+
+    const formatRow = (doc, list) => {
+      const minStudents = doc.minStudents || 10;
+      const maxStudents = doc.maxStudents || 15;
+      const count = list.length;
+      const capacityStatus = count === 0 ? 'empty' : count < minStudents ? 'forming' : count <= maxStudents ? 'optimal' : 'over';
+      const withAtt = list.filter((s) => typeof s.attendancePct === 'number');
+      const avgAttendance = withAtt.length ? Math.round(withAtt.reduce((a, s) => a + s.attendancePct, 0) / withAtt.length) : null;
+      const avgProgress = count
+        ? Math.round(list.reduce((a, s) => a + (s.syllabusCompleted ? 100 : (Number(s.syllabusProgressPct) || 0)), 0) / count)
+        : 0;
+      const syl = sylByKey.get(doc.batchKey || batchMatchKey(doc.batchName));
+      const sylDone = (syl?.modules || []).filter((m) => m.done).length;
+      const sylTotal = (syl?.modules || []).length;
+      return {
+        _id: doc._id?.toString?.() || doc.batchName,
+        id: doc._id?.toString?.() || doc.batchName,
+        batchCode: doc.batchCode || '',
+        name: doc.batchName,
+        batch: doc.batchName,
+        batchName: doc.batchName,
+        batchId: doc._id?.toString?.() || doc.batchName,
+        trainerId: doc.trainerId || '',
+        trainerName: doc.trainerName || '',
+        trainer: doc.trainerName || '',
+        faculty: doc.trainerName || '',
+        course: doc.course || '',
+        branch: doc.branch || '',
+        timing: doc.scheduledTime || '',
+        scheduledTime: doc.scheduledTime || '',
+        batchTiming: doc.scheduledTime || '',
+        mode: doc.mode || 'Online',
+        days: doc.days || 'Weekdays',
+        startDate: doc.startDate || '',
+        minStudents,
+        maxStudents,
+        status: doc.status || 'Active',
+        notes: doc.notes || '',
+        students: count,
+        enrolledCount: count,
+        isOptimalSize: count >= minStudents && count <= maxStudents,
+        capacityStatus,
+        avgAttendance,
+        avgProgress,
+        syllabusDoneCount: sylDone,
+        syllabusTotalCount: sylTotal,
+        ...(includeStudents ? { studentList: list } : {})
+      };
+    };
+
+    for (const b of batchDocs) {
+      const bId = b._id.toString();
+      const bKey = b.batchKey || batchMatchKey(b.batchName);
+      seenKeys.add(bKey);
+      const mergedMap = new Map();
+      (studentsByBatchId.get(bId) || []).forEach((s) => mergedMap.set(String(s._id), s));
+      (studentsByBatchKey.get(bKey) || []).forEach((s) => mergedMap.set(String(s._id), s));
+      results.push(formatRow(b, [...mergedMap.values()]));
+    }
+
+    // Legacy student-grouped batches without a Batch doc yet
+    for (const [bKey, list] of studentsByBatchKey.entries()) {
+      if (seenKeys.has(bKey)) continue;
+      seenKeys.add(bKey);
+      const first = list[0];
+      results.push(formatRow({
+        batchName: first.batchName,
+        batchKey: bKey,
+        trainerId: first.trainerId || '',
+        trainerName: first.trainerName || '',
+        course: first.course || '',
+        branch: first.branch || '',
+        scheduledTime: first.batchTiming || '',
+        mode: first.mode || 'Online',
+        minStudents: 10,
+        maxStudents: 15,
+        status: 'Active'
+      }, list));
+    }
+
+    results.sort((a, b) => String(a.batchName || '').localeCompare(String(b.batchName || '')));
+    res.json(results);
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// GET single batch with full per-student individual attendance & progress breakdown
+router.get('/batches/:id', async (req, res) => {
+  try {
+    const rawId = decodeURIComponent(req.params.id || '');
+    let batchDoc = await findBatchByAnyId(rawId);
+    let students = [];
+    if (batchDoc) {
+      const bId = batchDoc._id.toString();
+      students = await Student.find({
+        $or: [
+          { batchId: bId },
+          { batchName: new RegExp(`^${escapeRegex(batchDoc.batchName)}$`, 'i') }
+        ]
+      }).sort({ name: 1 });
+    } else {
+      students = await Student.find({ batchName: new RegExp(`^${escapeRegex(rawId)}$`, 'i') }).sort({ name: 1 });
+      if (!students.length) return res.status(404).json({ error: 'Batch not found' });
+      const first = students[0];
+      batchDoc = {
+        _id: first.batchName,
+        batchName: first.batchName,
+        batchKey: batchMatchKey(first.batchName),
+        course: first.course || '',
+        trainerId: first.trainerId || '',
+        trainerName: first.trainerName || '',
+        scheduledTime: first.batchTiming || '',
+        mode: first.mode || 'Online',
+        branch: first.branch || '',
+        minStudents: 10,
+        maxStudents: 15,
+        status: 'Active'
+      };
+    }
+
+    if (isIndividualTrainerUser(req) && String(batchDoc.trainerId) !== String(req.user.trainerId)) {
+      return res.status(403).json(NOT_YOUR_BATCH);
+    }
+
+    const trainer = batchDoc.trainerId ? await Trainer.findOne({ trainerId: batchDoc.trainerId }).lean() : null;
+    const stats = await buildBatchRosterStats(batchDoc.batchName, batchDoc.course, students);
+    const minStudents = batchDoc.minStudents || 10;
+    const maxStudents = batchDoc.maxStudents || 15;
+    const count = stats.studentRows.length;
+
+    res.json({
+      batch: {
+        ...(batchDoc.toObject ? batchDoc.toObject() : batchDoc),
+        id: batchDoc._id?.toString?.() || batchDoc.batchName,
+        enrolledCount: count,
+        minStudents,
+        maxStudents,
+        capacityStatus: count === 0 ? 'empty' : count < minStudents ? 'forming' : count <= maxStudents ? 'optimal' : 'over',
+        avgAttendance: stats.avgAttendance,
+        avgProgress: stats.avgProgress,
+        totalModules: stats.totalModules
+      },
+      trainer: publicTrainer(trainer),
+      syllabus: {
+        modules: stats.masterModules.map((mm) => {
+          const found = (stats.sylDoc?.modules || []).find((m) => String(m.name).trim().toLowerCase() === String(mm.name).trim().toLowerCase());
+          return { name: mm.name, done: Boolean(found?.done), doneAt: found?.doneAt || null, doneBy: found?.doneBy || '' };
+        })
+      },
+      students: stats.studentRows,
+      attendanceSessions: stats.attDocs.slice(0, 30).map((d) => ({
+        id: d._id.toString(),
+        date: d.date,
+        topic: d.topic || '',
+        trainerName: d.trainerName || '',
+        records: d.records instanceof Map ? Object.fromEntries(d.records) : (d.records || {})
+      }))
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /batches — Create a new batch under a trainer, course, and scheduled time, and optionally group students
+router.post('/batches', async (req, res) => {
+  try {
+    const authorized = await isHeadOfTrainerUser(req);
+    if (!authorized) {
+      return res.status(403).json({ error: 'Access denied: Only Head of Trainer / Training Managers / Team Leads can create batches.' });
+    }
+    const {
+      batchName: rawName = '',
+      course = '',
+      trainerId = '',
+      scheduledTime = '',
+      mode = 'Online',
+      branch = '',
+      days = 'Weekdays',
+      startDate = '',
+      minStudents = 10,
+      maxStudents = 15,
+      notes = '',
+      studentIds = [],
+      allowOverflow = false
+    } = req.body || {};
+
+    if (!course.trim()) return res.status(400).json({ error: 'Course is required to create a batch' });
+    if (!trainerId) return res.status(400).json({ error: 'Assigned trainer is required to create a batch' });
+    if (!scheduledTime.trim()) return res.status(400).json({ error: 'Scheduled time (e.g. 11:00 AM – 1:00 PM) is required' });
+
+    const trainer = await Trainer.findOne({ trainerId });
+    if (!trainer) return res.status(404).json({ error: 'Trainer not found in roster' });
+
+    const cleanCourse = course.trim();
+    const cleanTime = scheduledTime.trim();
+    const cleanName = tidyBatchName(rawName || `${cleanCourse} · ${cleanTime} · ${trainer.trainerName}`);
+    const bKey = batchMatchKey(cleanName);
+    const existing = await Batch.findOne({ batchKey: bKey });
+    if (existing) {
+      return res.status(400).json({ error: `A batch named "${existing.batchName}" already exists.` });
+    }
+
+    const capMax = Math.max(1, Number(maxStudents) || 15);
+    const capMin = Math.max(1, Math.min(capMax, Number(minStudents) || 10));
+    const uniqueStudentIds = [...new Set((Array.isArray(studentIds) ? studentIds : []).filter(Boolean))];
+    if (uniqueStudentIds.length > capMax && !allowOverflow) {
+      return res.status(400).json({
+        error: `Batch capacity is ${capMin}–${capMax} students (you selected ${uniqueStudentIds.length}). Split into multiple batches or confirm overflow.`,
+        code: 'BATCH_CAPACITY_EXCEEDED',
+        maxStudents: capMax,
+        selectedCount: uniqueStudentIds.length
+      });
+    }
+
+    const actor = req.user?.name || 'Head of Trainer';
+    const batchCode = await generateBatchCode(cleanCourse);
+    const batchDoc = await Batch.create({
+      batchCode,
+      batchName: cleanName,
+      batchKey: bKey,
+      course: cleanCourse,
+      trainerId: trainer.trainerId,
+      trainerName: trainer.trainerName,
+      scheduledTime: cleanTime,
+      mode: mode === 'Classroom' ? 'Classroom' : 'Online',
+      branch: branch || trainer.branchName || '',
+      days: days || trainer.workingDays || 'Weekdays',
+      startDate,
+      minStudents: capMin,
+      maxStudents: capMax,
+      status: uniqueStudentIds.length >= capMin ? 'Active' : 'Forming',
+      notes,
+      createdBy: actor,
+      updatedBy: actor
+    });
+
+    await ensureBatchSyllabusDoc(cleanName, cleanCourse, trainer.trainerId, trainer.trainerName).catch(() => {});
+    await syncTrainerScheduledClass(trainer, { batchName: cleanName, course: cleanCourse, scheduledTime: cleanTime, days });
+
+    const assignedStudents = [];
+    for (const sid of uniqueStudentIds) {
+      const st = await findStudentByAnyId(sid);
+      if (!st) continue;
+      const prevBatch = st.batchName || '';
+      const prevTrainerId = st.trainerId || '';
+      const prevTrainerName = st.trainerName || '';
+
+      st.batchId = batchDoc._id.toString();
+      st.batchName = batchDoc.batchName;
+      st.course = batchDoc.course;
+      st.trainerId = trainer.trainerId;
+      st.trainerName = trainer.trainerName;
+      st.batchTiming = batchDoc.scheduledTime;
+      st.mode = batchDoc.mode;
+      if (batchDoc.branch) st.branch = batchDoc.branch;
+      st.handoverStatus = 'Sent to Training';
+      st.allocatedByHead = actor;
+      st.allocatedByHeadAt = new Date();
+      st.allocatedTrainerAt = new Date();
+      if (!st.handedOverAt) st.handedOverAt = new Date();
+      st.batchHistory = st.batchHistory || [];
+      st.batchHistory.push({
+        fromBatch: prevBatch,
+        toBatch: batchDoc.batchName,
+        fromTrainerId: prevTrainerId,
+        fromTrainerName: prevTrainerName,
+        toTrainerId: trainer.trainerId,
+        toTrainerName: trainer.trainerName,
+        transitionType: prevBatch ? 'batch_transfer' : 'initial_allocation',
+        transitionedAt: new Date(),
+        transitionedBy: actor,
+        preservedSyllabusModule: st.syllabusModule,
+        timing: batchDoc.scheduledTime,
+        notes: notes || `Grouped into batch ${batchDoc.batchName}`
+      });
+      await st.save();
+      assignedStudents.push(st);
+
+      await notifyStudent(st.studentId, {
+        type: 'handover',
+        title: `Batch Assigned: ${batchDoc.batchName}`,
+        message: `You have been grouped into batch "${batchDoc.batchName}" (${batchDoc.course} · ${batchDoc.scheduledTime}) with trainer ${trainer.trainerName}.`,
+        createdBy: actor
+      }).catch(() => {});
+    }
+
+    if (assignedStudents.length) {
+      await pushNotification({
+        audience: 'trainer',
+        recipientId: trainer.trainerId,
+        recipientName: trainer.trainerName,
+        type: 'handover',
+        title: `New batch created: ${batchDoc.batchName} (${assignedStudents.length} students)`,
+        message: `${actor} created batch "${batchDoc.batchName}" (${batchDoc.course} · ${batchDoc.scheduledTime}) with ${assignedStudents.length} students assigned to you.`,
+        createdBy: actor
+      }).catch(() => {});
+    }
+
+    res.status(201).json({
+      batch: batchDoc,
+      assignedCount: assignedStudents.length,
+      students: assignedStudents
+    });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// PUT /batches/:id — Update batch details & keep all students in the batch linked to the same course, trainer, and scheduled time
+router.put('/batches/:id', async (req, res) => {
+  try {
+    const authorized = await isHeadOfTrainerUser(req);
+    if (!authorized) {
+      return res.status(403).json({ error: 'Access denied: Only Head of Trainer / Training Managers / Team Leads can update batches.' });
+    }
+    const batchDoc = await findBatchByAnyId(decodeURIComponent(req.params.id || ''));
+    if (!batchDoc) return res.status(404).json({ error: 'Batch not found' });
+
+    const oldName = batchDoc.batchName;
+    const oldKey = batchDoc.batchKey;
+    const {
+      batchName,
+      course,
+      trainerId,
+      scheduledTime,
+      mode,
+      branch,
+      days,
+      startDate,
+      minStudents,
+      maxStudents,
+      status,
+      notes
+    } = req.body || {};
+
+    let trainerDoc = null;
+    if (trainerId) {
+      trainerDoc = await Trainer.findOne({ trainerId });
+      if (!trainerDoc) return res.status(404).json({ error: 'Trainer not found in roster' });
+      batchDoc.trainerId = trainerDoc.trainerId;
+      batchDoc.trainerName = trainerDoc.trainerName;
+    } else if (batchDoc.trainerId) {
+      trainerDoc = await Trainer.findOne({ trainerId: batchDoc.trainerId });
+    }
+
+    if (course && course.trim()) batchDoc.course = course.trim();
+    if (scheduledTime && scheduledTime.trim()) batchDoc.scheduledTime = scheduledTime.trim();
+    if (mode && ['Online', 'Classroom'].includes(mode)) batchDoc.mode = mode;
+    if (typeof branch === 'string') batchDoc.branch = branch.trim();
+    if (typeof days === 'string') batchDoc.days = days.trim();
+    if (typeof startDate === 'string') batchDoc.startDate = startDate;
+    if (typeof minStudents === 'number' && minStudents > 0) batchDoc.minStudents = minStudents;
+    if (typeof maxStudents === 'number' && maxStudents > 0) batchDoc.maxStudents = maxStudents;
+    if (status && ['Forming', 'Active', 'Completed', 'Archived'].includes(status)) batchDoc.status = status;
+    if (typeof notes === 'string') batchDoc.notes = notes;
+
+    if (batchName && tidyBatchName(batchName) !== oldName) {
+      const nextName = tidyBatchName(batchName);
+      const nextKey = batchMatchKey(nextName);
+      const clash = await Batch.findOne({ batchKey: nextKey, _id: { $ne: batchDoc._id } });
+      if (clash) return res.status(400).json({ error: `A batch named "${clash.batchName}" already exists.` });
+      batchDoc.batchName = nextName;
+      batchDoc.batchKey = nextKey;
+    }
+
+    batchDoc.updatedBy = req.user?.name || 'Head of Trainer';
+    await batchDoc.save();
+
+    // Propagate batch changes to all students so they remain linked to the same course, trainer, and scheduled time
+    await syncBatchStudentsConsistency(batchDoc);
+
+    // Keep BatchSyllabus, ClassAttendance, LiveClassSession, BatchAnnouncement, TrainerAssessment aligned if batchName or course changed
+    if (oldName !== batchDoc.batchName || oldKey !== batchDoc.batchKey) {
+      await Promise.all([
+        BatchSyllabus.updateMany({ batchKey: oldKey }, { $set: { batch: batchDoc.batchName, batchKey: batchDoc.batchKey, course: batchDoc.course, trainerId: batchDoc.trainerId, trainerName: batchDoc.trainerName } }).catch(() => {}),
+        ClassAttendance.updateMany({ batch: oldName }, { $set: { batch: batchDoc.batchName, trainerId: batchDoc.trainerId, trainerName: batchDoc.trainerName } }).catch(() => {}),
+        LiveClassSession.updateMany({ batch: oldName }, { $set: { batch: batchDoc.batchName, course: batchDoc.course } }).catch(() => {}),
+        BatchAnnouncement.updateMany({ batchKey: oldKey }, { $set: { batch: batchDoc.batchName, batchKey: batchDoc.batchKey } }).catch(() => {}),
+        TrainerAssessment.updateMany({ batch: oldName }, { $set: { batch: batchDoc.batchName, course: batchDoc.course } }).catch(() => {})
+      ]);
+    }
+    if (trainerDoc) {
+      await syncTrainerScheduledClass(trainerDoc, {
+        batchName: batchDoc.batchName,
+        course: batchDoc.course,
+        scheduledTime: batchDoc.scheduledTime,
+        days: batchDoc.days
+      });
+    }
+
+    res.json({ batch: batchDoc });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// POST /batches/:id/assign-students — Bulk-assign students into an existing batch (10–15 optimal)
+router.post('/batches/:id/assign-students', async (req, res) => {
+  try {
+    const authorized = await isHeadOfTrainerUser(req);
+    if (!authorized) {
+      return res.status(403).json({ error: 'Access denied: Only Head of Trainer can assign students to batches.' });
+    }
+    const batchDoc = await findBatchByAnyId(decodeURIComponent(req.params.id || ''));
+    if (!batchDoc) return res.status(404).json({ error: 'Batch not found' });
+
+    const { studentIds = [], allowOverflow = false, note = '' } = req.body || {};
+    const ids = [...new Set((Array.isArray(studentIds) ? studentIds : []).filter(Boolean))];
+    if (!ids.length) return res.status(400).json({ error: 'Select at least one student to assign.' });
+
+    const bId = batchDoc._id.toString();
+    const existingStudents = await Student.find({
+      $or: [{ batchId: bId }, { batchName: new RegExp(`^${escapeRegex(batchDoc.batchName)}$`, 'i') }]
+    }).select('studentId _id');
+    const existingKeys = new Set(existingStudents.flatMap((s) => [s.studentId, s._id.toString()]));
+    const netNew = ids.filter((id) => !existingKeys.has(String(id))).length;
+    const maxCap = batchDoc.maxStudents || 15;
+    if (existingStudents.length + netNew > maxCap && !allowOverflow) {
+      return res.status(400).json({
+        error: `Batch "${batchDoc.batchName}" currently has ${existingStudents.length} students (recommended max ${maxCap}). Adding ${netNew} would bring it to ${existingStudents.length + netNew}. Create a new batch or confirm overflow.`,
+        code: 'BATCH_CAPACITY_EXCEEDED',
+        currentCount: existingStudents.length,
+        addingCount: netNew,
+        maxStudents: maxCap
+      });
+    }
+
+    const actor = req.user?.name || 'Head of Trainer';
+    const assigned = [];
+    for (const sid of ids) {
+      const st = await findStudentByAnyId(sid);
+      if (!st) continue;
+      const prevBatch = st.batchName || '';
+      const prevTrainerId = st.trainerId || '';
+      const prevTrainerName = st.trainerName || '';
+
+      st.batchId = bId;
+      st.batchName = batchDoc.batchName;
+      st.course = batchDoc.course;
+      st.trainerId = batchDoc.trainerId;
+      st.trainerName = batchDoc.trainerName;
+      st.batchTiming = batchDoc.scheduledTime;
+      st.mode = batchDoc.mode;
+      if (batchDoc.branch) st.branch = batchDoc.branch;
+      if (note) st.trainerNote = note;
+      st.handoverStatus = 'Sent to Training';
+      st.allocatedByHead = actor;
+      st.allocatedByHeadAt = new Date();
+      st.allocatedTrainerAt = new Date();
+      if (!st.handedOverAt) st.handedOverAt = new Date();
+      st.batchHistory = st.batchHistory || [];
+      st.batchHistory.push({
+        fromBatch: prevBatch,
+        toBatch: batchDoc.batchName,
+        fromTrainerId: prevTrainerId,
+        fromTrainerName: prevTrainerName,
+        toTrainerId: batchDoc.trainerId,
+        toTrainerName: batchDoc.trainerName,
+        transitionType: prevBatch ? 'batch_transfer' : 'initial_allocation',
+        transitionedAt: new Date(),
+        transitionedBy: actor,
+        preservedSyllabusModule: st.syllabusModule,
+        timing: batchDoc.scheduledTime,
+        notes: note || `Assigned to batch ${batchDoc.batchName}`
+      });
+      await st.save();
+      assigned.push(st);
+
+      await notifyStudent(st.studentId, {
+        type: 'handover',
+        title: `Batch Assigned: ${batchDoc.batchName}`,
+        message: `You have been assigned to trainer ${batchDoc.trainerName} in batch "${batchDoc.batchName}" (${batchDoc.course} · ${batchDoc.scheduledTime}).`,
+        createdBy: actor
+      }).catch(() => {});
+    }
+
+    const finalCount = existingStudents.length + netNew;
+    if (finalCount >= (batchDoc.minStudents || 10) && batchDoc.status === 'Forming') {
+      batchDoc.status = 'Active';
+      await batchDoc.save().catch(() => {});
+    }
+
+    if (assigned.length) {
+      await pushNotification({
+        audience: 'trainer',
+        recipientId: batchDoc.trainerId,
+        recipientName: batchDoc.trainerName,
+        type: 'handover',
+        title: `${assigned.length} student${assigned.length === 1 ? '' : 's'} added to ${batchDoc.batchName}`,
+        message: `${actor} added ${assigned.map((s) => s.name).join(', ')} to your batch "${batchDoc.batchName}" (${batchDoc.course} · ${batchDoc.scheduledTime}).`,
+        createdBy: actor
+      }).catch(() => {});
+    }
+
+    res.json({ batch: batchDoc, assignedCount: assigned.length, students: assigned });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// DELETE /batches/:id/students/:studentId — Remove a student from a batch back to pending allocation
+router.delete('/batches/:id/students/:studentId', async (req, res) => {
+  try {
+    const authorized = await isHeadOfTrainerUser(req);
+    if (!authorized) return res.status(403).json({ error: 'Access denied' });
+    const st = await findStudentByAnyId(req.params.studentId);
+    if (!st) return res.status(404).json({ error: 'Student not found' });
+    const prevBatch = st.batchName || '';
+    const prevTrainerId = st.trainerId || '';
+    const prevTrainerName = st.trainerName || '';
+    const actor = req.user?.name || 'Head of Trainer';
+    st.batchId = '';
+    st.batchName = '';
+    st.trainerId = '';
+    st.trainerName = '';
+    st.handoverStatus = 'Handed Over to Head of Trainer';
+    st.batchHistory = st.batchHistory || [];
+    st.batchHistory.push({
+      fromBatch: prevBatch,
+      toBatch: '',
+      fromTrainerId: prevTrainerId,
+      fromTrainerName: prevTrainerName,
+      toTrainerId: '',
+      toTrainerName: '',
+      transitionType: 'removed_from_batch',
+      transitionedAt: new Date(),
+      transitionedBy: actor,
+      preservedSyllabusModule: st.syllabusModule,
+      notes: 'Removed from batch by Head of Trainer'
+    });
+    await st.save();
+    res.json({ success: true, student: st });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// POST /batches/auto-group — Group students into batch(es) of 10–15 under a trainer, course, and scheduled time
+router.post('/batches/auto-group', async (req, res) => {
+  try {
+    const authorized = await isHeadOfTrainerUser(req);
+    if (!authorized) return res.status(403).json({ error: 'Access denied' });
+    const {
+      course = '',
+      trainerId = '',
+      scheduledTime = '',
+      mode = 'Online',
+      branch = '',
+      days = 'Weekdays',
+      targetBatchSize = 12,
+      studentIds = [],
+      batchNamePrefix = ''
+    } = req.body || {};
+
+    if (!course.trim() || !trainerId || !scheduledTime.trim()) {
+      return res.status(400).json({ error: 'Course, trainer, and scheduled time are required for batch grouping.' });
+    }
+    const trainer = await Trainer.findOne({ trainerId });
+    if (!trainer) return res.status(404).json({ error: 'Trainer not found' });
+
+    const chunkSize = Math.min(15, Math.max(10, Number(targetBatchSize) || 12));
+    let pool = [];
+    if (Array.isArray(studentIds) && studentIds.length) {
+      for (const sid of studentIds) {
+        const st = await findStudentByAnyId(sid);
+        if (st) pool.push(st);
+      }
+    } else {
+      pool = await Student.find({
+        $or: [{ trainerId: '' }, { trainerId: { $exists: false } }, { batchName: '' }, { batchName: { $exists: false } }],
+        course: new RegExp(escapeRegex(course.trim()), 'i'),
+        ...(branch ? { branch: new RegExp(escapeRegex(branch.trim()), 'i') } : {})
+      }).sort({ createdAt: 1 });
+    }
+
+    if (!pool.length) {
+      return res.status(400).json({ error: 'No matching unallocated students found to group.' });
+    }
+
+    // Split pool into chunks of 10–15 (avoid tiny trailing remainder by balancing if total > chunkSize)
+    const chunks = [];
+    if (pool.length <= 15) {
+      chunks.push(pool);
+    } else {
+      const batchCount = Math.ceil(pool.length / chunkSize);
+      const balancedSize = Math.ceil(pool.length / batchCount);
+      for (let i = 0; i < pool.length; i += balancedSize) {
+        chunks.push(pool.slice(i, i + balancedSize));
+      }
+    }
+
+    const actor = req.user?.name || 'Head of Trainer';
+    const createdBatches = [];
+    for (let idx = 0; idx < chunks.length; idx++) {
+      const group = chunks[idx];
+      const baseName = tidyBatchName(batchNamePrefix || `${course.trim()} · ${scheduledTime.trim()} · ${trainer.trainerName}`);
+      let candidateName = chunks.length > 1 ? `${baseName} (Batch ${idx + 1})` : baseName;
+      let suffix = 1;
+      while (await Batch.exists({ batchKey: batchMatchKey(candidateName) })) {
+        suffix += 1;
+        candidateName = `${baseName} #${suffix}`;
+      }
+      const batchCode = await generateBatchCode(course.trim());
+      const batchDoc = await Batch.create({
+        batchCode,
+        batchName: candidateName,
+        batchKey: batchMatchKey(candidateName),
+        course: course.trim(),
+        trainerId: trainer.trainerId,
+        trainerName: trainer.trainerName,
+        scheduledTime: scheduledTime.trim(),
+        mode: mode === 'Classroom' ? 'Classroom' : 'Online',
+        branch: branch || trainer.branchName || '',
+        days,
+        minStudents: 10,
+        maxStudents: 15,
+        status: group.length >= 10 ? 'Active' : 'Forming',
+        createdBy: actor,
+        updatedBy: actor
+      });
+      await ensureBatchSyllabusDoc(candidateName, course.trim(), trainer.trainerId, trainer.trainerName).catch(() => {});
+      await syncTrainerScheduledClass(trainer, {
+        batchName: candidateName,
+        course: course.trim(),
+        scheduledTime: scheduledTime.trim(),
+        days
+      });
+
+      for (const st of group) {
+        const prevBatch = st.batchName || '';
+        const prevTrainerId = st.trainerId || '';
+        const prevTrainerName = st.trainerName || '';
+        st.batchId = batchDoc._id.toString();
+        st.batchName = batchDoc.batchName;
+        st.course = batchDoc.course;
+        st.trainerId = trainer.trainerId;
+        st.trainerName = trainer.trainerName;
+        st.batchTiming = batchDoc.scheduledTime;
+        st.mode = batchDoc.mode;
+        if (batchDoc.branch) st.branch = batchDoc.branch;
+        st.handoverStatus = 'Sent to Training';
+        st.allocatedByHead = actor;
+        st.allocatedByHeadAt = new Date();
+        st.allocatedTrainerAt = new Date();
+        if (!st.handedOverAt) st.handedOverAt = new Date();
+        st.batchHistory = st.batchHistory || [];
+        st.batchHistory.push({
+          fromBatch: prevBatch,
+          toBatch: batchDoc.batchName,
+          fromTrainerId: prevTrainerId,
+          fromTrainerName: prevTrainerName,
+          toTrainerId: trainer.trainerId,
+          toTrainerName: trainer.trainerName,
+          transitionType: prevBatch ? 'batch_transfer' : 'initial_allocation',
+          transitionedAt: new Date(),
+          transitionedBy: actor,
+          preservedSyllabusModule: st.syllabusModule,
+          timing: batchDoc.scheduledTime,
+          notes: `Auto-grouped into batch ${batchDoc.batchName}`
+        });
+        await st.save();
+        await notifyStudent(st.studentId, {
+          type: 'handover',
+          title: `Batch Assigned: ${batchDoc.batchName}`,
+          message: `You have been grouped into batch "${batchDoc.batchName}" (${batchDoc.course} · ${batchDoc.scheduledTime}) with trainer ${trainer.trainerName}.`,
+          createdBy: actor
+        }).catch(() => {});
+      }
+      createdBatches.push({ batch: batchDoc, count: group.length });
+    }
+
+    await pushNotification({
+      audience: 'trainer',
+      recipientId: trainer.trainerId,
+      recipientName: trainer.trainerName,
+      type: 'handover',
+      title: `${createdBatches.length} batch${createdBatches.length > 1 ? 'es' : ''} grouped (${pool.length} students)`,
+      message: `${actor} grouped ${pool.length} ${course.trim()} students into ${createdBatches.length} batch(es) at ${scheduledTime.trim()} under you.`,
+      createdBy: actor
+    }).catch(() => {});
+
+    res.status(201).json({
+      batchesCreated: createdBatches.length,
+      totalStudentsGrouped: pool.length,
+      batches: createdBatches
+    });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// PUT /students/:id/batch-progress — Track or update individual student batch progress (per module)
+router.put('/students/:id/batch-progress', async (req, res) => {
+  try {
+    const st = await findStudentByAnyId(req.params.id);
+    if (!st) return res.status(404).json({ error: 'Student not found' });
+    if (!trainerOwnsStudent(req, st) && !(await isHeadOfTrainerUser(req))) {
+      return res.status(403).json(NOT_YOUR_STUDENT);
+    }
+    const { moduleName, done, modules, syllabusModule, syllabusCompleted } = req.body || {};
+    const by = req.user?.name || st.trainerName || 'Trainer';
+    const totalMods = await totalSyllabusModuleCount(st.batchName || st.course, st.course);
+
+    if (moduleName && typeof done === 'boolean') {
+      applyStudentModuleProgress(st, {
+        moduleName,
+        done,
+        doneBy: by,
+        source: 'manual',
+        totalModules: totalMods
+      });
+    }
+    if (Array.isArray(modules)) {
+      modules.forEach((m) => {
+        if (m?.name || m?.moduleName) {
+          applyStudentModuleProgress(st, {
+            moduleName: m.name || m.moduleName,
+            done: Boolean(m.done),
+            doneBy: by,
+            source: m.source || 'manual',
+            totalModules: Math.max(totalMods, modules.length)
+          });
+        }
+      });
+    }
+    if (syllabusModule) st.syllabusModule = String(syllabusModule).trim();
+    if (typeof syllabusCompleted === 'boolean') {
+      st.syllabusCompleted = syllabusCompleted;
+      st.syllabusCompletedAt = syllabusCompleted ? (st.syllabusCompletedAt || new Date()) : null;
+      if (syllabusCompleted) st.syllabusProgressPct = 100;
+    }
+
+    await st.save();
+    res.json(st);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
   }
 });
 
@@ -8099,7 +9113,9 @@ router.post('/students/:id/allocate-trainer', async (req, res) => {
 
     const {
       trainerId,
+      batchId = '',
       batchName = '',
+      course = '',
       trainerNote = '',
       allocatedBy = '',
       isAnatomyToCoding = false,
@@ -8109,11 +9125,18 @@ router.post('/students/:id/allocate-trainer', async (req, res) => {
       resolveTicket = false
     } = req.body || {};
 
-    if (!trainerId) return res.status(400).json({ error: 'Select a trainer to allocate the student to' });
-    const trainer = await Trainer.findOne({ trainerId });
-    if (!trainer) return res.status(404).json({ error: 'Trainer not found in the roster' });
     const st = await findStudentByAnyId(req.params.id);
     if (!st) return res.status(404).json({ error: 'Student not found' });
+
+    let targetBatchDoc = batchId ? await findBatchByAnyId(batchId) : null;
+    if (!targetBatchDoc && batchName) {
+      targetBatchDoc = await findBatchByAnyId(batchName);
+    }
+
+    const resolvedTrainerId = trainerId || targetBatchDoc?.trainerId || '';
+    if (!resolvedTrainerId) return res.status(400).json({ error: 'Select a trainer to allocate the student to' });
+    const trainer = await Trainer.findOne({ trainerId: resolvedTrainerId });
+    if (!trainer) return res.status(404).json({ error: 'Trainer not found in the roster' });
 
     const previousBatch = st.allocatedTrainerAt || st.handedOverAt ? studentBatchOf(st) : '';
     const previousTrainer = st.trainerName;
@@ -8121,16 +9144,58 @@ router.post('/students/:id/allocate-trainer', async (req, res) => {
 
     // Detect if this is an Anatomy to Medical Coding transition:
     const isAnatomySource = /anatomy/i.test(previousBatch || '') || /anatomy/i.test(st.course || '') || /anatomy/i.test(previousTrainer || '') || st.syllabusModule === 'Module 2' || st.anatomyCompleted;
-    const isCodingTarget = /coding|cpc|amct|cic|coc|ccs|cpt|icd/i.test(batchName || '') || /coding|cpc|amct|cic|coc|ccs/i.test(trainer.courseKey || trainer.specialization || '');
-    const isAnatomyConversion = Boolean(isAnatomyToCoding || (isAnatomySource && isCodingTarget && !/anatomy alone/i.test(batchName)));
+    const isCodingTarget = /coding|cpc|amct|cic|coc|ccs|cpt|icd/i.test(batchName || targetBatchDoc?.batchName || '') || /coding|cpc|amct|cic|coc|ccs/i.test(trainer.courseKey || trainer.specialization || '');
+    const isAnatomyConversion = Boolean(isAnatomyToCoding || (isAnatomySource && isCodingTarget && !/anatomy alone/i.test(batchName || targetBatchDoc?.batchName || '')));
 
-    st.trainerId = trainer.trainerId;
-    st.trainerName = trainer.trainerName;
-    st.batchName = await canonicalBatchName(batchName || st.batchName || `${st.course}${st.batchTiming ? ` · ${st.batchTiming}` : ''}`, trainer.trainerId);
+    const effectiveTiming = targetBatchDoc?.scheduledTime || batchTiming || targetTiming || st.batchTiming || '';
+    const effectiveCourse = targetBatchDoc?.course || course || st.course || 'Medical Coding';
+    const resolvedBatchName = targetBatchDoc?.batchName || await canonicalBatchName(batchName || st.batchName || `${effectiveCourse}${effectiveTiming ? ` · ${effectiveTiming}` : ''}`, trainer.trainerId);
 
-    // Schedule continuity — keep or update training schedule
-    const effectiveTiming = batchTiming || targetTiming || st.batchTiming || '';
-    if (effectiveTiming) st.batchTiming = effectiveTiming;
+    // Ensure a first-class Batch document exists so all students in this batch share course, trainer, and scheduled time
+    if (!targetBatchDoc && resolvedBatchName) {
+      const bKey = batchMatchKey(resolvedBatchName);
+      targetBatchDoc = await Batch.findOne({ batchKey: bKey });
+      if (!targetBatchDoc) {
+        const batchCode = await generateBatchCode(effectiveCourse);
+        targetBatchDoc = await Batch.create({
+          batchCode,
+          batchName: resolvedBatchName,
+          batchKey: bKey,
+          course: effectiveCourse,
+          trainerId: trainer.trainerId,
+          trainerName: trainer.trainerName,
+          scheduledTime: effectiveTiming || 'Flexible',
+          mode: st.mode === 'Classroom' ? 'Classroom' : 'Online',
+          branch: st.branch || trainer.branchName || '',
+          days: trainer.workingDays || 'Weekdays',
+          minStudents: 10,
+          maxStudents: 15,
+          status: 'Active',
+          createdBy: allocatedBy || req.user?.name || 'Head of Trainer',
+          updatedBy: allocatedBy || req.user?.name || 'Head of Trainer'
+        });
+      }
+      await ensureBatchSyllabusDoc(targetBatchDoc.batchName, targetBatchDoc.course, trainer.trainerId, trainer.trainerName).catch(() => {});
+      await syncTrainerScheduledClass(trainer, {
+        batchName: targetBatchDoc.batchName,
+        course: targetBatchDoc.course,
+        scheduledTime: targetBatchDoc.scheduledTime,
+        days: targetBatchDoc.days
+      });
+    }
+
+    st.trainerId = targetBatchDoc ? targetBatchDoc.trainerId : trainer.trainerId;
+    st.trainerName = targetBatchDoc ? targetBatchDoc.trainerName : trainer.trainerName;
+    st.batchId = targetBatchDoc ? targetBatchDoc._id.toString() : '';
+    st.batchName = targetBatchDoc ? targetBatchDoc.batchName : resolvedBatchName;
+    if (targetBatchDoc?.course) st.course = targetBatchDoc.course;
+    if (targetBatchDoc?.scheduledTime && targetBatchDoc.scheduledTime !== 'Flexible') {
+      st.batchTiming = targetBatchDoc.scheduledTime;
+    } else if (effectiveTiming) {
+      st.batchTiming = effectiveTiming;
+    }
+    if (targetBatchDoc?.mode) st.mode = targetBatchDoc.mode;
+    if (targetBatchDoc?.branch && !st.branch) st.branch = targetBatchDoc.branch;
 
     if (trainerNote) st.trainerNote = trainerNote;
     st.handoverStatus = 'Sent to Training';
@@ -10204,7 +11269,7 @@ export function computeStudentWeeklyRating(st, { attendance = [], assessments = 
     return dStr >= mondayStr && dStr <= sundayStr;
   });
 
-  let attScore = 4.0;
+  let attScore = 0;
   let attDetail = '';
   if (weeklyAttendance.length > 0) {
     const attendedCount = weeklyAttendance.filter((a) => a.status === 'Present' || a.status === 'Late').length;
@@ -10216,22 +11281,28 @@ export function computeStudentWeeklyRating(st, { attendance = [], assessments = 
     else if (rate >= 40) attScore = 2.0;
     else attScore = 1.0;
     attDetail = `${rate}% attendance (${attendedCount}/${weeklyAttendance.length} classes this week)`;
-  } else if (typeof st.attendancePct === 'number' && st.attendancePct > 0) {
-    const rate = st.attendancePct;
+  } else if (attendance.length > 0 || typeof st.attendancePct === 'number') {
+    const attendedAll = attendance.filter((a) => a.status === 'Present' || a.status === 'Late').length;
+    const rate = typeof st.attendancePct === 'number'
+      ? st.attendancePct
+      : Math.round((attendedAll / attendance.length) * 100);
     if (rate >= 90) attScore = 5.0;
     else if (rate >= 80) attScore = 4.5;
     else if (rate >= 75) attScore = 4.0;
     else if (rate >= 60) attScore = 3.0;
-    else attScore = 2.0;
+    else if (rate >= 40) attScore = 2.0;
+    else attScore = 1.0;
     attDetail = `${rate}% cumulative attendance rate (target: 75%+)`;
   } else {
-    attScore = 4.0;
-    attDetail = 'Regular attendance schedule on track';
+    attScore = 0;
+    attDetail = st.trainerId
+      ? 'No classes logged yet — starts with first session'
+      : 'No classes yet — awaiting batch & trainer allocation';
   }
 
-  // 2. ASSESSMENT PERFORMANCE PILLAR (0 - 5.0 stars)
+  // 2. ASSESSMENT PERFORMANCE PILLAR (0 - 5.0 stars; 0 = not conducted yet)
   const scoredTests = assessments.filter((t) => typeof t.pct === 'number');
-  let assScore = 4.0;
+  let assScore = 0;
   let assDetail = '';
   if (scoredTests.length > 0) {
     const avg = Math.round(scoredTests.reduce((acc, t) => acc + t.pct, 0) / scoredTests.length);
@@ -10242,28 +11313,41 @@ export function computeStudentWeeklyRating(st, { attendance = [], assessments = 
     else if (avg >= 40) assScore = 2.0;
     else assScore = 1.5;
     assDetail = `${avg}% average across ${scoredTests.length} tests/evaluations`;
-  } else if (typeof st.assessmentScore === 'number' && st.assessmentScore > 0) {
+  } else if (typeof st.assessmentScore === 'number') {
     const avg = st.assessmentScore;
     if (avg >= 90) assScore = 5.0;
     else if (avg >= 80) assScore = 4.5;
     else if (avg >= 70) assScore = 3.8;
     else if (avg >= 55) assScore = 3.0;
-    else assScore = 2.0;
+    else if (avg >= 40) assScore = 2.0;
+    else assScore = 1.5;
     assDetail = `${avg}% trainer evaluation baseline`;
   } else {
-    assScore = 3.8;
-    assDetail = 'Initial assessment module in progress';
+    assScore = 0;
+    assDetail = assessments.length > 0
+      ? `${assessments.length} assessment(s) assigned — awaiting evaluation`
+      : 'No assessments conducted yet';
   }
 
-  // 3. SYLLABUS PROGRESS PILLAR (0 - 5.0 stars)
+  // 3. SYLLABUS PROGRESS PILLAR (0 - 5.0 stars; 0 = not started / no modules)
   const modules = syllabus?.modules || [];
   const doneModules = modules.filter((m) => m.done).length;
-  const sylPct = modules.length > 0 ? Math.round((doneModules / modules.length) * 100) : (st.syllabusCompleted ? 100 : 50);
-  let sylScore = 4.0;
+  const sylPct = modules.length > 0
+    ? Math.round((doneModules / modules.length) * 100)
+    : (st.syllabusCompleted ? 100 : (typeof st.syllabusProgressPct === 'number' ? st.syllabusProgressPct : 0));
+  let sylScore = 0;
   let sylDetail = '';
   if (st.syllabusCompleted || (modules.length > 0 && doneModules === modules.length)) {
     sylScore = 5.0;
     sylDetail = '100% syllabus cleared · Placement ready';
+  } else if (modules.length === 0) {
+    sylScore = 0;
+    sylDetail = st.trainerId
+      ? 'Batch syllabus not published yet (0 modules)'
+      : '0% · Syllabus starts after batch allocation';
+  } else if (doneModules === 0) {
+    sylScore = 0;
+    sylDetail = `0/${modules.length} modules completed (0% — not started yet)`;
   } else if (sylPct >= 80) {
     sylScore = 4.8;
     sylDetail = `${doneModules}/${modules.length} modules completed (${sylPct}% syllabus progress)`;
@@ -10277,19 +11361,22 @@ export function computeStudentWeeklyRating(st, { attendance = [], assessments = 
     sylScore = 3.2;
     sylDetail = `${doneModules}/${modules.length} modules completed (${sylPct}% syllabus progress)`;
   } else {
-    sylScore = 3.0;
-    sylDetail = `Module 1 foundation pacing active (${st.syllabusModule || 'Core Foundations'})`;
+    sylScore = 2.6;
+    sylDetail = `${doneModules}/${modules.length} modules completed (${sylPct}% syllabus progress)`;
   }
 
-  // 4. PARTICIPATION PILLAR (0 - 5.0 stars)
+  // 4. PARTICIPATION PILLAR (0 - 5.0 stars; 0 = no sessions/doubts/submissions yet)
   const doubtCount = doubts.length;
   const subCount = submissions.length;
   const recentClassParticipation = recentClasses.length;
-  let partScore = 3.5;
+  let partScore = 0;
   let partDetail = '';
 
   const activityPoints = (doubtCount * 1.5) + (subCount * 2.5) + (recentClassParticipation * 1.0);
-  if (activityPoints >= 10 || (doubtCount >= 2 && subCount >= 2)) {
+  if (doubtCount === 0 && subCount === 0 && recentClassParticipation === 0) {
+    partScore = 0;
+    partDetail = 'No sessions, doubts, or submissions recorded yet';
+  } else if (activityPoints >= 10 || (doubtCount >= 2 && subCount >= 2)) {
     partScore = 5.0;
     partDetail = `High engagement: ${doubtCount} doubts asked, ${subCount} submissions uploaded`;
   } else if (activityPoints >= 6 || doubtCount >= 1 || subCount >= 1) {
@@ -10303,30 +11390,40 @@ export function computeStudentWeeklyRating(st, { attendance = [], assessments = 
     partDetail = 'Regular listener · Submit assignments and ask doubts to raise rating';
   }
 
-  // OVERALL STAR RATING (Average of 4 pillars, rounded to 1 decimal place)
-  const overall = Number(((attScore + assScore + sylScore + partScore) / 4).toFixed(1));
+  // OVERALL STAR RATING (Average across active/evaluated pillars; 0 for fresh students)
+  const activeScores = [attScore, assScore, sylScore, partScore].filter((s) => s > 0);
+  const overall = activeScores.length > 0
+    ? Number((activeScores.reduce((a, b) => a + b, 0) / activeScores.length).toFixed(1))
+    : 0;
   const roundedStars = Math.round(overall);
 
-  let tier = 'On-Track Learner';
-  if (overall >= 4.5) tier = 'Outstanding Star';
+  let tier = 'New Student';
+  if (activeScores.length === 0) tier = 'Not Evaluated Yet';
+  else if (overall >= 4.5) tier = 'Outstanding Star';
   else if (overall >= 3.8) tier = 'High Performer';
   else if (overall >= 3.0) tier = 'On-Track Learner';
   else if (overall >= 2.0) tier = 'Needs Focus';
   else tier = 'Action Required';
 
-  // Actionable tip based on the weakest pillar
+  // Actionable tip based on evaluated pillars
   let feedback = '';
-  const minScore = Math.min(attScore, assScore, sylScore, partScore);
-  if (minScore === attScore && attScore < 4.5) {
-    feedback = 'Boost your attendance this week to ensure you comfortably maintain the academy 75%+ eligibility threshold.';
-  } else if (minScore === assScore && assScore < 4.5) {
-    feedback = 'Review recent assessment topics and attempt online practice tests to raise your assessment average.';
-  } else if (minScore === partScore && partScore < 4.5) {
-    feedback = 'Increase your participation rating by submitting assignments on time and asking questions in doubt clearance.';
-  } else if (minScore === sylScore && sylScore < 4.5) {
-    feedback = 'Stay closely aligned with daily batch syllabus topics to speed up your module clearance pace.';
+  if (activeScores.length === 0) {
+    feedback = st.trainerId
+      ? 'Your weekly evaluation begins automatically once classes, syllabus modules, and assessments are logged.'
+      : 'Welcome! Your attendance, syllabus progress, and weekly evaluation will begin once your trainer and batch are allocated.';
   } else {
-    feedback = 'Exceptional all-round performance this week across attendance, tests, syllabus pacing, and active participation!';
+    const minScore = Math.min(...activeScores);
+    if (attScore > 0 && minScore === attScore && attScore < 4.5) {
+      feedback = 'Boost your attendance this week to ensure you comfortably maintain the academy 75%+ eligibility threshold.';
+    } else if (assScore > 0 && minScore === assScore && assScore < 4.5) {
+      feedback = 'Review recent assessment topics and attempt online practice tests to raise your assessment average.';
+    } else if (partScore > 0 && minScore === partScore && partScore < 4.5) {
+      feedback = 'Increase your participation rating by submitting assignments on time and asking questions in doubt clearance.';
+    } else if (sylScore > 0 && minScore === sylScore && sylScore < 4.5) {
+      feedback = 'Stay closely aligned with daily batch syllabus topics to speed up your module clearance pace.';
+    } else {
+      feedback = 'Strong performance across all recorded activities this week — keep up the momentum!';
+    }
   }
 
   return {
@@ -10479,20 +11576,61 @@ router.get('/student-portal/me', async (req, res) => {
     });
     const trainerFeedback = myFeedback.find((f) => f.kind === 'trainer' && f.trainerId === st.trainerId) || null;
 
-    // Syllabus checklist, trainer announcements, class recordings, my online-test attempts
+    // Syllabus checklist, trainer announcements, class recordings, my online-test attempts, batch info
     const bKey = batchMatchKey(batch);
-    const [syllabusDoc, announcements, recordingSessions, myAttempts] = await Promise.all([
+    const [batchDoc, syllabusDoc, announcements, recordingSessions, myAttempts] = await Promise.all([
+      st.batchId && mongoose.isValidObjectId(st.batchId)
+        ? Batch.findById(st.batchId).lean()
+        : (bKey ? Batch.findOne({ batchKey: bKey }).lean() : null),
       bKey ? BatchSyllabus.findOne({ batchKey: bKey }) : null,
       bKey ? BatchAnnouncement.find({ batchKey: bKey }).sort({ createdAt: -1 }).limit(10) : [],
       batch ? LiveClassSession.find({ batch, isLive: false, recordingUrl: { $nin: ['', null] } }).sort({ startedAt: -1 }).limit(20).select('topic trainerName startedAt recordingUrl') : [],
       TestAttempt.find({ studentId: st.studentId }).select('assessmentId status score totalMarks submittedAt endsAt')
     ]);
+    const batchMemberCount = batch
+      ? await Student.countDocuments({
+          $or: [
+            ...(batchDoc?._id ? [{ batchId: batchDoc._id.toString() }] : []),
+            { batchName: new RegExp(`^${escapeRegex(batch)}$`, 'i') }
+          ]
+        })
+      : 0;
+    const batchInfo = batch ? {
+      id: batchDoc?._id?.toString?.() || batch,
+      batchCode: batchDoc?.batchCode || '',
+      batchName: batchDoc?.batchName || batch,
+      course: batchDoc?.course || st.course || '',
+      trainerId: batchDoc?.trainerId || st.trainerId || '',
+      trainerName: batchDoc?.trainerName || st.trainerName || trainer?.trainerName || '',
+      scheduledTime: batchDoc?.scheduledTime || st.batchTiming || '',
+      mode: batchDoc?.mode || st.mode || 'Online',
+      branch: batchDoc?.branch || st.branch || '',
+      studentsCount: batchMemberCount,
+      minStudents: batchDoc?.minStudents || 10,
+      maxStudents: batchDoc?.maxStudents || 15
+    } : null;
+
     tests.forEach((t) => {
       const a = myAttempts.find((x) => x.assessmentId === t.id);
       if (a) t.attempt = { status: a.status, score: a.score, totalMarks: a.totalMarks, submittedAt: a.submittedAt, endsAt: a.endsAt };
     });
+    const smp = Array.isArray(st.studentModuleProgress) ? st.studentModuleProgress : [];
+    const completedSet = new Set((st.completedModules || []).map((x) => String(x).trim().toLowerCase()));
+    const hasIndividualTracking = smp.length > 0 || completedSet.size > 0 || attendance.length > 0;
     const syllabus = syllabusDoc ? {
-      modules: (syllabusDoc.modules || []).map((m) => ({ name: m.name, done: Boolean(m.done), doneAt: m.doneAt || null })),
+      modules: (syllabusDoc.modules || []).map((m) => {
+        const norm = String(m.name || '').trim().toLowerCase();
+        const ind = smp.find((x) => String(x.moduleName || '').trim().toLowerCase() === norm);
+        const batchDone = Boolean(m.done);
+        const indDone = Boolean(st.syllabusCompleted || ind?.done || completedSet.has(norm));
+        return {
+          name: m.name,
+          batchDone,
+          done: hasIndividualTracking ? indDone : batchDone,
+          doneAt: ind?.doneAt || (indDone ? m.doneAt : null) || null,
+          source: ind?.source || (completedSet.has(norm) ? 'manual' : '')
+        };
+      }),
       updatedAt: syllabusDoc.updatedAt
     } : null;
     const recordings = recordingSessions.map((sess) => ({ id: sess._id.toString(), topic: sess.topic || '', trainerName: sess.trainerName || '', date: sess.startedAt, url: sess.recordingUrl }));
@@ -10518,7 +11656,9 @@ router.get('/student-portal/me', async (req, res) => {
     let weeklyRating = computedWeeklyRating;
     try {
       const currentLabel = st.weeklyRating?.weekLabel;
-      if (!st.weeklyRating || !st.weeklyRating.stars || currentLabel !== computedWeeklyRating.weekLabel) {
+      const scoreChanged = Number(st.weeklyRating?.stars ?? -1) !== Number(computedWeeklyRating.stars)
+        || String(st.weeklyRating?.tier || '') !== String(computedWeeklyRating.tier || '');
+      if (!st.weeklyRating || currentLabel !== computedWeeklyRating.weekLabel || scoreChanged) {
         const history = Array.isArray(st.weeklyRating?.history) ? [...st.weeklyRating.history] : [];
         if (currentLabel && currentLabel !== computedWeeklyRating.weekLabel && st.weeklyRating?.stars) {
           history.unshift({
@@ -10564,6 +11704,7 @@ router.get('/student-portal/me', async (req, res) => {
     res.json({
       student: st,
       batch,
+      batchInfo,
       trainer: publicTrainer(trainer),
       liveSession: liveSessionView(live),
       classNotes,
