@@ -1,8 +1,12 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { X, Sparkles, Plus, Edit2, CheckCircle2, Lock } from 'lucide-react';
 
-export default function AddCourseRateModal({ isOpen, onClose, onSave, initialData, existingCourses = [] }) {
-  if (!isOpen) return null;
+export default function AddCourseRateModal(props) {
+  if (!props.isOpen) return null;
+  return <AddCourseRateModalContent {...props} />;
+}
+
+function AddCourseRateModalContent({ isOpen, onClose, onSave, initialData, existingCourses = [] }) {
 
   // Selected course for editing vs creating new
   const [selectedCourseCode, setSelectedCourseCode] = useState(initialData?.code || '__NEW__');

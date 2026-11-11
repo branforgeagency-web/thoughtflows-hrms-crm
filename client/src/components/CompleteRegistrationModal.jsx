@@ -21,7 +21,12 @@ const CURRENT_YEAR = new Date().getFullYear();
 const PASSOUT_YEARS = Array.from({ length: CURRENT_YEAR - 1980 + 1 }, (_, i) => String(CURRENT_YEAR - i));
 const ALL_QUALIFICATIONS = QUALIFICATION_GROUPS.flatMap((g) => g.options);
 
-export default function CompleteRegistrationModal({
+export default function CompleteRegistrationModal(props) {
+  if (!props.isOpen) return null;
+  return <CompleteRegistrationModalContent {...props} />;
+}
+
+function CompleteRegistrationModalContent({
   isOpen,
   onClose,
   initialData,
@@ -29,7 +34,6 @@ export default function CompleteRegistrationModal({
   onSubmit,
   existingStudents
 }) {
-  if (!isOpen) return null;
 
   // Personal Details - purely empty unless provided by initialData
   const [fullName, setFullName] = useState(initialData?.fullName || initialData?.name || '');

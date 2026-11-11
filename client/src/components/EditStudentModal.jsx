@@ -27,8 +27,12 @@ export const BRANCH_OPTIONS = [
 
 export const TIMING_OPTIONS = CANONICAL_TIMING_OPTIONS;
 
-export default function EditStudentModal({ isOpen, onClose, student, onSuccess, onDelete }) {
-  if (!isOpen || !student) return null;
+export default function EditStudentModal(props) {
+  if (!props.isOpen || !props.student) return null;
+  return <EditStudentModalContent {...props} />;
+}
+
+function EditStudentModalContent({ isOpen, onClose, student, onSuccess, onDelete }) {
 
   const studentIdentifier = student._id || student.id || student.studentId;
 

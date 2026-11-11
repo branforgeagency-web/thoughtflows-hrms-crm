@@ -48,8 +48,12 @@ const LOCATIONS = [
   'Theni'
 ];
 
-export default function BookNewDemoModal({ isOpen, onClose, initialData, onConfirm, currentUser }) {
-  if (!isOpen) return null;
+export default function BookNewDemoModal(props) {
+  if (!props.isOpen) return null;
+  return <BookNewDemoModalContent {...props} />;
+}
+
+function BookNewDemoModalContent({ isOpen, onClose, initialData, onConfirm, currentUser }) {
 
   const userBranchClean = currentUser?.branch
     ? String(currentUser.branch).replace(/\s*(branch|\(.*\)|hq)\b/gi, '').trim()

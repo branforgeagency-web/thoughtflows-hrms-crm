@@ -19,8 +19,12 @@ import {
 import { getLeadWhatsAppMessages, sendLeadWhatsAppMessage } from '../services/api';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 
-export default function WhatsAppChatModal({ student, onClose }) {
-  if (!student) return null;
+export default function WhatsAppChatModal(props) {
+  if (!props.student) return null;
+  return <WhatsAppChatModalContent {...props} />;
+}
+
+function WhatsAppChatModalContent({ student, onClose }) {
 
   const rawLead = student.rawLead || student;
   const leadId = student.id || student._id || rawLead._id || rawLead.id;

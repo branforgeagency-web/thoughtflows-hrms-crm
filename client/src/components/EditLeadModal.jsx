@@ -19,8 +19,12 @@ const STAGE_OPTIONS = [
   { value: 'closed', label: 'Closed / Lost' }
 ];
 
-export default function EditLeadModal({ isOpen, onClose, lead, onSuccess, onDelete }) {
-  if (!isOpen || !lead) return null;
+export default function EditLeadModal(props) {
+  if (!props.isOpen || !props.lead) return null;
+  return <EditLeadModalContent {...props} />;
+}
+
+function EditLeadModalContent({ isOpen, onClose, lead, onSuccess, onDelete }) {
 
   const leadId = lead._id || lead.id;
 

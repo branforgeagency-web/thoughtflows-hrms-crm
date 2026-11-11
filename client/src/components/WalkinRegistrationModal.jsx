@@ -8,8 +8,12 @@ import { getAvailableTimingSlots, BATCH_SCHEDULE } from '../constants/batchTimin
 import { getCurrentMonthYear, getCurrentMonthName } from '../utils/dateUtils';
 import { generateStudentIdDetails } from '../utils/studentIdGenerator';
 
-export default function WalkinRegistrationModal({ isOpen, onClose, onRegister, currentUser }) {
-  if (!isOpen) return null;
+export default function WalkinRegistrationModal(props) {
+  if (!props.isOpen) return null;
+  return <WalkinRegistrationModalContent {...props} />;
+}
+
+function WalkinRegistrationModalContent({ isOpen, onClose, onRegister, currentUser }) {
 
   // Form Fields
   const [name, setName] = useState('');

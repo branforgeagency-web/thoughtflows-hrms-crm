@@ -3,8 +3,12 @@ import { X, Save, IndianRupee, BookOpen, Calendar, User, Sparkles, CheckCircle2,
 import { updateStudent } from '../services/api';
 import { COURSE_CATEGORIES } from '../constants/courses';
 
-export default function EditStudentFeeModal({ isOpen, onClose, student, courseRates = [], onSave }) {
-  if (!isOpen || !student) return null;
+export default function EditStudentFeeModal(props) {
+  if (!props.isOpen || !props.student) return null;
+  return <EditStudentFeeModalContent {...props} />;
+}
+
+function EditStudentFeeModalContent({ isOpen, onClose, student, courseRates = [], onSave }) {
 
   const studentIdentifier = student._id || student.id || student.studentId;
 
