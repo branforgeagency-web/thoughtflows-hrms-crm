@@ -95,6 +95,9 @@ const handleAuthError = (error) => {
     try {
       sessionStorage.removeItem('thoughtflows_user');
       sessionStorage.removeItem('thoughtflows_dashboard');
+      sessionStorage.removeItem('thoughtflows_hr_user');
+      sessionStorage.removeItem('thoughtflows_hr_role');
+      sessionStorage.removeItem('thoughtflows_hr_active_tab');
       localStorage.removeItem('thoughtflows_user');
       localStorage.removeItem('thoughtflows_dashboard');
     } catch (_) {}
@@ -230,7 +233,10 @@ export const createLeadsBulk = async (leads, defaultOptions = {}) => {
   return res.data;
 };
 
+const SYNTH_LEAD_ERROR = 'This admitted student has no lead record — open them from Admitted Students to make changes.';
+const isSyntheticLeadId = (id) => String(id || '').startsWith('synth-');
 export const updateLead = async (id, leadData) => {
+  if (isSyntheticLeadId(id)) throw new Error(SYNTH_LEAD_ERROR);
   const res = await api.put(`/leads/${id}`, leadData);
   surfaceLmsWarning(res.data);
   notifyDataUpdate('leads');
@@ -238,6 +244,7 @@ export const updateLead = async (id, leadData) => {
 };
 
 export const deleteLead = async (id) => {
+  if (isSyntheticLeadId(id)) throw new Error(SYNTH_LEAD_ERROR);
   const res = await api.delete(`/leads/${id}`);
   notifyDataUpdate('leads');
   notifyDataUpdate('students');
@@ -1314,6 +1321,36 @@ export const addTrainerLeave = async (trainerId, data) => {
   return res.data;
 };
 
+// Leave approvals by the trainer's TL / Manager / Department Head
+export const getTrainerLeaveRequests = async () => {
+  const res = await api.get('/trainer/leave-requests');
+  return res.data;
+};
+
+export const decideTrainerLeave = async (trainerId, leaveId, action, note = '') => {
+  const res = await api.patch(`/trainer/settings/${encodeURIComponent(trainerId)}/leaves/${leaveId}/decision`, { action, note });
+  notifyDataUpdate('trainers');
+  return res.data;
+};
+
+// Trainer Manager / Team Lead leave — decided by the Department Head of Training
+export const getLeaderLeaves = async (params = {}) => {
+  const res = await api.get('/trainer/leader-leaves', { params });
+  return res.data;
+};
+
+export const applyLeaderLeave = async (data) => {
+  const res = await api.post('/trainer/leader-leaves', data);
+  notifyDataUpdate('leader_leaves');
+  return res.data;
+};
+
+export const decideLeaderLeave = async (id, action, note = '') => {
+  const res = await api.patch(`/trainer/leader-leaves/${id}/decision`, { action, note });
+  notifyDataUpdate('leader_leaves');
+  return res.data;
+};
+
 export const deleteTrainerLeave = async (trainerId, leaveId) => {
   const res = await api.delete(`/trainer/settings/${encodeURIComponent(trainerId)}/leaves/${leaveId}`);
   notifyDataUpdate('trainers');
@@ -1335,6 +1372,35 @@ export const getFeedbackSummary = async (params) => {
 // One timeline per student (HR profile)
 export const getStudentTimeline = async (id) => {
   const res = await api.get(`/students/${encodeURIComponent(id)}/timeline`);
+  return res.data;
+};
+
+// Training staff (Trainer, TL, Manager, Head): logout closes today's attendance.
+// Reads the token *now* (before the caller clears the session) and uses a
+// keepalive request so it still goes out while the page is changing.
+export const recordTrainingLogout = () => {
+  try {
+    const raw = sessionStorage.getItem('thoughtflows_user') || localStorage.getItem('thoughtflows_user');
+    const u = JSON.parse(raw || 'null');
+    const token = u?.token || '';
+    if (!token || !(u?.department === 'training' || u?.trainerRole || u?.trainerId)) return Promise.resolve(null);
+    return fetch(`${API_BASE}/auth/logout`, {
+      method: 'POST',
+      keepalive: true,
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: '{}'
+    })
+      .then((r) => r.json().catch(() => null))
+      .catch(() => null)
+      .finally(() => notifyDataUpdate('attendance'));
+  } catch (_) {
+    return Promise.resolve(null);
+  }
+};
+
+// Login / logout attendance of training staff (scoped by role on the server)
+export const getStaffAttendance = async (params = {}) => {
+  const res = await api.get('/trainer/staff-attendance', { params });
   return res.data;
 };
 

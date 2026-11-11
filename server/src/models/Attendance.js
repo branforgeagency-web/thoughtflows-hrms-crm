@@ -14,6 +14,12 @@ const attendanceSchema = new mongoose.Schema(
     breakMinutes: { type: Number, default: 0 },
     breakStartedAt: { type: Date, default: null },
     department: { type: String, default: '' },
+    // Training staff (auto login/logout attendance): trainer | part_time | tl | manager | head
+    staffRole: { type: String, default: '' },
+    trainerId: { type: String, default: '' },
+    // How the day was opened / closed: 'login' | 'logout' | 'manual'
+    startSource: { type: String, default: '' },
+    endSource: { type: String, default: '' },
     // Official work session tracking
     workStartTime: { type: Date, default: null },
     workEndTime: { type: Date, default: null },

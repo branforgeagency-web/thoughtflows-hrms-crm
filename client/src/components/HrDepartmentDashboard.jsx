@@ -65,6 +65,9 @@ import { useIncentivePolicy, progressiveIncentive } from '../utils/incentive';
 //   { mode: 'branch', branch, label }       — Branch Head: the whole branch (server scopes by branch)
 //   { mode: 'all', label }                  — HR Department Head: every HR, every branch
 export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, onSwitchDepartment, theme = 'classic', viewScope = null }) {
+  // Department Head of HR desk (All Branches view): no work-session attendance —
+  // no Start Work prompt, break timer, Close Work on logout or attendance card.
+  const isHrHeadDesk = viewScope?.mode === 'all';
   // Persist active tab across browser refresh within this session
   const [activeTab, setActiveTab] = useState(() => {
     try {
@@ -145,6 +148,14 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     } catch { return 0; }
   });
   const [isOnBreak, setIsOnBreak] = useState(() => Boolean(breakStartTime));
+  // Dashboard left open past midnight: the new day starts with no break used
+  const breakDayRef = React.useRef(localDateKey());
+  useEffect(() => {
+    if (breakDayRef.current === todayKey) return;
+    breakDayRef.current = todayKey;
+    if (!isOnBreak) setAccumulatedBreak(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [todayKey]);
 
   useEffect(() => {
     if (!isOnBreak) {
@@ -198,7 +209,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
 
   // Load server attendance & restore work session state
   const loadAttendance = async (promptIfNew = true) => {
-    if (!userName) return;
+    if (!userName || isHrHeadDesk) return;
     try {
       const rec = await getMyAttendance(currentUser?.branch);
       if (rec) {
@@ -275,6 +286,10 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       setAttendanceRecord(res);
       setSessionStatus('In Progress');
       setWorkStartTime(res.workStartTime || new Date().toISOString());
+      setWorkEndTime(res.workEndTime || null);
+      if (typeof res?.breakMinutes === 'number' && res.breakMinutes * 60 > accumulatedBreak) {
+        setAccumulatedBreak(res.breakMinutes * 60);
+      }
       setWorkingDurationText(res.durationText || '0 hrs 1 min');
       setShowStartWorkModal(false);
       showToast(`✓ Work started at ${res.checkIn || formatTimeDisplay(res.workStartTime)}!`);
@@ -295,8 +310,16 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   };
 
   // 2. Click Logout: display confirmation popup asking: “Are you sure you want to close today’s work?”
+  // Logout only asks to close the day while a work session is running;
+  // signing out before starting (or after closing) never touches attendance
+  const signOutNow = () => {
+    if (onLogout) onLogout();
+    else if (onClose) onClose();
+  };
   const handleLogoutClick = () => {
-    setShowCloseWorkModal(true);
+    if (isHrHeadDesk) { signOutNow(); return; }
+    if (sessionStatus === 'In Progress') setShowCloseWorkModal(true);
+    else signOutNow();
   };
 
   const handleCancelCloseWork = () => {
@@ -324,12 +347,13 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       }
 
       setShowCloseWorkModal(false);
+      // The server closed any open break with the day
+      try { localStorage.removeItem(breakStartKey); } catch (_) {}
+      setBreakStartTime(null);
+      setIsOnBreak(false);
       showToast('✓ Today\'s work closed successfully! Total Duration: ' + (res.durationText || workingDurationText));
 
-      setTimeout(() => {
-        if (onLogout) onLogout();
-        else if (onClose) onClose();
-      }, 700);
+      setTimeout(signOutNow, 700);
     } catch (err) {
       showToast(`⚠ Error closing work: ${err?.response?.data?.error || err.message}`);
     } finally {
@@ -377,13 +401,14 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   useEffect(() => {
     if (!userName) return undefined;
     let alive = true;
-    const load = () => getTodayCallLog()
-      .then((r) => { if (alive && Array.isArray(r?.list)) setTodayCallLogs(r.list.map((c) => ({ id: c.leadId, time: c.createdAt, outcome: c.outcome, duration: c.durationSeconds, connected: c.connected }))); })
+    // Leadership desks count the whole desk's calls (team / branch / all)
+    const load = () => getTodayCallLog(viewScope?.mode ? { scope: 'desk' } : undefined)
+      .then((r) => { if (alive && Array.isArray(r?.list)) setTodayCallLogs(r.list.map((c) => ({ id: c.leadId, time: c.createdAt, outcome: c.outcome, duration: c.durationSeconds, connected: c.connected, counselorName: c.counselorName || '' }))); })
       .catch(() => {});
     load();
     const t = setInterval(load, 120000);
     return () => { alive = false; clearInterval(t); };
-  }, [userName]);
+  }, [userName, viewScope?.mode]);
 
   const [dashMenuOpen, setDashMenuOpen] = useState(false);
   const [barTheme, setBarTheme] = useState(() => {
@@ -465,6 +490,13 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   );
   // true = show every record the server returned (Department Head / Branch Head / Admin "All")
   const viewAll = scopeKind ? scopeKind !== 'team' : (scopeMode === 'all' && isElevatedUser);
+  // The server already returned only this desk's records (own name, or the
+  // Team Lead's team) — don't re-filter them with a weaker client-side match
+  // (The server team-scopes only real HR Team Leads — an Admin opening the
+  // Team Lead desk still gets everything, so that case filters here.)
+  const isRealTeamLead = !isElevatedUser && /\btl\b|team\s*lead/i.test(String(currentUser?.role || ''));
+  const serverScoped = (scopeKind === 'team' && isRealTeamLead)
+    || (!scopeKind && Boolean(currentUser?.name?.trim()) && (!isElevatedUser || scopeMode === 'mine'));
 
   const showToast = (msg) => {
     setToastMsg(msg);
@@ -558,10 +590,12 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
 
   const handleAddLeadSubmit = async (leadData) => {
     try {
+      const owner = leadData.counselorAssigned || leadData.allocatedTo || currentUser?.name || '';
       const payload = {
         ...leadData,
         fullName: leadData.fullName || leadData.name,
-        counselorAssigned: currentUser?.name || ''
+        counselorAssigned: owner,
+        allocatedTo: owner
       };
       const created = await createLead(payload);
       setLeads(prev => [created, ...prev]);
@@ -609,9 +643,8 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     const cNoSpace = c.replace(/\s+/g, '');
     const mNoSpace = m.replace(/\s+/g, '');
     if (cNoSpace === mNoSpace) return true;
-    const cFirst = c.split(' ')[0];
-    const mFirst = m.split(' ')[0];
-    if (cFirst.length >= 3 && mFirst.length >= 3 && cFirst === mFirst) return true;
+    // No first-name-only match: "Priya Sharma" must never pick up "Priya Kumar".
+    // (The server decides those loose matches, knowing every staff name.)
     // Require at least 4 characters before letting one name be treated as
     // a nickname/prefix of the other (e.g. "Guru" for account "Guruvignesh")
     // — guards against a short, coincidental prefix (like a single letter)
@@ -635,7 +668,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   );
 
   const rawScopedStudents = useMemo(() => {
-    if (viewAll) return students;
+    if (viewAll || serverScoped) return students;
     if (!myName && !teamNames) return students;
     return students.filter(s => 
       ownerMatch(s.hrName) || 
@@ -644,11 +677,11 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       ownerMatch(s.allocatedTo)
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [students, viewAll, teamNames, myName]);
+  }, [students, viewAll, serverScoped, teamNames, myName]);
 
   const scopedLeads = useMemo(() => {
     let baseLeads = leads;
-    if (viewAll) {
+    if (viewAll || serverScoped) {
       baseLeads = leads;
     } else if (myName || teamNames) {
       baseLeads = leads.filter(l => 
@@ -675,8 +708,12 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         return !hasByPhone && !hasById;
       })
       .map(s => ({
-        _id: s._id || `synth-${s.studentId}`,
-        id: s._id || `synth-${s.studentId}`,
+        // Not a real lead: a "synth-" id never reaches /leads, and calls on it
+        // save to the student record instead (see openCallFor)
+        _id: `synth-${s._id || s.studentId}`,
+        id: `synth-${s._id || s.studentId}`,
+        isSynthetic: true,
+        studentMongoId: s._id || '',
         fullName: s.name,
         name: s.name,
         phone: s.phone || '',
@@ -703,13 +740,13 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
 
     return [...baseLeads, ...syntheticAdmittedLeads];
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [leads, rawScopedStudents, viewAll, teamNames, myName, currentUser?.name]);
+  }, [leads, rawScopedStudents, viewAll, serverScoped, teamNames, myName, currentUser?.name]);
 
   // Scoped students directly from verified records
   const scopedStudents = rawScopedStudents;
 
   const scopedDemos = useMemo(() => {
-    if (viewAll) return demos;
+    if (viewAll || serverScoped) return demos;
     if (!myName && !teamNames) return demos;
     const leadPhones = new Set(
       scopedLeads.map(l => (l.phone || '').replace(/\D/g, '').slice(-10)).filter(Boolean)
@@ -727,7 +764,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       return isMine || isLeadCandidate;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [demos, scopedLeads, viewAll, teamNames, myName]);
+  }, [demos, scopedLeads, viewAll, serverScoped, teamNames, myName]);
 
   // Call recordings in this desk's scope (the server already pins a counsellor to their own)
   // Branch Head: recordings of the counsellors who own this branch's leads / admissions
@@ -739,7 +776,11 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       ].filter(Boolean)))
       : null
   ), [scopeKind, scopedLeads, scopedStudents]);
-  const recordingScopeNames = teamNames || branchOwnerNames;
+  const recordingScopeNames = (scopeKind === 'team' && !isRealTeamLead) ? teamNames : branchOwnerNames;
+  const assignableCounsellors = useMemo(() => {
+    const names = teamNames || branchOwnerNames || Array.from(new Set(scopedLeads.map((l) => l.counselorAssigned || l.allocatedTo).filter(Boolean)));
+    return Array.from(new Set([currentUser?.name, ...(names || [])].filter(Boolean))).sort((a, b) => a.localeCompare(b));
+  }, [teamNames, branchOwnerNames, scopedLeads, currentUser?.name]);
   const scopedRecordings = useMemo(() => (
     recordingScopeNames
       ? callRecordings.filter((r) => recordingScopeNames.some((n) => matchesMyName(r.counselorName, n)))
@@ -788,32 +829,32 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   }, [scopedLeads]);
 
   // End of day numbers (strictly calculated for TODAY - resets each day)
-  const computedDailyMetrics = useMemo(() => {
+  const buildDailyMetrics = (L, S, D, R, C, admissionOwner) => {
     // 1. Calls made TODAY — the server call log is the record (every call saved
     //    from the call modal writes one row). Uploaded recordings only count if
     //    they outnumber it, e.g. calls made outside the modal.
-    const recordingsToday = scopedRecordings.filter(r => isToday(r.createdAt));
-    const callsMadeToday = Math.max(todayCallLogs.length, recordingsToday.length);
+    const recordingsToday = R.filter(r => isToday(r.createdAt));
+    const callsMadeToday = Math.max(C.length, recordingsToday.length);
 
     // 2. Connected calls TODAY (same sources, same rule)
     const connectedToday = Math.max(
-      todayCallLogs.filter(c => c.connected).length,
+      C.filter(c => c.connected).length,
       recordingsToday.filter(r => r.outcome && r.outcome !== 'Not Reachable').length
     );
 
     // 3. Demos BOOKED today (not demos that merely take place today)
-    const demosBookedToday = scopedDemos.filter(d => isToday(d.createdAt)).length;
+    const demosBookedToday = D.filter(d => isToday(d.createdAt)).length;
 
     // 4. Admissions TODAY (strictly admissions closed by this counselor)
-    const todayAdmissions = scopedStudents.filter(s => {
-      if (!viewAll && myName && !ownerMatch(s.hrName)) return false;
+    const todayAdmissions = S.filter(s => {
+      if (admissionOwner && !admissionOwner(s.hrName)) return false;
       return isToday(s.createdAt) || isToday(s.admissionDate);
     });
     const admissionsToday = todayAdmissions.length;
 
     // 5. Fees collected TODAY = receipts dated today (admission payments + instalments).
     //    Older admissions saved before receipts existed count their paid amount.
-    const feesTodayNum = scopedStudents.reduce((acc, s) => {
+    const feesTodayNum = S.reduce((acc, s) => {
       const receipts = Array.isArray(s.receipts) ? s.receipts : [];
       if (!receipts.length) return acc + (isToday(s.createdAt) ? Number(s.paidAmount) || 0 : 0);
       return acc + receipts
@@ -822,7 +863,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     }, 0);
 
     // 6. Pending follow-ups due TODAY or overdue
-    const pendingToday = scopedLeads.filter(l => {
+    const pendingToday = L.filter(l => {
       if (l.stage === 'admitted' || l.stage === 'closed') return false;
       if (l.followUpDate) return l.followUpDate <= todayKey;
       return l.stage === 'new' || l.stage === 'contacted';
@@ -837,7 +878,27 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       feesCollected: `₹${feesTodayNum.toLocaleString('en-IN')}`,
       pendingFus: pendingToday
     };
-  }, [scopedLeads, scopedStudents, scopedDemos, scopedRecordings, todayCallLogs, todayKey]);
+  };
+  const computedDailyMetrics = useMemo(
+    () => buildDailyMetrics(scopedLeads, scopedStudents, scopedDemos, scopedRecordings, todayCallLogs, (!viewAll && myName) ? ownerMatch : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [scopedLeads, scopedStudents, scopedDemos, scopedRecordings, todayCallLogs, todayKey, viewAll, myName, teamNames]
+  );
+  // The EOD report is always the signed-in person's OWN day. On a leadership
+  // desk the dashboard shows team numbers, so the EOD uses only their own records.
+  const eodDailyMetrics = useMemo(() => {
+    if (!scopeKind) return computedDailyMetrics;
+    const mine = (...names) => names.some((n) => matchesMyName(n, myName));
+    return buildDailyMetrics(
+      scopedLeads.filter((l) => mine(l.counselorAssigned, l.allocatedTo, l.spokenBy)),
+      scopedStudents.filter((st) => mine(st.hrName, st.counselor, st.counselorName, st.allocatedTo)),
+      scopedDemos.filter((d) => mine(d.bookedBy, d.counselor, d.hrName, d.counselorAssigned, d.allocatedTo)),
+      scopedRecordings.filter((r) => mine(r.counselorName)),
+      todayCallLogs.filter((c) => !c.counselorName || mine(c.counselorName)),
+      (n) => matchesMyName(n, myName)
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scopeKind, computedDailyMetrics, scopedLeads, scopedStudents, scopedDemos, scopedRecordings, todayCallLogs, myName]);
 
   // If user corrected/edited numbers, use customMetrics; otherwise use live computed daily metrics
   const closureMetrics = useMemo(() => {
@@ -846,19 +907,21 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         ? customMetrics.feesCollected 
         : (parseInt(String(customMetrics.feesCollected).replace(/\D/g, '')) || 0);
       return {
-        callsMade: customMetrics.callsMade ?? computedDailyMetrics.callsMade,
-        connected: customMetrics.connected ?? computedDailyMetrics.connected,
-        demosBooked: customMetrics.demosBooked ?? computedDailyMetrics.demosBooked,
-        admissions: customMetrics.admissions ?? computedDailyMetrics.admissions,
+        callsMade: customMetrics.callsMade ?? eodDailyMetrics.callsMade,
+        connected: customMetrics.connected ?? eodDailyMetrics.connected,
+        demosBooked: customMetrics.demosBooked ?? eodDailyMetrics.demosBooked,
+        admissions: customMetrics.admissions ?? eodDailyMetrics.admissions,
         rawFeesCollected: rawFees,
         feesCollected: typeof customMetrics.feesCollected === 'string' && customMetrics.feesCollected.startsWith('₹') 
           ? customMetrics.feesCollected 
           : `₹${rawFees.toLocaleString('en-IN')}`,
-        pendingFus: customMetrics.pendingFus ?? computedDailyMetrics.pendingFus
+        pendingFus: customMetrics.pendingFus ?? eodDailyMetrics.pendingFus
       };
     }
-    return computedDailyMetrics;
-  }, [customMetrics, computedDailyMetrics]);
+    return eodDailyMetrics;
+  }, [customMetrics, eodDailyMetrics]);
+  // Home KPI cards: the desk's numbers (team / branch / all on leadership desks)
+  const homeMetrics = scopeKind ? computedDailyMetrics : closureMetrics;
 
   // 3. Submit EOD Report to HR Head (saves report with HR user details, date, submission time, work session info, and CRM metrics)
   const handleEodReportSubmit = async (customSummary = null, attendanceOverride = null) => {
@@ -893,11 +956,11 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         status: 'submitted',
         // What the system counted — managers see which numbers were hand-corrected
         systemMetrics: {
-          callsMade: computedDailyMetrics.callsMade,
-          connected: computedDailyMetrics.connected,
-          demosBooked: computedDailyMetrics.demosBooked,
-          admissions: computedDailyMetrics.admissions,
-          feesCollected: computedDailyMetrics.rawFeesCollected,
+          callsMade: eodDailyMetrics.callsMade,
+          connected: eodDailyMetrics.connected,
+          demosBooked: eodDailyMetrics.demosBooked,
+          admissions: eodDailyMetrics.admissions,
+          feesCollected: eodDailyMetrics.rawFeesCollected,
           pendingFus: computedDailyMetrics.pendingFus
         }
       };
@@ -1160,9 +1223,13 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   // Open the call modal for a lead or student (priority queue, pipeline, search, admitted CRM)
   const openCallFor = (lead, isStudent = false) => {
     if (!lead) return;
+    // An admitted student shown in the pipeline has no lead record — save to the student
+    const synthetic = Boolean(lead.isSynthetic);
+    const dbId = synthetic ? lead.studentMongoId : (lead._id || lead.id || lead.studentId);
+    if (synthetic) isStudent = true;
     setSelectedCallLead({
-      id: lead._id || lead.id || lead.studentId,
-      _id: lead._id || lead.id || lead.studentId,
+      id: dbId,
+      _id: dbId,
       name: lead.fullName || lead.name,
       details: [lead.sourceName || lead.source, lead.course, lead.location].filter(Boolean).join(' • '),
       phone: lead.phone || '',
@@ -1460,6 +1527,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             </div>
           </div>
 
+{!isHrHeadDesk && (<>
           {/* Work Session Status Pill */}
           <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white/90 border border-slate-200/80 text-xs shadow-2xs">
             <span className={`w-2 h-2 rounded-full ${
@@ -1512,6 +1580,8 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
               <span className="text-[10px] opacity-80">({Math.floor(accumulatedBreak / 60)}m used)</span>
             )}
           </button>
+
+          </>)}
 
           {/* Logout Button: triggers "Are you sure you want to close today's work?" */}
           <button
@@ -1736,7 +1806,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             workEndTimeFormatted={attendanceRecord?.checkOut || formatTimeDisplay(workEndTime)}
             workingDurationText={workingDurationText}
             closureMetrics={closureMetrics}
-            computedDailyMetrics={computedDailyMetrics}
+            computedDailyMetrics={eodDailyMetrics}
             customMetrics={customMetrics}
             setCustomMetrics={setCustomMetrics}
             closureSubmitted={closureSubmitted}
@@ -1760,7 +1830,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
                 {greeting}, <span className="text-[#0e6977]">{userFirstName}</span>
               </h1>
               <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
-                {[todayDisplay, branchName].filter(Boolean).join(' • ')} • You have <strong className="text-slate-800 font-semibold">{closureMetrics.pendingFus} pending follow-ups</strong> in your pipeline
+                {[todayDisplay, branchName].filter(Boolean).join(' • ')} • You have <strong className="text-slate-800 font-semibold">{homeMetrics.pendingFus} pending follow-ups</strong> in your pipeline
               </p>
             </div>
             {/* Scoping status pill */}
@@ -1799,6 +1869,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
           </div>
         </div>
 
+{!isHrHeadDesk && (<>
         {/* Today's Official Work Session & Attendance Card */}
         <div className="bg-white rounded-2xl border border-slate-200/90 p-4 sm:p-5 shadow-xs text-left">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
@@ -1895,6 +1966,18 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
               {sessionStatus === 'Completed' && (
                 <button
                   type="button"
+                  onClick={handleConfirmStartWork}
+                  disabled={workModalLoading}
+                  title="Closed the day by mistake or back after a break? Re-open it — the time away counts as break"
+                  className="w-full mb-2 py-2 rounded-xl bg-white hover:bg-teal-50 text-teal-800 border border-teal-200 text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer"
+                >
+                  <Play className="w-3.5 h-3.5" />
+                  <span>Resume Work</span>
+                </button>
+              )}
+              {sessionStatus === 'Completed' && (
+                <button
+                  type="button"
                   onClick={() => handleTabChange('EOD Report')}
                   className="w-full py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer"
                 >
@@ -1905,6 +1988,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             </div>
           </div>
         </div>
+        </>)}
 
         {/* Golden Target Progress Banner */}
         <div className="bg-gradient-to-r from-[#fff9eb] via-[#fffbeb] to-[#fef3c7] border border-[#fde68a] rounded-2xl p-4 sm:p-5 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
@@ -1945,7 +2029,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             </div>
             <div className="flex items-center justify-between w-full mt-1.5 flex-wrap gap-2">
               <span className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">
-                COLLECTED TODAY: <strong className="text-emerald-700">{closureMetrics.feesCollected}</strong>
+                COLLECTED TODAY: <strong className="text-emerald-700">{homeMetrics.feesCollected}</strong>
               </span>
               <button
                 type="button"
@@ -1973,8 +2057,8 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
                 <Phone className="w-3.5 h-3.5" />
               </div>
             </div>
-            <div className="text-3xl font-extrabold text-slate-900">{closureMetrics.callsMade}</div>
-            <div className="text-xs text-slate-500 mt-1 font-medium">{closureMetrics.connected} connected</div>
+            <div className="text-3xl font-extrabold text-slate-900">{homeMetrics.callsMade}</div>
+            <div className="text-xs text-slate-500 mt-1 font-medium">{homeMetrics.connected} connected</div>
           </div>
 
           {/* Card 2 */}
@@ -1987,7 +2071,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
                 <Clock className="w-3.5 h-3.5" />
               </div>
             </div>
-            <div className="text-3xl font-extrabold text-amber-600">{closureMetrics.pendingFus}</div>
+            <div className="text-3xl font-extrabold text-amber-600">{homeMetrics.pendingFus}</div>
             <div className="text-xs text-rose-500 mt-1 font-bold">{overdueCount} overdue · due today or earlier</div>
           </div>
 
@@ -2045,7 +2129,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
                   <h3 className="text-sm font-bold text-slate-900">Today's Priority Queue</h3>
                 </div>
                 <span className="text-xs text-slate-500 font-medium">
-                  {closureMetrics.pendingFus} pending in pipeline
+                  {homeMetrics.pendingFus} pending in pipeline
                 </span>
               </div>
 
@@ -2575,11 +2659,12 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         onBulkImported={() => loadAllData(true)}
         initialMode={addLeadModalMode}
         currentUser={currentUser}
+        assignableCounsellors={scopeKind ? assignableCounsellors : null}
       />
 
-      {/* 1. Start Work Confirmation Modal: "Are you ready to start today’s work?" */}
+      {/* 1. Start Work Confirmation Modal: "Are you ready to start today’s work?" (not on the Head of HR desk) */}
       <StartWorkConfirmationModal
-        isOpen={showStartWorkModal}
+        isOpen={showStartWorkModal && !isHrHeadDesk}
         onClose={handleCancelStartWork}
         onConfirmStart={handleConfirmStartWork}
         loading={workModalLoading}
@@ -2589,7 +2674,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
 
       {/* 2. Close Work Confirmation Modal: "Are you sure you want to close today’s work?" */}
       <CloseWorkConfirmationModal
-        isOpen={showCloseWorkModal}
+        isOpen={showCloseWorkModal && !isHrHeadDesk}
         onClose={handleCancelCloseWork}
         onConfirmClose={handleConfirmCloseWork}
         loading={workModalLoading}
@@ -2602,6 +2687,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         eodSummary={eodSummaryText}
         onEodSummaryChange={setEodSummaryText}
         onOpenEodTab={() => handleTabChange('EOD Report')}
+        onSignOutOnly={() => { setShowCloseWorkModal(false); signOutNow(); }}
       />
     </div>
   );

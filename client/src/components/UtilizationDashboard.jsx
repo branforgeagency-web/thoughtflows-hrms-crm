@@ -209,14 +209,20 @@ export default function UtilizationDashboard({
       );
     }
     if (roleType === 'manager') {
+      // Manager plans for their TLs and every trainer under them (directly or via a TL)
       const myMgrId = effectiveUserId.toLowerCase();
-      return workLogs.filter(
-        (l) => l.userRole === 'trainer' &&
-               (l.managerId.toLowerCase() === myMgrId || l.managerName.toLowerCase().includes(effectiveUserName.toLowerCase()))
-      );
+      const myName = effectiveUserName.toLowerCase();
+      const isMine = (l) => (l.managerId || '').toLowerCase() === myMgrId || (myName && (l.managerName || '').toLowerCase() === myName);
+      const myTls = workLogs.filter((l) => l.userRole === 'tl' && isMine(l));
+      const myTlIds = new Set(myTls.map((l) => l.userId.toLowerCase()));
+      const trainersUnderMe = workLogs.filter((l) => l.userRole === 'trainer' && (isMine(l) || myTlIds.has((l.teamLeadId || '').toLowerCase())));
+      return [...myTls, ...trainersUnderMe];
     }
-    // Head sees all trainers
-    return workLogs.filter((l) => l.userRole === 'trainer');
+    // Head plans for everyone: Managers, TLs and Trainers (not their own desk — that's "My work")
+    const order = { manager: 0, tl: 1, trainer: 2 };
+    return workLogs
+      .filter((l) => ['manager', 'tl', 'trainer'].includes(l.userRole) && l.userId.toLowerCase() !== effectiveUserId.toLowerCase())
+      .sort((a, b) => (order[a.userRole] ?? 3) - (order[b.userRole] ?? 3) || String(a.userName).localeCompare(String(b.userName)));
   }, [workLogs, roleType, effectiveUserId, effectiveUserName]);
 
   // Currently inspected log in Team Planner
@@ -442,7 +448,8 @@ export default function UtilizationDashboard({
       ALL_HIERARCHY_TRAINERS.some((t) => t.trainerId === log.userId && t.teamLeadId === effectiveUserId)
     );
 
-    if (!isSelf && !isMySubordinate && roleType !== 'head' && roleType !== 'manager') {
+    const isManagersMember = roleType === 'manager' && subordinateTrainers.some((st) => st.userId === log.userId);
+    if (!isSelf && !isMySubordinate && !isManagersMember && roleType !== 'head') {
       setMessage({ type: 'error', text: 'You can update only your own hourly work progress.' });
       return;
     }
@@ -750,6 +757,18 @@ export default function UtilizationDashboard({
             <>
               <button
                 type="button"
+                onClick={() => setActiveSubTab('team_planner')}
+                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
+                  activeSubTab === 'team_planner'
+                    ? 'bg-teal-700 text-white shadow-sm'
+                    : 'bg-white text-slate-600 hover:bg-slate-100'
+                }`}
+              >
+                <Users className="w-4 h-4" />
+                <span>Team Work Planner ({subordinateTrainers.length} TLs & Trainers)</span>
+              </button>
+              <button
+                type="button"
                 onClick={() => setActiveSubTab('monitoring')}
                 className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
                   activeSubTab === 'monitoring'
@@ -790,6 +809,18 @@ export default function UtilizationDashboard({
           {/* For Trainer Head */}
           {roleType === 'head' && (
             <>
+              <button
+                type="button"
+                onClick={() => setActiveSubTab('team_planner')}
+                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
+                  activeSubTab === 'team_planner'
+                    ? 'bg-blue-700 text-white shadow-sm'
+                    : 'bg-white text-slate-600 hover:bg-slate-100'
+                }`}
+              >
+                <Users className="w-4 h-4" />
+                <span>Team Work Planner ({subordinateTrainers.length} Managers, TLs & Trainers)</span>
+              </button>
               <button
                 type="button"
                 onClick={() => setActiveSubTab('monitoring')}
@@ -1009,17 +1040,21 @@ export default function UtilizationDashboard({
       {/* ========================================================================= */}
       {/* VIEW 2: TEAM TRAINERS WORK PLANNER (FOR TRAINING TEAM LEAD)             */}
       {/* ========================================================================= */}
-      {roleType === 'tl' && activeSubTab === 'team_planner' && (
+      {['tl', 'manager', 'head'].includes(roleType) && activeSubTab === 'team_planner' && (
         <div className="space-y-6">
           {/* TL Action Header */}
           <div className="bg-gradient-to-r from-emerald-800 to-teal-800 text-white rounded-3xl p-5 sm:p-6 shadow-md flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div>
               <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md bg-white/20 text-white mb-2 inline-block">
-                TL Planning Responsibility
+                {roleType === 'head' ? 'Department Head Planning' : roleType === 'manager' ? 'Manager Planning' : 'TL Planning Responsibility'}
               </span>
               <h2 className="text-xl font-black">Plan Next-Day & Today&apos;s Work for Your Team</h2>
               <p className="text-xs text-emerald-100 mt-1 max-w-xl">
-                Create the hour-by-hour work plan for every trainer under your squad. Trainers will update actual progress against tasks assigned by you.
+                {roleType === 'head'
+                  ? 'Create the hour-by-hour work plan for any Manager, Team Lead or Trainer in the department. They update actual progress against the tasks you assign.'
+                  : roleType === 'manager'
+                    ? 'Create the hour-by-hour work plan for your Team Leads and every trainer under them. They update actual progress against the tasks you assign.'
+                    : 'Create the hour-by-hour work plan for every trainer under your squad. Trainers will update actual progress against tasks assigned by you.'}
               </p>
             </div>
 
@@ -1030,7 +1065,7 @@ export default function UtilizationDashboard({
                 className="px-4 py-2 rounded-xl bg-white text-emerald-900 font-extrabold text-xs shadow-sm hover:bg-emerald-50 transition-colors cursor-pointer flex items-center gap-1.5"
               >
                 <Sparkles className="w-4 h-4 text-emerald-600" />
-                <span>Bulk Plan All {subordinateTrainers.length} Trainers</span>
+                <span>Bulk Plan All {subordinateTrainers.length} {roleType === 'tl' ? 'Trainers' : 'Members'}</span>
               </button>
             </div>
           </div>
@@ -1054,6 +1089,9 @@ export default function UtilizationDashboard({
                   }`}
                 >
                   <span>{tr.userName}</span>
+                  {tr.userRole && tr.userRole !== 'trainer' && (
+                    <span className={`text-[9px] font-black uppercase px-1.5 rounded ${isSelected ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'}`}>{tr.userRole === 'tl' ? 'TL' : tr.userRole === 'manager' ? 'Manager' : tr.userRole}</span>
+                  )}
                   <span className={`text-[9px] font-black px-1.5 py-0.2 rounded-full ${isSelected ? 'bg-white/20 text-white' : badge.bg}`}>
                     {badge.label}
                   </span>
@@ -1305,7 +1343,7 @@ export default function UtilizationDashboard({
                               key={log.userId}
                               className="hover:bg-slate-50/60 transition-colors cursor-pointer"
                               onClick={() => {
-                                if (roleType === 'tl') {
+                                if (['tl', 'manager', 'head'].includes(roleType) && subordinateTrainers.some((st) => st.userId === log.userId)) {
                                   setSelectedTrainerForPlan(log.userId);
                                   setActiveSubTab('team_planner');
                                 } else {
@@ -1774,7 +1812,7 @@ export default function UtilizationDashboard({
                     const plans = subordinateTrainers.map((tr) => ({
                       userId: tr.userId,
                       userName: tr.userName,
-                      userRole: 'trainer',
+                      userRole: tr.userRole || 'trainer',
                       teamLeadId: tr.teamLeadId,
                       teamLeadName: tr.teamLeadName,
                       managerId: tr.managerId,

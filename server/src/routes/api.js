@@ -82,6 +82,24 @@ router.use((req, res, next) => {
   next();
 });
 
+// A Branch Head account with no branch set must not fall through to "all branches"
+const isBranchHeadWithoutBranch = (req) => /branch\s*(manager|head)/i.test(req.user?.role || '')
+  && !String(req.user?.branch || '').trim()
+  && !/admin/i.test(req.user?.role || '') && !['admin', 'leadership'].includes(req.user?.department);
+router.use((req, res, next) => {
+  if (req.user && isBranchHeadWithoutBranch(req) && /^\/(leads|students|demos|recordings)(\/|$)/.test(req.path)) {
+    return res.status(403).json({ error: 'No branch is set on this Branch Head account. Ask Admin to set the branch.' });
+  }
+  next();
+});
+
+// HR Team Lead: the names whose records they may see / change (own + team).
+// Resolved once per request so the sync ownership checks can use it.
+router.use(async (req, res, next) => {
+  try { req.hrTeamNames = await hrTeamScopeNames(req); } catch (_) { req.hrTeamNames = null; }
+  next();
+});
+
 // Health Check
 router.get('/health', (req, res) => {
   const isMongoConnected = mongoose.connection.readyState === 1;
@@ -800,16 +818,22 @@ router.get('/recordings', async (req, res) => {
         ...(mongoose.isValidObjectId(studentId) ? [{ studentMongoId: studentId }] : [])
       ];
     }
-    if (counselorName && counselorName !== 'all') query.counselorName = exactNameRx(counselorName);
+    if (req.hrTeamNames) {
+      const names = pickTeamNames(req.hrTeamNames, req.query.counselorName || req.query.counselor);
+      query.counselorName = { $in: names.map((n) => counselorNameRx(n)) };
+    } else if (counselorName && counselorName !== 'all') query.counselorName = counselorNameRx(counselorName);
     if (search) {
-      query.$or = [
-        { leadName: { $regex: search, $options: 'i' } },
-        { leadPhone: { $regex: search, $options: 'i' } },
-        { counselorName: { $regex: search, $options: 'i' } },
-        { outcome: { $regex: search, $options: 'i' } },
-        { notes: { $regex: search, $options: 'i' } },
-        { studentId: { $regex: search, $options: 'i' } }
+      // Keep any studentId filter: both must hold
+      if (query.$or) { query.$and = [{ $or: query.$or }]; delete query.$or; }
+      const searchOr = [
+        { leadName: { $regex: escapeRegex(String(search).trim()), $options: 'i' } },
+        { leadPhone: { $regex: escapeRegex(String(search).trim()), $options: 'i' } },
+        { counselorName: { $regex: escapeRegex(String(search).trim()), $options: 'i' } },
+        { outcome: { $regex: escapeRegex(String(search).trim()), $options: 'i' } },
+        { notes: { $regex: escapeRegex(String(search).trim()), $options: 'i' } },
+        { studentId: { $regex: escapeRegex(String(search).trim()), $options: 'i' } }
       ];
+      if (query.$and) query.$and.push({ $or: searchOr }); else query.$or = searchOr;
     }
     const recordings = await CallRecording.find(query).sort({ createdAt: -1 });
     res.json(recordings);
@@ -1613,6 +1637,15 @@ async function applyApprovalDecision(approval) {
       createdBy: approval.decidedBy || ''
     });
   }
+  // Trainer Manager / TL leave decided from the Leadership Hub → tell the requester
+  if (approval.refType === 'trainer_leader_leave' && approval.requestedBy && approval.status !== 'pending') {
+    await pushNotification({
+      audience: 'trainer', recipientName: approval.requestedBy, type: 'approval',
+      title: `Leave ${approval.status}: ${approval.leaveFrom}${approval.leaveTo && approval.leaveTo !== approval.leaveFrom ? ` → ${approval.leaveTo}` : ''}`,
+      message: approval.decidedBy ? `Decided by ${approval.decidedBy}` : 'Decision recorded',
+      createdBy: approval.decidedBy || ''
+    });
+  }
   // Tell an HR requester (leave, discount, shift change …) the outcome
   if (approval.requestedBy && approval.status !== 'pending' && /^(DEP-HR-001|HR)$/i.test(approval.departmentCode || '')) {
     await pushNotification({
@@ -1905,23 +1938,7 @@ router.get('/hr/hub-summary', async (req, res) => {
 // of the Team Lead's branch so the dashboard is never empty.
 router.get('/hr/my-team', async (req, res) => {
   try {
-    const me = req.user || {};
-    const myName = String(me.name || '').trim();
-    if (!myName) return res.json({ members: [], source: 'none' });
-    const hrUser = { $or: [{ role: /^hr$/i }, { department: /counsel|admission|^hr$/i }] };
-    const or = [{ managerName: exactNameRx(myName) }];
-    if (me.id) or.push({ managerId: String(me.id) });
-    let users = await User.find({ $and: [{ $or: or }, { status: { $not: /inactive|disabled|suspended/i } }] }).select('name branch role email').lean();
-    let source = 'assigned';
-    if (!users.length && me.branch) {
-      const bRx = new RegExp(escapeRegex(branchShort(me.branch)), 'i');
-      users = await User.find({ $and: [hrUser, { role: /^hr$/i }, { branch: bRx }, { status: { $not: /inactive|disabled|suspended/i } }] }).select('name branch role email').lean();
-      source = 'branch';
-    }
-    res.json({
-      members: users.filter((u) => u.name && u.name.trim().toLowerCase() !== myName.toLowerCase()).map((u) => ({ name: u.name, branch: u.branch || '', role: u.role || '', email: u.email || '' })),
-      source
-    });
+    res.json(await findHrTeam(req.user || {}));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -2194,7 +2211,18 @@ router.get('/calls/log', async (req, res) => {
     const isLead = ['admin', 'leadership'].includes(req.user?.department);
     const name = isLead && req.query.counselorName ? String(req.query.counselorName) : String(req.user?.name || '');
     const query = { date };
-    if (!(isLead && req.query.counselorName === 'all')) query.counselorName = new RegExp(`^${escapeRegex(name.trim())}$`, 'i');
+    const role = String(req.user?.role || '');
+    if (req.query.scope === 'desk' && req.hrTeamNames) {
+      // HR Team Lead: own + team calls
+      query.counselorName = { $in: req.hrTeamNames.map((n) => counselorNameRx(n)) };
+    } else if (req.query.scope === 'desk' && isScopedBranchManager(req)) {
+      // Branch Head: calls of the HR staff in their branch
+      const bRx = new RegExp(escapeRegex(getBranchManagerBranch(req)), 'i');
+      const staff = await User.find({ $and: [HR_STAFF, { branch: bRx }, ACTIVE_USER] }).select('name').lean();
+      query.counselorName = { $in: [req.user?.name, ...staff.map((u) => u.name)].filter(Boolean).map((n) => exactNameRx(n)) };
+    } else if (req.query.scope === 'desk' && (isLead || isHrLeaderUser(req) || /admin/i.test(role))) {
+      // HR Department Head / Admin: every counsellor's calls
+    } else if (!(isLead && req.query.counselorName === 'all')) query.counselorName = new RegExp(`^${escapeRegex(name.trim())}$`, 'i');
     const list = await CallLog.find(query).sort({ createdAt: -1 }).limit(500);
     res.json({ date, calls: list.length, connected: list.filter((c) => c.connected).length, list });
   } catch (e) {
@@ -2280,13 +2308,11 @@ router.get('/attendance/me', async (req, res) => {
   }
 });
 
-router.post('/attendance/me', async (req, res) => {
-  try {
-    const { action } = req.body || {}; // 'start_work' | 'start' | 'close_work' | 'close' | 'in' | 'break' | 'resume' | 'out'
-    const validActions = ['start_work', 'start', 'close_work', 'close', 'in', 'break', 'resume', 'out'];
-    if (!validActions.includes(action)) return res.status(400).json({ error: 'Invalid action' });
+// Core of self attendance — used by the dashboard buttons and by the automatic
+// login / logout attendance of training staff (Trainer, TL, Manager, Head)
+async function applySelfAttendance(req, action, source = '') {
     const { employeeName, branchName } = await selfAttendanceKey(req);
-    if (!employeeName) return res.status(400).json({ error: 'No staff name on this login' });
+    if (!employeeName) throw Object.assign(new Error('No staff name on this login'), { status: 400 });
     const date = todayStr();
     const now = new Date();
     const hhmmFormatted = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
@@ -2319,6 +2345,14 @@ router.post('/attendance/me', async (req, res) => {
       if (!rec.workStartTime) {
         rec.workStartTime = now;
       }
+      // Re-opening a day that was closed earlier (e.g. logged out at lunch):
+      // keep the first start time, count the time away as break, clear the close
+      if (rec.workEndTime && rec.sessionStatus === 'Completed') {
+        const awayMins = Math.max(0, Math.round((now - new Date(rec.workEndTime)) / 60000));
+        rec.breakMinutes = (rec.breakMinutes || 0) + awayMins;
+        rec.workEndTime = null;
+        rec.checkOut = '';
+      }
       if (!rec.checkIn) {
         rec.checkIn = hhmmFormatted;
       }
@@ -2326,15 +2360,15 @@ router.post('/attendance/me', async (req, res) => {
       if (rec.status !== 'break') rec.status = 'in';
       rec.department = req.user?.department || 'hr';
       rec.userEmail = req.user?.email || '';
+      if (source && !rec.startSource) rec.startSource = source;
     } else if (action === 'close_work' || action === 'close' || action === 'out') {
       closeBreak();
-      // Record logout time and calculate total working duration between start and end
-      if (!rec.workEndTime) {
-        rec.workEndTime = now;
-      }
+      // Record logout time (the latest close wins — a re-opened day closes again later)
+      rec.workEndTime = now;
       rec.checkOut = hhmmFormatted;
       rec.sessionStatus = 'Completed';
       rec.status = 'out';
+      if (source) rec.endSource = source;
 
       if (rec.workStartTime) {
         const diffMins = Math.max(0, Math.round((new Date(rec.workEndTime).getTime() - new Date(rec.workStartTime).getTime()) / 60000));
@@ -2360,10 +2394,23 @@ router.post('/attendance/me', async (req, res) => {
       rec.status = 'in';
     }
 
+    if (req.user?.department === 'training' || req.user?.trainerRole) {
+      rec.staffRole = req.user?.trainerRole || rec.staffRole || 'trainer';
+      if (req.user?.trainerId) rec.trainerId = String(req.user.trainerId);
+    }
     await rec.save();
+    return rec;
+}
+
+router.post('/attendance/me', async (req, res) => {
+  try {
+    const { action } = req.body || {}; // 'start_work' | 'start' | 'close_work' | 'close' | 'in' | 'break' | 'resume' | 'out'
+    const validActions = ['start_work', 'start', 'close_work', 'close', 'in', 'break', 'resume', 'out'];
+    if (!validActions.includes(action)) return res.status(400).json({ error: 'Invalid action' });
+    const rec = await applySelfAttendance(req, action, 'manual');
     res.json(attendanceView(rec));
   } catch (e) {
-    res.status(400).json({ error: e.message });
+    res.status(e.status || 400).json({ error: e.message });
   }
 });
 
@@ -2373,47 +2420,71 @@ router.post('/attendance/me', async (req, res) => {
 // (case / spacing ignored) so "Ram" never matches "Ramesh".
 const normName = (v) => String(v || '').trim().replace(/\s+/g, ' ').toLowerCase();
 const exactNameRx = (v) => new RegExp(`^\\s*${escapeRegex(String(v || '').trim()).replace(/\s+/g, '\\s+')}\\s*$`, 'i');
+// ---- Staff name registry (for safe loose name matching) ----
+// Loose matches (first name only, one word of the name, a nickname prefix)
+// are only safe when no OTHER staff member could own the same short form.
+// Two counsellors called "Priya Sharma" and "Priya Kumar" must never see
+// each other's records just because both start with "Priya".
+let staffNameCache = { at: 0, loaded: false, names: [], loading: null };
+const STAFF_NAME_TTL = 2 * 60 * 1000;
+const normStaffName = (v) => String(v || '').trim().replace(/\s+/g, ' ').toLowerCase();
+function refreshStaffNames() {
+  if (staffNameCache.loading) return staffNameCache.loading;
+  staffNameCache.loading = User.find({ status: { $not: /inactive|disabled|suspended/i } })
+    .select('name').lean()
+    .then((rows) => {
+      const names = Array.from(new Set(rows.map((r) => normStaffName(r.name)).filter(Boolean)));
+      staffNameCache = { at: Date.now(), loaded: true, names, loading: null };
+    })
+    .catch(() => { staffNameCache.loading = null; });
+  return staffNameCache.loading;
+}
+const invalidateStaffNames = () => { staffNameCache.at = 0; refreshStaffNames(); };
+refreshStaffNames();
+// Does any staff member OTHER than `self` own this loose form?
+//   kind 'first'  — their first word equals token
+//   kind 'word'   — any word of their name equals token
+//   kind 'prefix' — their first word starts with token
+function looseFormTaken(token, self, kind) {
+  if (Date.now() - staffNameCache.at > STAFF_NAME_TTL) refreshStaffNames();
+  if (!staffNameCache.loaded) return true; // registry not ready → stay strict
+  const t = normStaffName(token);
+  const me = normStaffName(self).replace(/\s+/g, '');
+  return staffNameCache.names.some((n) => {
+    if (n.replace(/\s+/g, '') === me) return false;
+    const words = n.split(' ');
+    if (kind === 'first') return words[0] === t;
+    if (kind === 'word') return words.includes(t);
+    return words[0].startsWith(t);
+  });
+}
 const counselorNameRx = (name) => {
   const clean = String(name || '').trim();
   if (!clean) return /^$/;
   const nameWords = clean.split(/\s+/);
   const firstName = nameWords[0];
-  // Bulk-uploaded sheets sometimes run a counsellor's full name together
-  // with no space at all (e.g. "guruvignesh" for "Guru Vignesh"), which
-  // used to never match this user's own name and silently hid those rows
-  // from their dashboard. Spacing between name parts is now OPTIONAL
-  // (\s* instead of \s+) in the full-name alternative, so "Guru Vignesh",
-  // "Guru  Vignesh" and "guruvignesh" all match the same person.
+  // Full name, spacing optional ("Guru Vignesh" = "guruvignesh")
   const rxParts = [
-    `^\\s*${escapeRegex(clean).replace(/\s+/g, '\\s*')}\\s*$`,
-    `^\\s*${escapeRegex(firstName)}(\\s+.*)?$`
+    `^\\s*${escapeRegex(clean).replace(/\s+/g, '\\s*')}\\s*$`
   ];
-  // A single-word (compound) account name — e.g. "Guruvignesh" with no
-  // internal space at all — has no real first/last split, so the
-  // firstName alternative above only ever matched the full 11-letter
-  // string. A sheet that used a short nickname for it ("Guru") never
-  // matched anything and silently vanished from that counsellor's own
-  // dashboard. Allow any whole-string prefix of at least 4 characters to
-  // match too — same idea as the startsWith() check the dashboard's own
-  // client-side matcher already uses — but ONLY when the account name is
-  // a single word, so a real two-word name like "Ram Kumar" still never
-  // lets "Ram" match an unrelated "Ramesh".
+  // First name + anything ("Vishnupriya DSNR" for "Vishnupriya") — only when
+  // no other staff member shares that first name
+  if (firstName.length >= 3 && !looseFormTaken(firstName, clean, 'first')) {
+    rxParts.push(`^\\s*${escapeRegex(firstName)}(\\s+.*)?$`);
+  }
+  // Nickname prefix of a single-word account name ("Guru" for "Guruvignesh")
+  // — only when no other staff member's first name starts with it
   if (nameWords.length === 1 && firstName.length > 4) {
     for (let len = firstName.length - 1; len >= 4; len--) {
-      rxParts.push(`^\\s*${escapeRegex(firstName.slice(0, len))}\\s*$`);
+      const pre = firstName.slice(0, len);
+      if (!looseFormTaken(pre, clean, 'prefix')) rxParts.push(`^\\s*${escapeRegex(pre)}\\s*$`);
     }
   }
-  // A sheet/record sometimes carries only ONE part of a multi-word
-  // account name -- e.g. "Poojitha" alone for the account "Kota
-  // Poojitha" (surname-first naming) -- which used to match neither the
-  // full-name nor the firstName+anything alternative above, silently
-  // hiding that counsellor's own records from their dashboard even
-  // though the DB had them. Any individual word of the account name
-  // (3+ letters, to avoid a short/coincidental match) is now also
-  // accepted as a WHOLE stored value on its own.
+  // One word of a multi-word name on its own ("Poojitha" for "Kota Poojitha")
+  // — only when no other staff member has that word in their name
   if (nameWords.length > 1) {
     nameWords.forEach((w) => {
-      if (w.length >= 3) rxParts.push(`^\\s*${escapeRegex(w)}\\s*$`);
+      if (w.length >= 3 && !looseFormTaken(w, clean, 'word')) rxParts.push(`^\\s*${escapeRegex(w)}\\s*$`);
     });
   }
   return new RegExp(rxParts.join('|'), 'i');
@@ -2433,6 +2504,58 @@ const isHrLeaderUser = (req) => {
   const dept = String(req.user?.department || '').toLowerCase();
   return (dept === 'hr' || /\bhr\b/i.test(role)) && /\btl\b|team\s*lead|\bhead\b|\bhod\b/i.test(role);
 };
+// HR Team Lead only (not the HR Department Head, not a Branch Head)
+const isHrTeamLeadUser = (req) => isHrLeaderUser(req)
+  && !/\bhead\b|\bhod\b/i.test(String(req.user?.role || ''))
+  && !isScopedBranchManager(req);
+const ACTIVE_USER = { status: { $not: /inactive|disabled|suspended/i } };
+const HR_STAFF = { $or: [{ role: /\bhr\b|counsel/i }, { department: /counsel|admission|^hr$/i }] };
+// The counsellors who report to this Team Lead ("Reports to" = managerName /
+// managerId). With nobody assigned yet, the HR counsellors of their branch.
+async function findHrTeam(me) {
+  const myName = String(me?.name || '').trim();
+  if (!myName) return { members: [], source: 'none' };
+  const or = [{ managerName: exactNameRx(myName) }];
+  if (me.id) or.push({ managerId: String(me.id) });
+  const notLeader = { role: { $not: /\btl\b|team\s*lead|\bhead\b|\bhod\b|manager/i } };
+  let users = await User.find({ $and: [{ $or: or }, HR_STAFF, ACTIVE_USER] }).select('name branch role email').lean();
+  let source = 'assigned';
+  if (!users.length && me.branch) {
+    const bRx = new RegExp(escapeRegex(branchShort(me.branch)), 'i');
+    users = await User.find({ $and: [HR_STAFF, notLeader, { branch: bRx }, ACTIVE_USER] }).select('name branch role email').lean();
+    source = 'branch';
+  }
+  const members = users
+    .filter((u) => u.name && normName(u.name) !== normName(myName))
+    .map((u) => ({ name: u.name, branch: u.branch || '', role: u.role || '', email: u.email || '' }));
+  return { members, source };
+}
+const hrTeamCache = new Map(); // user name → { at, names }
+async function hrTeamScopeNames(req) {
+  if (!req.user || !isHrTeamLeadUser(req)) return null;
+  const key = normName(req.user.name);
+  if (!key) return null;
+  const hit = hrTeamCache.get(key);
+  if (hit && Date.now() - hit.at < 60000) return hit.names;
+  const { members } = await findHrTeam(req.user);
+  const names = [req.user.name, ...members.map((m) => m.name)];
+  hrTeamCache.set(key, { at: Date.now(), names });
+  return names;
+}
+// Records owned by any of these names (each name matched like counselorNameRx)
+const ownerAnyQuery = (names, fields) => ({
+  $or: names.flatMap((n) => { const rx = counselorNameRx(n); return fields.map((f) => ({ [f]: rx })); })
+});
+const LEAD_OWNER_FIELDS = ['counselorAssigned', 'allocatedTo', 'spokenBy', 'counselor', 'counselorName', 'hrName'];
+const STUDENT_OWNER_FIELDS = ['hrName', 'counselorAssigned', 'counselor', 'counselorName', 'allocatedTo', 'spokenBy'];
+const DEMO_OWNER_FIELDS = ['bookedBy', 'counselor', 'counselorName', 'hrName', 'allocatedTo', 'counselorAssigned'];
+// A Team Lead asking for one counsellor gets that counsellor only if they are in the team
+const pickTeamNames = (team, requested) => {
+  if (!requested || requested === 'all') return team;
+  const one = team.find((n) => namesMatch(n, requested) || normName(n) === normName(requested));
+  return one ? [one] : ['__no_such_team_member__'];
+};
+
 const leadOwner = (l) => l?.counselorAssigned || l?.allocatedTo || l?.spokenBy || l?.counselor || l?.hrName || '';
 const leadOwnerQuery = (name) => {
   const rx = counselorNameRx(name);
@@ -2451,25 +2574,12 @@ const bClean = (v) => String(v || '').toLowerCase().replace(/\s*(branch|\(.*\)|h
 
 const namesMatch = (a, b) => {
   if (!a || !b) return false;
-  const sA = String(a).trim().toLowerCase();
-  const sB = String(b).trim().toLowerCase();
-  if (sA === sB) return true;
-
-  const cleanA = sA.replace(/\([^)]*\)/g, '').replace(/[\.\-_]/g, ' ').replace(/\s+/g, ' ').trim();
-  const cleanB = sB.replace(/\([^)]*\)/g, '').replace(/[\.\-_]/g, ' ').replace(/\s+/g, ' ').trim();
-  if (!cleanA || !cleanB) return false;
-  if (cleanA === cleanB) return true;
-
-  const wordsA = cleanA.split(' ').filter(Boolean);
-  const wordsB = cleanB.split(' ').filter(Boolean);
-
-  if (wordsA[0] && wordsB[0] && wordsA[0] === wordsB[0]) return true;
-
-  for (const wA of wordsA) {
-    if (wA.length >= 3 && wordsB.includes(wA)) return true;
-  }
-
-  return false;
+  const clean = (v) => String(v).replace(/\([^)]*\)/g, '').replace(/[\.\-_]/g, ' ').replace(/\s+/g, ' ').trim();
+  const cA = clean(a);
+  const cB = clean(b);
+  if (!cA || !cB) return false;
+  // a = the signed-in user's name, b = the name stored on the record
+  return counselorNameRx(cA).test(cB);
 };
 
 const leadHasCounselor = (lead, user) => {
@@ -2503,40 +2613,40 @@ const leadHasCounselor = (lead, user) => {
     }
   }
 
-  // Branch matching fallback: If counsellor and lead are in the same branch, allow editing
-  const userBranch = branchShort(user.branch || user.location || '');
-  const leadBranch = branchShort(lead.branch || lead.location || '');
-  if (userBranch && leadBranch && bClean(userBranch) === bClean(leadBranch)) {
-    return true;
-  }
-
+  // (No same-branch fallback: a counsellor only changes their own or unassigned records.)
   return false;
 };
 
-const ownsStudent = (req, st) => {
-  if (!isScopedHr(req)) return true;
-  return leadHasCounselor(st, req.user);
+// Who may change a lead / student / demo:
+//   HR Team Lead   → records owned by their team (or not owned by anyone yet)
+//   Branch Head    → records of their own branch only (a record with no branch is not theirs)
+//   Counsellor     → their own records (or unassigned ones)
+//   Admin / Leadership / HR Department Head → everything
+const recordOwnerNames = (r) => [
+  r?.counselorAssigned, r?.allocatedTo, r?.spokenBy, r?.counselor, r?.counselorName,
+  r?.hrName, r?.bookedBy, r?.createdBy, r?.assignedTo
+].map((v) => String(v || '').trim()).filter(Boolean);
+const teamOwnsRecord = (req, rec) => {
+  const owners = recordOwnerNames(rec);
+  if (!owners.length) return true;
+  return req.hrTeamNames.some((n) => owners.some((o) => namesMatch(n, o)));
 };
-
-const ownsLead = (req, lead) => {
-  if (!lead) return false;
-  if (!isScopedHr(req) && !isScopedBranchManager(req)) return true;
-  if (isScopedHr(req)) {
-    return leadHasCounselor(lead, req.user);
-  }
-  if (isScopedBranchManager(req)) {
-    const targetBranch = getBranchManagerBranch(req);
-    if (!targetBranch) return true;
-    const ub = bClean(targetBranch);
-    return !lead.branch || bClean(lead.branch).includes(ub) || ub.includes(bClean(lead.branch));
-  }
+const branchOwnsRecord = (req, rec) => {
+  const ub = bClean(getBranchManagerBranch(req));
+  if (!ub) return false;
+  const vals = [rec?.branch, rec?.leadBranch, rec?.location].map(bClean).filter(Boolean);
+  return vals.some((v) => v.includes(ub) || ub.includes(v));
+};
+const canChangeRecord = (req, rec) => {
+  if (!rec) return false;
+  if (req.hrTeamNames) return teamOwnsRecord(req, rec);
+  if (isScopedBranchManager(req)) return branchOwnsRecord(req, rec);
+  if (isScopedHr(req)) return leadHasCounselor(rec, req.user);
   return true;
 };
-
-const ownsDemo = (req, demo) => {
-  if (!isScopedHr(req)) return true;
-  return leadHasCounselor(demo, req.user);
-};
+const ownsStudent = canChangeRecord;
+const ownsLead = canChangeRecord;
+const ownsDemo = canChangeRecord;
 
 const NOT_YOURS = { error: 'This record belongs to another counsellor.' };
 
@@ -2605,6 +2715,8 @@ router.get('/students', async (req, res) => {
     if (isBM && userBranch) {
       const bRx = new RegExp(escapeRegex(userBranch), 'i');
       andConditions.push({ $or: [{ branch: bRx }, { location: bRx }, { leadBranch: bRx }] });
+    } else if (req.hrTeamNames) {
+      andConditions.push(ownerAnyQuery(pickTeamNames(req.hrTeamNames, req.query.hrName), STUDENT_OWNER_FIELDS));
     } else if (isScopedHr(req)) {
       const counselor = req.user?.name || req.user?.userName;
       if (counselor) {
@@ -2640,13 +2752,13 @@ router.get('/students', async (req, res) => {
     if (search) {
       andConditions.push({
         $or: [
-          { name: { $regex: search, $options: 'i' } },
-          { studentId: { $regex: search, $options: 'i' } },
-          { phone: { $regex: search, $options: 'i' } },
-          { course: { $regex: search, $options: 'i' } },
-          { hrName: { $regex: search, $options: 'i' } },
-          { branch: { $regex: search, $options: 'i' } },
-          { location: { $regex: search, $options: 'i' } }
+          { name: { $regex: escapeRegex(String(search).trim()), $options: 'i' } },
+          { studentId: { $regex: escapeRegex(String(search).trim()), $options: 'i' } },
+          { phone: { $regex: escapeRegex(String(search).trim()), $options: 'i' } },
+          { course: { $regex: escapeRegex(String(search).trim()), $options: 'i' } },
+          { hrName: { $regex: escapeRegex(String(search).trim()), $options: 'i' } },
+          { branch: { $regex: escapeRegex(String(search).trim()), $options: 'i' } },
+          { location: { $regex: escapeRegex(String(search).trim()), $options: 'i' } }
         ]
       });
     }
@@ -3590,7 +3702,9 @@ router.get('/leads', async (req, res) => {
     const isBM = isScopedBranchManager(req);
     const targetBranch = isBM ? getBranchManagerBranch(req) : branch;
     let query = {};
-    if (counselor && counselor !== 'all') {
+    if (req.hrTeamNames) {
+      query.$or = ownerAnyQuery(pickTeamNames(req.hrTeamNames, req.query.counselor), LEAD_OWNER_FIELDS).$or;
+    } else if (counselor && counselor !== 'all') {
       query.$or = leadOwnerQuery(counselor).$or;
     }
     if (stage && stage !== 'all') {
@@ -3600,7 +3714,7 @@ router.get('/leads', async (req, res) => {
       query.branch = { $regex: new RegExp(escapeRegex(targetBranch.trim()), 'i') };
     }
     if (search) {
-      const searchRegex = { $regex: search.trim(), $options: 'i' };
+      const searchRegex = { $regex: escapeRegex(String(search).trim()), $options: 'i' };
       const searchOr = [
         { fullName: searchRegex },
         { phone: searchRegex },
@@ -4178,7 +4292,7 @@ function classRunsOn(days, date) {
 function trainerOnLeave(t, date) {
   const d = String(date || '').slice(0, 10);
   if (!d) return false;
-  return (t.leaves || []).some((l) => l.from && d >= l.from && d <= (l.to || l.from));
+  return (t.leaves || []).some((l) => l.from && l.status !== 'rejected' && d >= l.from && d <= (l.to || l.from));
 }
 
 export function isSpecialtyCourse(course) {
@@ -4437,8 +4551,15 @@ router.post('/trainer/settings/:id/leaves', async (req, res) => {
     // Clash check: accepted demos inside the leave window
     const clashes = await Demo.find({ trainerId: id, preferredDate: { $gte: from, $lte: end }, status: { $in: ['booked', 'confirmed', 'Booked', 'Confirmed'] } })
       .select('candidateName preferredDate timeSlot bookedBy');
-    trainer.leaves.push({ from, to: end, reason: String(reason).slice(0, 200) });
+    const decidedByLeader = !(req.user?.trainerId && req.user.trainerId === id) && isTrainerLeaveApprover(req);
+    trainer.leaves.push({
+      from, to: end, reason: String(reason).slice(0, 200),
+      status: decidedByLeader ? 'approved' : 'pending',
+      decidedBy: decidedByLeader ? (req.user?.name || '') : '',
+      decidedAt: decidedByLeader ? new Date() : undefined
+    });
     await trainer.save();
+    if (!decidedByLeader) await notifyTrainerLeaveApprovers(trainer, { from, to: end, reason });
     for (const d of clashes) {
       await pushNotification({
         audience: 'hr', recipientName: d.bookedBy || '', type: 'demo',
@@ -4448,6 +4569,189 @@ router.post('/trainer/settings/:id/leaves', async (req, res) => {
       });
     }
     res.status(201).json({ trainer, clashes: clashes.length });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Who may approve / reject a trainer's leave: Department Head, Trainer Manager,
+// Training Team Lead (plus Admin & Leadership)
+function isTrainerLeaveApprover(req) {
+  const u = req.user || {};
+  return ['admin', 'leadership'].includes(u.department) || ['Admin', 'Super Admin'].includes(u.role)
+    || isTrainerHeadUser(req) || isTrainerManagerUser(req) || isTrainerTLUser(req)
+    || ['head', 'manager', 'tl', 'trainer_head', 'trainer_manager'].includes(String(req.headers?.['x-trainer-role'] || '').toLowerCase());
+}
+
+// Bell notification to the trainer's TL, Manager and every Department Head of Training
+async function notifyTrainerLeaveApprovers(trainer, { from, to, reason }) {
+  const names = new Set();
+  if (trainer.teamLeadName) names.add(trainer.teamLeadName.trim());
+  if (trainer.managerName) names.add(trainer.managerName.trim());
+  try {
+    const heads = await User.find({ role: /department head of training|head of training|head of trainer|trainer head|training head|chief trainer/i }).select('name').lean();
+    heads.forEach((h) => h.name && names.add(h.name.trim()));
+  } catch (_) { /* best effort */ }
+  const tb = String(trainer.branchName || trainer.branch || '').toLowerCase();
+  const zonal = HEAD_OF_TRAINERS_MASTER.filter((h) => tb && (h.branches || []).some((b) => tb.includes(String(b).toLowerCase())));
+  (zonal.length ? zonal : HEAD_OF_TRAINERS_MASTER).forEach((h) => h.name && names.add(h.name.trim()));
+  const period = `${from}${to && to !== from ? ` → ${to}` : ''}`;
+  for (const recipientName of names) {
+    await pushNotification({
+      audience: 'trainer', recipientName, type: 'approval',
+      title: `Leave request: ${trainer.trainerName}`,
+      message: `${trainer.trainerName} applied for leave ${period}${reason ? ` · ${String(reason).slice(0, 140)}` : ''}. Open Leave Requests to approve or reject.`,
+      createdBy: trainer.trainerName
+    });
+  }
+}
+
+// GET all trainer leave requests (leaders) — flattened, newest first
+router.get('/trainer/leave-requests', async (req, res) => {
+  try {
+    if (!isTrainerLeaveApprover(req)) return res.status(403).json({ error: 'Only the Department Head, Manager or Team Lead can view leave requests.' });
+    const trainers = await Trainer.find({ 'leaves.0': { $exists: true } }).select('trainerId trainerName branchName teamLeadId teamLeadName managerId managerName leaves').lean();
+    const out = [];
+    trainers.forEach((t) => (t.leaves || []).forEach((l) => out.push({
+      ...l, status: l.status || 'approved', trainerId: t.trainerId, trainerName: t.trainerName, branchName: t.branchName || '',
+      teamLeadId: t.teamLeadId || '', teamLeadName: t.teamLeadName || '', managerId: t.managerId || '', managerName: t.managerName || ''
+    })));
+    out.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+    res.json(out);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Approve / reject a trainer's leave (Head, Manager, TL)
+router.patch('/trainer/settings/:id/leaves/:leaveId/decision', async (req, res) => {
+  try {
+    const { id, leaveId } = req.params;
+    if (!isTrainerLeaveApprover(req)) return res.status(403).json({ error: 'Only the Department Head, Manager or Team Lead can decide leave.' });
+    if (req.user?.trainerId && req.user.trainerId === id && !['admin', 'leadership'].includes(req.user?.department)) {
+      return res.status(403).json({ error: 'You cannot approve your own leave.' });
+    }
+    const { action, note = '' } = req.body || {};
+    if (!['approved', 'rejected', 'pending'].includes(action)) return res.status(400).json({ error: 'Decision must be approved, rejected or pending' });
+    const trainer = await Trainer.findOne({ trainerId: id });
+    if (!trainer) return res.status(404).json({ error: 'Trainer not found' });
+    const leave = trainer.leaves.id(leaveId);
+    if (!leave) return res.status(404).json({ error: 'Leave request not found' });
+    const decidedBy = req.user?.name || req.body?.decidedBy || '';
+    leave.status = action;
+    leave.decidedBy = action === 'pending' ? '' : decidedBy;
+    leave.decidedAt = action === 'pending' ? undefined : new Date();
+    leave.decisionNote = String(note).slice(0, 200);
+    await trainer.save();
+    if (action !== 'pending') {
+      await pushNotification({
+        audience: 'trainer', recipientName: trainer.trainerName, type: 'approval',
+        title: `Leave ${action}: ${leave.from}${leave.to && leave.to !== leave.from ? ` → ${leave.to}` : ''}`,
+        message: `${decidedBy ? `Decided by ${decidedBy}` : 'Decision recorded'}${leave.decisionNote ? ` · ${leave.decisionNote}` : ''}`,
+        createdBy: decidedBy
+      });
+    }
+    res.json({ trainer, leave });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ---- Trainer Manager & Team Lead leave → approved only by the Department Head of Training ----
+const TRAINING_HEAD_ROLE_RX = /department head of training|head of training|head of trainer|trainer head|training head|chief trainer|chief faculty/i;
+function isStrictTrainingHead(req) {
+  const u = req.user || {};
+  if (['admin', 'leadership'].includes(u.department) || ['Admin', 'Super Admin'].includes(u.role)) return true;
+  if (u.trainerRole === 'head') return true;
+  const email = String(u.email || '').toLowerCase().trim();
+  if (email && HEAD_OF_TRAINERS_MASTER.some((h) => String(h.email || '').toLowerCase() === email)) return true;
+  return TRAINING_HEAD_ROLE_RX.test(String(u.role || ''));
+}
+function trainingLeaderRole(req) {
+  if (isTrainerTLUser(req)) return 'tl';
+  const u = req.user || {};
+  const role = String(u.role || '').toLowerCase();
+  if (u.trainerRole === 'manager' || u.trainerRole === 'trainer_manager' || /trainer manager|training manager|training team manager/.test(role) || String(u.email || '').toLowerCase().includes('.manager@')) return 'manager';
+  return '';
+}
+
+router.get('/trainer/leader-leaves', async (req, res) => {
+  try {
+    const q = { refType: 'trainer_leader_leave' };
+    if (!isStrictTrainingHead(req)) {
+      if (!trainingLeaderRole(req)) return res.status(403).json({ error: 'Not allowed.' });
+      q.requestedBy = exactNameRx(req.user?.name || '');
+    }
+    if (req.query.status) q.status = String(req.query.status).toLowerCase();
+    res.json(await Approval.find(q).sort({ createdAt: -1 }).limit(500));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.post('/trainer/leader-leaves', async (req, res) => {
+  try {
+    const role = trainingLeaderRole(req);
+    if (!role) return res.status(403).json({ error: 'Only a Trainer Manager or Team Lead can apply here.' });
+    const name = req.user?.name || '';
+    if (!name) return res.status(400).json({ error: 'Your login has no name on it.' });
+    const { from, to = '', reason = '', leaveType = 'Casual Leave' } = req.body || {};
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(from || ''))) return res.status(400).json({ error: 'Pick a start date' });
+    const end = to && /^\d{4}-\d{2}-\d{2}$/.test(to) ? to : from;
+    if (end < from) return res.status(400).json({ error: 'End date is before start date' });
+    if (!String(reason).trim()) return res.status(400).json({ error: 'Please give a reason' });
+    const roleLabel = role === 'tl' ? 'Training Team Lead' : 'Trainer Manager';
+    const period = `${from}${end !== from ? ` → ${end}` : ''}`;
+    const created = await Approval.create({
+      title: `Leave Request: ${name} (${roleLabel})`,
+      description: `${leaveType} · ${period} · ${String(reason).slice(0, 200)}`,
+      kind: 'Leave Approval', priority: 'medium', status: 'pending',
+      departmentCode: 'ACAD', branchName: req.user?.branch || '',
+      requestedBy: name, refType: 'trainer_leader_leave',
+      leaveFrom: from, leaveTo: end, leaveType: String(leaveType).slice(0, 60), requesterRole: role
+    });
+    // Notify the Department Head(s) of Training only
+    const heads = new Set();
+    try {
+      (await User.find({ role: TRAINING_HEAD_ROLE_RX }).select('name').lean()).forEach((h) => h.name && heads.add(h.name.trim()));
+    } catch (_) { /* best effort */ }
+    const myBranch = String(req.user?.branch || '').toLowerCase();
+    const zonal = HEAD_OF_TRAINERS_MASTER.filter((h) => myBranch && (h.branches || []).some((b) => myBranch.includes(String(b).toLowerCase())));
+    (zonal.length ? zonal : HEAD_OF_TRAINERS_MASTER).forEach((h) => h.name && heads.add(h.name.trim()));
+    heads.delete(name.trim());
+    for (const recipientName of heads) {
+      await pushNotification({
+        audience: 'trainer', recipientName, type: 'approval',
+        title: `Leave request: ${name} (${roleLabel})`,
+        message: `${leaveType} · ${period} · ${String(reason).slice(0, 140)}. Open Leave Requests to approve or reject.`,
+        createdBy: name
+      });
+    }
+    res.status(201).json(created);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.patch('/trainer/leader-leaves/:id/decision', async (req, res) => {
+  try {
+    if (!isStrictTrainingHead(req)) return res.status(403).json({ error: 'Only the Department Head of Training can decide Manager / TL leave.' });
+    const { action, note = '' } = req.body || {};
+    if (!['approved', 'rejected', 'pending'].includes(action)) return res.status(400).json({ error: 'Decision must be approved, rejected or pending' });
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Leave request not found' });
+    const ap = await Approval.findOne({ _id: req.params.id, refType: 'trainer_leader_leave' });
+    if (!ap) return res.status(404).json({ error: 'Leave request not found' });
+    const decidedBy = req.user?.name || '';
+    if (decidedBy && ap.requestedBy && decidedBy.trim().toLowerCase() === ap.requestedBy.trim().toLowerCase()) {
+      return res.status(403).json({ error: 'You cannot approve your own leave.' });
+    }
+    ap.status = action;
+    ap.decidedBy = action === 'pending' ? '' : decidedBy;
+    ap.decidedAt = action === 'pending' ? null : new Date();
+    if (note) ap.description = `${ap.description} · Note: ${String(note).slice(0, 200)}`;
+    await ap.save();
+    await applyApprovalDecision(ap);
+    res.json(ap);
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -4568,6 +4872,15 @@ router.get('/demos', async (req, res) => {
         }
         andConditions.push({ $or: ownerConditions });
       }
+    } else if (req.hrTeamNames) {
+      const names = pickTeamNames(req.hrTeamNames, qCounselor);
+      const ownerConditions = [...ownerAnyQuery(names, DEMO_OWNER_FIELDS).$or];
+      const teamLeads = await StudentLead.find(ownerAnyQuery(names, LEAD_OWNER_FIELDS)).select('phone whatsappNumber').lean();
+      const teamPhones = Array.from(new Set(teamLeads.map((l) => phoneDigits(l.phone || l.whatsappNumber)).filter((p) => p.length === 10)));
+      if (teamPhones.length > 0) {
+        ownerConditions.push({ phone: { $in: teamPhones.map((p) => new RegExp(escapeRegex(p) + '$')) } });
+      }
+      andConditions.push({ $or: ownerConditions });
     } else if (qCounselor && qCounselor !== 'all') {
       const rx = counselorNameRx(qCounselor);
       const ownerConditions = [
@@ -4801,12 +5114,16 @@ async function assertTrainerFreeToConfirm({ trainerId, preferredDate, timeSlot, 
 
 // Tell the HR who booked the demo what the trainer did with it
 async function notifyHrOfDemo(demo, what) {
+  // HR is told only when a candidate actually attended (after the trainer marks
+  // them Present at the end of the meeting) — and only once per demo, however
+  // many times End / Save is clicked. Slot acceptance is a separate one-off.
   const labels = {
     confirmed: 'accepted the demo slot',
-    attended: 'completed the demo — lead moved to Demo Attended',
-    missed: 'marked the candidate as a no-show — please reschedule'
+    attended: 'completed the demo — candidate was present, lead moved to Demo Attended'
   };
   if (!labels[what]) return;
+  const already = await Notification.exists({ audience: 'hr', demoId: String(demo._id), title: `Demo ${what}: ${demo.candidateName}` }).catch(() => null);
+  if (already) return;
   await pushNotification({
     audience: 'hr', recipientName: demo.bookedBy || '', type: 'demo',
     title: `Demo ${what}: ${demo.candidateName}`,
@@ -4834,17 +5151,20 @@ router.put('/demos/:id', async (req, res) => {
       });
     }
 
+    const prevStatus = String(existing.status || '').toLowerCase();
     const updated = await Demo.findByIdAndUpdate(
       req.params.id,
       { $set: req.body },
       { new: true }
     );
     if (!updated) return res.status(404).json({ error: 'Demo not found' });
-    if (String(updated.status || '').toLowerCase() === 'attended') {
+    const statusChanged = Boolean(req.body.status) && req.body.status !== prevStatus;
+    if (statusChanged && String(updated.status || '').toLowerCase() === 'attended') {
       try { await advanceLeadAfterDemo(updated); } catch (e) { console.warn('advanceLeadAfterDemo failed:', e.message); }
     }
-    // Only outcomes set from the trainer desk notify HR (HR's own clicks don't notify themselves)
-    if (updatedBy === 'trainer' && req.body.status) await notifyHrOfDemo(updated, req.body.status);
+    // Only outcomes set from the trainer desk notify HR (HR's own clicks don't notify themselves),
+    // and only when the status really changed (repeat clicks don't re-notify)
+    if (updatedBy === 'trainer' && statusChanged) await notifyHrOfDemo(updated, req.body.status);
     res.json(updated);
   } catch (err) {
     if (err.code === 11000 || err.statusCode === 409) {
@@ -5394,8 +5714,11 @@ router.get('/auth/trainer-credentials', async (req, res) => {
       trainerRole: 'tl',
       branch: u.branch || '',
       branches: u.branch ? [u.branch] : [],
-      zone: u.branch || 'Pod Operations',
-      zoneLabel: u.branch ? `${u.branch} Pod` : 'Assigned Pod',
+      // Reporting manager set by the Head of Trainer (Managers & TLs → Reports to)
+      managerId: u.managerId || '',
+      managerName: u.managerName || '',
+      zone: u.zone || u.branch || 'Pod Operations',
+      zoneLabel: u.zoneLabel || (u.branch ? `${u.branch} Pod` : 'Assigned Pod'),
       status: u.status || 'Active',
       color: '#16a34a'
     }));
@@ -5453,8 +5776,15 @@ router.put('/trainer/role-accounts/:id', async (req, res) => {
     if (zoneLabel !== undefined) update.zoneLabel = zoneLabel;
 
     const user = await User.findByIdAndUpdate(id, { $set: update }, { new: true }).select('-password');
+    invalidateStaffNames();
     if (!user) {
       return res.status(404).json({ error: 'Team member not found' });
+    }
+    // A Team Lead's new manager cascades to every trainer in that TL's squad
+    if (managerId !== undefined || managerName !== undefined) {
+      const squad = [{ teamLeadId: String(user._id) }];
+      if (user.name) squad.push({ teamLeadName: exactNameRx(user.name) });
+      await Trainer.updateMany({ $or: squad }, { $set: { managerId: update.managerId ?? user.managerId ?? '', managerName: update.managerName ?? user.managerName ?? '' } });
     }
     res.json(user);
   } catch (err) {
@@ -5643,7 +5973,7 @@ router.post('/auth/login', async (req, res) => {
           else trainerRole = 'trainer';
         }
 
-        return grant({
+        const grantedUser = {
           id: dbUser._id.toString(),
           name: dbUser.name,
           userName: dbUser.name,
@@ -5659,7 +5989,16 @@ router.post('/auth/login', async (req, res) => {
           color: mapping.color,
           ...rosterFields,
           ...(studentId ? { studentId } : {})
-        }, `Welcome ${dbUser.name}`);
+        };
+        // Training staff (Trainer, Part-time, TL, Manager, Head): login = attendance start
+        if (mapping.department === 'training') {
+          try {
+            await applySelfAttendance({ user: grantedUser, body: {}, query: {} }, 'start_work', 'login');
+          } catch (err) {
+            console.warn('Auto attendance on login failed:', err.message);
+          }
+        }
+        return grant(grantedUser, `Welcome ${dbUser.name}`);
       }
       const isBuiltIn = normalizedEmail === 'admin' || Object.values(DEPARTMENT_PORTALS).some(d => d.defaultEmail.toLowerCase() === normalizedEmail);
       if (!isBuiltIn) return deny();
@@ -5696,6 +6035,65 @@ router.post('/auth/login', async (req, res) => {
   }
 
   return deny('Access denied. This account is not registered in ThoughtFlows ERP.');
+});
+
+// Logout — training staff: logout = attendance close (latest logout of the day wins)
+router.post('/auth/logout', async (req, res) => {
+  try {
+    const u = req.user || {};
+    const isTraining = u.department === 'training' || Boolean(u.trainerRole);
+    if (!isTraining) return res.json({ success: true });
+    const rec = await applySelfAttendance(req, 'close_work', 'logout');
+    res.json({ success: true, attendance: attendanceView(rec) });
+  } catch (e) {
+    res.status(e.status || 400).json({ success: false, error: e.message });
+  }
+});
+
+// Login / logout attendance of training staff, scoped by role:
+//   Head (and Admin/Leadership): everyone · Manager: self + their TLs & trainers
+//   Team Lead: self + their trainers · Trainer: self only
+router.get('/trainer/staff-attendance', async (req, res) => {
+  try {
+    const u = req.user || {};
+    const from = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.from || '')) ? req.query.from : todayStr();
+    const to = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.to || '')) ? req.query.to : from;
+    // Training staff only — never HR / other departments' clock-ins
+    const q = {
+      date: { $gte: from, $lte: to },
+      department: { $nin: ['hr', 'HR', 'cccp', 'marketing', 'admin', 'leadership', 'student'] },
+      $or: [{ department: 'training' }, { staffRole: { $in: ['trainer', 'part_time', 'tl', 'manager', 'head'] } }]
+    };
+    const myName = String(u.name || '').trim();
+    const role = isStrictTrainingHead(req) ? 'head' : trainingLeaderRole(req) || 'trainer';
+    if (role !== 'head') {
+      const names = new Set([myName.toLowerCase()]);
+      if (role === 'tl' || role === 'manager') {
+        const nameRx = exactNameRx(myName);
+        const tq = role === 'tl'
+          ? { $or: [{ teamLeadName: nameRx }, ...(u.leaderId ? [{ teamLeadId: u.leaderId }] : []), ...(u.supervisedTrainers?.length ? [{ trainerId: { $in: u.supervisedTrainers } }] : [])] }
+          : { $or: [{ managerName: nameRx }, ...(u.leaderId ? [{ managerId: u.leaderId }] : []), ...(u.supervisedTrainers?.length ? [{ trainerId: { $in: u.supervisedTrainers } }] : [])] };
+        const team = await Trainer.find(tq).select('trainerName teamLeadName').lean();
+        team.forEach((t) => {
+          if (t.trainerName) names.add(t.trainerName.trim().toLowerCase());
+          if (role === 'manager' && t.teamLeadName) names.add(t.teamLeadName.trim().toLowerCase());
+        });
+      }
+      q.employeeName = { $in: [...names].filter(Boolean).map((n) => exactNameRx(n)) };
+    }
+    const rows = await Attendance.find(q).sort({ date: -1, employeeName: 1 }).limit(2000);
+    const today = todayStr();
+    res.json(rows.map((r) => {
+      const v = attendanceView(r);
+      // A past day still "In Progress" means the person never logged out
+      if (v.date < today && !v.workEndTime && v.workStartTime) {
+        return { ...v, sessionStatus: 'Logout missing', calculatedWorkingMinutes: 0, durationText: '—' };
+      }
+      return v;
+    }));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ==========================================
@@ -5844,6 +6242,7 @@ router.put('/admin/users/:id', async (req, res) => {
     let user;
     if (mongoose.Types.ObjectId.isValid(id)) {
       user = await User.findByIdAndUpdate(id, update, { new: true });
+    invalidateStaffNames();
     } else {
       user = await User.findOneAndUpdate({ email: req.body.email }, update, { new: true });
     }
@@ -5872,6 +6271,7 @@ router.delete('/admin/users/:id', async (req, res) => {
     const { id } = req.params;
     if (mongoose.Types.ObjectId.isValid(id)) {
       await User.findByIdAndDelete(id);
+    invalidateStaffNames();
     } else if (req.query.email) {
       await User.findOneAndDelete({ email: req.query.email });
     }
@@ -6626,6 +7026,23 @@ function getTodayIST() {
 }
 
 // Helper: Get user's effective role and identity for utilization
+// Manager may plan for: their TLs, trainers whose manager is them, and trainers
+// under any TL that reports to them (manager set on the TL only).
+async function managerCanPlanFor(caller, { userId, managerId, managerName, teamLeadId }) {
+  const ids = [caller.leaderId, caller.id].filter(Boolean).map((v) => String(v).toLowerCase());
+  const myName = String(caller.name || '').trim().toLowerCase();
+  const isMine = (mid, mname) => (mid && ids.includes(String(mid).toLowerCase())) || (myName && String(mname || '').trim().toLowerCase() === myName);
+  if (isMine(managerId, managerName)) return true;
+  const tr = await Trainer.findOne({ trainerId: new RegExp(`^${escapeRegex(String(userId))}$`, 'i') }).lean();
+  if (tr && isMine(tr.managerId, tr.managerName)) return true;
+  const tlId = tr?.teamLeadId || teamLeadId || (mongoose.isValidObjectId(userId) ? userId : '');
+  if (tlId && mongoose.isValidObjectId(tlId)) {
+    const tlUser = await User.findById(tlId).select('managerId managerName').lean();
+    if (tlUser && isMine(tlUser.managerId, tlUser.managerName)) return true;
+  }
+  return false;
+}
+
 function getUtilizationUserIdentity(req) {
   const u = req.user || {};
   const query = req.query || {};
@@ -6769,10 +7186,16 @@ router.get('/trainer/utilization', async (req, res) => {
       );
     } else if (caller.role === 'manager' && caller.id) {
       const myMgrId = caller.leaderId || caller.id;
-      roster = roster.filter(
-        (r) => r.userId.toLowerCase() === myMgrId.toLowerCase() ||
-               (r.managerId && r.managerId.toLowerCase() === myMgrId.toLowerCase())
-      );
+      const mine = (r) => r.userId.toLowerCase() === myMgrId.toLowerCase() ||
+        (r.managerId && r.managerId.toLowerCase() === myMgrId.toLowerCase()) ||
+        (caller.name && String(r.managerName || '').trim().toLowerCase() === caller.name.toLowerCase());
+      // TLs reporting to me → their trainers are mine too (even if the trainer row has no manager set)
+      const myTlIds = new Set(roster.filter((r) => r.userRole === 'tl' && mine(r)).map((r) => r.userId.toLowerCase()));
+      roster = roster
+        .filter((r) => mine(r) || (r.teamLeadId && myTlIds.has(r.teamLeadId.toLowerCase())))
+        .map((r) => (r.userRole === 'trainer' && !r.managerId && r.teamLeadId && myTlIds.has(r.teamLeadId.toLowerCase())
+          ? { ...r, managerId: myMgrId, managerName: caller.name || r.managerName }
+          : r));
     }
 
     if (filterUserId) {
@@ -7050,8 +7473,7 @@ router.post('/trainer/utilization/plan', async (req, res) => {
     } else if (caller.role === 'head' || caller.role === 'admin' || caller.role === 'leadership') {
       isAuthorized = true;
     } else if (caller.role === 'manager') {
-      const myMgrId = caller.leaderId || caller.id;
-      if (managerId && managerId.toLowerCase() === myMgrId.toLowerCase()) isAuthorized = true;
+      isAuthorized = await managerCanPlanFor(caller, { userId, managerId, managerName, teamLeadId });
     } else if (caller.role === 'tl') {
       const myTlId = caller.leaderId || caller.id;
       if (teamLeadId && teamLeadId.toLowerCase() === myTlId.toLowerCase()) isAuthorized = true;
@@ -7267,6 +7689,20 @@ router.post('/trainer/utilization/bulk-plan', async (req, res) => {
       } = plan;
 
       if (!userId) continue;
+
+      // Same permission as single-slot planning
+      const isSelfPlan = caller.id && caller.id.toLowerCase() === String(userId).toLowerCase();
+      let allowed = isSelfPlan || ['head', 'admin', 'leadership'].includes(caller.role);
+      if (!allowed && caller.role === 'manager') allowed = await managerCanPlanFor(caller, { userId, managerId, managerName, teamLeadId });
+      if (!allowed && caller.role === 'tl') {
+        const myTlId = String(caller.leaderId || caller.id || '').toLowerCase();
+        if (teamLeadId && teamLeadId.toLowerCase() === myTlId) allowed = true;
+        if (!allowed) {
+          const trMatch = await Trainer.findOne({ trainerId: new RegExp(`^${escapeRegex(String(userId))}$`, 'i') }).lean();
+          if (trMatch?.teamLeadId && trMatch.teamLeadId.toLowerCase() === myTlId) allowed = true;
+        }
+      }
+      if (!allowed) continue;
 
       let workDoc = await TrainerHourlyWork.findOne({ userId, date });
       if (!workDoc) {
@@ -9481,12 +9917,16 @@ router.post('/demos/bulk-outcome', async (req, res) => {
     const updatedList = [];
     for (const id of ids) {
       if (!mongoose.isValidObjectId(id)) continue;
-      const updated = await Demo.findByIdAndUpdate(id, { $set: { status: s } }, { new: true });
+      const before = await Demo.findById(id).select('status').lean();
+      if (!before) continue;
+      const changed = String(before.status || '').toLowerCase() !== s;
+      const updated = changed ? await Demo.findByIdAndUpdate(id, { $set: { status: s } }, { new: true }) : await Demo.findById(id);
       if (updated) {
-        if (s === 'attended') {
+        // Repeat End / Save clicks on an already-marked candidate do nothing
+        if (changed && s === 'attended') {
           try { await advanceLeadAfterDemo(updated); } catch (e) { console.warn(e.message); }
         }
-        if (updatedBy === 'trainer') {
+        if (changed && updatedBy === 'trainer') {
           await notifyHrOfDemo(updated, s);
         }
         updatedList.push(updated);

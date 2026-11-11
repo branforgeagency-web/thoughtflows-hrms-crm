@@ -11,6 +11,7 @@ import CourseCatalogWidget from './components/CourseCatalogWidget';
 import StudentRegistrationPage from './components/StudentRegistrationPage';
 import ScreenGuard from './components/ScreenGuard';
 import axios from 'axios';
+import { recordTrainingLogout } from './services/api';
 
 export default function App() {
   const [isRegistrationRoute, setIsRegistrationRoute] = useState(() => {
@@ -192,6 +193,7 @@ export default function App() {
   };
 
   const handleSignOut = () => {
+    recordTrainingLogout();
     sessionStorage.removeItem('thoughtflows_user');
     sessionStorage.removeItem('thoughtflows_dashboard');
     sessionStorage.removeItem('thoughtflows_trainer_user');

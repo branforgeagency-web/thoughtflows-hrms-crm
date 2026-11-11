@@ -39,7 +39,10 @@ import { parseGoogleSheetOrCsv, downloadSampleGoogleSheetTemplate } from '../uti
 const CURRENT_YEAR = new Date().getFullYear();
 const PASSOUT_YEARS = Array.from({ length: CURRENT_YEAR - 1980 + 1 }, (_, i) => String(CURRENT_YEAR - i));
 
-export default function AddLeadModal({ isOpen, onClose, onAddLead, onBulkImported, initialMode = 'single', currentUser }) {
+export default function AddLeadModal({ isOpen, onClose, onAddLead, onBulkImported, initialMode = 'single', currentUser, assignableCounsellors = null }) {
+  // Leadership desks pick the counsellor; a counsellor's own leads stay theirs
+  const [assignTo, setAssignTo] = useState(currentUser?.name || '');
+  useEffect(() => { if (isOpen) setAssignTo(currentUser?.name || ''); }, [isOpen, currentUser?.name]);
   if (!isOpen) return null;
 
   // Mode: 'single' (individual enquiry form) or 'bulk' (Google Sheet / CSV import)
@@ -228,6 +231,7 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead, onBulkImporte
       source: currentSelectedSource.name,
       sourceBadge: currentSelectedSource.badge,
       category: selectedCategory,
+      ...(assignableCounsellors && assignTo ? { counselorAssigned: assignTo, allocatedTo: assignTo } : {}),
       createdAt: new Date().toISOString()
     };
 
@@ -582,6 +586,23 @@ export default function AddLeadModal({ isOpen, onClose, onAddLead, onBulkImporte
                 />
                 <p className="text-[10px] text-slate-400 mt-1">Student dashboard login: this email + an auto-generated TF password.</p>
               </div>
+
+              {Array.isArray(assignableCounsellors) && assignableCounsellors.length > 0 && (
+                <div>
+                  <label className="block text-[10.5px] font-bold font-mono tracking-wider text-slate-400 uppercase mb-1.5">
+                    ASSIGN TO COUNSELLOR
+                  </label>
+                  <select
+                    value={assignTo}
+                    onChange={(e) => setAssignTo(e.target.value)}
+                    className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#0e6977] transition-all font-sans"
+                  >
+                    {assignableCounsellors.map((n) => (
+                      <option key={n} value={n}>{n}{n === currentUser?.name ? ' (me)' : ''}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               {/* Row 3: Age, Gender & Location */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">

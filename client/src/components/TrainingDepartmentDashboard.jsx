@@ -101,6 +101,7 @@ import {
 } from '../services/api';
 import { TRAINER_COURSES } from '../constants/courses';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
+import StaffLoginAttendance from './StaffLoginAttendance';
 
 export default function TrainingDepartmentDashboard({
   onClose,
@@ -1172,7 +1173,7 @@ export default function TrainingDepartmentDashboard({
       setDemos(prev => prev.map(l => l._id === lead._id ? { ...l, ...updated } : l));
       flashDemoToast(status === 'attended'
         ? `✓ ${lead.candidateName} marked Attended · lead moved to Demo Attended · HR notified`
-        : `${lead.candidateName} marked No-show · HR notified to reschedule`);
+        : `${lead.candidateName} marked No-show`);
     } catch (e) {
       flashDemoToast(e?.response?.data?.error || e.message || 'Could not update demo', 5000);
     }
@@ -1223,26 +1224,51 @@ export default function TrainingDepartmentDashboard({
     }
   };
 
-  // End the live demo: mark all attending candidates Attended and leave Zoom
+  // End the live demo: leave Zoom, then the trainer marks attendance per
+  // candidate. Only candidates marked Present become 'attended'; Absent →
+  // 'missed'; anyone left unmarked stays as is (mark later from the Demos tab).
+  const [demoAttendanceSheet, setDemoAttendanceSheet] = useState(null); // { students: [...], marks: { id: 'present'|'absent' } }
+  const [demoAttendanceSaving, setDemoAttendanceSaving] = useState(false);
+  const endingDemoRef = React.useRef(false);
   const endDemo = async (room) => {
+    // Ignore repeat clicks on End while the meeting is closing / the sheet is open
+    if (endingDemoRef.current || demoAttendanceSheet) return;
+    endingDemoRef.current = true;
     try { if (room?._id) await endDemoMeeting(room._id); } catch (e) { console.warn(e); }
-    const studentsToMark = (room?.sessionStudents && room.sessionStudents.length)
-      ? room.sessionStudents.filter(s => lc(s.status) !== 'missed')
-      : (room?._id ? [room] : []);
-    if (studentsToMark.length) {
-      try {
-        await updateDemosBulkOutcome(studentsToMark.map(s => s._id), 'attended');
-        setDemos(prev => prev.map(d => {
-          if (studentsToMark.some(u => u._id === d._id)) return { ...d, status: 'attended' };
-          return d;
-        }));
-      } catch (e) {
-        console.warn('endDemo bulk outcome failed:', e);
-      }
-    }
+    endingDemoRef.current = false;
+    const students = (room?.sessionStudents && room.sessionStudents.length) ? room.sessionStudents : (room?._id ? [room] : []);
+    const marks = {};
+    students.forEach((st) => {
+      if (lc(st.status) === 'attended') marks[st._id] = 'present';
+      else if (lc(st.status) === 'missed') marks[st._id] = 'absent';
+    });
     setDemoRoom(null);
     setDemoMin(false);
-    flashDemoToast(`✓ Group demo session ended · ${studentsToMark.length} candidate(s) marked Attended`, 4000);
+    if (students.length) setDemoAttendanceSheet({ students, marks, course: room?.course, preferredDate: room?.preferredDate, timeSlot: room?.timeSlot || room?.time });
+  };
+  const saveDemoAttendance = async () => {
+    const sheet = demoAttendanceSheet;
+    if (!sheet) return;
+    const present = sheet.students.filter((st) => sheet.marks[st._id] === 'present' && lc(st.status) !== 'attended');
+    const absent = sheet.students.filter((st) => sheet.marks[st._id] === 'absent' && lc(st.status) !== 'missed');
+    const unmarked = sheet.students.filter((st) => !sheet.marks[st._id]).length;
+    if (unmarked && !window.confirm(`${unmarked} candidate(s) not marked yet. They stay pending — you can mark them later from the Demos tab. Save the rest?`)) return;
+    setDemoAttendanceSaving(true);
+    try {
+      if (present.length) await updateDemosBulkOutcome(present.map((st) => st._id), 'attended');
+      if (absent.length) await updateDemosBulkOutcome(absent.map((st) => st._id), 'missed');
+      setDemos((prev) => prev.map((d) => {
+        if (present.some((u) => u._id === d._id)) return { ...d, status: 'attended' };
+        if (absent.some((u) => u._id === d._id)) return { ...d, status: 'missed' };
+        return d;
+      }));
+      setDemoAttendanceSheet(null);
+      flashDemoToast(`✓ Attendance saved · ${present.length} Attended${present.length ? ' (HR notified)' : ''} · ${absent.length} No-show${unmarked ? ` · ${unmarked} pending` : ''}`, 5000);
+    } catch (e) {
+      flashDemoToast(e?.response?.data?.error || 'Could not save attendance', 5000);
+    } finally {
+      setDemoAttendanceSaving(false);
+    }
   };
 
   // Once every candidate in the active Google Meet session has a final
@@ -1327,7 +1353,7 @@ export default function TrainingDepartmentDashboard({
         }
         return d;
       }));
-      flashDemoToast(`✓ All ${eligible.length} students marked Attended — HR notified`, 4000);
+      flashDemoToast(`✓ All ${eligible.length} students marked Attended`, 4000);
     } catch (e) {
       flashDemoToast(e?.response?.data?.error || 'Could not mark all attended', 5000);
     }
@@ -2001,7 +2027,7 @@ export default function TrainingDepartmentDashboard({
                     )}
                     <button onClick={() => setDemoMin(true)} className="px-3 py-1.5 rounded-xl bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold transition-all cursor-pointer shadow-sm">Minimize</button>
                     <button onClick={() => endDemo(demoRoom)} className="px-3.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-all cursor-pointer shadow-sm">
-                      {demoRoom.sessionStudents?.length > 1 ? 'End Session & Complete Attendance' : 'End Demo'}
+                      {demoRoom.sessionStudents?.length > 1 ? 'End Session & Mark Attendance' : 'End Demo & Mark Attendance'}
                     </button>
                   </div>
                 </div>
@@ -2076,6 +2102,47 @@ export default function TrainingDepartmentDashboard({
               </div>
             </div>
           </>
+        )}
+
+        {/* Post-demo attendance: only candidates marked Present become Attended */}
+        {demoAttendanceSheet && (
+          <div className="fixed inset-0 z-[90] bg-slate-950/70 flex items-center justify-center p-4">
+            <div className="w-full max-w-lg bg-white rounded-3xl shadow-2xl border border-slate-200 p-6 space-y-4 text-slate-800">
+              <div>
+                <h3 className="text-base font-black text-slate-900">Mark demo attendance</h3>
+                <p className="text-xs text-slate-500">
+                  {[demoAttendanceSheet.course, demoAttendanceSheet.preferredDate, demoAttendanceSheet.timeSlot].filter(Boolean).join(' · ')}
+                  {' — '}only candidates marked <b>Present</b> are set to Attended.
+                </p>
+              </div>
+              <div className="flex gap-2 text-xs">
+                <button type="button" onClick={() => setDemoAttendanceSheet((sh) => ({ ...sh, marks: Object.fromEntries(sh.students.map((st) => [st._id, 'present'])) }))} className="px-3 py-1.5 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-800 font-bold">All present</button>
+                <button type="button" onClick={() => setDemoAttendanceSheet((sh) => ({ ...sh, marks: Object.fromEntries(sh.students.map((st) => [st._id, 'absent'])) }))} className="px-3 py-1.5 rounded-lg border border-rose-200 bg-rose-50 text-rose-800 font-bold">All absent</button>
+              </div>
+              <div className="max-h-[50vh] overflow-y-auto divide-y divide-slate-100 border border-slate-100 rounded-2xl">
+                {demoAttendanceSheet.students.map((st) => {
+                  const mark = demoAttendanceSheet.marks[st._id];
+                  const setMark = (m) => setDemoAttendanceSheet((sh) => ({ ...sh, marks: { ...sh.marks, [st._id]: m } }));
+                  return (
+                    <div key={st._id} className="px-3 py-2.5 flex items-center justify-between gap-3 text-xs">
+                      <div className="min-w-0">
+                        <div className="font-bold text-slate-900 truncate">{st.candidateName}</div>
+                        <div className="text-[10px] text-slate-500 truncate">{st.phone || st.email || '—'}</div>
+                      </div>
+                      <div className="flex gap-1.5 shrink-0">
+                        <button type="button" onClick={() => setMark('present')} className={`px-3 py-1 rounded-lg font-bold border ${mark === 'present' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-emerald-700 border-emerald-200'}`}>Present</button>
+                        <button type="button" onClick={() => setMark('absent')} className={`px-3 py-1 rounded-lg font-bold border ${mark === 'absent' ? 'bg-rose-600 text-white border-rose-600' : 'bg-white text-rose-700 border-rose-200'}`}>Absent</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="flex justify-end gap-2">
+                <button type="button" disabled={demoAttendanceSaving} onClick={() => { setDemoAttendanceSheet(null); flashDemoToast('Attendance not saved — mark each candidate from the Demos tab.', 4500); }} className="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 text-xs font-bold">Later</button>
+                <button type="button" disabled={demoAttendanceSaving} onClick={saveDemoAttendance} className="px-4 py-2 rounded-xl bg-[#0f212d] text-white text-xs font-bold disabled:opacity-50">{demoAttendanceSaving ? 'Saving…' : 'Save attendance'}</button>
+              </div>
+            </div>
+          </div>
         )}
 
         {/* Toast for Demo Actions */}
@@ -2850,6 +2917,7 @@ export default function TrainingDepartmentDashboard({
           {/* ================= TAB 3: ATTENDANCE ================= */}
           {activeNav === 'attendance' && (
             <div className="space-y-6 max-w-[1280px]">
+              <StaffLoginAttendance title="My Login Attendance" selfOnly />
               {attendanceSavedToast && (
                 <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold animate-fadeIn">
                   {attendanceSavedToast}

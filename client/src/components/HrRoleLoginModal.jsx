@@ -120,7 +120,7 @@ export function hrRoleAllows(roleKey, u) {
     case 'tl':
       return isHrUser(u) && /\btl\b|team\s*lead|\bhead\b|\bhod\b/i.test(role);
     case 'branch':
-      return isBranchHeadRole(role);
+      return isBranchHeadRole(role) && Boolean(String(u.branch || '').trim());
     case 'head':
       return isHrUser(u) && /\bhead\b|\bhod\b/i.test(role);
     default:
@@ -161,6 +161,10 @@ export default function HrRoleLoginModal({ isOpen, roleKey = 'hr', onClose, onLo
       const res = await axios.post('/api/auth/login', { email: email.trim(), password, role: roleKey });
       const authedUser = res.data?.user;
       if (res.data?.success && authedUser) {
+        if (roleKey === 'branch' && isBranchHeadRole(authedUser.role) && !String(authedUser.branch || '').trim()) {
+          setError('This Branch Head account has no branch set. Ask Admin to set the branch on this user before signing in.');
+          return;
+        }
         if (!hrRoleAllows(roleKey, authedUser)) {
           setError(`This account (${authedUser.role || 'no role'}) is not a ${meta.name} account. Ask Admin to create a user with role "${meta.adminRole}".`);
           return;

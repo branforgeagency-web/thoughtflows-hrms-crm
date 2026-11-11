@@ -8,7 +8,8 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "sync:placement": "node scripts/sync-placement-stages.js",
-    "fix:guru-vignesh-names": "node scripts/fix-guru-vignesh-owner-names.js"
+    "fix:guru-vignesh-names": "node scripts/fix-guru-vignesh-owner-names.js",
+    "remove:seed-students": "node scripts/remove-seed-students.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

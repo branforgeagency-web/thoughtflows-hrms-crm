@@ -20,16 +20,27 @@ const SS_ROLE = 'thoughtflows_hr_role';
 const readJson = (key) => {
   try { return JSON.parse(sessionStorage.getItem(key) || 'null'); } catch (_) { return null; }
 };
+// A saved HR desk session is only valid while the API login token is still there
+const readHrSession = () => {
+  const u = readJson(SS_USER);
+  const apiUser = readJson('thoughtflows_user');
+  if (u && !apiUser?.token) {
+    try { sessionStorage.removeItem(SS_USER); sessionStorage.removeItem(SS_ROLE); } catch (_) {}
+    return null;
+  }
+  return u;
+};
 const isHrDeptUser = (u) => Boolean(u) && String(u.department || '').toLowerCase() === 'hr';
 
 export default function HrDepartmentHub({ onClose, currentUser, onLogout, onHrAuth, onHrRoleChange, onSwitchDepartment, theme = 'classic' }) {
-  const [activeHrUser, setActiveHrUser] = useState(() => readJson(SS_USER) || (isHrDeptUser(currentUser) ? currentUser : null));
+  const [activeHrUser, setActiveHrUser] = useState(() => readHrSession() || (isHrDeptUser(currentUser) ? currentUser : null));
   const [selectedRole, setSelectedRole] = useState(() => {
+    const u = readHrSession() || (isHrDeptUser(currentUser) ? currentUser : null);
+    if (!u) return null;
     try {
       const saved = sessionStorage.getItem(SS_ROLE);
       if (saved && HR_ROLE_META[saved]) return saved;
     } catch (_) {}
-    const u = readJson(SS_USER) || (isHrDeptUser(currentUser) ? currentUser : null);
     return inferHrRole(u);
   });
   const [loginModalRole, setLoginModalRole] = useState(null);
@@ -55,17 +66,19 @@ export default function HrDepartmentHub({ onClose, currentUser, onLogout, onHrAu
   const [teamNames, setTeamNames] = useState([]);
   const [teamSource, setTeamSource] = useState('');
   const [teamLoaded, setTeamLoaded] = useState(false);
+  const [teamError, setTeamError] = useState(false);
   useEffect(() => {
     if (selectedRole !== 'tl') return undefined;
     let alive = true;
     setTeamLoaded(false);
+    setTeamError(false);
     getHrMyTeam()
       .then((d) => {
         if (!alive) return;
         setTeamNames((d?.members || []).map((m) => m.name).filter(Boolean));
         setTeamSource(d?.source || '');
       })
-      .catch(() => { if (alive) { setTeamNames([]); setTeamSource(''); } })
+      .catch(() => { if (alive) { setTeamNames([]); setTeamSource(''); setTeamError(true); } })
       .finally(() => { if (alive) setTeamLoaded(true); });
     return () => { alive = false; };
   }, [selectedRole, activeHrUser?.name]);
@@ -147,7 +160,15 @@ export default function HrDepartmentHub({ onClose, currentUser, onLogout, onHrAu
     const user = activeHrUser || currentUser || {};
     const branchLabel = String(user.branch || '').replace(/\s*branch\b.*$/i, '').trim();
     const viewScope = selectedRole === 'tl'
-      ? { mode: 'team', names: teamNames, label: `My Team (${teamNames.length} HR${teamNames.length === 1 ? '' : 's'}${teamSource === 'branch' ? ` · ${branchLabel || 'branch'}` : ''})` }
+      ? {
+        mode: 'team',
+        names: teamNames,
+        label: teamError
+          ? 'My Team · could not load your team — showing only your own records (refresh to retry)'
+          : teamNames.length === 0
+            ? 'My Team · no HRs report to you yet — ask Admin to set "Reports to"'
+            : `My Team (${teamNames.length} HR${teamNames.length === 1 ? '' : 's'}${teamSource === 'branch' ? ` · ${branchLabel || 'branch'} (no one assigned to you yet)` : ''})`
+      }
       : selectedRole === 'branch'
         ? { mode: 'branch', branch: user.branch || '', label: `${branchLabel || 'Branch'} Branch · All HRs` }
         : { mode: 'all', label: 'All Branches · All HRs' };

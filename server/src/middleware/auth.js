@@ -141,6 +141,8 @@ const STAFF_RULES = [
   ['PUT', /^\/trainer\/role-accounts\/[^/]+$/, ['training']],
   ['*', /^\/trainer\/utilization(\/|$)/, ['training']],
   ['*', /^\/trainer\/settings\/[^/]+\/leaves/, ['training']], // own-record check is in the route
+  ['GET', /^\/trainer\/leave-requests$/, ['training']], // approver check is in the route
+  ['*', /^\/trainer\/leader-leaves(\/|$)/, ['training']], // Manager/TL apply, Head decides — checks in the route
   // Student requests: trainer answers academic ones, HR the admin ones
   ['PUT', /^\/student-portal\/requests\/[^/]+$/, ['training', 'hr']],
   // Placement & marketing

@@ -31,7 +31,10 @@ import {
   getStudents,
   getDemos,
   getBranches,
-  onDataUpdate
+  onDataUpdate,
+  recordTrainingLogout,
+  getMyAttendance,
+  startMyWork
 } from '../services/api';
 
 const TRAINER_ROLES = [
@@ -304,6 +307,19 @@ export default function TrainersDepartmentHub({
     return demos.filter((d) => ['booked', 'confirmed'].includes(String(d.status || '').toLowerCase())).length;
   }, [demos]);
 
+  // Already signed in (e.g. tab kept open into a new day): no login happens, so
+  // open today's attendance if it hasn't started yet
+  useEffect(() => {
+    const u = activeTrainerUser;
+    if (!u?.token || !(u.department === 'training' || u.trainerRole || u.trainerId)) return;
+    getMyAttendance(u.branch)
+      .then((rec) => {
+        if (!rec || rec.sessionStatus === 'Not Started' || !rec.workStartTime) return startMyWork(u.branch);
+        return null;
+      })
+      .catch(() => {});
+  }, [activeTrainerUser]);
+
   // Handle clicking a role card
   const handleRoleCardClick = (roleKey) => {
     // If user is already authenticated in this session for this role, enter directly
@@ -350,6 +366,8 @@ export default function TrainersDepartmentHub({
 
   // Logout trainer session
   const handleTrainerLogout = () => {
+    // Logout time = attendance close (sent before the session token is cleared)
+    recordTrainingLogout();
     try {
       sessionStorage.removeItem('thoughtflows_trainer_user');
       sessionStorage.removeItem('thoughtflows_trainer_role');

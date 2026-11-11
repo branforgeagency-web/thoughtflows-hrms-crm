@@ -15,7 +15,12 @@ const approvalSchema = new mongoose.Schema(
     // The record this approval acts on (e.g. a marketing creative) — the
     // decision is written back to it so both dashboards stay in step
     refType: { type: String, default: '' },
-    refId: { type: String, default: '' }
+    refId: { type: String, default: '' },
+    // Leave requests (e.g. Trainer Manager / TL leave, decided by the Department Head of Training)
+    leaveFrom: { type: String, default: '' },
+    leaveTo: { type: String, default: '' },
+    leaveType: { type: String, default: '' },
+    requesterRole: { type: String, default: '' }
   },
   { timestamps: true }
 );

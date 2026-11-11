@@ -129,6 +129,12 @@ const trainerSchema = new mongoose.Schema(
           from: String, // YYYY-MM-DD
           to: String, // YYYY-MM-DD (inclusive)
           reason: String,
+          // Approval by the trainer's TL / Manager / Department Head.
+          // Legacy rows (saved before approvals existed) default to approved.
+          status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'approved' },
+          decidedBy: { type: String, default: '' },
+          decidedAt: Date,
+          decisionNote: { type: String, default: '' },
           createdAt: { type: Date, default: Date.now }
         }
       ],

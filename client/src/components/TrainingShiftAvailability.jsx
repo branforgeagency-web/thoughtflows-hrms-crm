@@ -13,7 +13,7 @@ export default function TrainingShiftAvailability({ trainer, demos = [], batches
   const [leaveBusy, setLeaveBusy] = useState(false);
   const [leaveMsg, setLeaveMsg] = useState('');
   const upcomingLeaves = (trainer?.leaves || []).filter((l) => (l.to || l.from) >= todayKey).sort((a, b) => a.from.localeCompare(b.from));
-  const onLeaveToday = upcomingLeaves.some((l) => l.from <= todayKey && (l.to || l.from) >= todayKey);
+  const onLeaveToday = upcomingLeaves.some((l) => l.status !== 'rejected' && l.status !== 'pending' && l.from <= todayKey && (l.to || l.from) >= todayKey);
 
   // Weekly roster set by the Head of Trainer (Leadership → Trainer Roster), same
   // pattern as HR's read-only "My Shift Roster" card.
@@ -72,7 +72,7 @@ export default function TrainingShiftAvailability({ trainer, demos = [], batches
       const res = await addTrainerLeave(trainer.trainerId, leaveForm);
       if (onTrainerUpdated) onTrainerUpdated(res.trainer);
       setLeaveForm({ from: '', to: '', reason: '' });
-      setLeaveMsg(res.clashes ? `✓ Leave saved. ${res.clashes} booked demo${res.clashes > 1 ? 's' : ''} in this period — HR has been asked to reschedule.` : '✓ Leave saved. You won\'t get demo bookings on these days.');
+      setLeaveMsg(`✓ Leave request sent to your Team Lead, Manager and Department Head for approval.${res.clashes ? ` ${res.clashes} booked demo${res.clashes > 1 ? 's' : ''} in this period — HR has been asked to reschedule.` : ''}`);
     } catch (e) {
       setLeaveMsg(e?.response?.data?.error || e.message);
     } finally {
@@ -231,14 +231,21 @@ export default function TrainingShiftAvailability({ trainer, demos = [], batches
           <label className="text-[11px] font-semibold text-slate-600">From<input type="date" min={todayKey} value={leaveForm.from} onChange={(e) => setLeaveForm({ ...leaveForm, from: e.target.value })} className="block mt-1 px-3 py-2 rounded-xl border border-slate-200 text-xs" /></label>
           <label className="text-[11px] font-semibold text-slate-600">To<input type="date" min={leaveForm.from || todayKey} value={leaveForm.to} onChange={(e) => setLeaveForm({ ...leaveForm, to: e.target.value })} className="block mt-1 px-3 py-2 rounded-xl border border-slate-200 text-xs" /></label>
           <label className="text-[11px] font-semibold text-slate-600 flex-1 min-w-[160px]">Reason (optional)<input value={leaveForm.reason} onChange={(e) => setLeaveForm({ ...leaveForm, reason: e.target.value })} placeholder="e.g. Personal leave" className="block w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 text-xs" /></label>
-          <button type="button" disabled={leaveBusy} onClick={saveLeave} className="px-4 py-2 rounded-xl bg-[#0f212d] text-white text-xs font-bold disabled:opacity-50">{leaveBusy ? 'Saving…' : 'Add leave'}</button>
+          <button type="button" disabled={leaveBusy} onClick={saveLeave} className="px-4 py-2 rounded-xl bg-[#0f212d] text-white text-xs font-bold disabled:opacity-50">{leaveBusy ? 'Sending…' : 'Apply for leave'}</button>
         </div>
         {leaveMsg && <div className="text-xs font-semibold text-slate-700">{leaveMsg}</div>}
         {upcomingLeaves.length > 0 && (
           <div className="divide-y divide-slate-100 text-xs">
             {upcomingLeaves.map((l) => (
               <div key={l._id || l.from} className="py-2 flex items-center justify-between gap-3">
-                <span><b>{l.from}{l.to && l.to !== l.from ? ` → ${l.to}` : ''}</b>{l.reason ? <span className="text-slate-500"> · {l.reason}</span> : null}</span>
+                <span>
+                  <b>{l.from}{l.to && l.to !== l.from ? ` → ${l.to}` : ''}</b>{l.reason ? <span className="text-slate-500"> · {l.reason}</span> : null}
+                  <span className={`ml-2 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                    (l.status || 'approved') === 'approved' ? 'bg-emerald-100 text-emerald-800' : l.status === 'rejected' ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'
+                  }`}>{l.status || 'approved'}</span>
+                  {l.decidedBy && <span className="text-[10px] text-slate-500"> · by {l.decidedBy}</span>}
+                  {l.decisionNote && <span className="text-[10px] text-slate-500"> · {l.decisionNote}</span>}
+                </span>
                 {l._id && <button type="button" disabled={leaveBusy} onClick={() => removeLeave(l._id)} className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50" aria-label="Remove leave"><Trash2 className="w-4 h-4" /></button>}
               </div>
             ))}

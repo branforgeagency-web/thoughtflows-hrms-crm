@@ -14,8 +14,8 @@ import {
   Briefcase,
   Filter
 } from 'lucide-react';
-import { getTeam, setTeamMemberShift, onDataUpdate } from '../services/api';
-import { getCurrentWeekScheduleDays } from '../utils/dateUtils';
+import { getTeam, setTeamMemberShift, onDataUpdate, getTrainerSettings, getLeaderLeaves } from '../services/api';
+import { getCurrentWeekScheduleDays, localDateKey } from '../utils/dateUtils';
 
 export default function TeamRosterBoard({ 
   customMembers = null, 
@@ -102,13 +102,54 @@ export default function TeamRosterBoard({
     if (customMembers) setMembers(customMembers);
   }, [customMembers]);
 
+  // ---- Today's real availability: week off (roster) and approved leave ----
+  const todayKey = localDateKey();
+  const todayAbbr = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][new Date().getDay()];
+  const [leaveTodayByName, setLeaveTodayByName] = useState({}); // name(lowercase) → reason
+  useEffect(() => {
+    // Leave applies to the Training roster (trainer leave + Manager/TL leave)
+    if (departmentCode !== 'ACAD') { setLeaveTodayByName({}); return undefined; }
+    const covers = (from, to) => from && todayKey >= from && todayKey <= (to || from);
+    const load = async () => {
+      const map = {};
+      const [trainers, leaderLeaves] = await Promise.all([
+        getTrainerSettings().catch(() => []),
+        getLeaderLeaves({ status: 'approved' }).catch(() => [])
+      ]);
+      (Array.isArray(trainers) ? trainers : []).forEach((t) => {
+        const hit = (t.leaves || []).find((l) => (l.status || 'approved') === 'approved' && covers(l.from, l.to));
+        if (hit && t.trainerName) map[t.trainerName.trim().toLowerCase()] = hit.reason || 'Approved leave';
+      });
+      (Array.isArray(leaderLeaves) ? leaderLeaves : []).forEach((a) => {
+        if (a.status === 'approved' && covers(a.leaveFrom, a.leaveTo) && a.requestedBy) map[a.requestedBy.trim().toLowerCase()] = a.leaveType || 'Approved leave';
+      });
+      setLeaveTodayByName(map);
+    };
+    load();
+    const unsub = onDataUpdate((entity) => { if (['trainers', 'leader_leaves', 'approvals'].includes(entity)) load(); });
+    return unsub;
+  }, [departmentCode, todayKey]);
+
+  // { available, reason } for today — manual "On Leave" toggle, approved leave or week off
+  const todayStatus = (m) => {
+    if (m.status === 'On Leave') return { available: false, reason: 'On Leave' };
+    if (leaveTodayByName[String(m.name || '').trim().toLowerCase()]) return { available: false, reason: 'On Leave' };
+    const sched = Array.isArray(m.weeklySchedule) && m.weeklySchedule.length ? m.weeklySchedule : getCurrentWeekScheduleDays();
+    const today = sched.find((d) => String(d.day || d.dayName || d.dayKey || '').trim().slice(0, 3).toLowerCase() === todayAbbr);
+    if (today) {
+      if (today.timing === 'On Leave') return { available: false, reason: 'On Leave' };
+      if (today.timing === 'Week Off' || today.type === 'off' || today.isOff) return { available: false, reason: 'Week Off' };
+    }
+    return { available: true, reason: '' };
+  };
+
   const availableCount = useMemo(() => {
-    return members.filter(m => m.status === 'Available').length;
-  }, [members]);
+    return members.filter(m => todayStatus(m).available).length;
+  }, [members, leaveTodayByName]);
 
   const onLeaveCount = useMemo(() => {
-    return members.filter(m => m.status === 'On Leave').length;
-  }, [members]);
+    return members.filter(m => !todayStatus(m).available).length;
+  }, [members, leaveTodayByName]);
 
   const leadershipCount = useMemo(() => {
     return members.filter(m => /head|manager|team lead|\btl\b/i.test(m.role || '')).length;
@@ -136,8 +177,8 @@ export default function TeamRosterBoard({
       
       if (!matchSearch) return false;
 
-      if (statusFilter === 'Available' && m.status !== 'Available') return false;
-      if (statusFilter === 'On Leave' && m.status !== 'On Leave') return false;
+      if (statusFilter === 'Available' && !todayStatus(m).available) return false;
+      if (statusFilter === 'On Leave' && todayStatus(m).available) return false;
 
       if (branchFilter !== 'All' && String(m.branchName || '').toLowerCase() !== branchFilter.toLowerCase()) {
         return false;
@@ -156,7 +197,7 @@ export default function TeamRosterBoard({
 
       return true;
     });
-  }, [members, searchQuery, statusFilter, roleCategoryFilter, branchFilter, shiftFilter]);
+  }, [members, searchQuery, statusFilter, roleCategoryFilter, branchFilter, shiftFilter, leaveTodayByName]);
 
   // Open Weekly Roster Allocation Modal
   const handleOpenScheduleModal = (member) => {
@@ -352,7 +393,7 @@ export default function TeamRosterBoard({
                   : 'text-slate-500 hover:text-slate-800'
               }`}
             >
-              On Leave ({onLeaveCount})
+              Not Available ({onLeaveCount})
             </button>
           </div>
         </div>
@@ -481,7 +522,10 @@ export default function TeamRosterBoard({
           </div>
         ) : (
           filteredMembers.map((m) => {
-            const isAvailable = m.status === 'Available';
+            const today = todayStatus(m);
+            const isAvailable = today.available;
+            const autoUnavailable = !today.available && m.status === 'Available'; // week off / approved leave, not the manual toggle
+            const unavailableLabel = `Not Available · ${today.reason || 'On Leave'}`;
             const isLeadershipRole = /head|manager|team lead|\btl\b/i.test(m.role || '');
 
             return (
@@ -495,7 +539,7 @@ export default function TeamRosterBoard({
                     className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${
                       isAvailable ? 'bg-emerald-500' : 'bg-rose-500 animate-pulse'
                     }`} 
-                    title={isAvailable ? 'Available' : 'On Leave'}
+                    title={isAvailable ? 'Available' : unavailableLabel}
                   />
 
                   <div className="min-w-0 flex-1">
@@ -578,7 +622,14 @@ export default function TeamRosterBoard({
                       }`}
                       title="Availability set by Head of Trainer"
                     >
-                      {isAvailable ? 'Available' : 'On Leave'}
+                      {isAvailable ? 'Available' : unavailableLabel}
+                    </span>
+                  ) : autoUnavailable ? (
+                    <span
+                      className="inline-block bg-[#ffe4e6] text-[#e11d48] border border-[#fecdd3] text-[11px] sm:text-xs font-semibold px-3.5 py-1 rounded-full tracking-wide select-none"
+                      title={today.reason === 'Week Off' ? 'Today is a week off in this roster' : 'Approved leave today'}
+                    >
+                      {unavailableLabel}
                     </span>
                   ) : (
                     <button
@@ -593,7 +644,7 @@ export default function TeamRosterBoard({
                         </span>
                       ) : (
                         <span className="inline-block bg-[#ffe4e6] text-[#e11d48] border border-[#fecdd3] text-[11px] sm:text-xs font-semibold px-3.5 py-1 rounded-full tracking-wide">
-                          On Leave
+                          Not Available · On Leave
                         </span>
                       )}
                     </button>

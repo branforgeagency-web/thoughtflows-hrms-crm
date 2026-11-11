@@ -70,7 +70,11 @@ import {
   acknowledgeDemo,
   getTeam,
   updateTrainerSettings,
-  updateTrainerRoleAccount
+  updateTrainerRoleAccount,
+  decideTrainerLeave,
+  getLeaderLeaves,
+  applyLeaderLeave,
+  decideLeaderLeave
 } from '../services/api';
 import TrainerOrgHierarchyChart from './TrainerOrgHierarchyChart';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
@@ -78,6 +82,7 @@ import CourseSyllabusBoard from './CourseSyllabusBoard';
 import ClassSessionRoom from './ClassSessionRoom';
 import TeamRosterBoard from './TeamRosterBoard';
 import UtilizationDashboard from './UtilizationDashboard';
+import StaffLoginAttendance from './StaffLoginAttendance';
 import { getCurrentWeekScheduleDays, getWeekRangeString, localDateKey } from '../utils/dateUtils';
 
 export default function TrainerHeadDashboard({
@@ -351,6 +356,33 @@ export default function TrainerHeadDashboard({
     }
   };
 
+  // Managing Manager from the Trainer ↔ Batch mapping table: a trainer with a
+  // Team Lead takes the TL's manager (so this re-points the whole TL squad);
+  // a trainer without a TL gets the manager directly.
+  const findTrainerTl = (trainer) => trainerTLsList.find((tl) => trainer.teamLeadId && (String(tl.id) === String(trainer.teamLeadId) || tl.name === trainer.teamLeadId))
+    || trainerTLsList.find((tl) => trainer.teamLeadName && tl.name.toLowerCase() === String(trainer.teamLeadName).toLowerCase());
+  const handleAssignTrainerManager = async (trainer, managerIdValue) => {
+    const tl = findTrainerTl(trainer);
+    if (tl) {
+      const manager = trainerManagersList.find((m) => String(m.id) === String(managerIdValue));
+      if (!window.confirm(`${trainer.trainerName} reports to Team Lead ${tl.name}. Set ${manager ? manager.name : 'no manager'} as the manager for ${tl.name} and all of ${tl.name}'s trainers?`)) return;
+      await handleAssignTlManager(tl, managerIdValue);
+      return;
+    }
+    const manager = trainerManagersList.find((m) => String(m.id) === String(managerIdValue));
+    const trainerKey = trainer.trainerId || trainer.id;
+    setSavingAssignment(`trainer_${trainerKey}`);
+    try {
+      await updateTrainerSettings(trainerKey, { managerId: manager ? manager.id : '', managerName: manager ? manager.name : '' });
+      flashToast(manager ? `${trainer.trainerName} now reports to ${manager.name}.` : `Removed ${trainer.trainerName}'s manager.`);
+      loadDashboardData();
+    } catch (err) {
+      flashToast(err?.response?.data?.error || `Could not update ${trainer.trainerName}'s manager.`);
+    } finally {
+      setSavingAssignment('');
+    }
+  };
+
   // ================= SCOPING LOGIC BASED ON ROLE =================
   // 1. Scoped Trainers
   const scopedTrainers = useMemo(() => {
@@ -393,6 +425,86 @@ export default function TrainerHeadDashboard({
   const scopedTrainerIds = useMemo(() => {
     return scopedTrainers.map((t) => t.trainerId || t.id).filter(Boolean);
   }, [scopedTrainers]);
+
+  // ================= TRAINER LEAVE REQUESTS (HEAD, MANAGER, TL) =================
+  const [leaveFilter, setLeaveFilter] = useState('pending');
+  const [leaveDecidingId, setLeaveDecidingId] = useState('');
+  const scopedLeaveRequests = useMemo(() => {
+    const out = [];
+    scopedTrainers.forEach((t) => (t.leaves || []).forEach((l) => out.push({
+      ...l,
+      status: l.status || 'approved',
+      trainerId: t.trainerId || t.id,
+      trainerName: t.trainerName || t.name,
+      branchName: t.branchName || t.branch || '',
+      teamLeadName: t.teamLeadName || '',
+      managerName: t.managerName || ''
+    })));
+    return out.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  }, [scopedTrainers]);
+  // Manager / TL own leave → decided only by the Department Head of Training
+  const [leaderLeaves, setLeaderLeaves] = useState([]);
+  const [leaderLeaveForm, setLeaderLeaveForm] = useState({ leaveType: 'Casual Leave', from: '', to: '', reason: '' });
+  const [leaderLeaveBusy, setLeaderLeaveBusy] = useState(false);
+  const loadLeaderLeaves = useCallback(() => {
+    getLeaderLeaves().then((d) => setLeaderLeaves(Array.isArray(d) ? d : [])).catch(() => setLeaderLeaves([]));
+  }, []);
+  useEffect(() => {
+    loadLeaderLeaves();
+    const unsub = onDataUpdate((entity) => { if (entity === 'leader_leaves' || entity === 'approvals') loadLeaderLeaves(); });
+    return () => unsub();
+  }, [loadLeaderLeaves, roleType]);
+  const submitLeaderLeave = async () => {
+    if (!leaderLeaveForm.from) { flashToast('Pick a start date'); return; }
+    if (!leaderLeaveForm.reason.trim()) { flashToast('Please give a reason'); return; }
+    setLeaderLeaveBusy(true);
+    try {
+      await applyLeaderLeave(leaderLeaveForm);
+      setLeaderLeaveForm({ leaveType: 'Casual Leave', from: '', to: '', reason: '' });
+      flashToast('✓ Leave request sent to the Department Head of Training.');
+      loadLeaderLeaves();
+    } catch (err) {
+      flashToast(err?.response?.data?.error || 'Could not send the leave request.');
+    } finally {
+      setLeaderLeaveBusy(false);
+    }
+  };
+  const handleLeaderLeaveDecision = async (ap, action) => {
+    let note = '';
+    if (action === 'rejected') note = window.prompt(`Reason for rejecting ${ap.requestedBy}'s leave (optional):`, '') || '';
+    setLeaveDecidingId(ap._id);
+    try {
+      await decideLeaderLeave(ap._id, action, note);
+      flashToast(action === 'approved' ? `Approved ${ap.requestedBy}'s leave.` : action === 'rejected' ? `Rejected ${ap.requestedBy}'s leave.` : 'Moved back to pending.');
+      loadLeaderLeaves();
+    } catch (err) {
+      flashToast(err?.response?.data?.error || 'Could not update the leave request.');
+    } finally {
+      setLeaveDecidingId('');
+    }
+  };
+  const pendingLeaderLeaveCount = isHeadRole ? leaderLeaves.filter((a) => a.status === 'pending').length : 0;
+  const pendingLeaveCount = scopedLeaveRequests.filter((l) => l.status === 'pending').length + pendingLeaderLeaveCount;
+  const visibleLeaveRequests = leaveFilter === 'all' ? scopedLeaveRequests : scopedLeaveRequests.filter((l) => l.status === leaveFilter);
+  const handleLeaveDecision = async (leave, action) => {
+    if (!leave?._id || !leave.trainerId) return;
+    let note = '';
+    if (action === 'rejected') {
+      note = window.prompt(`Reason for rejecting ${leave.trainerName}'s leave (optional):`, '') || '';
+    }
+    setLeaveDecidingId(leave._id);
+    try {
+      const res = await decideTrainerLeave(leave.trainerId, leave._id, action, note);
+      if (res?.trainer) {
+        setTrainers((prev) => prev.map((t) => ((t.trainerId || t.id) === leave.trainerId ? { ...t, leaves: res.trainer.leaves } : t)));
+      }
+      flashToast(action === 'approved' ? `Approved ${leave.trainerName}'s leave.` : action === 'rejected' ? `Rejected ${leave.trainerName}'s leave.` : 'Moved back to pending.');
+    } catch (err) {
+      flashToast(err?.response?.data?.error || 'Could not update the leave request.');
+    } finally {
+      setLeaveDecidingId('');
+    }
+  };
 
   // 2. Scoped Branches — Derived 100% dynamically from real database records and user scope
   const scopedBranchNames = useMemo(() => {
@@ -1880,6 +1992,24 @@ export default function TrainerHeadDashboard({
                   isHeadRole ? 'bg-amber-500/20 text-amber-300' : 'bg-slate-700 text-slate-300'
                 }`}>
                   {isHeadRole ? 'Manage' : 'View'}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveTab('leave_requests')}
+                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
+                  activeTab === 'leave_requests'
+                    ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                    : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <CalendarCheck className="w-4 h-4 shrink-0 text-rose-300" />
+                  <span>Leave Requests</span>
+                </div>
+                <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-md ${pendingLeaveCount ? 'bg-rose-500 text-white' : 'bg-slate-700 text-slate-300'}`}>
+                  {pendingLeaveCount}
                 </span>
               </button>
 
@@ -4186,9 +4316,32 @@ export default function TrainerHeadDashboard({
                             )}
                           </td>
                           <td className="py-3 px-3">
-                            <span className="inline-flex items-center gap-1 font-bold text-teal-800 bg-teal-50 px-2 py-0.5 rounded border border-teal-200">
-                              {tr.managerName || '—'}
-                            </span>
+                            {(() => {
+                              const tlRec = findTrainerTl(tr);
+                              const mgrId = tr.managerId || tlRec?.managerId || '';
+                              const mgrName = tr.managerName || tlRec?.managerName || '';
+                              if (!isHeadRole) {
+                                return (
+                                  <span className="inline-flex items-center gap-1 font-bold text-teal-800 bg-teal-50 px-2 py-0.5 rounded border border-teal-200">
+                                    {mgrName || '—'}
+                                  </span>
+                                );
+                              }
+                              return (
+                                <select
+                                  value={trainerManagersList.some((m) => String(m.id) === String(mgrId)) ? mgrId : ''}
+                                  disabled={savingAssignment === `trainer_${tr.trainerId || tr.id}` || (tlRec && savingAssignment === `tl_${tlRec.id}`)}
+                                  onChange={(e) => handleAssignTrainerManager(tr, e.target.value)}
+                                  title={tlRec ? `Sets the manager for TL ${tlRec.name} and their whole squad` : 'Sets this trainer\'s manager'}
+                                  className="text-xs font-bold text-teal-800 bg-teal-50 border border-teal-200 rounded px-1.5 py-1 outline-none cursor-pointer disabled:opacity-50"
+                                >
+                                  <option value="">— Unassigned —</option>
+                                  {trainerManagersList.map((m) => (
+                                    <option key={m.id} value={m.id}>{m.name}</option>
+                                  ))}
+                                </select>
+                              );
+                            })()}
                           </td>
                         </tr>
                       ))}
@@ -4326,9 +4479,188 @@ export default function TrainerHeadDashboard({
             </div>
           )}
 
+          {/* ================= SECTION: TRAINER LEAVE REQUESTS (HEAD, MANAGER, TL) ================= */}
+          {activeTab === 'leave_requests' && (
+            <div className="space-y-6">
+              {/* Manager / TL: apply for own leave (goes to the Department Head only) */}
+              {!isHeadRole && (
+                <div className="bg-white rounded-3xl p-6 border border-slate-200/90 shadow-xs space-y-4">
+                  <div>
+                    <h2 className="text-lg font-black text-slate-900">My Leave</h2>
+                    <p className="text-xs text-slate-500">Your leave as {roleType === 'manager' ? 'Trainer Manager' : 'Training Team Lead'} is approved by the Department Head of Training.</p>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 text-xs">
+                    <select value={leaderLeaveForm.leaveType} onChange={(e) => setLeaderLeaveForm((f) => ({ ...f, leaveType: e.target.value }))} className="px-3 py-2 rounded-xl border border-slate-200">
+                      {['Casual Leave', 'Sick Leave', 'Earned Leave', 'Half Day', 'Comp Off', 'Other'].map((t) => <option key={t}>{t}</option>)}
+                    </select>
+                    <input type="date" value={leaderLeaveForm.from} onChange={(e) => setLeaderLeaveForm((f) => ({ ...f, from: e.target.value }))} className="px-3 py-2 rounded-xl border border-slate-200" aria-label="From" />
+                    <input type="date" value={leaderLeaveForm.to} min={leaderLeaveForm.from || undefined} onChange={(e) => setLeaderLeaveForm((f) => ({ ...f, to: e.target.value }))} className="px-3 py-2 rounded-xl border border-slate-200" aria-label="To" />
+                    <input value={leaderLeaveForm.reason} onChange={(e) => setLeaderLeaveForm((f) => ({ ...f, reason: e.target.value }))} placeholder="Reason" className="px-3 py-2 rounded-xl border border-slate-200" />
+                  </div>
+                  <button type="button" disabled={leaderLeaveBusy} onClick={submitLeaderLeave} className="px-4 py-2 rounded-xl bg-[#0f212d] text-white text-xs font-bold disabled:opacity-50">{leaderLeaveBusy ? 'Sending…' : 'Apply for leave'}</button>
+                  {leaderLeaves.length > 0 && (
+                    <div className="divide-y divide-slate-100 text-xs">
+                      {leaderLeaves.map((a) => (
+                        <div key={a._id} className="py-2 flex flex-wrap items-center gap-2">
+                          <b>{a.leaveFrom}{a.leaveTo && a.leaveTo !== a.leaveFrom ? ` → ${a.leaveTo}` : ''}</b>
+                          <span className="text-slate-500">{a.description}</span>
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                  a.status === 'approved' ? 'bg-emerald-100 text-emerald-800' : a.status === 'rejected' ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'
+                                }`}>{a.status}</span>
+                          {a.decidedBy && <span className="text-[10px] text-slate-500">by {a.decidedBy}</span>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Head: Manager & TL leave requests */}
+              {isHeadRole && (
+                <div className="bg-white rounded-3xl p-6 border border-slate-200/90 shadow-xs space-y-4">
+                  <div>
+                    <h2 className="text-lg font-black text-slate-900">Manager &amp; Team Lead Leave Requests</h2>
+                    <p className="text-xs text-slate-500">Only the Department Head of Training can approve these.</p>
+                  </div>
+                  {(() => {
+                    const rows = leaveFilter === 'all' ? leaderLeaves : leaderLeaves.filter((a) => a.status === leaveFilter);
+                    if (!rows.length) return <div className="text-center text-xs text-slate-500 py-6">{leaveFilter === 'pending' ? 'No Manager / TL leave waiting for a decision.' : 'No Manager / TL leave here.'}</div>;
+                    return (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="text-left text-slate-500 border-b border-slate-100">
+                              <th className="py-2 pr-3 font-bold">Name</th>
+                              <th className="py-2 pr-3 font-bold">Role</th>
+                              <th className="py-2 pr-3 font-bold">Dates</th>
+                              <th className="py-2 pr-3 font-bold">Details</th>
+                              <th className="py-2 pr-3 font-bold">Status</th>
+                              <th className="py-2 font-bold text-right">Action</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {rows.map((a) => {
+                              const busy = leaveDecidingId === a._id;
+                              return (
+                                <tr key={a._id} className="align-top">
+                                  <td className="py-2.5 pr-3 font-bold text-slate-900">{a.requestedBy}{a.branchName ? <div className="text-[10px] font-normal text-slate-500">{a.branchName}</div> : null}</td>
+                                  <td className="py-2.5 pr-3">{a.requesterRole === 'tl' ? 'Team Lead' : 'Manager'}</td>
+                                  <td className="py-2.5 pr-3 font-semibold whitespace-nowrap">{a.leaveFrom}{a.leaveTo && a.leaveTo !== a.leaveFrom ? ` → ${a.leaveTo}` : ''}</td>
+                                  <td className="py-2.5 pr-3 text-slate-600 max-w-[260px]">{a.description}</td>
+                                  <td className="py-2.5 pr-3">
+                                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                  a.status === 'approved' ? 'bg-emerald-100 text-emerald-800' : a.status === 'rejected' ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'
+                                }`}>{a.status}</span>
+                                    {a.decidedBy && <div className="text-[10px] text-slate-500 mt-1">by {a.decidedBy}</div>}
+                                  </td>
+                                  <td className="py-2.5 text-right whitespace-nowrap">
+                                    {a.status === 'pending' ? (
+                                      <div className="inline-flex gap-1.5">
+                                        <button type="button" disabled={busy} onClick={() => handleLeaderLeaveDecision(a, 'approved')} className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white font-bold disabled:opacity-50">Approve</button>
+                                        <button type="button" disabled={busy} onClick={() => handleLeaderLeaveDecision(a, 'rejected')} className="px-2.5 py-1 rounded-lg bg-rose-600 text-white font-bold disabled:opacity-50">Reject</button>
+                                      </div>
+                                    ) : (
+                                      <button type="button" disabled={busy} onClick={() => handleLeaderLeaveDecision(a, 'pending')} className="px-2.5 py-1 rounded-lg border border-slate-200 text-slate-600 font-bold disabled:opacity-50">Undo</button>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+
+              <div className="bg-white rounded-3xl p-6 border border-slate-200/90 shadow-xs space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-lg font-black text-slate-900">Trainer Leave Requests</h2>
+                    <p className="text-xs text-slate-500">
+                      Leave applied by trainers {roleType === 'head' ? 'across the academy' : roleType === 'manager' ? 'reporting to you' : 'in your pod'}. Approve or reject; the trainer is notified.
+                    </p>
+                  </div>
+                  <div className="flex gap-1.5 flex-wrap">
+                    {['pending', 'approved', 'rejected', 'all'].map((f) => (
+                      <button
+                        key={f}
+                        type="button"
+                        onClick={() => setLeaveFilter(f)}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold capitalize border ${leaveFilter === f ? 'bg-[#0f212d] text-white border-[#0f212d]' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+                      >
+                        {f}{f === 'pending' && pendingLeaveCount ? ` (${pendingLeaveCount})` : ''}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {visibleLeaveRequests.length === 0 ? (
+                  <div className="text-center text-xs text-slate-500 py-10">
+                    {leaveFilter === 'pending' ? 'No leave requests waiting for a decision.' : 'No leave requests here.'}
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="text-left text-slate-500 border-b border-slate-100">
+                          <th className="py-2 pr-3 font-bold">Trainer</th>
+                          <th className="py-2 pr-3 font-bold">Dates</th>
+                          <th className="py-2 pr-3 font-bold">Reason</th>
+                          <th className="py-2 pr-3 font-bold">TL / Manager</th>
+                          <th className="py-2 pr-3 font-bold">Applied</th>
+                          <th className="py-2 pr-3 font-bold">Status</th>
+                          <th className="py-2 font-bold text-right">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {visibleLeaveRequests.map((l) => {
+                          const busy = leaveDecidingId === l._id;
+                          return (
+                            <tr key={`${l.trainerId}-${l._id || l.from}`} className="align-top">
+                              <td className="py-2.5 pr-3">
+                                <div className="font-bold text-slate-900">{l.trainerName}</div>
+                                {l.branchName && <div className="text-[10px] text-slate-500">{l.branchName}</div>}
+                              </td>
+                              <td className="py-2.5 pr-3 font-semibold whitespace-nowrap">{l.from}{l.to && l.to !== l.from ? ` → ${l.to}` : ''}</td>
+                              <td className="py-2.5 pr-3 text-slate-600 max-w-[220px]">{l.reason || '—'}</td>
+                              <td className="py-2.5 pr-3 text-slate-600">{[l.teamLeadName, l.managerName].filter(Boolean).join(' / ') || '—'}</td>
+                              <td className="py-2.5 pr-3 text-slate-500 whitespace-nowrap">{l.createdAt ? new Date(l.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '—'}</td>
+                              <td className="py-2.5 pr-3">
+                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                  l.status === 'approved' ? 'bg-emerald-100 text-emerald-800' : l.status === 'rejected' ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'
+                                }`}>{l.status}</span>
+                                {l.decidedBy && <div className="text-[10px] text-slate-500 mt-1">by {l.decidedBy}</div>}
+                                {l.decisionNote && <div className="text-[10px] text-slate-500">{l.decisionNote}</div>}
+                              </td>
+                              <td className="py-2.5 text-right whitespace-nowrap">
+                                {l._id && l.status === 'pending' ? (
+                                  <div className="inline-flex gap-1.5">
+                                    <button type="button" disabled={busy} onClick={() => handleLeaveDecision(l, 'approved')} className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white font-bold disabled:opacity-50">Approve</button>
+                                    <button type="button" disabled={busy} onClick={() => handleLeaveDecision(l, 'rejected')} className="px-2.5 py-1 rounded-lg bg-rose-600 text-white font-bold disabled:opacity-50">Reject</button>
+                                  </div>
+                                ) : l._id ? (
+                                  <button type="button" disabled={busy} onClick={() => handleLeaveDecision(l, 'pending')} className="px-2.5 py-1 rounded-lg border border-slate-200 text-slate-600 font-bold disabled:opacity-50">Undo</button>
+                                ) : null}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* ================= SECTION 6: TRAINER ATTENDANCE DETAILS ================= */}
           {activeTab === 'trainer_attendance' && (
             <div className="space-y-6">
+              <StaffLoginAttendance
+                title={roleType === 'head' ? 'Staff Login Attendance — Managers, Team Leads & Trainers' : roleType === 'manager' ? 'Login Attendance — You, your Team Leads & Trainers' : 'Login Attendance — You & your Trainers'}
+              />
               <div className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-xs space-y-4">
                 <div className="flex items-center justify-between pb-2 border-b border-slate-100 flex-wrap gap-2">
                   <div>
@@ -4738,6 +5070,8 @@ export default function TrainerHeadDashboard({
                         const dTr = String(dm.trainer || dm.faculty || dm.trainerMapping || '').toLowerCase();
                         const dTrId = String(dm.trainerId || '');
                         const isAssignedToMe = dTrId === leaderId || (leaderName && (dTr.includes(leaderName) || leaderName.includes(dTr)));
+                        // Demo already finished (attended / missed / enrolled …) → no Start / Take / Assign / Reassign
+                        const isDemoClosed = ['attended', 'completed', 'enrolled', 'converted', 'missed', 'no-show', 'no_show', 'cancelled', 'canceled'].includes(String(dm.status || '').toLowerCase());
 
                         return (
                           <tr key={dm._id || dm.id} className={`hover:bg-slate-50 ${isAssignedToMe ? 'bg-emerald-50/30' : ''}`}>
@@ -4788,7 +5122,7 @@ export default function TrainerHeadDashboard({
                             </td>
                             <td className="py-3 px-3 text-right">
                               <div className="flex items-center justify-end gap-1.5 flex-wrap">
-                                {(!dm.trainer || dm.trainer === 'Unassigned' || !dm.trainerId) ? (
+                                {!isDemoClosed && (!dm.trainer || dm.trainer === 'Unassigned' || !dm.trainerId) ? (
                                   <>
                                     {/* Primary Action for Trainer Head & Manager: Assign Trainer */}
                                     <button
@@ -4816,6 +5150,7 @@ export default function TrainerHeadDashboard({
                                 ) : (
                                   <>
                                     {/* Start Demo Zoom Meeting Button */}
+                                    {!isDemoClosed && (
                                     <button
                                       type="button"
                                       onClick={() => handleStartDemoMeeting(dm)}
@@ -4825,9 +5160,10 @@ export default function TrainerHeadDashboard({
                                       <Video className="w-3 h-3" />
                                       <span>Start Demo</span>
                                     </button>
+                                    )}
 
                                     {/* Self-assign button if not already assigned to leader */}
-                                    {!isAssignedToMe && (
+                                    {!isAssignedToMe && !isDemoClosed && (
                                       <button
                                         type="button"
                                         onClick={() => handleSelfAssignDemo(dm._id || dm.id)}
@@ -4855,6 +5191,7 @@ export default function TrainerHeadDashboard({
                                     </button>
 
                                     {/* Reassign button */}
+                                    {!isDemoClosed && (
                                     <button
                                       type="button"
                                       onClick={() => {
@@ -4866,6 +5203,7 @@ export default function TrainerHeadDashboard({
                                     >
                                       Reassign
                                     </button>
+                                    )}
 
                                     {/* Delete Demo */}
                                     <button
