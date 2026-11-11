@@ -838,6 +838,11 @@ export const getHrHubSummary = async () => {
   return res.data;
 };
 
+export const getHrStaffAttendance = async (params = {}) => {
+  const res = await api.get('/hr/staff-attendance', { params });
+  return res.data;
+};
+
 export const getTeam = async (params) => {
   const res = await api.get('/leadership/team', { params });
   return res.data;

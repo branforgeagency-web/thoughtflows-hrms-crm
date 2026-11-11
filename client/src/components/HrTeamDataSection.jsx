@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Users, Search, ChevronLeft, ChevronRight, Phone, Monitor, GraduationCap, AlertTriangle, PhoneCall } from 'lucide-react';
-import { getTeam, onDataUpdate } from '../services/api';
+import { Users, Search, ChevronLeft, ChevronRight, Phone, Monitor, GraduationCap, AlertTriangle, PhoneCall, Clock, Calendar } from 'lucide-react';
+import { getHrStaffAttendance, getTeam, onDataUpdate } from '../services/api';
 import { localDateKey } from '../utils/dateUtils';
 
 // HR-wise breakdown for HR Team Lead, Branch Head & HR Department Head.
@@ -21,6 +21,15 @@ const STAGE_LABEL = {
   new: 'New', contacted: 'Contacted', demo_booked: 'Demo Booked', demo_attended: 'Demo Attended',
   fee_followup: 'Fee Discussion', admitted: 'Admitted', closed: 'Closed', not_mentioned: 'Not Mentioned'
 };
+const fmtAttTime = (v, fallback) => {
+  if (v) {
+    const d = new Date(v);
+    if (!Number.isNaN(d.getTime())) {
+      return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
+    }
+  }
+  return fallback || '—';
+};
 
 export default function HrTeamDataSection({
   leads = [],
@@ -39,14 +48,22 @@ export default function HrTeamDataSection({
 
   // HR roster for this scope, so counsellors with zero records still show up
   const [roster, setRoster] = useState([]);
+  const [attData, setAttData] = useState({ attendance: [], leaves: [] });
   useEffect(() => {
-    const load = () => getTeam({ departmentCode: 'DEP-HR-001', ...(scopeKind === 'branch' && branch ? { branchName: branch } : {}) })
+    const loadRoster = () => getTeam({ departmentCode: 'DEP-HR-001', ...(scopeKind === 'branch' && branch ? { branchName: branch } : {}) })
       .then((rows) => setRoster(Array.isArray(rows) ? rows : []))
       .catch(() => setRoster([]));
-    load();
-    const off = onDataUpdate((e) => { if (e === 'team') load(); });
+    const loadAtt = () => getHrStaffAttendance({ from: todayKey, to: todayKey, ...(scopeKind === 'branch' && branch ? { branch } : {}) })
+      .then((res) => setAttData({ attendance: Array.isArray(res?.attendance) ? res.attendance : [], leaves: Array.isArray(res?.leaves) ? res.leaves : [] }))
+      .catch(() => setAttData({ attendance: [], leaves: [] }));
+    loadRoster();
+    loadAtt();
+    const off = onDataUpdate((e) => {
+      if (e === 'team') loadRoster();
+      if (e === 'attendance' || e === 'approvals') loadAtt();
+    });
     return off;
-  }, [scopeKind, branch]);
+  }, [scopeKind, branch, todayKey]);
 
   const members = useMemo(() => {
     const list = [];
@@ -88,12 +105,16 @@ export default function HrTeamDataSection({
       const bal = s.pendingBalance != null && !isNaN(Number(s.pendingBalance)) ? Number(s.pendingBalance) : Math.max(0, (Number(s.courseFee) || 0) - (Number(s.paidAmount) || 0));
       return acc + bal;
     }, 0);
+    const todayAtt = attData.attendance.find((a) => own(a.employeeName)) || null;
+    const myLeaves = attData.leaves.filter((l) => own(l.requestedBy));
     return {
       ...m,
       leads: myLeads,
       students: myStudents,
       demos: myDemos,
       calls: myCalls,
+      todayAttendance: todayAtt,
+      myLeaves,
       totalLeads: myLeads.length,
       newToday: myLeads.filter((l) => dayKey(l.createdAt) === todayKey).length,
       dueToday: open.filter((l) => l.followUpDate === todayKey).length,
@@ -108,7 +129,7 @@ export default function HrTeamDataSection({
       conversion: myLeads.length ? Math.round((myStudents.length / myLeads.length) * 100) : 0
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [members, leads, students, demos, recordings, todayKey, monthKey]);
+  }), [members, leads, students, demos, recordings, attData, todayKey, monthKey]);
 
   const unassignedLeads = useMemo(() => leads.filter((l) => !leadOwner(l)).length, [leads]);
 
@@ -195,6 +216,8 @@ export default function HrTeamDataSection({
           <thead>
             <tr className="bg-slate-50 text-slate-500 uppercase tracking-wider text-[10px]">
               <th className="text-left px-4 py-3 font-extrabold">HR</th>
+              <th className="text-left px-3 py-3 font-extrabold whitespace-nowrap">Today Attendance</th>
+              <th className="text-left px-3 py-3 font-extrabold whitespace-nowrap">Leaves</th>
               {COLS.map((c) => (
                 <th key={c.key} className="px-3 py-3 font-extrabold text-right whitespace-nowrap">
                   <button onClick={() => setSortKey(c.key)} className={`cursor-pointer ${sortKey === c.key ? 'text-indigo-700' : 'hover:text-slate-800'}`}>
@@ -206,7 +229,13 @@ export default function HrTeamDataSection({
             </tr>
           </thead>
           <tbody>
-            {visible.map((r) => (
+            {visible.map((r) => {
+              const att = r.todayAttendance;
+              const loginTxt = att ? fmtAttTime(att.workStartTime, att.checkIn) : '—';
+              const logoutTxt = att ? fmtAttTime(att.workEndTime, att.checkOut) : '—';
+              const pendingCount = (r.myLeaves || []).filter((l) => l.status === 'pending').length;
+              const leaveDay = att?.leaveInfo;
+              return (
               <tr key={r.name} onClick={() => setSelected(r.name)} className="border-t border-slate-100 hover:bg-indigo-50/40 cursor-pointer">
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-2.5">
@@ -217,6 +246,35 @@ export default function HrTeamDataSection({
                     </div>
                   </div>
                 </td>
+                <td className="px-3 py-3 whitespace-nowrap">
+                  <div className="text-[11px] font-bold text-slate-800">
+                    <span className="text-emerald-700">In: {loginTxt}</span> · <span className="text-slate-600">Out: {logoutTxt}</span>
+                  </div>
+                  <div className="text-[10px] font-semibold mt-0.5">
+                    {att?.sessionStatus === 'In Progress' ? (
+                      <span className="text-emerald-700">Logged in</span>
+                    ) : att?.sessionStatus === 'Completed' ? (
+                      <span className="text-slate-500">Logged out ({att.durationText || '—'})</span>
+                    ) : att?.sessionStatus === 'On Leave' ? (
+                      <span className="text-violet-700">On Leave</span>
+                    ) : (
+                      <span className="text-rose-600">{att?.sessionStatus || 'Not Started'}</span>
+                    )}
+                  </div>
+                </td>
+                <td className="px-3 py-3 whitespace-nowrap">
+                  {leaveDay ? (
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${leaveDay.status === 'approved' ? 'bg-violet-100 text-violet-700' : 'bg-amber-100 text-amber-800'}`}>
+                      {leaveDay.leaveType} ({leaveDay.status})
+                    </span>
+                  ) : pendingCount > 0 ? (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800">
+                      {pendingCount} Pending
+                    </span>
+                  ) : (
+                    <span className="text-[11px] text-slate-400">{(r.myLeaves || []).length ? `${r.myLeaves.length} total` : '—'}</span>
+                  )}
+                </td>
                 {COLS.map((c) => (
                   <td key={c.key} className={`px-3 py-3 text-right font-bold ${c.key === 'overdue' && r.overdue ? 'text-rose-600' : 'text-slate-800'}`}>
                     {c.money ? inr(r[c.key]) : c.pct ? `${r[c.key]}%` : r[c.key]}
@@ -224,9 +282,10 @@ export default function HrTeamDataSection({
                 ))}
                 <td className="px-3 py-3 text-slate-400"><ChevronRight className="w-4 h-4" /></td>
               </tr>
-            ))}
+              );
+            })}
             {!visible.length && (
-              <tr><td colSpan={COLS.length + 2} className="px-4 py-10 text-center text-slate-400">
+              <tr><td colSpan={COLS.length + 4} className="px-4 py-10 text-center text-slate-400">
                 {scopeKind === 'team' ? 'No HRs report to you yet — ask Admin to set "Reports to (HR Team Lead)" on your HRs.' : 'No HRs found for this scope.'}
               </td></tr>
             )}
@@ -256,8 +315,10 @@ function HrDrillDown({ row, todayKey, onBack }) {
     { key: 'leads', label: `All Leads (${row.leads.length})`, icon: Users },
     { key: 'demos', label: `Demos (${row.demos.length})`, icon: Monitor },
     { key: 'admissions', label: `Admissions (${row.students.length})`, icon: GraduationCap },
-    { key: 'calls', label: `Calls (${row.calls.length})`, icon: PhoneCall }
+    { key: 'calls', label: `Calls (${row.calls.length})`, icon: PhoneCall },
+    { key: 'attendance', label: `Attendance & Leaves (${(row.myLeaves || []).length})`, icon: Calendar }
   ];
+  const att = row.todayAttendance;
   const fmt = (v) => {
     const k = dayKey(v);
     return k ? new Date(`${k}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '—';
@@ -270,11 +331,26 @@ function HrDrillDown({ row, todayKey, onBack }) {
       </button>
 
       <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-xs">
-        <div className="flex items-center gap-3">
-          <span className="w-11 h-11 rounded-full bg-[#0e6977] text-white grid place-items-center font-extrabold">{(row.name || '?')[0].toUpperCase()}</span>
-          <div>
-            <h2 className="text-lg font-extrabold text-slate-900 leading-tight">{row.name}</h2>
-            <p className="text-xs text-slate-500">{[row.role, row.branch].filter(Boolean).join(' · ') || 'HR'}</p>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <span className="w-11 h-11 rounded-full bg-[#0e6977] text-white grid place-items-center font-extrabold">{(row.name || '?')[0].toUpperCase()}</span>
+            <div>
+              <h2 className="text-lg font-extrabold text-slate-900 leading-tight">{row.name}</h2>
+              <p className="text-xs text-slate-500">{[row.role, row.branch].filter(Boolean).join(' · ') || 'HR'}</p>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200 font-bold text-emerald-800">
+              <Clock className="w-3.5 h-3.5" />
+              Login: {att ? fmtAttTime(att.workStartTime, att.checkIn) : '—'}
+            </span>
+            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 font-bold text-slate-700">
+              <Clock className="w-3.5 h-3.5" />
+              Logout: {att ? fmtAttTime(att.workEndTime, att.checkOut) : '—'}
+            </span>
+            <span className="px-3 py-1.5 rounded-xl bg-indigo-50 border border-indigo-200 font-bold text-indigo-700">
+              {att?.sessionStatus || 'Not Started'}
+            </span>
           </div>
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3 mt-4">
@@ -340,6 +416,21 @@ function HrDrillDown({ row, todayKey, onBack }) {
             head={['Lead', 'Phone', 'Outcome', 'Date', 'Notes']}
             rows={row.calls.map((r) => [r.leadName || '—', r.leadPhone || '—', r.outcome || '—', fmt(r.createdAt), r.notes || '—'])}
             empty="No call recordings"
+          />
+        )}
+        {tab === 'attendance' && (
+          <Table
+            head={['Leave Type', 'From – To', 'Details / Reason', 'Status', 'Reviewed By']}
+            rows={(row.myLeaves || []).map((l) => [
+              l.leaveType || 'Leave',
+              l.leaveFrom ? (l.leaveTo && l.leaveTo !== l.leaveFrom ? `${fmt(l.leaveFrom)} → ${fmt(l.leaveTo)}` : fmt(l.leaveFrom)) : '—',
+              l.description || l.title || '—',
+              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                l.status === 'approved' ? 'bg-emerald-100 text-emerald-800' : l.status === 'rejected' ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-800'
+              }`}>{l.status || 'pending'}</span>,
+              l.decidedBy || '—'
+            ])}
+            empty="No leave requests for this HR"
           />
         )}
       </div>

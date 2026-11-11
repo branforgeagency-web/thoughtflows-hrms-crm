@@ -50,6 +50,7 @@ import HrCallRecordingsTable from './HrCallRecordingsTable';
 import HrStudentRequestsDesk from './HrStudentRequestsDesk';
 import TrainerQualityBoard from './TrainerQualityBoard';
 import HrTeamDataSection from './HrTeamDataSection';
+import HrAttendanceLeavesSection from './HrAttendanceLeavesSection';
 import HrWeeklyRoster from './HrWeeklyRoster';
 import { Inbox as InboxIcon } from 'lucide-react';
 import LeadCallModal from './LeadCallModal';
@@ -1036,9 +1037,10 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
 
     return [
       { name: 'Home', badge: null, icon: Home, iconBg: 'bg-[#0e6977]', color: 'teal' },
-      // Team Lead / Branch Head / Department Head: HR-wise data + weekly roster
+      // Team Lead / Branch Head / Department Head: HR-wise data + HR Attendance & Leaves
       ...(scopeKind ? [
-        { name: 'HR-wise Data', badge: null, icon: Users, iconBg: 'bg-indigo-600', color: 'indigo' }
+        { name: 'HR-wise Data', badge: null, icon: Users, iconBg: 'bg-indigo-600', color: 'indigo' },
+        { name: 'HR Attendance', badge: null, icon: Clock, iconBg: 'bg-emerald-600', color: 'emerald' }
       ] : []),
       { name: 'Pipeline & Follow-ups', badge: pipelineCount, icon: Filter, iconBg: 'bg-[#7c3aed]', badgeBg: 'bg-rose-500', color: 'purple' },
       { name: 'Demo Desk', badge: scopedDemos.length > 0 ? scopedDemos.length.toString() : null, icon: Monitor, iconBg: 'bg-cyan-600', color: 'cyan' },
@@ -1719,6 +1721,13 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             branch={viewScope?.branch || ''}
             scopeLabel={viewScope?.label || ''}
             matchesName={matchesMyName}
+          />
+        ) : scopeKind && activeTab === 'HR Attendance' ? (
+          <HrAttendanceLeavesSection
+            scopeKind={scopeKind}
+            scopeLabel={viewScope?.label || ''}
+            branch={viewScope?.branch || ''}
+            canDecideLeaves={scopeKind === 'all' || scopeKind === 'branch'}
           />
 ) : activeTab === 'My Schedule' ? (
           <div className="space-y-6">

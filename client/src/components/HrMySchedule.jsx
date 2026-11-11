@@ -209,7 +209,11 @@ export default function HrMySchedule({
         status: 'pending',
         departmentCode: 'DEP-HR-001',
         branchName: currentUser?.branch || '',
-        requestedBy: userName
+        requestedBy: userName,
+        leaveFrom: newLeave.fromDate || '',
+        leaveTo: newLeave.toDate || newLeave.fromDate || '',
+        leaveType: newLeave.type || '',
+        requesterRole: currentUser?.role || 'HR'
       });
       setLeaveRequests(prev => [createdLocal, ...prev]);
       showToast('✓ Submitted leave request to Head of HR');

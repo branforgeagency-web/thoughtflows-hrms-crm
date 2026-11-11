@@ -1665,6 +1665,26 @@ router.patch('/leadership/approvals/:id/decision', async (req, res) => {
       return res.status(400).json({ error: 'Decision must be approved, rejected, forwarded or pending' });
     }
     if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Approval not found' });
+    const existing = await Approval.findById(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Approval not found' });
+
+    const uDept = String(req.user?.department || '').toLowerCase();
+    const uRole = String(req.user?.role || '').toLowerCase();
+    const isAdminOrExec = ['admin', 'leadership'].includes(uDept) || ['admin', 'super admin'].includes(uRole)
+      || /director|ceo|founder|leadership/i.test(uRole);
+    const isMarketingCaller = uDept === 'marketing' || /marketing/i.test(uRole);
+    if (!isAdminOrExec && !isMarketingCaller) {
+      const canHrDecide = !isScopedHr(req) && (isHrLeaderUser(req) || isScopedBranchManager(req) || /manager|head|hod/i.test(uRole));
+      if (!canHrDecide) {
+        return res.status(403).json({ error: 'Only HR Head, Branch Head, or Leadership can decide leave approvals' });
+      }
+      const isHrApproval = /^(DEP-HR-001|HR)$/i.test(String(existing.departmentCode || '').trim())
+        || /leave/i.test(String(existing.kind || existing.title || ''));
+      if (!isHrApproval) {
+        return res.status(403).json({ error: 'HR role can only decide HR / leave approvals' });
+      }
+    }
+
     const decidedBy = req.user?.name || req.body?.decidedBy || '';
     const update = action === 'pending'
       ? { status: 'pending', decidedBy: '', decidedAt: null }
@@ -1940,6 +1960,207 @@ router.get('/hr/hub-summary', async (req, res) => {
 router.get('/hr/my-team', async (req, res) => {
   try {
     res.json(await findHrTeam(req.user || {}));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Parse structured leave dates/type with fallback for legacy HR Approval descriptions
+function extractHrLeaveInfo(doc) {
+  const o = doc?.toObject ? doc.toObject() : { ...(doc || {}) };
+  const title = String(o.title || '');
+  const desc = String(o.description || '');
+  let leaveFrom = String(o.leaveFrom || '').trim();
+  let leaveTo = String(o.leaveTo || '').trim();
+  if (!leaveFrom) {
+    const rangeMatch = `${desc} ${title}`.match(/(\d{4}-\d{2}-\d{2})(?:\s*(?:to|-|–)\s*(\d{4}-\d{2}-\d{2}))?/i);
+    if (rangeMatch) {
+      leaveFrom = rangeMatch[1];
+      leaveTo = rangeMatch[2] || rangeMatch[1];
+    }
+  }
+  if (leaveFrom && !leaveTo) leaveTo = leaveFrom;
+  let leaveType = String(o.leaveType || '').trim();
+  if (!leaveType && title) {
+    leaveType = title.replace(/\s*\([^)]*\)\s*$/, '').trim();
+  }
+  return {
+    _id: o._id,
+    requestedBy: o.requestedBy || '',
+    branchName: o.branchName || '',
+    requesterRole: o.requesterRole || '',
+    title,
+    leaveType: leaveType || o.kind || 'Leave',
+    leaveFrom,
+    leaveTo,
+    description: desc,
+    status: o.status || 'pending',
+    decidedBy: o.decidedBy || '',
+    decidedAt: o.decidedAt || null,
+    createdAt: o.createdAt || null
+  };
+}
+
+// HR attendance (login time, logout time, work hours) + HR leave details for Head of HR / Branch Head / HR TL
+router.get('/hr/staff-attendance', async (req, res) => {
+  try {
+    await syncTeamFromUsers().catch(() => {});
+    const today = todayStr();
+    const from = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.from || '')) ? req.query.from : today;
+    const to = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.to || '')) ? req.query.to : from;
+    const isSelfOnly = isScopedHr(req);
+    const tlNames = !isSelfOnly && isHrTeamLeadUser(req) ? await hrTeamScopeNames(req) : null;
+    const isBM = !isSelfOnly && !tlNames && isScopedBranchManager(req);
+    const branchParam = String(req.query.branch || '').trim();
+    const effectiveBranch = isBM ? req.user.branch : (branchParam && branchParam !== 'all' ? branchParam : '');
+    const branchFilterKey = effectiveBranch ? branchShort(effectiveBranch).toLowerCase() : '';
+
+    const [teamDocs, hrUsers] = await Promise.all([
+      TeamMember.find(deptCodeQuery('DEP-HR-001')).select('name role branchName email').lean(),
+      User.find({ $and: [HR_STAFF, ACTIVE_USER] }).select('name role branch email').lean()
+    ]);
+
+    const rosterMap = new Map();
+    const addRoster = (name, role, branchName, email) => {
+      const cleanName = String(name || '').trim();
+      const key = normName(cleanName);
+      if (!cleanName || !key) return;
+      const prev = rosterMap.get(key) || {};
+      rosterMap.set(key, {
+        name: prev.name || cleanName,
+        role: role || prev.role || 'HR',
+        branchName: branchName || prev.branchName || '',
+        email: email || prev.email || ''
+      });
+    };
+    teamDocs.forEach((m) => addRoster(m.name, m.role, m.branchName, m.email));
+    hrUsers.forEach((u) => addRoster(u.name, u.role, u.branch, u.email));
+
+    const allowedNameSet = isSelfOnly
+      ? new Set([normName(req.user?.name)])
+      : (tlNames ? new Set(tlNames.map(normName).filter(Boolean)) : null);
+
+    const matchesScope = (name, branchName) => {
+      const nKey = normName(name);
+      if (allowedNameSet && !allowedNameSet.has(nKey)) return false;
+      if (branchFilterKey) {
+        const bKey = branchShort(branchName || rosterMap.get(nKey)?.branchName || '').toLowerCase();
+        if (!bKey || !bKey.includes(branchFilterKey)) return false;
+      }
+      return true;
+    };
+
+    const scopedRoster = [...rosterMap.values()]
+      .filter((m) => matchesScope(m.name, m.branchName))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    const rosterRegexes = [...rosterMap.values()].map((m) => exactNameRx(m.name));
+    const attOr = [{ department: /^hr$/i }];
+    if (rosterRegexes.length) attOr.push({ employeeName: { $in: rosterRegexes } });
+
+    const [attDocs, leaveDocs] = await Promise.all([
+      Attendance.find({ date: { $gte: from, $lte: to }, $or: attOr }).sort({ date: -1, employeeName: 1 }).limit(2000),
+      Approval.find({
+        $and: [
+          deptCodeQuery('DEP-HR-001'),
+          { $or: [{ kind: /leave/i }, { title: /leave/i }] }
+        ]
+      }).sort({ createdAt: -1 }).limit(400).lean()
+    ]);
+
+    const leaves = leaveDocs
+      .map(extractHrLeaveInfo)
+      .filter((l) => matchesScope(l.requestedBy, l.branchName));
+
+    const findLeaveFor = (employeeName, dateStr) => {
+      const nKey = normName(employeeName);
+      if (!nKey || !dateStr) return null;
+      const matches = leaves.filter((l) => {
+        if (normName(l.requestedBy) !== nKey) return false;
+        if (!l.leaveFrom) return false;
+        const end = l.leaveTo || l.leaveFrom;
+        return l.leaveFrom <= dateStr && dateStr <= end;
+      });
+      return matches.find((l) => l.status === 'approved') || matches.find((l) => l.status === 'pending') || null;
+    };
+
+    const presentKeys = new Set();
+    const attendance = [];
+    for (const r of attDocs) {
+      const v = attendanceView(r);
+      if (!matchesScope(v.employeeName, v.branchName)) continue;
+      const meta = rosterMap.get(normName(v.employeeName));
+      const leaveForDay = findLeaveFor(v.employeeName, v.date);
+      const isLogoutMissing = v.date < today && !v.workEndTime && v.workStartTime;
+      presentKeys.add(`${v.date}::${normName(v.employeeName)}`);
+      attendance.push({
+        ...v,
+        staffRole: v.staffRole || meta?.role || 'HR',
+        branchName: v.branchName || meta?.branchName || '',
+        sessionStatus: isLogoutMissing ? 'Logout missing' : v.sessionStatus,
+        calculatedWorkingMinutes: isLogoutMissing ? 0 : v.calculatedWorkingMinutes,
+        durationText: isLogoutMissing ? '—' : v.durationText,
+        leaveInfo: leaveForDay
+      });
+    }
+
+    // For a single-date view, include scoped HR staff without clock-in docs so login/logout or leave status is visible for all HR staff
+    if (from === to) {
+      for (const m of scopedRoster) {
+        const key = `${from}::${normName(m.name)}`;
+        if (presentKeys.has(key)) continue;
+        const leaveForDay = findLeaveFor(m.name, from);
+        const approvedLeave = leaveForDay?.status === 'approved' ? leaveForDay : null;
+        attendance.push({
+          _id: `roster-${from}-${normName(m.name)}`,
+          employeeName: m.name,
+          staffRole: m.role || 'HR',
+          branchName: m.branchName || '',
+          userEmail: m.email || '',
+          date: from,
+          checkIn: '',
+          checkOut: '',
+          workStartTime: null,
+          workEndTime: null,
+          breakMinutesTotal: 0,
+          calculatedWorkingMinutes: 0,
+          durationText: '—',
+          sessionStatus: approvedLeave ? 'On Leave' : 'Not Started',
+          leaveInfo: leaveForDay
+        });
+      }
+    }
+
+    const refDate = from === to ? from : today;
+    const refRows = attendance.filter((r) => r.date === refDate);
+    const onLeaveNames = new Set(
+      leaves
+        .filter((l) => l.status === 'approved' && l.leaveFrom && l.leaveFrom <= refDate && refDate <= (l.leaveTo || l.leaveFrom))
+        .map((l) => normName(l.requestedBy))
+    );
+    const branches = [...new Set([
+      ...scopedRoster.map((m) => m.branchName),
+      ...attendance.map((r) => r.branchName),
+      ...leaves.map((l) => l.branchName)
+    ].map((b) => String(b || '').trim()).filter(Boolean))].sort();
+
+    res.json({
+      attendance,
+      leaves,
+      branches,
+      summary: {
+        dateFrom: from,
+        dateTo: to,
+        refDate,
+        totalStaff: scopedRoster.length,
+        loggedInNow: refRows.filter((r) => r.sessionStatus === 'In Progress').length,
+        loggedOut: refRows.filter((r) => r.sessionStatus === 'Completed').length,
+        logoutMissing: refRows.filter((r) => r.sessionStatus === 'Logout missing').length,
+        notStarted: refRows.filter((r) => r.sessionStatus === 'Not Started').length,
+        onLeaveToday: onLeaveNames.size,
+        pendingLeaves: leaves.filter((l) => l.status === 'pending').length
+      }
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

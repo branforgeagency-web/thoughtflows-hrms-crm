@@ -155,8 +155,8 @@ const STAFF_RULES = [
   // SOPs are written by department heads (Leadership / Admin only)
   ['*', /^\/sops(\/[^/]+)?$/, []],
   ['POST', /^\/sops\/[^/]+\/assign$/, []],
-  // Leadership desk
-  ['PATCH', /^\/leadership\/approvals\/[^/]+\/decision$/, ['marketing']],
+  // Leadership desk & Head of HR (for HR leave approvals; route enforces dept scope)
+  ['PATCH', /^\/leadership\/approvals\/[^/]+\/decision$/, ['marketing', 'hr']],
   ['PATCH', /^\/leadership\/escalations\/[^/]+\/status$/, ['hr']],
   ['PUT', /^\/admin\/audit-logs/, []]
 ];
