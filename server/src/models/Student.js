@@ -435,6 +435,23 @@ const studentSchema = new mongoose.Schema({
   placementStage: {
     type: Number,
     default: 0
+  },
+  // ---- WiseApp Onboarding & Class Allocation Sync ----
+  introSessionCompleted: {
+    type: Boolean,
+    default: false
+  },
+  whatsappGroupAdded: {
+    type: Boolean,
+    default: false
+  },
+  whatsappGroupName: {
+    type: String,
+    default: ''
+  },
+  classAllocationSynced: {
+    type: Boolean,
+    default: false
   }
 }, {
   timestamps: true

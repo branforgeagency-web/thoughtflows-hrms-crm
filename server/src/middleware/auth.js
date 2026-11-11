@@ -147,6 +147,8 @@ const STAFF_RULES = [
   ['*', /^\/trainer\/leader-leaves(\/|$)/, ['training']], // Manager/TL apply, Head decides — checks in the route
   // Student requests: trainer answers academic ones, HR the admin ones
   ['PUT', /^\/student-portal\/requests\/[^/]+$/, ['training', 'hr']],
+  // WiseApp Academy LMS, Tests, Questions, Schedules, Packages & Onboarding Sync
+  ['*', /^\/wiseapp(\/|$)/, ['wiseapp', 'training', 'hr']],
   // Placement & marketing
   ['*', /^\/cccp\//, ['cccp']],
   ['*', /^\/marketing\/(campaigns|creatives|content)/, ['marketing']],
@@ -178,6 +180,7 @@ export function normalizeDept(dept = '', role = '') {
   if (d === 'cccp' || d.includes('cccp') || d.includes('placement') || r.includes('placement') || r.includes('cccp')) return 'cccp';
   if (d === 'marketing' || d.includes('market') || d.includes('growth') || r.includes('market') || r.includes('growth')) return 'marketing';
   if (d === 'student' || d.includes('student') || d.includes('scholar') || r.includes('student') || r.includes('scholar')) return 'student';
+  if (d === 'wiseapp' || d.includes('wiseapp') || r.includes('wiseapp')) return 'wiseapp';
   return d;
 }
 
@@ -227,7 +230,10 @@ const STUDENT_RULES = [
   ['GET', /^\/student-portal\/tests\/[^/]+$/],
   ['POST', /^\/student-portal\/tests\/[^/]+\/(start|save|submit)$/],
   ['POST', /^\/student-portal\/doubts\/[^/]+\/(followup|resolve)$/],
-  ['POST', /^\/student-portal\/live-class\/join$/, (req, u) => { req.body = { ...(req.body || {}), studentId: u.studentId || req.body?.studentId, email: u.email || req.body?.email }; }]
+  ['POST', /^\/student-portal\/live-class\/join$/, (req, u) => { req.body = { ...(req.body || {}), studentId: u.studentId || req.body?.studentId, email: u.email || req.body?.email }; }],
+  ['GET', /^\/wiseapp\/(questions|videos|packages|resources|feedback)$/],
+  ['POST', /^\/wiseapp\/questions\/[^/]+\/report$/],
+  ['POST', /^\/wiseapp\/feedback$/]
 ];
 
 function allowStudent(req, user) {

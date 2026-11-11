@@ -1652,3 +1652,63 @@ export const getTrainerUtilizationReport = async (params = {}) => {
   const res = await api.get('/trainer/utilization/report', { params });
   return res.data;
 };
+
+// ==========================================
+// WISEAPP ACADEMY PORTAL (LMS, TESTS, SCHEDULES, ALLOCATIONS)
+// ==========================================
+export const getWiseAppOverview = async () => (await api.get('/wiseapp/overview')).data;
+export const getWiseAppStudents = async (params = {}) => (await api.get('/wiseapp/students', { params })).data;
+export const updateWiseAppStudentOnboarding = async (id, data) => {
+  const res = await api.put(`/wiseapp/students/${id}/onboarding`, data);
+  notifyDataUpdate('students');
+  return res.data;
+};
+export const getWiseAppTeachers = async () => (await api.get('/wiseapp/teachers')).data;
+export const getWiseAppSchedules = async (params = {}) => (await api.get('/wiseapp/schedules', { params })).data;
+export const createWiseAppSchedule = async (data) => (await api.post('/wiseapp/schedules', data)).data;
+export const updateWiseAppSchedule = async (id, data) => (await api.put(`/wiseapp/schedules/${id}`, data)).data;
+export const followUpWiseAppSchedule = async (id, data) => (await api.patch(`/wiseapp/schedules/${id}/followup`, data)).data;
+export const deleteWiseAppSchedule = async (id) => (await api.delete(`/wiseapp/schedules/${id}`)).data;
+export const getWiseAppAllocations = async () => (await api.get('/wiseapp/allocations')).data;
+export const assignWiseAppAllocation = async (data) => {
+  const res = await api.post('/wiseapp/allocations/assign', data);
+  notifyDataUpdate('students');
+  return res.data;
+};
+export const getWiseAppQuestions = async (params = {}) => (await api.get('/wiseapp/questions', { params })).data;
+export const createWiseAppQuestion = async (data) => (await api.post('/wiseapp/questions', data)).data;
+export const bulkCreateWiseAppQuestions = async (questions) => (await api.post('/wiseapp/questions/bulk', { questions })).data;
+export const updateWiseAppQuestion = async (id, data) => (await api.put(`/wiseapp/questions/${id}`, data)).data;
+export const deleteWiseAppQuestion = async (id) => (await api.delete(`/wiseapp/questions/${id}`)).data;
+export const reportWiseAppQuestion = async (id, data) => (await api.post(`/wiseapp/questions/${id}/report`, data)).data;
+export const resolveWiseAppQuestionReport = async (id, data) => (await api.patch(`/wiseapp/questions/${id}/resolve-report`, data)).data;
+export const getWiseAppTests = async () => (await api.get('/wiseapp/tests')).data;
+export const createWiseAppTest = async (data) => {
+  const res = await api.post('/wiseapp/tests', data);
+  notifyDataUpdate('assessments');
+  return res.data;
+};
+export const updateWiseAppTest = async (id, data) => {
+  const res = await api.put(`/wiseapp/tests/${id}`, data);
+  notifyDataUpdate('assessments');
+  return res.data;
+};
+export const deleteWiseAppTest = async (id) => (await api.delete(`/wiseapp/tests/${id}`)).data;
+export const getWiseAppVideos = async (params = {}) => (await api.get('/wiseapp/videos', { params })).data;
+export const createWiseAppVideo = async (data) => (await api.post('/wiseapp/videos', data)).data;
+export const updateWiseAppVideo = async (id, data) => (await api.put(`/wiseapp/videos/${id}`, data)).data;
+export const deleteWiseAppVideo = async (id) => (await api.delete(`/wiseapp/videos/${id}`)).data;
+export const getWiseAppPackages = async (params = {}) => (await api.get('/wiseapp/packages', { params })).data;
+export const createWiseAppPackage = async (data) => (await api.post('/wiseapp/packages', data)).data;
+export const updateWiseAppPackage = async (id, data) => (await api.put(`/wiseapp/packages/${id}`, data)).data;
+export const deleteWiseAppPackage = async (id) => (await api.delete(`/wiseapp/packages/${id}`)).data;
+export const getWiseAppFeedback = async () => (await api.get('/wiseapp/feedback')).data;
+export const submitWiseAppFeedback = async (data) => (await api.post('/wiseapp/feedback', data)).data;
+export const getWiseAppResources = async () => (await api.get('/wiseapp/resources')).data;
+export const getWiseAppAttendance = async () => (await api.get('/wiseapp/attendance')).data;
+export const getWiseAppReports = async () => (await api.get('/wiseapp/reports')).data;
+export const getWiseAppCatalog = async (params = {}) => (await api.get('/wiseapp/catalog', { params })).data;
+export const createWiseAppCatalogItem = async (data) => (await api.post('/wiseapp/catalog', data)).data;
+export const updateWiseAppCatalogItem = async (id, data) => (await api.put(`/wiseapp/catalog/${id}`, data)).data;
+export const deleteWiseAppCatalogItem = async (id) => (await api.delete(`/wiseapp/catalog/${id}`)).data;
+export const getWiseAppCenters = async () => (await api.get('/wiseapp/centers')).data;

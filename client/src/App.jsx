@@ -58,7 +58,8 @@ export default function App() {
     { id: 'marketing', title: 'Marketing Department', status: 'ACTIVE', description: 'Digital, outdoor & campaigns driving 100+ lead sources every month across all branches' },
     { id: 'leadership', title: 'Leadership Hub', status: '4 ROLES', description: 'All the heads in one place — Operational, Department, Regional & Branch. Open to pick your role.' },
     { id: 'student', title: 'Student Dashboard', status: '247 ONLINE', description: 'Students log in here to track attendance, syllabus, exam slot bookings, assignments & placement opportunities' },
-    { id: 'admin', title: 'Admin & Management', status: '3 ALERTS', description: "Founders' command bridge · back-office operations · strategy, red-line alerts & administration" }
+    { id: 'admin', title: 'Admin & Management', status: '3 ALERTS', description: "Founders' command bridge · back-office operations · strategy, red-line alerts & administration" },
+    { id: 'wiseapp', title: 'WiseApp Academy Hub', status: 'LMS LIVE', description: 'WiseApp-style LMS · tests, question bank, class schedules, allocations, videos, feedback & reports' }
   ];
 
   // Clear any old long-lived localStorage auth so past sessions cannot leak across window close

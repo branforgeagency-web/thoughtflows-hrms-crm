@@ -41,6 +41,22 @@ const trainerAssessmentSchema = new mongoose.Schema({
     type: String,
     default: 'Active'
   },
+  testCode: {
+    type: String,
+    default: ''
+  },
+  openDate: {
+    type: String,
+    default: ''
+  },
+  closeDate: {
+    type: String,
+    default: ''
+  },
+  publishResult: {
+    type: Boolean,
+    default: true
+  },
   scores: {
     type: Map,
     of: Number,

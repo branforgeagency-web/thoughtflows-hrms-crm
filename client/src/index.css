@@ -87,3 +87,9 @@ body {
   max-width: 100% !important;
 }
 
+
+/* Hide the Zoom SDK's own "Joining Meeting..." loader while our "Connecting Zoom…"
+   overlay is shown, so the two texts don't overlap. Layout is kept (visibility, not display). */
+#zoomSDKContainer[data-status="loading"] > * {
+  visibility: hidden;
+}

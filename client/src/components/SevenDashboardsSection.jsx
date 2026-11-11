@@ -126,6 +126,22 @@ const DASHBOARD_CARDS = [
     cornerGlow: 'from-indigo-50/40',
     icon: Crown,
   },
+  {
+    id: 'wiseapp',
+    title: 'WiseApp LMS Hub',
+    status: 'LMS LIVE',
+    statusColor: 'text-[#00a65a]',
+    statusDotBg: 'bg-[#00a65a]',
+    description: 'Practice questions, online tests, class schedules, allocation sync, live videos, feedback & reports',
+    tag: 'TESTS · QUESTIONS · SCHEDULES',
+    tagStyle: 'bg-[#dcfce7]/80 text-[#008d4c] border-[#86efac]',
+    ctaText: 'OPEN WISEAPP HUB',
+    ctaColor: 'text-[#008d4c] hover:text-[#006e3b]',
+    iconGradient: 'from-[#00c0ef] to-[#00a65a]',
+    iconShadow: 'shadow-emerald-500/20',
+    cornerGlow: 'from-emerald-50/40',
+    icon: CheckCircle2,
+  },
 ];
 
 const CLAY_CARD_CLASSES = {
@@ -136,6 +152,7 @@ const CLAY_CARD_CLASSES = {
   leadership: 'clay-card-leadership',
   student: 'clay-card-student',
   admin: 'clay-card-admin',
+  wiseapp: 'clay-card-training',
 };
 
 export default function SevenDashboardsSection({ onSelectDashboard, currentUser, theme = 'classic' }) {
@@ -275,18 +292,18 @@ export default function SevenDashboardsSection({ onSelectDashboard, currentUser,
               : 'bg-[#dcfce7]/60 border border-[#86efac]/70 backdrop-blur-sm'
           }`}>
             <span className="text-[10.5px] font-extrabold tracking-[0.22em] text-[#065f46] uppercase">
-              SEVEN DASHBOARDS &nbsp;•&nbsp; ONE MISSION
+              EIGHT DASHBOARDS &nbsp;•&nbsp; ONE MISSION
             </span>
           </div>
 
           {/* Headline */}
           <h2 className="text-3xl sm:text-4xl md:text-5xl font-extrabold text-[#073734] tracking-tight leading-[1.15]">
-            Seven dashboards. <span className="text-[#009688]">One mission.</span>
+            Eight dashboards. <span className="text-[#009688]">One mission.</span>
           </h2>
 
           {/* Subtitle */}
           <p className="mt-4 text-xs sm:text-sm md:text-[15px] text-[#426a66] leading-relaxed">
-            From the first lead to the first paycheck — seven dashboards for everyone who makes Thoughtflows run. Including the students themselves.
+            From the first lead to the first paycheck — eight dashboards for everyone who makes Thoughtflows run. Including WiseApp LMS &amp; the students themselves.
           </p>
         </div>
 
@@ -295,8 +312,8 @@ export default function SevenDashboardsSection({ onSelectDashboard, currentUser,
           {rowOneCards.map(renderCard)}
         </div>
 
-        {/* Row 2: 3 Cards Centered (desktop: matching width of row 1) */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 lg:gap-6 max-w-[1014px] mx-auto mt-5 lg:mt-6">
+        {/* Row 2: 4 Cards */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 lg:gap-6 mt-5 lg:mt-6">
           {rowTwoCards.map(renderCard)}
         </div>
       </div>

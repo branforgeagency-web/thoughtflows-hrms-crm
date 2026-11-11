@@ -58,6 +58,7 @@ import { BRANCH_MASTER, DEPARTMENT_MASTER, DEPT_CODE_BY_DASHBOARD } from '../con
 
 import TrainerHourlyWork from '../models/TrainerHourlyWork.js';
 import { DEFAULT_WORK_SLOTS } from '../constants/trainerHierarchy.js';
+import wiseappRouter from './wiseapp.js';
 
 const router = express.Router();
 
@@ -5835,6 +5836,18 @@ const DEPARTMENT_PORTALS = {
     branch: '',
     color: '#4338ca',
     description: 'Founders command bridge, back-office operations, strategy & administration'
+  },
+  wiseapp: {
+    id: 'wiseapp',
+    code: 'WISE',
+    name: 'WiseApp Academy Portal',
+    title: 'WiseApp LMS & Practice Hub',
+    defaultEmail: 'wiseapp@thoughtflows.in',
+    role: 'WiseApp Operations & LMS Coordinator',
+    userName: 'WiseApp Desk',
+    branch: '',
+    color: '#00a65a',
+    description: 'Tests, question bank, class schedules, allocations, videos, feedback & reports'
   }
 };
 
@@ -6074,6 +6087,14 @@ const mapRoleOrDeptToDashboard = (role = '', department = '') => {
       color: '#0d9488'
     };
   }
+  if (r.includes('wiseapp') || d.includes('wiseapp')) {
+    return {
+      department: 'wiseapp',
+      departmentCode: 'WISE',
+      departmentName: 'WiseApp Academy Portal',
+      color: '#00a65a'
+    };
+  }
   return {
     department: 'training',
     departmentCode: 'ACAD',
@@ -6159,7 +6180,9 @@ router.post('/auth/login', async (req, res) => {
     }
 
     // 1. Accounts created by Admin / at admission (User collection)
-    let dbUser = await User.findOne({ email: normalizedEmail });
+    let dbUser = await User.findOne({
+      $or: [{ email: normalizedEmail }, { username: normalizedEmail }]
+    });
     if (!dbUser) {
       const rawInput = String(email).trim();
       const tr = await Trainer.findOne({ trainerId: new RegExp(`^${escapeRegex(rawInput)}$`, 'i') });
@@ -6199,6 +6222,7 @@ router.post('/auth/login', async (req, res) => {
           id: dbUser._id.toString(),
           name: dbUser.name,
           userName: dbUser.name,
+          username: dbUser.username || '',
           email: dbUser.email,
           phone: dbUser.phone || '',
           role: dbUser.role,
@@ -6383,6 +6407,7 @@ router.get('/admin/users', async (req, res) => {
       id: u._id.toString(),
       _id: u._id.toString(),
       name: u.name,
+      username: u.username || '',
       email: u.email,
       password: u.password || '',
       phone: u.phone || '',
@@ -6403,23 +6428,34 @@ router.get('/admin/users', async (req, res) => {
 
 router.post('/admin/users', async (req, res) => {
   try {
-    const { name, email, phone, password, role, department, branch, status, avatarBg, managerId, managerName } = req.body;
-    if (!email) {
-      return res.status(400).json({ error: 'Email is required' });
+    const { name, username, email, phone, password, role, department, branch, status, avatarBg, managerId, managerName } = req.body;
+    const cleanUsername = String(username || '').trim().toLowerCase();
+    const isWiseAppUser = /wiseapp/i.test(String(role || '')) || /wiseapp/i.test(String(department || ''));
+    const rawEmail = String(email || '').trim().toLowerCase();
+    const cleanEmail = rawEmail || (cleanUsername ? `${cleanUsername.replace(/[^a-z0-9._-]/g, '')}@wiseapp.thoughtflows.in` : '');
+
+    if (!cleanEmail) {
+      return res.status(400).json({ error: 'Email or Username is required' });
     }
-    if (!phone || String(phone).trim().length === 0) {
+    if (!isWiseAppUser && (!phone || String(phone).trim().length === 0)) {
       return res.status(400).json({ error: 'Mobile number is mandatory for all roles' });
     }
     if (!password || String(password).trim().length === 0) {
       return res.status(400).json({ error: 'Password is required' });
     }
-    const cleanEmail = email.toLowerCase().trim();
     const existing = await User.findOne({ email: cleanEmail });
     if (existing) {
       return res.status(400).json({ error: 'User with this email already exists' });
     }
+    if (cleanUsername) {
+      const existingUsername = await User.findOne({ username: cleanUsername });
+      if (existingUsername) {
+        return res.status(400).json({ error: 'User with this username already exists' });
+      }
+    }
     const user = new User({
-      name: name || cleanEmail.split('@')[0],
+      name: name || cleanUsername || cleanEmail.split('@')[0],
+      username: cleanUsername,
       email: cleanEmail,
       phone: phone || '',
       password: String(password).trim(),
@@ -6437,6 +6473,7 @@ router.post('/admin/users', async (req, res) => {
       id: user._id.toString(),
       _id: user._id.toString(),
       name: user.name,
+      username: user.username || '',
       email: user.email,
       password: user.password,
       phone: user.phone || '',
@@ -6473,6 +6510,7 @@ router.put('/admin/users/:id', async (req, res) => {
       id: user._id.toString(),
       _id: user._id.toString(),
       name: user.name,
+      username: user.username || '',
       email: user.email,
       password: user.password,
       phone: user.phone || '',
@@ -14054,5 +14092,7 @@ router.post('/student-portal/doubts/:id/resolve', async (req, res) => {
     res.status(400).json({ error: e.message });
   }
 });
+
+router.use('/wiseapp', wiseappRouter);
 
 export default router;

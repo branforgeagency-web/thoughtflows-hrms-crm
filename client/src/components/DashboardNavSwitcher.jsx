@@ -82,6 +82,16 @@ export const ALL_DASHBOARDS = [
     accent: 'bg-teal-600',
     hoverBorder: 'hover:border-teal-400',
     badgeColor: 'bg-teal-100 text-teal-700'
+  },
+  {
+    id: 'wiseapp',
+    label: 'WiseApp LMS Hub',
+    badge: 'WISEAPP',
+    role: 'Tests, Questions, Schedules & Videos',
+    icon: Sparkles,
+    accent: 'bg-emerald-600',
+    hoverBorder: 'hover:border-emerald-400',
+    badgeColor: 'bg-emerald-100 text-emerald-700'
   }
 ];
 

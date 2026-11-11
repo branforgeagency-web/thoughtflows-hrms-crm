@@ -471,6 +471,7 @@ export default function ZoomMeeting({
           ref={containerRef}
           id="zoomSDKContainer"
           data-sharing={isRemoteSharing ? 'true' : undefined}
+          data-status={status}
           className="relative w-full h-full flex-1 flex items-center justify-center"
           style={{ width: '100%', height: '100%', minHeight: typeof height === 'number' ? height : undefined }}
         />

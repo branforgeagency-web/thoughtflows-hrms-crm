@@ -81,7 +81,9 @@ const ACADEMY_ROLES = [
   'Regional Manager',
   'Management',
   'CCCP Team',
-  'Marketing Team'
+  'Marketing Team',
+  'WISEAPP',
+  'WISEAPP ADMIN'
 ];
 
 const ROLE_TO_DEPARTMENT = {
@@ -117,7 +119,9 @@ const ROLE_TO_DEPARTMENT = {
   'Operational Head': 'Leadership & Operations',
   'Management': 'Admin & Management',
   'CCCP Team': 'Corporate Placements',
-  'Marketing Team': 'Growth & Marketing'
+  'Marketing Team': 'Growth & Marketing',
+  'WISEAPP': 'WiseApp LMS Hub',
+  'WISEAPP ADMIN': 'WiseApp LMS Hub'
 };
 
 // Extra inputs a Trainer login needs beyond the generic staff account —
@@ -146,12 +150,14 @@ const DIRECTORY_GROUPS = [
   { key: 'hr', label: 'HR & Admissions', borderAccent: 'border-l-4 border-l-emerald-600', avatarBg: 'bg-[#059669]' },
   { key: 'training', label: 'Training & Faculty', borderAccent: 'border-l-4 border-l-blue-600', avatarBg: 'bg-[#2563eb]' },
   { key: 'cccp', label: 'CCCP — Placement', borderAccent: 'border-l-4 border-l-teal-500', avatarBg: 'bg-[#0d9488]' },
-  { key: 'marketing', label: 'Marketing', borderAccent: 'border-l-4 border-l-amber-500', avatarBg: 'bg-[#ea580c]' }
+  { key: 'marketing', label: 'Marketing', borderAccent: 'border-l-4 border-l-amber-500', avatarBg: 'bg-[#ea580c]' },
+  { key: 'wiseapp', label: 'WiseApp LMS Hub', borderAccent: 'border-l-4 border-l-emerald-600', avatarBg: 'bg-[#00a65a]' }
 ];
 // Same role/department → dashboard mapping the server uses at login
 const dashboardOfUser = (u) => {
   const r = String(u?.role || '').toLowerCase();
   const d = String(u?.department || '').toLowerCase();
+  if (r.includes('wiseapp') || d.includes('wiseapp')) return 'wiseapp';
   if (r.includes('trainer') || r.includes('faculty') || d.includes('faculty') || d.includes('training')) return 'training';
   if (r.includes('admin') || d.includes('admin')) return 'leadership';
   if (r.includes('counsel') || r.includes('advisor') || d.includes('counsel') || d.includes('admission') || d === 'hr') return 'hr';
@@ -313,6 +319,7 @@ export default function AdminManagementDashboard({
   const [isRoleDropdownOpen, setIsRoleDropdownOpen] = useState(false);
   const [newUserForm, setNewUserForm] = useState({
     name: '',
+    username: '',
     email: '',
     phone: '',
     role: 'HR',
@@ -337,6 +344,7 @@ export default function AdminManagementDashboard({
   const [editUserForm, setEditUserForm] = useState({
     id: '',
     name: '',
+    username: '',
     email: '',
     phone: '',
     role: 'HR',
@@ -474,8 +482,16 @@ export default function AdminManagementDashboard({
   // Add New User
   const handleCreateUser = async (e) => {
     e.preventDefault();
-    if (!newUserForm.name || !newUserForm.email || !newUserForm.phone || !newUserForm.phone.trim()) {
-      showToast('⚠️ Please enter name, email, and mobile number (mandatory for all roles).');
+    const isWiseAppAccount = newUserForm.role === 'WISEAPP' || newUserForm.role === 'WISEAPP ADMIN';
+    const cleanUsername = (newUserForm.username || '').trim().toLowerCase();
+    const effectiveEmail = (newUserForm.email || '').trim().toLowerCase() || (cleanUsername ? `${cleanUsername.replace(/[^a-z0-9._-]/g, '')}@wiseapp.thoughtflows.in` : '');
+
+    if (!newUserForm.name || !effectiveEmail || !newUserForm.password?.trim()) {
+      showToast('⚠️ Please enter full name, username or email, and password.');
+      return;
+    }
+    if (!isWiseAppAccount && (!newUserForm.phone || !newUserForm.phone.trim())) {
+      showToast('⚠️ Mobile number is mandatory for non-WiseApp roles.');
       return;
     }
 
@@ -499,7 +515,8 @@ export default function AdminManagementDashboard({
     const newUser = {
       id: `usr_${Date.now()}`,
       name: newUserForm.name,
-      email: newUserForm.email.toLowerCase(),
+      username: cleanUsername,
+      email: effectiveEmail,
       phone: newUserForm.phone || '',
       password: newUserForm.password,
       role: newUserForm.role,
@@ -508,7 +525,7 @@ export default function AdminManagementDashboard({
       managerName: newUserForm.role === 'HR' ? (newUserForm.managerName || '') : '',
       status: 'Active',
       lastLogin: 'Never',
-      avatarBg: 'bg-indigo-600'
+      avatarBg: isWiseAppAccount ? 'bg-[#00a65a]' : 'bg-indigo-600'
     };
 
     // Save to MongoDB
@@ -573,6 +590,7 @@ export default function AdminManagementDashboard({
     setIsRoleDropdownOpen(false);
     setNewUserForm({
       name: '',
+      username: '',
       email: '',
       phone: '',
       role: 'HR',
@@ -642,6 +660,7 @@ export default function AdminManagementDashboard({
       id: u.id || u._id,
       _id: u._id || u.id,
       name: u.name || '',
+      username: u.username || '',
       email: u.email || '',
       phone: u.phone || '',
       role: u.role || 'HR',
@@ -666,6 +685,7 @@ export default function AdminManagementDashboard({
     try {
       const payload = {
         name: editUserForm.name.trim(),
+        username: (editUserForm.username || '').trim().toLowerCase(),
         email: editUserForm.email.trim().toLowerCase(),
         phone: editUserForm.phone ? editUserForm.phone.trim() : '',
         role: editUserForm.role,
@@ -1390,6 +1410,7 @@ export default function AdminManagementDashboard({
             const matchesSearch =
               !q ||
               u.name?.toLowerCase().includes(q) ||
+              u.username?.toLowerCase().includes(q) ||
               u.email?.toLowerCase().includes(q) ||
               u.role?.toLowerCase().includes(q) ||
               u.department?.toLowerCase().includes(q) ||
@@ -1476,6 +1497,28 @@ export default function AdminManagementDashboard({
                       </option>
                     ))}
                   </select>
+
+                  {/* Quick WiseApp Username + Password Account Button */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsRoleDropdownOpen(false);
+                      setNewUserForm((prev) => ({
+                        ...prev,
+                        role: 'WISEAPP',
+                        department: 'WiseApp LMS Hub',
+                        username: '',
+                        email: '',
+                        password: ''
+                      }));
+                      setShowAddUserModal(true);
+                    }}
+                    className="px-3.5 py-2.5 rounded-xl bg-[#00a65a] hover:bg-[#008d4c] text-white font-extrabold text-xs shadow-md hover:shadow-lg transition-all flex items-center gap-1.5 cursor-pointer active:scale-95 shrink-0"
+                    title="Create a WiseApp Username & Password login"
+                  >
+                    <UserPlus className="w-4 h-4" />
+                    <span>+ WiseApp Login</span>
+                  </button>
 
                   {/* The User-Requested "Create Account" Button */}
                   <button
@@ -1579,7 +1622,14 @@ export default function AdminManagementDashboard({
                                   {u.name.slice(0, 2).toUpperCase()}
                                 </div>
                                 <div>
-                                  <div className="font-bold text-slate-900 leading-tight">{u.name}</div>
+                                  <div className="font-bold text-slate-900 leading-tight flex items-center gap-1.5">
+                                    <span>{u.name}</span>
+                                    {u.username && (
+                                      <span className="px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-bold">
+                                        @{u.username}
+                                      </span>
+                                    )}
+                                  </div>
                                   <div className="text-[11px] text-slate-500">{u.email}</div>
                                   {u.phone && <div className="text-[10.5px] text-slate-400 font-medium">📱 {u.phone}</div>}
                                 </div>
@@ -2609,21 +2659,43 @@ export default function AdminManagementDashboard({
                 <input
                   type="text"
                   required
-                  placeholder="e.g., Kavitha N."
+                  placeholder="e.g., Balamurali S"
                   value={newUserForm.name}
                   onChange={(e) => setNewUserForm({ ...newUserForm, name: e.target.value })}
                   className="w-full px-4 py-2.5 rounded-xl border border-slate-200 hover:border-slate-300 focus:border-blue-500 bg-white text-slate-800 placeholder:text-slate-400 focus:outline-none text-sm shadow-2xs font-medium transition-all"
                 />
               </div>
 
+              {(newUserForm.role === 'WISEAPP' || newUserForm.role === 'WISEAPP ADMIN') && (
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50/70 p-3.5 space-y-2">
+                  <label className="text-[#008d4c] font-extrabold text-[11px] tracking-wider uppercase block flex items-center justify-between">
+                    <span>WISEAPP USERNAME</span>
+                    <span className="text-[10px] font-bold text-emerald-700">* SIGN-IN ID</span>
+                  </label>
+                  <input
+                    type="text"
+                    required={!newUserForm.email}
+                    placeholder="e.g., balamurali or wiseapp.cbe"
+                    value={newUserForm.username}
+                    onChange={(e) => setNewUserForm({ ...newUserForm, username: e.target.value.toLowerCase().replace(/\s+/g, '') })}
+                    className="w-full px-4 py-2.5 rounded-xl border border-emerald-300 focus:border-[#00a65a] bg-white text-slate-800 placeholder:text-slate-400 focus:outline-none text-sm shadow-2xs font-semibold transition-all"
+                  />
+                  <p className="text-[11px] text-emerald-800 font-medium">
+                    User can log in to WiseApp LMS Hub using this Username (or Email) + Password.
+                  </p>
+                </div>
+              )}
+
               <div>
                 <label className="text-[#2563eb] font-extrabold text-[11px] tracking-wider uppercase mb-1.5 block flex items-center justify-between">
                   <span>EMAIL</span>
-                  <span className="text-rose-500 font-bold text-[10px]">* REQUIRED</span>
+                  <span className={`font-bold text-[10px] ${(newUserForm.role === 'WISEAPP' || newUserForm.role === 'WISEAPP ADMIN') ? 'text-slate-400' : 'text-rose-500'}`}>
+                    {(newUserForm.role === 'WISEAPP' || newUserForm.role === 'WISEAPP ADMIN') ? 'OPTIONAL (AUTO-GENERATED IF BLANK)' : '* REQUIRED'}
+                  </span>
                 </label>
                 <input
                   type="email"
-                  required
+                  required={newUserForm.role !== 'WISEAPP' && newUserForm.role !== 'WISEAPP ADMIN'}
                   placeholder="e.g., kavitha@thoughtflows.in"
                   value={newUserForm.email}
                   onChange={(e) => setNewUserForm({ ...newUserForm, email: e.target.value })}
@@ -2634,11 +2706,13 @@ export default function AdminManagementDashboard({
               <div>
                 <label className="text-[#2563eb] font-extrabold text-[11px] tracking-wider uppercase mb-1.5 block flex items-center justify-between">
                   <span>MOBILE NUMBER</span>
-                  <span className="text-rose-500 font-bold text-[10px]">* MANDATORY</span>
+                  <span className={`font-bold text-[10px] ${(newUserForm.role === 'WISEAPP' || newUserForm.role === 'WISEAPP ADMIN') ? 'text-slate-400' : 'text-rose-500'}`}>
+                    {(newUserForm.role === 'WISEAPP' || newUserForm.role === 'WISEAPP ADMIN') ? 'OPTIONAL FOR WISEAPP' : '* MANDATORY'}
+                  </span>
                 </label>
                 <input
                   type="tel"
-                  required
+                  required={newUserForm.role !== 'WISEAPP' && newUserForm.role !== 'WISEAPP ADMIN'}
                   placeholder="e.g., +91 98765 43210"
                   value={newUserForm.phone}
                   onChange={(e) => setNewUserForm({ ...newUserForm, phone: e.target.value })}
@@ -2980,19 +3054,33 @@ export default function AdminManagementDashboard({
                 )}
               </div>
 
-              {/* FULL NAME */}
-              <div>
-                <label className="text-[#2563eb] font-extrabold text-[11px] tracking-wider uppercase mb-1.5 block">
-                  FULL NAME
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Kavitha N."
-                  value={editUserForm.name}
-                  onChange={(e) => setEditUserForm({ ...editUserForm, name: e.target.value })}
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-[#2563eb] text-xs font-medium text-slate-800 focus:outline-none transition-colors"
-                />
+              {/* FULL NAME & USERNAME */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[#2563eb] font-extrabold text-[11px] tracking-wider uppercase mb-1.5 block">
+                    FULL NAME
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Kavitha N."
+                    value={editUserForm.name}
+                    onChange={(e) => setEditUserForm({ ...editUserForm, name: e.target.value })}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-[#2563eb] text-xs font-medium text-slate-800 focus:outline-none transition-colors"
+                  />
+                </div>
+                <div>
+                  <label className="text-[#2563eb] font-extrabold text-[11px] tracking-wider uppercase mb-1.5 block">
+                    USERNAME (WISEAPP / PORTAL)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. balamurali"
+                    value={editUserForm.username || ''}
+                    onChange={(e) => setEditUserForm({ ...editUserForm, username: e.target.value.toLowerCase().replace(/\s+/g, '') })}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-[#2563eb] text-xs font-medium text-slate-800 focus:outline-none transition-colors"
+                  />
+                </div>
               </div>
 
               {/* EMAIL ADDRESS & MOBILE NUMBER */}

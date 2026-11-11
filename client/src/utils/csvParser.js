@@ -300,6 +300,62 @@ function parseVerticalStream(lines) {
   return records;
 }
 
+// Decide what each column of a header-less paste holds by looking at its cells.
+// Returns an array of header names (using the same labels the header matcher
+// understands); columns that can't be identified come back as '' and are kept
+// as notes so nothing is lost.
+function inferHeadersFromContent(rows) {
+  const width = Math.max(...rows.map(r => r.length));
+  const sample = rows.slice(0, 50);
+  const cellsOf = (c) => sample.map(r => String(r[c] || '').trim()).filter(Boolean);
+  const share = (cells, test) => (cells.length ? cells.filter(test).length / cells.length : 0);
+
+  const isPhone = (v) => /^[6-9]\d{9}$/.test(v.replace(/\D+/g, '').slice(-10)) && v.replace(/\D+/g, '').length >= 10;
+  const isEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+  const isDate = (v) => Boolean(parseDateCell(v));
+  const isBranch = (v) => Boolean(detectBranchFromText(v));
+  const isCourse = (v) => /\b(cpc|cpma|amct|medical\s*coding|coding|beginner|advanced|course)\b/i.test(v);
+  const isSource = (v) => KNOWN_SOURCES.some(k => v.toLowerCase().includes(k));
+  const isCounselor = (v) => KNOWN_COUNSELORS.some(k => v.toLowerCase().includes(k));
+  const isYear = (v) => /^(19|20)\d{2}$/.test(v);
+
+  const headers = new Array(width).fill('');
+  const used = new Set();
+  const claim = (label, test, min = 0.5, { multiple = false } = {}) => {
+    for (let c = 0; c < width; c++) {
+      if (used.has(c)) continue;
+      const cells = cellsOf(c);
+      if (cells.length && share(cells, test) >= min) {
+        headers[c] = label;
+        used.add(c);
+        if (!multiple) return;
+      }
+    }
+  };
+
+  claim('date', isDate);
+  claim('phone', isPhone);
+  claim('whatsapp', isPhone);          // a second all-phone column is the WhatsApp number
+  claim('email', isEmail, 0.3);       // some rows may have a name/blank here, so a lower bar
+  claim('branch', isBranch);
+  claim('course', isCourse);
+  claim('source', isSource);
+  claim('counselor', isCounselor);
+  claim('passout year', isYear, 0.8);
+
+  // Name = first remaining column that is mostly letters (not digits / dates).
+  for (let c = 0; c < width; c++) {
+    if (used.has(c)) continue;
+    const cells = cellsOf(c);
+    if (cells.length && share(cells, v => /[a-zA-Z]{2,}/.test(v) && !/\d{5,}/.test(v)) >= 0.6) {
+      headers[c] = 'name';
+      used.add(c);
+      break;
+    }
+  }
+  return headers;
+}
+
 export function parseGoogleSheetOrCsv(rawText) {
   if (!rawText || !rawText.trim()) return [];
 
@@ -373,7 +429,15 @@ export function parseGoogleSheetOrCsv(rawText) {
 
   // Check if first line contains header titles
   const headerRow = parsedMatrix[0].map(h => String(h || '').toLowerCase().trim());
-  const hasRecognizedHeader = headerRow.some(h => 
+  // A first row that holds a real phone number, an email address or a parseable
+  // date is DATA, not a header — even if a cell happens to contain a header-ish
+  // word (e.g. an email like "name.k@gmail.com"). Without this guard a header-less
+  // paste could have its first row swallowed as a "header".
+  const looksLikeDataRow = parsedMatrix[0].some(c => {
+    const v = String(c || '').trim();
+    return /^[6-9]\d{9}$/.test(v.replace(/\D+/g, '')) || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v) || Boolean(parseDateCell(v));
+  });
+  const hasRecognizedHeader = !looksLikeDataRow && headerRow.some(h =>
     /name|phone|contact|mobile|whatsapp|email|course|branch|source|qual|degree|passout|location|city|note|category|remark|allocated|date|month/i.test(h)
   );
 
@@ -384,9 +448,12 @@ export function parseGoogleSheetOrCsv(rawText) {
     headers = headerRow;
     dataRows = parsedMatrix.slice(1);
   } else {
-    // Positional assumption if no header row present
-    headers = ['name', 'phone', 'course', 'branch', 'email', 'whatsapp'];
+    // No header row (e.g. rows pasted from the middle of a running sheet):
+    // work out what each column is from its CONTENT instead of assuming a fixed
+    // order, so a Date / Name / Mobile / Branch / Email sheet doesn't get its
+    // values dropped into the wrong fields.
     dataRows = parsedMatrix;
+    headers = inferHeadersFromContent(dataRows);
   }
 
   // Index mapping for all standard ThoughtFlows Google Sheet columns
@@ -416,6 +483,16 @@ export function parseGoogleSheetOrCsv(rawText) {
     }
   });
 
+  // Header-less paste: keep any column we couldn't identify as a note, not lost.
+  if (!hasRecognizedHeader) {
+    headers.forEach((h, idx) => {
+      if (!h) {
+        if (fieldIndex.notes === undefined) fieldIndex.notes = idx;
+        else extraNotesIndices.push(idx);
+      }
+    });
+  }
+
   // Fallbacks if primary fields not mapped by name
   if (fieldIndex.name === undefined) fieldIndex.name = 0;
   if (fieldIndex.phone === undefined && headers.length > 1) fieldIndex.phone = 1;
@@ -435,7 +512,9 @@ export function parseGoogleSheetOrCsv(rawText) {
     const cleanWaDigits = rawWa.replace(/\D+/g, '');
     const cleanWa = cleanWaDigits.length >= 10 ? cleanWaDigits.slice(-10) : (cleanPhone || rawPhone);
 
-    const email = fieldIndex.email !== undefined ? String(cols[fieldIndex.email] || '').trim() : '';
+    const emailCell = fieldIndex.email !== undefined ? String(cols[fieldIndex.email] || '').trim() : '';
+    // Only a real address goes in the email field; anything else in that column is kept as a note.
+    const email = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailCell) ? emailCell : '';
     const course = fieldIndex.course !== undefined ? String(cols[fieldIndex.course] || '').trim() : '';
     const location = fieldIndex.location !== undefined ? String(cols[fieldIndex.location] || '').trim() : '';
     const sourceName = fieldIndex.source !== undefined ? String(cols[fieldIndex.source] || '').trim() : '';
@@ -460,7 +539,7 @@ export function parseGoogleSheetOrCsv(rawText) {
     // Collect all remarks, follow ups, and comments
     const mainNote = fieldIndex.notes !== undefined ? String(cols[fieldIndex.notes] || '').trim() : '';
     const extraNotes = extraNotesIndices.map(idx => String(cols[idx] || '').trim()).filter(Boolean);
-    const combinedNotes = [fetchedBy ? `Fetched by: ${fetchedBy}` : '', mainNote, ...extraNotes].filter(Boolean).join(' | ');
+    const combinedNotes = [fetchedBy ? `Fetched by: ${fetchedBy}` : '', mainNote, ...extraNotes, (emailCell && !email) ? emailCell : ''].filter(Boolean).join(' | ');
 
     let branch = fieldIndex.branch !== undefined ? String(cols[fieldIndex.branch] || '').trim() : '';
     if (branch) {

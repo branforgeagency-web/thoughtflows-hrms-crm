@@ -135,6 +135,20 @@ export const DEPARTMENTS = [
     email: 'admin@thoughtflows.in',
     color: '#4338ca',
     badgeClassLight: 'bg-indigo-50 text-indigo-700 border-indigo-200',
+  },
+  {
+    id: 'wiseapp',
+    title: 'WiseApp Academy Hub',
+    code: 'WISE',
+    shortName: 'WiseApp',
+    icon: '🧪',
+    subtitle: 'Tests, question bank, schedules, videos & feedback',
+    roleName: 'WiseApp Operations & LMS Coordinator',
+    staffName: 'WiseApp Desk',
+    branch: '12 Branches',
+    email: 'wiseapp@thoughtflows.in',
+    color: '#00a65a',
+    badgeClassLight: 'bg-emerald-50 text-emerald-700 border-emerald-200',
   }
 ];
 
@@ -256,7 +270,7 @@ export default function LoginModal({
             <div className="text-[10px] sm:text-[11px] font-extrabold tracking-wider text-slate-500 uppercase mb-2 flex items-center justify-between px-1">
               <span>Select Dashboard</span>
               <span className="text-[10px] font-bold text-[#00897b] bg-teal-50 px-2 py-0.5 rounded-full border border-teal-200">
-                7 Options
+                8 Options
               </span>
             </div>
 
@@ -309,14 +323,14 @@ export default function LoginModal({
 
           <div>
             <label className="block text-[11px] font-extrabold tracking-wider text-[#00695c] uppercase mb-1">
-              EMAIL ADDRESS
+              {activeDept.id === 'wiseapp' ? 'WISEAPP USERNAME OR EMAIL' : 'EMAIL ADDRESS OR USERNAME'}
             </label>
             <input
-              type="email"
+              type="text"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
-              placeholder="Enter your email address"
+              placeholder={activeDept.id === 'wiseapp' ? 'Enter WiseApp username or email' : 'Enter your email address or username'}
               autoComplete="off"
               className={`w-full px-3.5 py-2.5 text-xs text-slate-800 placeholder-slate-400 outline-none transition-all ${
                 isClay

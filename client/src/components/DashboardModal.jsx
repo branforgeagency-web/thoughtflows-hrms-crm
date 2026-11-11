@@ -32,6 +32,7 @@ import TrainersDepartmentHub from './TrainersDepartmentHub';
 import CccpDashboard from './CccpDashboard';
 import MarketingDepartmentDashboard from './MarketingDepartmentDashboard';
 import LeadershipHubDashboard from './LeadershipHubDashboard';
+import WiseAppDashboard from './WiseAppDashboard';
 
 export default function DashboardModal({ 
   isOpen, 
@@ -161,6 +162,17 @@ export default function DashboardModal({
   if (deptId === 'leadership') {
     return (
       <LeadershipHubDashboard
+        onClose={onClose}
+        currentUser={currentUser}
+        onLogout={handleSignOutAction}
+        onSwitchDepartment={onSwitchDepartment}
+      />
+    );
+  }
+
+  if (deptId === 'wiseapp') {
+    return (
+      <WiseAppDashboard
         onClose={onClose}
         currentUser={currentUser}
         onLogout={handleSignOutAction}
