@@ -68,8 +68,50 @@ export default function ZoomMeeting({
   const [meetingNo, setMeetingNo] = useState('');
   const [rootKey, setRootKey] = useState(0); // fresh DOM root for the SDK on every retry
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isRemoteSharing, setIsRemoteSharing] = useState(false);
   const wrapperRef = useRef(null);
   const debugRef = useRef(null);
+  const clientRef = useRef(null);
+  const remoteSharersRef = useRef(new Set());
+
+  const computeViewSizes = useCallback((el, sharing) => {
+    const rect = el?.getBoundingClientRect?.() || { width: 0, height: 0 };
+    const rawW = rect.width || window.innerWidth || 1200;
+    const rawH = rect.height || (typeof height === 'number' ? height : window.innerHeight || 640);
+    // Reserve ~104px for Zoom's top title/view bar and bottom control toolbar.
+    const availH = Math.round(Math.min(720, Math.max(240, rawH - 104)));
+    if (sharing) {
+      // Keep the participant video panel compact during screen share so it does
+      // not squeeze the shared screen pane or trigger Zoom's 615*(w/250) height
+      // inflation when Cross-Origin Isolation is disabled.
+      const maxSidebar = rawW < 640 ? Math.max(130, Math.round(rawW * 0.28)) : 240;
+      const sidebarW = Math.round(Math.max(130, Math.min(maxSidebar, (availH / 615) * 250)));
+      return {
+        default: { width: sidebarW, height: availH },
+        ribbon: { width: sidebarW, height: availH }
+      };
+    }
+    const viewW = Math.round(Math.min(1440, Math.max(360, rawW)));
+    const ribbonW = rawW < 640 ? Math.max(150, Math.round(rawW * 0.3)) : 240;
+    return {
+      default: { width: viewW, height: availH },
+      ribbon: { width: ribbonW, height: availH }
+    };
+  }, [height]);
+
+  const applyShareLayout = useCallback((client, runId) => {
+    if (!client || (runId !== undefined && runId !== runRef.current)) return;
+    const sharing = remoteSharersRef.current.size > 0;
+    setIsRemoteSharing(sharing);
+    if (!containerRef.current) return;
+    try {
+      client.updateVideoOptions?.({ viewSizes: computeViewSizes(containerRef.current, sharing) });
+    } catch (_) {}
+  }, [computeViewSizes]);
+  const computeViewSizesRef = useRef(computeViewSizes);
+  computeViewSizesRef.current = computeViewSizes;
+  const applyShareLayoutRef = useRef(applyShareLayout);
+  applyShareLayoutRef.current = applyShareLayout;
 
   const toggleFullscreen = () => {
     if (!document.fullscreenElement) {
@@ -85,6 +127,25 @@ export default function ZoomMeeting({
     document.addEventListener('fullscreenchange', handleFsChange);
     return () => document.removeEventListener('fullscreenchange', handleFsChange);
   }, []);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    let timer = null;
+    const ro = new ResizeObserver(() => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (clientRef.current && status === 'joined') {
+          applyShareLayout(clientRef.current);
+        }
+      }, 100);
+    });
+    ro.observe(el);
+    return () => {
+      if (timer) clearTimeout(timer);
+      ro.disconnect();
+    };
+  }, [status, applyShareLayout, rootKey]);
 
   // Fresh join details from the server on EVERY attempt (server frees the trainer's Zoom user first)
   const fetchDetails = useCallback(async (reset = false) => {
@@ -146,16 +207,15 @@ export default function ZoomMeeting({
 
       const client = ZoomMtgEmbedded.createClient();
       sharedClient = client;
+      clientRef.current = client;
+      remoteSharersRef.current = new Set();
+      setIsRemoteSharing(false);
       // Left unconfigured, the SDK renders as its own small (~244px) floating,
       // draggable "smart mode" widget instead of filling our container — that's
       // why the native Leave-meeting confirmation looked cut off to just a
       // "Cancel" button, there simply wasn't room for the rest of it. Locking
       // an explicit size + disabling drag/resize (per Zoom's documented
       // customize.video options) makes it fill the room instead.
-      const rect = containerRef.current.getBoundingClientRect();
-      const numHeight = typeof height === 'number' ? height : (rect.height > 200 ? rect.height : 600);
-      const viewWidth = Math.round(Math.min(1440, Math.max(360, rect.width || window.innerWidth || 1200)));
-      const viewHeight = Math.round(Math.min(810, Math.max(240, rect.height || numHeight)));
       await client.init({
         zoomAppRoot: containerRef.current,
         language: 'en-US',
@@ -164,7 +224,7 @@ export default function ZoomMeeting({
           video: {
             popper: { disableDraggable: true },
             isResizable: false,
-            viewSizes: { default: { width: viewWidth, height: viewHeight } }
+            viewSizes: computeViewSizesRef.current(containerRef.current, false)
           }
         }
       });
@@ -173,8 +233,51 @@ export default function ZoomMeeting({
       // Fires when the user leaves via Zoom's own Leave button, or the host
       // ends the meeting — otherwise our side would never learn the call ended.
       client.on('connection-change', (payload) => {
-        if (payload?.state === 'Closed' && run === runRef.current) onLeftRef.current?.();
+        if (payload?.state === 'Closed' && run === runRef.current) {
+          remoteSharersRef.current = new Set();
+          setIsRemoteSharing(false);
+          onLeftRef.current?.();
+        }
       });
+
+      // Shrink the video strip to a compact sidebar whenever a remote
+      // participant shares their screen so the shared canvas gets full width.
+      client.on('peer-share-state-change', (payload) => {
+        if (run !== runRef.current) return;
+        const myId = client.getCurrentUser?.()?.userId;
+        if (payload?.userId && payload.userId !== myId) {
+          if (payload.action === 'Start') remoteSharersRef.current.add(payload.userId);
+          else if (payload.action === 'Stop') remoteSharersRef.current.delete(payload.userId);
+          applyShareLayoutRef.current(client, run);
+        }
+      });
+      client.on('user-updated', (payload) => {
+        if (run !== runRef.current) return;
+        const myId = client.getCurrentUser?.()?.userId;
+        const list = Array.isArray(payload) ? payload : payload ? [payload] : [];
+        let changed = false;
+        for (const u of list) {
+          if (!u?.userId || u.userId === myId) continue;
+          if (u.sharerOn === true && !remoteSharersRef.current.has(u.userId)) {
+            remoteSharersRef.current.add(u.userId);
+            changed = true;
+          } else if (u.sharerOn === false && remoteSharersRef.current.has(u.userId)) {
+            remoteSharersRef.current.delete(u.userId);
+            changed = true;
+          }
+        }
+        if (changed) applyShareLayoutRef.current(client, run);
+      });
+      client.on('user-removed', (payload) => {
+        if (run !== runRef.current) return;
+        const list = Array.isArray(payload) ? payload : payload ? [payload] : [];
+        let changed = false;
+        for (const u of list) {
+          if (u?.userId && remoteSharersRef.current.delete(u.userId)) changed = true;
+        }
+        if (changed) applyShareLayoutRef.current(client, run);
+      });
+
       await client.join({
         sdkKey: d.sdkKey,
         signature: d.signature,
@@ -184,7 +287,19 @@ export default function ZoomMeeting({
         userEmail: studentEmail || undefined,
         zak: d.zak || undefined
       });
-      if (run === runRef.current) { setStatus('joined'); onJoinedRef.current?.(); }
+      if (run === runRef.current) {
+        // Detect a screen share that was already active before we joined
+        try {
+          const myId = client.getCurrentUser?.()?.userId;
+          const attendees = client.getAttendeeslist?.() || [];
+          for (const u of attendees) {
+            if (u?.sharerOn && u.userId !== myId) remoteSharersRef.current.add(u.userId);
+          }
+        } catch (_) {}
+        applyShareLayoutRef.current(client, run);
+        setStatus('joined');
+        onJoinedRef.current?.();
+      }
     } catch (err) {
       if (run !== runRef.current) return;
       const msg = err?.response?.data?.error || err?.reason || err?.message || 'Failed to connect Zoom Meeting SDK';
@@ -226,6 +341,8 @@ export default function ZoomMeeting({
     return () => {
       clearTimeout(t);
       runRef.current++; // cancel in-flight attempt
+      clientRef.current = null;
+      remoteSharersRef.current = new Set();
       resetSharedClient();
     };
   }, [connect]);
@@ -238,6 +355,9 @@ export default function ZoomMeeting({
   const handleLeave = async () => {
     const run = runRef.current;
     try { await sharedClient?.leaveMeeting(); } catch (_) {}
+    clientRef.current = null;
+    remoteSharersRef.current = new Set();
+    setIsRemoteSharing(false);
     await resetSharedClient();
     if (run === runRef.current) {
       setStatus('left');
@@ -350,7 +470,8 @@ export default function ZoomMeeting({
           key={rootKey}
           ref={containerRef}
           id="zoomSDKContainer"
-          className="w-full h-full flex-1 flex items-center justify-center"
+          data-sharing={isRemoteSharing ? 'true' : undefined}
+          className="relative w-full h-full flex-1 flex items-center justify-center"
           style={{ width: '100%', height: '100%', minHeight: typeof height === 'number' ? height : undefined }}
         />
       </div>

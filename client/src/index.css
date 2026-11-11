@@ -73,3 +73,17 @@ body {
   scrollbar-width: none !important;
 }
 
+/* Zoom Embedded SDK: expand shared screen container to fill #zoomSDKContainer
+   instead of Zoom's built-in min(80vw, 1120px) cap or corner clamping */
+#zoomSDKContainer [aria-label="Zoom Web SDK Widget"] {
+  max-width: 100%;
+  max-height: 100%;
+}
+
+#zoomSDKContainer[data-sharing="true"] > div,
+#zoomSDKContainer[data-sharing="true"] [aria-label="Zoom Web SDK Widget"],
+#zoomSDKContainer[data-sharing="true"] [aria-label="Zoom Web SDK Widget"] > div:first-child {
+  width: 100% !important;
+  max-width: 100% !important;
+}
+
