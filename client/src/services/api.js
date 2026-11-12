@@ -262,14 +262,73 @@ const handleAuthError = (error) => {
   return Promise.reject(error);
 };
 
-api.interceptors.request.use(attachToken);
-api.interceptors.response.use((r) => {
-  const method = String(r?.config?.method || 'get').toLowerCase();
-  if (!['get', 'head', 'options'].includes(method)) clearApiGetCache();
-  return r;
-}, handleAuthError);
-axios.interceptors.request.use(attachToken);
-axios.interceptors.response.use((r) => r, handleAuthError);
+// ---------------------------------------------------------------------------
+// Global API Loading Tracker (tracks all `api` and `axios` requests)
+// ---------------------------------------------------------------------------
+let activeLoaderRequests = 0;
+const loaderListeners = new Set();
+
+const notifyLoaderListeners = () => {
+  loaderListeners.forEach((fn) => {
+    try {
+      fn(activeLoaderRequests);
+    } catch (_) {}
+  });
+};
+
+export const subscribeApiLoading = (listener) => {
+  if (typeof listener !== 'function') return () => {};
+  loaderListeners.add(listener);
+  listener(activeLoaderRequests);
+  return () => loaderListeners.delete(listener);
+};
+
+const isSilentLoaderUrl = (url = '') => {
+  const u = String(url).toLowerCase();
+  return u.includes('/health') || u.includes('/auth/file-token');
+};
+
+const trackRequestStart = (config) => {
+  if (config && !config.silentLoader && !isSilentLoaderUrl(config.url) && !config._trackedLoader) {
+    config._trackedLoader = true;
+    activeLoaderRequests += 1;
+    notifyLoaderListeners();
+  }
+  return config;
+};
+
+const trackRequestEnd = (config) => {
+  if (config?._trackedLoader) {
+    config._trackedLoader = false;
+    activeLoaderRequests = Math.max(0, activeLoaderRequests - 1);
+    notifyLoaderListeners();
+  }
+};
+
+api.interceptors.request.use((config) => trackRequestStart(attachToken(config)));
+api.interceptors.response.use(
+  (r) => {
+    trackRequestEnd(r?.config);
+    const method = String(r?.config?.method || 'get').toLowerCase();
+    if (!['get', 'head', 'options'].includes(method)) clearApiGetCache();
+    return r;
+  },
+  (err) => {
+    trackRequestEnd(err?.config);
+    return handleAuthError(err);
+  }
+);
+axios.interceptors.request.use((config) => trackRequestStart(attachToken(config)));
+axios.interceptors.response.use(
+  (r) => {
+    trackRequestEnd(r?.config);
+    return r;
+  },
+  (err) => {
+    trackRequestEnd(err?.config);
+    return handleAuthError(err);
+  }
+);
 
 // Real-Time Cross-Dashboard Sync Event Bus (in-tab + multi-tab)
 export const notifyDataUpdate = (entity) => {
@@ -930,6 +989,35 @@ export const assignTrainingMaterial = async (id, data) => {
 
 export const deleteTrainingMaterial = async (id) => {
   const res = await api.delete(`/training/materials/${id}`);
+  notifyDataUpdate('materials');
+  return res.data;
+};
+
+export const moveTrainingMaterialFolder = async (id, folder) => {
+  const res = await api.put(`/training/materials/${id}/move`, { folder });
+  notifyDataUpdate('materials');
+  return res.data;
+};
+
+export const getTrainingFolders = async () => {
+  const res = await api.get('/training/folders');
+  return res.data;
+};
+
+export const createTrainingFolder = async (data) => {
+  const res = await api.post('/training/folders', data);
+  notifyDataUpdate('materials');
+  return res.data;
+};
+
+export const renameTrainingFolder = async (id, name) => {
+  const res = await api.put(`/training/folders/${id}`, { name });
+  notifyDataUpdate('materials');
+  return res.data;
+};
+
+export const deleteTrainingFolder = async (id) => {
+  const res = await api.delete(`/training/folders/${id}`);
   notifyDataUpdate('materials');
   return res.data;
 };

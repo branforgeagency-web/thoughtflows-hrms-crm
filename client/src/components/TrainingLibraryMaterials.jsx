@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import useFileToken from '../hooks/useFileToken';
 import {
   Eye,
@@ -12,14 +12,25 @@ import {
   Search,
   Lock,
   Presentation,
-  BookOpen
+  BookOpen,
+  Folder,
+  FolderPlus,
+  FolderUp,
+  FolderInput,
+  ArrowLeft,
+  Pencil
 } from 'lucide-react';
 import {
   uploadTrainingMaterial,
   trainingMaterialFileUrl,
   pinTrainingMaterial,
   assignTrainingMaterial,
-  deleteTrainingMaterial
+  deleteTrainingMaterial,
+  moveTrainingMaterialFolder,
+  getTrainingFolders,
+  createTrainingFolder,
+  renameTrainingFolder,
+  deleteTrainingFolder
 } from '../services/api';
 import { isAmplifyStorageConfigured, uploadTrainingMaterialFile } from '../services/amplifyStorage';
 import LmsMaterialViewer from './LmsMaterialViewer';
@@ -85,11 +96,23 @@ export default function TrainingLibraryMaterials({
   const [activeTab, setActiveTab] = useState('All');
   const [searchQuery, setSearchQuery] = useState('');
   const [uploadCategory, setUploadCategory] = useState('General');
+  const [uploadFolder, setUploadFolder] = useState('');
   const [uploadTitle, setUploadTitle] = useState('');
   const [uploadNote, setUploadNote] = useState('');
   const [uploading, setUploading] = useState(false);
+  const [uploadProgressText, setUploadProgressText] = useState('');
   const [toast, setToast] = useState(null);
   const fileInputRef = useRef(null);
+  const folderInputRef = useRef(null);
+
+  const [folders, setFolders] = useState([]);
+  const [activeFolder, setActiveFolder] = useState(null); // null = Root (All Folders view)
+  const [showNewFolderInput, setShowNewFolderInput] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [renamingFolder, setRenamingFolder] = useState(null);
+  const [renameFolderValue, setRenameFolderValue] = useState('');
+  const [moveFor, setMoveFor] = useState(null);
+  const [moveTargetFolder, setMoveTargetFolder] = useState('');
 
   const [viewer, setViewer] = useState(null);
   const [assignFor, setAssignFor] = useState(null);
@@ -103,60 +126,229 @@ export default function TrainingLibraryMaterials({
   };
   const myId = currentUser.id || currentUser._id || currentUser.trainerId || currentUser.name || '';
 
-  const handleFileUpload = async (e) => {
-    if (!canManage) return;
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (file.size > MAX_MB * 1024 * 1024) {
-      flash(`File is larger than ${MAX_MB} MB`);
+  const loadFolders = async () => {
+    try {
+      const list = await getTrainingFolders();
+      setFolders(Array.isArray(list) ? list : []);
+    } catch {
+      // ignore
+    }
+  };
+
+  useEffect(() => {
+    loadFolders();
+  }, []);
+
+  // Merge DB folders with any folder names referenced on materials
+  const allFolders = useMemo(() => {
+    const byName = new Map();
+    folders.forEach((f) => {
+      if (f?.name) byName.set(f.name, f);
+    });
+    materials.forEach((m) => {
+      const name = String(m.folder || '').trim();
+      if (name && !byName.has(name)) {
+        byName.set(name, { _id: null, name });
+      }
+    });
+    return Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [folders, materials]);
+
+  const openFolder = (folderName) => {
+    setActiveFolder(folderName);
+    setUploadFolder(folderName || '');
+    setActiveTab('All');
+  };
+
+  const handleCreateFolder = async (e) => {
+    e?.preventDefault?.();
+    const name = newFolderName.trim();
+    if (!name) return;
+    try {
+      await createTrainingFolder({ name });
+      setNewFolderName('');
+      setShowNewFolderInput(false);
+      await loadFolders();
+      setUploadFolder(name);
+      flash(`Folder "${name}" created`);
+    } catch (err) {
+      flash(err?.response?.data?.error || 'Could not create folder');
+    }
+  };
+
+  const handleRenameFolder = async (folder) => {
+    const next = renameFolderValue.trim();
+    if (!next || next === folder.name) {
+      setRenamingFolder(null);
       return;
     }
-    setUploading(true);
     try {
-      const payload = {
-        title: uploadTitle.trim() || file.name.replace(/\.[^.]+$/, ''),
-        description: uploadNote.trim(),
-        category: uploadCategory,
-        fileName: file.name,
-        fileSize: file.size,
-        mimeType: file.type || 'application/octet-stream',
-        uploadedBy: currentUser.name,
-        uploaderId: myId,
-        branch: currentUser.branch || ''
-      };
+      if (folder._id) {
+        await renameTrainingFolder(folder._id, next);
+      }
+      if (activeFolder === folder.name) setActiveFolder(next);
+      if (uploadFolder === folder.name) setUploadFolder(next);
+      setRenamingFolder(null);
+      await loadFolders();
+      onChanged?.();
+      flash(`Renamed folder to "${next}"`);
+    } catch (err) {
+      flash(err?.response?.data?.error || 'Could not rename folder');
+    }
+  };
 
-      if (isAmplifyStorageConfigured()) {
-        try {
-          const s3Result = await uploadTrainingMaterialFile(file, { category: uploadCategory });
-          payload.storageKey = s3Result.storageKey;
-          payload.storageUrl = s3Result.storageUrl;
-          payload.storageProvider = 'amplify';
-        } catch (amplifyErr) {
-          console.warn('Amplify upload failed, falling back to database storage:', amplifyErr);
+  const handleDeleteFolder = async (folder) => {
+    const count = materials.filter((m) => (m.folder || '') === folder.name).length;
+    const msg = count > 0
+      ? `Delete folder "${folder.name}"? The ${count} file(s) inside will be moved to Root (not deleted).`
+      : `Delete empty folder "${folder.name}"?`;
+    if (!window.confirm(msg)) return;
+    try {
+      if (folder._id) {
+        await deleteTrainingFolder(folder._id);
+      }
+      if (activeFolder === folder.name) setActiveFolder(null);
+      if (uploadFolder === folder.name) setUploadFolder('');
+      await loadFolders();
+      onChanged?.();
+      flash(`Folder "${folder.name}" deleted`);
+    } catch (err) {
+      flash(err?.response?.data?.error || 'Could not delete folder');
+    }
+  };
+
+  const handleMoveMaterial = async () => {
+    if (!moveFor) return;
+    try {
+      await moveTrainingMaterialFolder(moveFor._id, moveTargetFolder.trim());
+      setMoveFor(null);
+      await loadFolders();
+      onChanged?.();
+      flash(moveTargetFolder.trim() ? `Moved to "${moveTargetFolder.trim()}"` : 'Moved to Root');
+    } catch (err) {
+      flash(err?.response?.data?.error || 'Could not move file');
+    }
+  };
+
+  const ALLOWED_EXTS = new Set(['ppt', 'pptx', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'png', 'jpg', 'jpeg', 'webp']);
+
+  const uploadSingleFile = async (file, targetFolder, customTitle = '') => {
+    const payload = {
+      title: customTitle || file.name.replace(/\.[^.]+$/, ''),
+      description: uploadNote.trim(),
+      category: uploadCategory,
+      folder: targetFolder,
+      fileName: file.name,
+      fileSize: file.size,
+      mimeType: file.type || 'application/octet-stream',
+      uploadedBy: currentUser.name,
+      uploaderId: myId,
+      branch: currentUser.branch || ''
+    };
+
+    if (isAmplifyStorageConfigured()) {
+      try {
+        const s3Result = await uploadTrainingMaterialFile(file, { category: uploadCategory });
+        payload.storageKey = s3Result.storageKey;
+        payload.storageUrl = s3Result.storageUrl;
+        payload.storageProvider = 'amplify';
+      } catch (amplifyErr) {
+        console.warn('Amplify upload failed, falling back to database storage:', amplifyErr);
+      }
+    }
+
+    if (!payload.storageUrl) {
+      const data = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      payload.data = data;
+      payload.storageProvider = 'inline';
+    }
+
+    await uploadTrainingMaterial(payload);
+    return payload.storageProvider;
+  };
+
+  const handleFileUpload = async (e, isFolderUpload = false) => {
+    if (!canManage) return;
+    const rawFiles = Array.from(e.target.files || []);
+    if (!rawFiles.length) return;
+
+    // Filter valid files (skip system hidden files like .DS_Store / Thumbs.db)
+    const validFiles = [];
+    let skipped = 0;
+    for (const f of rawFiles) {
+      if (f.name.startsWith('.') || f.name.toLowerCase() === 'thumbs.db' || f.name.toLowerCase() === 'desktop.ini') {
+        continue;
+      }
+      const ext = (f.name.split('.').pop() || '').toLowerCase();
+      if (isFolderUpload && !ALLOWED_EXTS.has(ext)) {
+        skipped++;
+        continue;
+      }
+      if (f.size > MAX_MB * 1024 * 1024) {
+        skipped++;
+        continue;
+      }
+      validFiles.push(f);
+    }
+
+    if (!validFiles.length) {
+      flash(`No valid files under ${MAX_MB} MB found to upload.`);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      if (folderInputRef.current) folderInputRef.current.value = '';
+      return;
+    }
+
+    setUploading(true);
+    let uploadedCount = 0;
+    let lastProvider = 'inline';
+    let detectedFolder = uploadFolder.trim();
+
+    try {
+      for (let i = 0; i < validFiles.length; i++) {
+        const file = validFiles[i];
+        setUploadProgressText(
+          validFiles.length > 1 ? `Uploading ${i + 1} of ${validFiles.length}…` : 'Uploading…'
+        );
+        let targetFolder = uploadFolder.trim();
+        if (isFolderUpload && file.webkitRelativePath) {
+          const pcFolder = file.webkitRelativePath.split('/')[0]?.trim();
+          if (pcFolder) {
+            targetFolder = targetFolder || pcFolder;
+            detectedFolder = targetFolder;
+          }
         }
+        const customTitle = validFiles.length === 1 && !isFolderUpload ? uploadTitle.trim() : '';
+        lastProvider = await uploadSingleFile(file, targetFolder, customTitle);
+        uploadedCount++;
       }
 
-      if (!payload.storageUrl) {
-        const data = await new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result);
-          reader.onerror = reject;
-          reader.readAsDataURL(file);
-        });
-        payload.data = data;
-        payload.storageProvider = 'inline';
-      }
-
-      await uploadTrainingMaterial(payload);
       setUploadTitle('');
       setUploadNote('');
-      flash(`"${file.name}" uploaded to the LMS library${payload.storageProvider === 'amplify' ? ' (AWS S3)' : ''}`);
+      await loadFolders();
+      if (isFolderUpload && detectedFolder) {
+        setActiveFolder(detectedFolder);
+        setUploadFolder(detectedFolder);
+      }
+      const folderLabel = detectedFolder ? ` into folder "${detectedFolder}"` : '';
+      const skipNote = skipped > 0 ? ` (${skipped} skipped: unsupported or >${MAX_MB} MB)` : '';
+      flash(
+        uploadedCount === 1
+          ? `"${validFiles[0].name}" uploaded${folderLabel}${lastProvider === 'amplify' ? ' (AWS S3)' : ''}${skipNote}`
+          : `${uploadedCount} files uploaded${folderLabel}${skipNote}`
+      );
       onChanged?.();
     } catch (err) {
-      flash(err?.response?.data?.error || 'Upload failed');
+      flash(err?.response?.data?.error || `Upload failed after ${uploadedCount} file(s)`);
     }
     setUploading(false);
+    setUploadProgressText('');
     if (fileInputRef.current) fileInputRef.current.value = '';
+    if (folderInputRef.current) folderInputRef.current.value = '';
   };
 
   const handleTogglePin = async (m) => {
@@ -217,14 +409,23 @@ export default function TrainingLibraryMaterials({
 
   const myBatchNames = new Set(batches.map((b) => b.name));
 
+  const isSearching = Boolean(searchQuery.trim());
+
   const filtered = materials.filter((m) => {
+    const mFolder = String(m.folder || '').trim();
+    if (activeFolder !== null) {
+      if (mFolder !== activeFolder) return false;
+    } else if (!isSearching && activeTab === 'All' && allFolders.length > 0) {
+      // At Root with no search/filter, show only unfiled (root) materials below the folder cards
+      if (mFolder !== '') return false;
+    }
     if (activeTab === 'PPT Decks' && !isPptMaterial(m)) return false;
     if (activeTab === 'Pinned' && !(m.pinnedBy || []).includes(myId)) return false;
     if (activeTab === 'My uploads' && m.uploaderId !== myId) return false;
     if (!['All', 'PPT Decks', 'Pinned', 'My uploads'].includes(activeTab) && m.category !== activeTab) return false;
-    if (searchQuery.trim()) {
+    if (isSearching) {
       const q = searchQuery.toLowerCase();
-      return [m.title, m.description, m.category, m.uploadedBy, m.fileName, m.fileFormat].some((v) =>
+      return [m.title, m.description, m.category, m.folder, m.uploadedBy, m.fileName, m.fileFormat].some((v) =>
         String(v || '').toLowerCase().includes(q)
       );
     }
@@ -276,7 +477,36 @@ export default function TrainingLibraryMaterials({
             Upload <strong>PPT / PPTX</strong> presentations, PDFs, or course materials (max {MAX_MB} MB). Team Leads and Trainers can open and view them inside their LMS dashboard — download and delete are restricted for TL &amp; Trainers.
           </div>
           <div className="border border-dashed border-[#009688]/60 bg-[#f9fdfd] rounded-2xl p-4 sm:p-5 space-y-3">
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              <div className="flex items-center gap-1.5">
+                <select
+                  value={uploadFolder}
+                  onChange={(e) => {
+                    if (e.target.value === '__new__') {
+                      setShowNewFolderInput(true);
+                    } else {
+                      setUploadFolder(e.target.value);
+                    }
+                  }}
+                  className="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs text-slate-700 font-medium focus:outline-none focus:border-teal-500"
+                >
+                  <option value="">📁 Root (No Folder)</option>
+                  {allFolders.map((f) => (
+                    <option key={f.name} value={f.name}>
+                      📁 {f.name}
+                    </option>
+                  ))}
+                  <option value="__new__">+ Create New Folder…</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={() => setShowNewFolderInput((v) => !v)}
+                  title="Create new folder"
+                  className="p-2.5 rounded-xl bg-white border border-slate-200 hover:border-teal-500 text-teal-700 shrink-0 cursor-pointer"
+                >
+                  <FolderPlus className="w-4 h-4" />
+                </button>
+              </div>
               <select
                 value={uploadCategory}
                 onChange={(e) => setUploadCategory(e.target.value)}
@@ -291,7 +521,7 @@ export default function TrainingLibraryMaterials({
               <input
                 value={uploadTitle}
                 onChange={(e) => setUploadTitle(e.target.value)}
-                placeholder="PPT / Material title (defaults to file name)"
+                placeholder="Title (optional, defaults to file name)"
                 className="bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-teal-500"
               />
               <input
@@ -301,22 +531,86 @@ export default function TrainingLibraryMaterials({
                 className="bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-teal-500"
               />
             </div>
+
+            {showNewFolderInput && (
+              <form onSubmit={handleCreateFolder} className="flex items-center gap-2 bg-white p-2.5 rounded-xl border border-teal-200">
+                <Folder className="w-4 h-4 text-teal-600 shrink-0 ml-1" />
+                <input
+                  value={newFolderName}
+                  onChange={(e) => setNewFolderName(e.target.value)}
+                  placeholder="Enter folder name (e.g. CCP, CPC, ICD-10)"
+                  autoFocus
+                  className="flex-1 text-xs px-2 py-1 focus:outline-none"
+                />
+                <button
+                  type="submit"
+                  className="px-3 py-1.5 rounded-lg bg-[#00897b] hover:bg-[#007a6d] text-white text-xs font-bold cursor-pointer"
+                >
+                  Create
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowNewFolderInput(false);
+                    setNewFolderName('');
+                  }}
+                  className="p-1 text-slate-400 hover:text-slate-600 cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </form>
+            )}
+
             <input
               type="file"
               ref={fileInputRef}
-              onChange={handleFileUpload}
+              onChange={(e) => handleFileUpload(e, false)}
+              multiple
               className="hidden"
-              accept=".ppt,.pptx,.pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg"
+              accept=".ppt,.pptx,.pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.webp"
             />
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={uploading}
-              type="button"
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#00897b] hover:bg-[#007a6d] disabled:opacity-50 text-white text-xs font-bold shadow-sm transition-all cursor-pointer"
-            >
-              <UploadCloud className="w-4 h-4" />
-              <span>{uploading ? 'Uploading PPT…' : 'Choose PPT / File & Upload'}</span>
-            </button>
+            <input
+              type="file"
+              ref={folderInputRef}
+              onChange={(e) => handleFileUpload(e, true)}
+              webkitdirectory=""
+              directory=""
+              multiple
+              className="hidden"
+            />
+
+            <div className="flex items-center flex-wrap gap-2.5">
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading}
+                type="button"
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#00897b] hover:bg-[#007a6d] disabled:opacity-50 text-white text-xs font-bold shadow-sm transition-all cursor-pointer"
+              >
+                <UploadCloud className="w-4 h-4" />
+                <span>
+                  {uploading
+                    ? uploadProgressText || 'Uploading…'
+                    : uploadFolder
+                    ? `Choose Files & Upload to "${uploadFolder}"`
+                    : 'Choose PPT / Files & Upload'}
+                </span>
+              </button>
+              <button
+                onClick={() => folderInputRef.current?.click()}
+                disabled={uploading}
+                type="button"
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white hover:bg-teal-50 border border-teal-300 disabled:opacity-50 text-[#00897b] text-xs font-bold shadow-xs transition-all cursor-pointer"
+              >
+                <FolderUp className="w-4 h-4" />
+                <span>Upload Folder from PC</span>
+              </button>
+              {uploadFolder && (
+                <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-teal-50 border border-teal-200 text-teal-800 text-[11px] font-semibold">
+                  <Folder className="w-3.5 h-3.5 text-teal-600" />
+                  <span>Target: {uploadFolder}</span>
+                </span>
+              )}
+            </div>
           </div>
         </div>
       ) : (
@@ -383,12 +677,144 @@ export default function TrainingLibraryMaterials({
           ))}
         </div>
 
+        {/* Folder Breadcrumb or Folders Grid */}
+        {activeFolder !== null ? (
+          <div className="flex items-center justify-between flex-wrap gap-2 bg-teal-50/70 border border-teal-200 rounded-2xl px-4 py-3">
+            <div className="flex items-center gap-2 text-xs font-bold text-slate-800">
+              <button
+                type="button"
+                onClick={() => openFolder(null)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white border border-slate-200 hover:border-teal-400 text-slate-700 cursor-pointer"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                <span>All Folders</span>
+              </button>
+              <span className="text-slate-400">/</span>
+              <span className="inline-flex items-center gap-1.5 text-teal-800">
+                <Folder className="w-4 h-4 fill-teal-500/20 text-teal-600" />
+                <span>{activeFolder}</span>
+              </span>
+              <span className="text-[11px] font-medium text-slate-500">({filtered.length} files)</span>
+            </div>
+          </div>
+        ) : (
+          !isSearching &&
+          activeTab === 'All' &&
+          (allFolders.length > 0 || canManage) && (
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Folders</span>
+                {canManage && !showNewFolderInput && (
+                  <button
+                    type="button"
+                    onClick={() => setShowNewFolderInput(true)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white border border-slate-200 hover:border-teal-400 text-teal-700 text-xs font-semibold cursor-pointer"
+                  >
+                    <FolderPlus className="w-3.5 h-3.5" />
+                    <span>New Folder</span>
+                  </button>
+                )}
+              </div>
+              {allFolders.length > 0 && (
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+                  {allFolders.map((folder) => {
+                    const count = materials.filter((m) => String(m.folder || '').trim() === folder.name).length;
+                    const isRenaming = renamingFolder === folder.name;
+                    return (
+                      <div
+                        key={folder.name}
+                        className="group bg-white rounded-2xl border border-slate-200/90 hover:border-teal-400 hover:shadow-sm p-3.5 transition-all flex flex-col justify-between"
+                      >
+                        {isRenaming ? (
+                          <div className="space-y-2">
+                            <input
+                              value={renameFolderValue}
+                              onChange={(e) => setRenameFolderValue(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') handleRenameFolder(folder);
+                                if (e.key === 'Escape') setRenamingFolder(null);
+                              }}
+                              autoFocus
+                              className="w-full text-xs border border-teal-400 rounded-lg px-2 py-1 focus:outline-none"
+                            />
+                            <div className="flex justify-end gap-1">
+                              <button
+                                type="button"
+                                onClick={() => setRenamingFolder(null)}
+                                className="px-2 py-0.5 text-[10px] text-slate-500 cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleRenameFolder(folder)}
+                                className="px-2 py-0.5 text-[10px] bg-teal-600 text-white rounded font-semibold cursor-pointer"
+                              >
+                                Save
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => openFolder(folder.name)}
+                              className="flex items-start gap-2.5 text-left w-full cursor-pointer"
+                            >
+                              <div className="w-9 h-9 rounded-xl bg-amber-50 border border-amber-200/80 flex items-center justify-center text-amber-600 shrink-0">
+                                <Folder className="w-4 h-4 fill-amber-400/30" />
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <div className="text-xs font-bold text-slate-900 truncate">{folder.name}</div>
+                                <div className="text-[11px] text-slate-400 mt-0.5">
+                                  {count} {count === 1 ? 'file' : 'files'}
+                                </div>
+                              </div>
+                            </button>
+                            {canManage && (
+                              <div className="flex items-center justify-end gap-1 mt-2 pt-1.5 border-t border-slate-100 opacity-70 group-hover:opacity-100">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setRenamingFolder(folder.name);
+                                    setRenameFolderValue(folder.name);
+                                  }}
+                                  title="Rename folder"
+                                  className="p-1 rounded hover:bg-slate-100 text-slate-400 hover:text-teal-700 cursor-pointer"
+                                >
+                                  <Pencil className="w-3 h-3" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteFolder(folder)}
+                                  title="Delete folder"
+                                  className="p-1 rounded hover:bg-slate-100 text-slate-400 hover:text-rose-600 cursor-pointer"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )
+        )}
+
         {filtered.length === 0 ? (
           <div className="py-10 text-center rounded-2xl bg-white border border-slate-200 text-xs text-slate-500">
             {materials.length === 0
               ? canManage
                 ? 'No PPTs or materials uploaded yet. Upload one above to share across all trainer dashboards.'
                 : 'No PPTs or materials uploaded yet by Head of Department or Manager.'
+              : activeFolder !== null
+              ? `No materials in folder "${activeFolder}" yet. Use the upload box above to add files here.`
+              : allFolders.length > 0 && activeTab === 'All' && !isSearching
+              ? 'All materials are organized inside folders above. Click any folder to view its files.'
               : 'No materials match this filter.'}
           </div>
         ) : (
@@ -404,7 +830,7 @@ export default function TrainingLibraryMaterials({
                 >
                   <div>
                     <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-1.5 min-w-0">
+                      <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
                         <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-[#ede9fe] text-[#6d28d9] truncate">
                           {m.category}
                         </span>
@@ -412,6 +838,16 @@ export default function TrainingLibraryMaterials({
                           <span className={`px-2 py-0.5 rounded-md text-[10px] font-extrabold border ${formatBadgeStyle(m)}`}>
                             {m.fileFormat}
                           </span>
+                        )}
+                        {m.folder && activeFolder === null && (
+                          <button
+                            type="button"
+                            onClick={() => openFolder(m.folder)}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100 cursor-pointer"
+                          >
+                            <Folder className="w-2.5 h-2.5" />
+                            <span>{m.folder}</span>
+                          </button>
                         )}
                       </div>
                       <button type="button" onClick={() => handleTogglePin(m)} title={pinned ? 'Unpin' : 'Pin'} className="cursor-pointer shrink-0">
@@ -437,6 +873,17 @@ export default function TrainingLibraryMaterials({
                       </span>
                       {canManage ? (
                         <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMoveFor(m);
+                              setMoveTargetFolder(m.folder || '');
+                            }}
+                            className="p-1 rounded hover:text-teal-700 cursor-pointer"
+                            title="Move to folder"
+                          >
+                            <FolderInput className="w-3.5 h-3.5" />
+                          </button>
                           <a
                             href={trainingMaterialFileUrl(m._id, true)}
                             className="p-1 rounded hover:text-teal-700"
@@ -590,6 +1037,58 @@ export default function TrainingLibraryMaterials({
               >
                 <Send className="w-3.5 h-3.5" />
                 <span>Assign</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {canManage && moveFor && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-5 shadow-2xl border border-slate-100 space-y-4">
+            <div className="flex items-center justify-between pb-2.5 border-b border-slate-100">
+              <h3 className="text-sm font-bold text-slate-900">Move to Folder</h3>
+              <button type="button" onClick={() => setMoveFor(null)} className="text-slate-400 hover:text-slate-600 cursor-pointer">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="text-xs font-semibold text-slate-700 truncate">{moveFor.title}</div>
+            <div className="space-y-2">
+              <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">Select Folder</label>
+              <select
+                value={allFolders.some((f) => f.name === moveTargetFolder) || moveTargetFolder === '' ? moveTargetFolder : '__custom__'}
+                onChange={(e) => {
+                  if (e.target.value !== '__custom__') setMoveTargetFolder(e.target.value);
+                }}
+                className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-700 focus:outline-none focus:border-teal-500"
+              >
+                <option value="">📁 Root (No Folder)</option>
+                {allFolders.map((f) => (
+                  <option key={f.name} value={f.name}>
+                    📁 {f.name}
+                  </option>
+                ))}
+              </select>
+              <input
+                value={moveTargetFolder}
+                onChange={(e) => setMoveTargetFolder(e.target.value)}
+                placeholder="Or type a new folder name (e.g. CCP)"
+                className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-teal-500"
+              />
+            </div>
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setMoveFor(null)}
+                className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleMoveMaterial}
+                className="px-4 py-2 rounded-xl bg-[#00897b] hover:bg-[#007a6d] text-white text-xs font-bold cursor-pointer"
+              >
+                Move
               </button>
             </div>
           </div>

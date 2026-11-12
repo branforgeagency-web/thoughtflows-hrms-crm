@@ -7,6 +7,7 @@ const trainingMaterialSchema = new mongoose.Schema(
     title: { type: String, required: true },
     description: { type: String, default: '' },
     category: { type: String, default: 'General' },
+    folder: { type: String, default: '', trim: true },
     fileName: { type: String, default: '' },
     fileFormat: { type: String, default: '' },
     mimeType: { type: String, default: 'application/octet-stream' },

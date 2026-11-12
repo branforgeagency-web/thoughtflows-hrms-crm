@@ -10,6 +10,7 @@ import LoginModal from './components/LoginModal';
 import CourseCatalogWidget from './components/CourseCatalogWidget';
 import StudentRegistrationPage from './components/StudentRegistrationPage';
 import ScreenGuard from './components/ScreenGuard';
+import GlobalApiLoader from './components/GlobalApiLoader';
 import axios from 'axios';
 import { recordTrainingLogout } from './services/api';
 
@@ -254,21 +255,25 @@ export default function App() {
 
   if (isRegistrationRoute) {
     return (
-      <StudentRegistrationPage
-        onBack={() => {
-          if (window.history?.pushState) {
-            window.history.pushState({}, '', '/');
-          } else {
-            window.location.href = '/';
-          }
-          setIsRegistrationRoute(false);
-        }}
-      />
+      <>
+        <GlobalApiLoader />
+        <StudentRegistrationPage
+          onBack={() => {
+            if (window.history?.pushState) {
+              window.history.pushState({}, '', '/');
+            } else {
+              window.location.href = '/';
+            }
+            setIsRegistrationRoute(false);
+          }}
+        />
+      </>
     );
   }
 
   return (
     <div className="relative min-h-screen w-full overflow-x-hidden bg-[#f4fcfb] selection:bg-teal-200 selection:text-teal-950 font-sans flex flex-col justify-between">
+      <GlobalApiLoader />
       {/* Background Gradient Mesh matching the exact bright mint aesthetic in screenshot */}
       <div 
         className="fixed inset-0 pointer-events-none z-0"

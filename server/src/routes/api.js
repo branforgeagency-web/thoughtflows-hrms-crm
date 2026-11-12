@@ -34,6 +34,7 @@ import DailyClosure from '../models/DailyClosure.js';
 import HrTarget from '../models/HrTarget.js';
 import ClassAttendance from '../models/ClassAttendance.js';
 import TrainingMaterial from '../models/TrainingMaterial.js';
+import TrainingFolder from '../models/TrainingFolder.js';
 import Notification from '../models/Notification.js';
 import ClassFeedback from '../models/ClassFeedback.js';
 import LmsProgress from '../models/LmsProgress.js';
@@ -8487,7 +8488,7 @@ async function buildBatchRosterStats(batchName, course, students) {
       totalAttSessions,
       attendancePct,
       sessionMarks: sessionMarks.slice(0, 30),
-      doneModulesCount,
+      doneModulesCount: doneModsCount,
       totalModulesCount: totalModules,
       individualProgressPct,
       moduleStates
@@ -10191,8 +10192,22 @@ router.post('/training/materials', async (req, res) => {
     if (!canManageTrainingMaterials(req)) {
       return res.status(403).json({ error: 'Only Head of Department and Manager can upload PPT or teaching materials.' });
     }
-    const { title, description, category, fileName, mimeType, data, uploadedBy, uploaderId, branch, storageKey, storageUrl, storageProvider } = req.body || {};
+    const { title, description, category, folder, fileName, mimeType, data, uploadedBy, uploaderId, branch, storageKey, storageUrl, storageProvider } = req.body || {};
     if (!data && !storageKey && !storageUrl && !fileName) return res.status(400).json({ error: 'A file is required' });
+    const cleanFolder = String(folder || '').trim();
+    if (cleanFolder) {
+      await TrainingFolder.updateOne(
+        { name: cleanFolder },
+        {
+          $setOnInsert: {
+            name: cleanFolder,
+            createdBy: uploadedBy || req.user?.name || '',
+            createdById: String(req.user?.trainerId || req.user?.sub || req.user?.id || uploaderId || '')
+          }
+        },
+        { upsert: true }
+      );
+    }
     let base64 = '';
     let size = Number(req.body?.fileSize) || 0;
     if (data) {
@@ -10204,6 +10219,7 @@ router.post('/training/materials', async (req, res) => {
       title: title || fileName,
       description: description || '',
       category: category || 'General',
+      folder: cleanFolder,
       fileName,
       fileFormat: (fileName.split('.').pop() || '').toUpperCase(),
       mimeType: mimeType || 'application/octet-stream',
@@ -10314,6 +10330,108 @@ router.delete('/training/materials/:id', async (req, res) => {
     }
     const deleted = await TrainingMaterial.findByIdAndDelete(req.params.id);
     if (!deleted) return res.status(404).json({ error: 'Material not found' });
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.put('/training/materials/:id/move', async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+    if (!canManageTrainingMaterials(req)) {
+      return res.status(403).json({ error: 'Only Head of Department and Manager can move materials.' });
+    }
+    const cleanFolder = String(req.body?.folder || '').trim();
+    if (cleanFolder) {
+      await TrainingFolder.updateOne(
+        { name: cleanFolder },
+        {
+          $setOnInsert: {
+            name: cleanFolder,
+            createdBy: req.user?.name || '',
+            createdById: String(req.user?.trainerId || req.user?.sub || req.user?.id || '')
+          }
+        },
+        { upsert: true }
+      );
+    }
+    const doc = await TrainingMaterial.findByIdAndUpdate(
+      req.params.id,
+      { $set: { folder: cleanFolder } },
+      { new: true }
+    );
+    if (!doc) return res.status(404).json({ error: 'Material not found' });
+    res.json(doc);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.get('/training/folders', async (_req, res) => {
+  try {
+    const folders = await TrainingFolder.find().sort({ name: 1 });
+    res.json(folders);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.post('/training/folders', async (req, res) => {
+  try {
+    if (!canManageTrainingMaterials(req)) {
+      return res.status(403).json({ error: 'Only Head of Department and Manager can create folders.' });
+    }
+    const name = String(req.body?.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'Folder name is required' });
+    const existing = await TrainingFolder.findOne({ name: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') });
+    if (existing) return res.status(409).json({ error: `Folder "${existing.name}" already exists` });
+    const doc = await TrainingFolder.create({
+      name,
+      description: String(req.body?.description || '').trim(),
+      createdBy: req.user?.name || '',
+      createdById: String(req.user?.trainerId || req.user?.sub || req.user?.id || '')
+    });
+    res.status(201).json(doc);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.put('/training/folders/:id', async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+    if (!canManageTrainingMaterials(req)) {
+      return res.status(403).json({ error: 'Only Head of Department and Manager can rename folders.' });
+    }
+    const newName = String(req.body?.name || '').trim();
+    if (!newName) return res.status(400).json({ error: 'Folder name is required' });
+    const folder = await TrainingFolder.findById(req.params.id);
+    if (!folder) return res.status(404).json({ error: 'Folder not found' });
+    const duplicate = await TrainingFolder.findOne({
+      _id: { $ne: folder._id },
+      name: new RegExp(`^${newName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i')
+    });
+    if (duplicate) return res.status(409).json({ error: `Folder "${duplicate.name}" already exists` });
+    const oldName = folder.name;
+    folder.name = newName;
+    await folder.save();
+    await TrainingMaterial.updateMany({ folder: oldName }, { $set: { folder: newName } });
+    res.json(folder);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.delete('/training/folders/:id', async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+    if (!canManageTrainingMaterials(req)) {
+      return res.status(403).json({ error: 'Only Head of Department and Manager can delete folders.' });
+    }
+    const deleted = await TrainingFolder.findByIdAndDelete(req.params.id);
+    if (!deleted) return res.status(404).json({ error: 'Folder not found' });
+    await TrainingMaterial.updateMany({ folder: deleted.name }, { $set: { folder: '' } });
     res.json({ success: true });
   } catch (e) {
     res.status(400).json({ error: e.message });
