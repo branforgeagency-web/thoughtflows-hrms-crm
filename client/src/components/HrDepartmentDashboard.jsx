@@ -396,6 +396,13 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   const [customMetrics, setCustomMetrics] = useState(null);
   const [editingMetric, setEditingMetric] = useState(null);
   const [callRecordings, setCallRecordings] = useState([]);
+  const [leadsPage, setLeadsPage] = useState(1);
+  const [leadsTotalCount, setLeadsTotalCount] = useState(0);
+  const [leadsTotalPages, setLeadsTotalPages] = useState(1);
+  const [studentsPage, setStudentsPage] = useState(1);
+  const [studentsTotalCount, setStudentsTotalCount] = useState(0);
+  const [studentsTotalPages, setStudentsTotalPages] = useState(1);
+  const PAGE_LIMIT = 50;
   
   // Local daily calls cache for instant reactivity when calling through modal
   // Today's calls come from the server call log (works across devices / browsers)
@@ -517,24 +524,35 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const loadAllData = async (silent = false) => {
+  const loadAllData = async (silent = false, overrides = {}) => {
     try {
       if (!silent) setLoading(true);
       const counselorFilter = currentUser?.name?.trim();
       const shouldFilterOnServer = counselorFilter && !scopeKind && (!isElevatedUser || scopeMode === 'mine');
       const dKey = localDateKey();
+      const targetStudentsPage = overrides.studentsPage ?? studentsPage;
+      const targetLeadsPage = overrides.leadsPage ?? leadsPage;
 
       const [stRes, ldRes, dmRes, recRes, closureRes] = await Promise.all([
-        getStudents(shouldFilterOnServer ? { hrName: counselorFilter } : undefined),
-        getLeads(shouldFilterOnServer ? { counselor: counselorFilter } : undefined),
+        getStudents({ ...(shouldFilterOnServer ? { hrName: counselorFilter } : {}), page: targetStudentsPage, limit: PAGE_LIMIT }),
+        getLeads({ ...(shouldFilterOnServer ? { counselor: counselorFilter } : {}), page: targetLeadsPage, limit: PAGE_LIMIT }),
         getDemos(shouldFilterOnServer ? { counselor: counselorFilter } : undefined),
-        getRecordings(shouldFilterOnServer ? { counselor: counselorFilter } : undefined).catch(() => []),
+        getRecordings({ ...(shouldFilterOnServer ? { counselor: counselorFilter } : {}), page: 1, limit: PAGE_LIMIT }).catch(() => []),
         (counselorFilter ? getTodayClosure(counselorFilter, dKey) : Promise.resolve(null)).catch(() => null)
       ]);
-      setStudents(Array.isArray(stRes) ? stRes : []);
-      setLeads(ldRes?.leads || []);
+      const stList = Array.isArray(stRes) ? stRes : (Array.isArray(stRes?.students) ? stRes.students : []);
+      setStudents(stList);
+      setStudentsTotalCount(typeof stRes?.totalCount === 'number' ? stRes.totalCount : stList.length);
+      setStudentsTotalPages(stRes?.totalPages || 1);
+
+      const ldList = ldRes?.leads || [];
+      setLeads(ldList);
+      setLeadsTotalCount(typeof ldRes?.totalCount === 'number' ? ldRes.totalCount : ldList.length);
+      setLeadsTotalPages(ldRes?.totalPages || 1);
+
       setDemos(Array.isArray(dmRes) ? dmRes : []);
-      setCallRecordings(Array.isArray(recRes) ? recRes : []);
+      const recList = Array.isArray(recRes) ? recRes : (Array.isArray(recRes?.recordings) ? recRes.recordings : []);
+      setCallRecordings(recList);
 
       // Check if closure was submitted today
       if (closureRes) {
@@ -1748,6 +1766,14 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             currentUser={currentUser} 
             onStudentLogin={setStudentLogin}
             onCallStudent={(st) => openCallFor(st, true)}
+            page={studentsPage}
+            totalPages={studentsTotalPages}
+            totalCount={studentsTotalCount}
+            limit={PAGE_LIMIT}
+            onPageChange={(nextPage) => {
+              setStudentsPage(nextPage);
+              loadAllData(false, { studentsPage: nextPage });
+            }}
           />
         ) : activeTab === 'Call Recordings' ? (
           <HrCallRecordingsTable
@@ -1774,6 +1800,14 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             onCallLead={(lead) => openCallFor(lead, false)}
             initialViewMode={activeTab === 'Follow-up Board' ? 'followup' : 'kanban'}
             currentUser={currentUser}
+            page={leadsPage}
+            totalPages={leadsTotalPages}
+            totalCount={leadsTotalCount}
+            limit={PAGE_LIMIT}
+            onPageChange={(nextPage) => {
+              setLeadsPage(nextPage);
+              loadAllData(false, { leadsPage: nextPage });
+            }}
           />
         ) : activeTab === 'LMS' ? (
           <HrLmsSection currentUser={currentUser} />

@@ -22,11 +22,16 @@ import { getRecordings, deleteRecording, onDataUpdate, recordingUrl, syncEdesyRe
 import RecordingAudio from './RecordingAudio';
 import PhoneRecordingSync from './PhoneRecordingSync';
 import UploadStudentRecordingModal from './UploadStudentRecordingModal';
+import PaginationBar from './PaginationBar';
 
 export default function HrCallRecordingsTable({ currentUser, students = [], allStudents = [], leads = [], viewAll = false, scopeNames = null }) {
   useFileToken(); // keeps file links (downloads / audio) signed with a fresh short-lived token
   const [recordings, setRecordings] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalCount, setTotalCount] = useState(0);
+  const PAGE_LIMIT = 50;
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedOutcomeFilter, setSelectedOutcomeFilter] = useState('ALL');
   const [toastMsg, setToastMsg] = useState(null);
@@ -41,24 +46,40 @@ export default function HrCallRecordingsTable({ currentUser, students = [], allS
   const [showPhoneSync, setShowPhoneSync] = useState(false);
   const [showUploadModal, setShowUploadModal] = useState(false);
 
-  // Load students & leads if not provided via props
+  // Load students & leads if not provided via props (paged so we never pull 10k+ docs)
   useEffect(() => {
     if (!students || students.length === 0) {
-      getStudents().then((data) => setInternalStudents(Array.isArray(data) ? data : [])).catch(() => {});
+      getStudents({ page: 1, limit: 50 }).then((data) => {
+        const list = Array.isArray(data) ? data : (Array.isArray(data?.students) ? data.students : []);
+        setInternalStudents(list);
+      }).catch(() => {});
     }
     if (!leads || leads.length === 0) {
-      getLeads().then((data) => setInternalLeads(Array.isArray(data) ? data : [])).catch(() => {});
+      getLeads({ page: 1, limit: 50 }).then((data) => {
+        const list = Array.isArray(data) ? data : (Array.isArray(data?.leads) ? data.leads : []);
+        setInternalLeads(list);
+      }).catch(() => {});
     }
   }, [students, leads]);
 
   const activeStudents = (students && students.length > 0) ? students : (allStudents && allStudents.length > 0 ? allStudents : internalStudents);
   const activeLeads = (leads && leads.length > 0) ? leads : internalLeads;
 
-  const loadRecordings = async () => {
+  const loadRecordings = async (targetPage = page) => {
     try {
       setLoading(true);
-      const data = await getRecordings();
-      setRecordings(Array.isArray(data) ? data : []);
+      const data = await getRecordings({ page: targetPage, limit: PAGE_LIMIT });
+      if (Array.isArray(data)) {
+        setRecordings(data);
+        setTotalCount(data.length);
+        setTotalPages(1);
+      } else if (data && Array.isArray(data.recordings)) {
+        setRecordings(data.recordings);
+        setTotalCount(data.totalCount ?? data.recordings.length);
+        setTotalPages(data.totalPages || 1);
+      } else {
+        setRecordings([]);
+      }
       setLoading(false);
     } catch (err) {
       console.error('Error fetching call recordings:', err);
@@ -67,10 +88,10 @@ export default function HrCallRecordingsTable({ currentUser, students = [], allS
   };
 
   useEffect(() => {
-    loadRecordings();
+    loadRecordings(page);
     const unsub = onDataUpdate((entity) => {
       if (entity === 'recordings' || entity === 'leads') {
-        loadRecordings();
+        loadRecordings(page);
       }
     });
     return unsub;
@@ -471,6 +492,16 @@ export default function HrCallRecordingsTable({ currentUser, students = [], allS
           </div>
         )}
       </div>
+
+      <PaginationBar
+        page={page}
+        totalPages={totalPages}
+        totalCount={totalCount}
+        limit={PAGE_LIMIT}
+        loading={loading}
+        itemLabel="recordings"
+        onPageChange={(nextPage) => setPage(nextPage)}
+      />
     </div>
   );
 }

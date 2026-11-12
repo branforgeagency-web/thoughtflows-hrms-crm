@@ -476,4 +476,12 @@ studentSchema.post('findOneAndUpdate', async function (res) {
   }
 });
 
+studentSchema.index({ createdAt: -1 });
+studentSchema.index({ branch: 1, statusGroup: 1, createdAt: -1 });
+studentSchema.index({ statusGroup: 1, createdAt: -1 });
+studentSchema.index({ hrName: 1, createdAt: -1 });
+studentSchema.index({ trainerId: 1, createdAt: -1 });
+studentSchema.index({ handoverStatus: 1, createdAt: -1 });
+studentSchema.index({ phone: 1 });
+
 export default mongoose.models.Student || mongoose.model('Student', studentSchema);

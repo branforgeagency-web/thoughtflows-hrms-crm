@@ -89,4 +89,8 @@ const callRecordingSchema = new mongoose.Schema({
   timestamps: true
 });
 
+callRecordingSchema.index({ isDeleted: 1, createdAt: -1 });
+callRecordingSchema.index({ counselorName: 1, isDeleted: 1, createdAt: -1 });
+callRecordingSchema.index({ leadId: 1, createdAt: -1 });
+
 export default mongoose.models.CallRecording || mongoose.model('CallRecording', callRecordingSchema);

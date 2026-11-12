@@ -25,13 +25,25 @@ import {
 import StudentProfileModal from './StudentProfileModal';
 import CompleteRegistrationModal from './CompleteRegistrationModal';
 import EditStudentModal from './EditStudentModal';
+import PaginationBar from './PaginationBar';
 
 import { getStudents, createStudent, updateStudent, deleteStudent, resetStudentLogin, onDataUpdate } from '../services/api';
 import { getCurrentMonthYear, getCurrentMonthName, localDateKey } from '../utils/dateUtils';
 import { copyToClipboard } from '../utils/clipboard';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 
-export default function HrAdmittedStudentsCrm({ students: propStudents, onRefreshStudents, currentUser, onStudentLogin, onCallStudent }) {
+export default function HrAdmittedStudentsCrm({
+  students: propStudents,
+  onRefreshStudents,
+  currentUser,
+  onStudentLogin,
+  onCallStudent,
+  page: propPage,
+  totalPages: propTotalPages,
+  totalCount: propTotalCount,
+  limit: propLimit = 50,
+  onPageChange
+}) {
   // Show new / reset portal credentials in the persistent card owned by the HR dashboard
   const shareLogin = (st, login) => {
     if (login?.password && onStudentLogin) onStudentLogin({ name: st.name, phone: st.phone, email: login.email, password: login.password });
@@ -58,6 +70,9 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
   const [isDeleting, setIsDeleting] = useState(false);
 
   const [students, setStudents] = useState(propStudents || []);
+  const [localPage, setLocalPage] = useState(1);
+  const [localTotalPages, setLocalTotalPages] = useState(1);
+  const [localTotalCount, setLocalTotalCount] = useState(0);
 
   const handleConfirmDeleteStudent = async () => {
     if (!deletingStudent) return;
@@ -77,16 +92,32 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
     }
   };
 
+  const fetchStandaloneStudents = (targetPage = localPage) => {
+    const params = {
+      ...(currentUser?.name ? { hrName: currentUser.name } : {}),
+      page: targetPage,
+      limit: propLimit
+    };
+    getStudents(params).then(res => {
+      if (Array.isArray(res)) {
+        setStudents(res);
+        setLocalTotalCount(res.length);
+        setLocalTotalPages(1);
+      } else if (res && Array.isArray(res.students)) {
+        setStudents(res.students);
+        setLocalTotalCount(res.totalCount ?? res.students.length);
+        setLocalTotalPages(res.totalPages || 1);
+      }
+    }).catch(err => console.error('Error fetching students:', err));
+  };
+
   useEffect(() => {
     if (propStudents !== undefined) {
       setStudents(propStudents);
     } else {
-      const params = currentUser?.name ? { hrName: currentUser.name } : undefined;
-      getStudents(params).then(res => {
-        if (Array.isArray(res)) setStudents(res);
-      }).catch(err => console.error('Error fetching students:', err));
+      fetchStandaloneStudents(localPage);
     }
-  }, [propStudents, currentUser?.name]);
+  }, [propStudents, currentUser?.name, localPage]);
  
   useEffect(() => {
     const unsub = onDataUpdate((entity) => {
@@ -94,15 +125,12 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
         if (onRefreshStudents) {
           onRefreshStudents();
         } else {
-          const params = currentUser?.name ? { hrName: currentUser.name } : undefined;
-          getStudents(params).then(res => {
-            if (Array.isArray(res)) setStudents(res);
-          }).catch(() => {});
+          fetchStandaloneStudents(localPage);
         }
       }
     });
     return () => unsub();
-  }, [onRefreshStudents, currentUser?.name]);
+  }, [onRefreshStudents, currentUser?.name, localPage]);
 
   const showToast = (msg) => {
     setToastMessage(msg);
@@ -899,6 +927,18 @@ export default function HrAdmittedStudentsCrm({ students: propStudents, onRefres
           setStudents(prev => prev.filter(s => (s._id || s.id || s.studentId) !== targetId));
           showToast('✓ Admitted student removed');
           if (onRefreshStudents) onRefreshStudents();
+        }}
+      />
+
+      <PaginationBar
+        page={propPage ?? localPage}
+        totalPages={propTotalPages ?? localTotalPages}
+        totalCount={propTotalCount ?? localTotalCount}
+        limit={propLimit}
+        itemLabel="students"
+        onPageChange={(nextPage) => {
+          if (onPageChange) onPageChange(nextPage);
+          else setLocalPage(nextPage);
         }}
       />
 

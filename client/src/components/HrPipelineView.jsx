@@ -28,6 +28,7 @@ import {
 
 import { getLeads, updateLead, deleteLead, createEscalation } from '../services/api';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
+import PaginationBar from './PaginationBar';
 import EditLeadModal from './EditLeadModal';
 
 const STAGE_ORDER = ['new', 'contacted', 'demo_booked', 'demo_attended', 'fee_followup', 'done', 'admitted', 'not_mentioned'];
@@ -104,7 +105,12 @@ export default function HrPipelineView({
   onAdmitLead,
   onCallLead,
   initialViewMode = 'kanban',
-  currentUser
+  currentUser,
+  page: propPage,
+  totalPages: propTotalPages,
+  totalCount: propTotalCount,
+  limit: propLimit = 50,
+  onPageChange
 }) {
   const [viewMode, setViewMode] = useState(initialViewMode); // 'kanban' | 'followup' | 'table'
   const [activeFilter, setActiveFilter] = useState('all'); // all, overdue, today, tomorrow, this_week, demo, fee, admitted
@@ -114,6 +120,9 @@ export default function HrPipelineView({
   const [actionLoading, setActionLoading] = useState({});
   const [escalatedIds, setEscalatedIds] = useState(new Set());
   const [leads, setLeads] = useState(propLeads || []);
+  const [localPage, setLocalPage] = useState(1);
+  const [localTotalPages, setLocalTotalPages] = useState(1);
+  const [localTotalCount, setLocalTotalCount] = useState(0);
   const [editingLead, setEditingLead] = useState(null);
   const [deletingLead, setDeletingLead] = useState(null);
   const [isDeletingLead, setIsDeletingLead] = useState(false);
@@ -141,14 +150,22 @@ export default function HrPipelineView({
     if (propLeads !== undefined) {
       setLeads(propLeads);
     } else {
-      const params = currentUser?.name ? { counselor: currentUser.name } : undefined;
+      const params = {
+        ...(currentUser?.name ? { counselor: currentUser.name } : {}),
+        page: localPage,
+        limit: propLimit
+      };
       getLeads(params)
         .then(res => {
-          if (res && res.leads) setLeads(res.leads);
+          if (res && res.leads) {
+            setLeads(res.leads);
+            setLocalTotalCount(res.totalCount ?? res.leads.length);
+            setLocalTotalPages(res.totalPages || 1);
+          }
         })
         .catch(err => console.error('Error fetching leads:', err));
     }
-  }, [propLeads, currentUser?.name]);
+  }, [propLeads, currentUser?.name, localPage]);
 
   const triggerAction = (msg) => {
     setActionNotice(msg);
@@ -1713,6 +1730,17 @@ export default function HrPipelineView({
           </div>
         </div>
       )}
+      <PaginationBar
+        page={propPage ?? localPage}
+        totalPages={propTotalPages ?? localTotalPages}
+        totalCount={propTotalCount ?? localTotalCount}
+        limit={propLimit}
+        itemLabel="leads"
+        onPageChange={(nextPage) => {
+          if (onPageChange) onPageChange(nextPage);
+          else setLocalPage(nextPage);
+        }}
+      />
     </div>
   );
 }

@@ -839,7 +839,24 @@ router.get('/recordings', async (req, res) => {
       ];
       if (query.$and) query.$and.push({ $or: searchOr }); else query.$or = searchOr;
     }
-    const recordings = await CallRecording.find(query).sort({ createdAt: -1 });
+    const hasPagination = req.query.page !== undefined || req.query.limit !== undefined;
+    if (hasPagination) {
+      const pageNum = Math.max(1, parseInt(req.query.page, 10) || 1);
+      const limitNum = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 50));
+      const skip = (pageNum - 1) * limitNum;
+      const [recordings, totalCount] = await Promise.all([
+        CallRecording.find(query).sort({ createdAt: -1 }).skip(skip).limit(limitNum).lean(),
+        CallRecording.countDocuments(query)
+      ]);
+      return res.json({
+        recordings,
+        totalCount,
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.max(1, Math.ceil(totalCount / limitNum))
+      });
+    }
+    const recordings = await CallRecording.find(query).sort({ createdAt: -1 }).lean();
     res.json(recordings);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -3104,25 +3121,36 @@ router.get('/students', async (req, res) => {
     }
 
     const query = andConditions.length > 0 ? { $and: andConditions } : {};
-    const students = await Student.find(query).sort({ createdAt: -1 });
-    // Trainers get full records only for their own students (and handed-over,
-    // not-yet-allocated ones they may pick up). Leadership, Head of Trainer,
-    // Managers, and Team Leads get all their scoped students (with financial fields
-    // removed for training staff).
-    if (req.user?.department === 'training') {
+    const hasPagination = req.query.page !== undefined || req.query.limit !== undefined;
+    const pageNum = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limitNum = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 50));
+    const skip = (pageNum - 1) * limitNum;
+    const projection = req.query.includeDocuments === 'true' ? '' : '-documents';
+
+    let students;
+    let totalCount = null;
+    if (hasPagination) {
+      [students, totalCount] = await Promise.all([
+        Student.find(query).select(projection).sort({ createdAt: -1 }).skip(skip).limit(limitNum).lean(),
+        Student.countDocuments(query)
+      ]);
+    } else {
+      students = await Student.find(query).select(projection).sort({ createdAt: -1 }).lean();
+    }
+
+    const formatStudentsForUser = async (list) => {
+      if (req.user?.department !== 'training') return list;
       const FIN = ['feeStatus', 'feeAmount', 'courseFee', 'paidAmount', 'pendingBalance', 'paymentPlan', 'nextDueDate', 'examFee', 'paymentMethod', 'receipts', 'rewardPoints', 'documents'];
       if (isIndividualTrainerUser(req)) {
         const me = req.user.trainerId || '';
-        // Other students are returned only when they were admitted from a demo this
-        // trainer delivered (needed for the incentive ledger) — nothing else.
         const myDemos = me
-          ? await Demo.find({ status: /^attended$/i, $or: [{ trainerId: me }, { notifiedTrainerIds: me }, { notificationSentTo: me }] }).select('phone email')
+          ? await Demo.find({ status: /^attended$/i, $or: [{ trainerId: me }, { notifiedTrainerIds: me }, { notificationSentTo: me }] }).select('phone email').lean()
           : [];
         const demoPhones = new Set(myDemos.map((d) => phoneDigits(d.phone)).filter((p) => p.length === 10));
         const demoEmails = new Set(myDemos.map((d) => String(d.email || '').trim().toLowerCase()).filter(Boolean));
         const out = [];
-        students.forEach((s) => {
-          const o = s.toObject();
+        list.forEach((s) => {
+          const o = { ...s };
           const isHandedOver = !o.trainerId && (
             o.handoverStatus === 'Sent to Training' ||
             o.handoverStatus === 'Handed Over to Head of Trainer' ||
@@ -3134,17 +3162,26 @@ router.get('/students', async (req, res) => {
           const fromMyDemo = demoPhones.has(phoneDigits(o.phone)) || (o.email && demoEmails.has(String(o.email).trim().toLowerCase()));
           if (fromMyDemo) out.push({ _id: o._id, studentId: o.studentId, name: o.name, phone: o.phone, email: o.email, course: o.course, createdAt: o.createdAt, statusGroup: o.statusGroup });
         });
-        return res.json(out);
+        return out;
       }
-      // For Department Head of Training, Managers, and Team Leads: return all scoped students with FIN stripped
-      const out = students.map((s) => {
-        const o = s.toObject();
+      return list.map((s) => {
+        const o = { ...s };
         FIN.forEach((k) => delete o[k]);
         return o;
       });
-      return res.json(out);
+    };
+
+    const resultList = await formatStudentsForUser(students);
+    if (hasPagination) {
+      return res.json({
+        students: resultList,
+        totalCount,
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.max(1, Math.ceil(totalCount / limitNum))
+      });
     }
-    res.json(students);
+    res.json(resultList);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -4042,22 +4079,19 @@ router.get('/leads', async (req, res) => {
     const counselor = isScopedHr(req) ? req.user?.name : req.query.counselor;
     const isBM = isScopedBranchManager(req);
     const targetBranch = isBM ? getBranchManagerBranch(req) : branch;
-    const andConditions = [];
+    const baseConditions = [];
     if (req.hrTeamNames) {
-      andConditions.push(ownerAnyQuery(pickTeamNames(req.hrTeamNames, req.query.counselor), LEAD_OWNER_FIELDS, BRANCH_FIELDS_LEAD));
+      baseConditions.push(ownerAnyQuery(pickTeamNames(req.hrTeamNames, req.query.counselor), LEAD_OWNER_FIELDS, BRANCH_FIELDS_LEAD));
     } else if (counselor && counselor !== 'all') {
       const ownerBranch = isScopedHr(req) ? (req.user?.branch || '') : (branch && branch !== 'all' ? branch : '');
-      andConditions.push(leadOwnerQuery(counselor, ownerBranch));
-    }
-    if (stage && stage !== 'all') {
-      andConditions.push({ stage });
+      baseConditions.push(leadOwnerQuery(counselor, ownerBranch));
     }
     if (targetBranch && targetBranch !== 'all') {
-      andConditions.push({ branch: { $regex: new RegExp(escapeRegex(targetBranch.trim()), 'i') } });
+      baseConditions.push({ branch: { $regex: new RegExp(escapeRegex(targetBranch.trim()), 'i') } });
     }
     if (search) {
       const searchRegex = { $regex: escapeRegex(String(search).trim()), $options: 'i' };
-      andConditions.push({
+      baseConditions.push({
         $or: [
           { fullName: searchRegex },
           { phone: searchRegex },
@@ -4067,10 +4101,18 @@ router.get('/leads', async (req, res) => {
         ]
       });
     }
+    const andConditions = [...baseConditions];
+    if (stage && stage !== 'all') {
+      andConditions.push({ stage });
+    }
+    const baseQuery = baseConditions.length > 0 ? { $and: baseConditions } : {};
     const query = andConditions.length > 0 ? { $and: andConditions } : {};
-    const leads = await StudentLead.find(query).sort({ createdAt: -1 });
-    
-    // Group into pipeline counts
+
+    const hasPagination = req.query.page !== undefined || req.query.limit !== undefined;
+    const pageNum = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limitNum = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 50));
+    const skip = (pageNum - 1) * limitNum;
+
     const stages = [
       { key: 'new', label: '1. New Leads', count: 0, color: '#0f172a' },
       { key: 'contacted', label: '2. Contacted / Follow-up', count: 0, color: '#0284c7' },
@@ -4081,9 +4123,38 @@ router.get('/leads', async (req, res) => {
       { key: 'not_mentioned', label: '7. Not Mentioned', count: 0, color: '#64748b' }
     ];
 
-    leads.forEach(l => {
-      const match = stages.find(s => s.key === l.stage);
-      if (match) match.count++;
+    const stageAggPromise = StudentLead.aggregate([
+      { $match: baseQuery },
+      { $group: { _id: '$stage', count: { $sum: 1 } } }
+    ]);
+
+    if (hasPagination) {
+      const [leads, totalCount, stageCounts] = await Promise.all([
+        StudentLead.find(query).select('-whatsappMessages').sort({ createdAt: -1 }).skip(skip).limit(limitNum).lean(),
+        StudentLead.countDocuments(query),
+        stageAggPromise
+      ]);
+      stageCounts.forEach((row) => {
+        const match = stages.find((s) => s.key === row._id);
+        if (match) match.count = row.count;
+      });
+      return res.json({
+        leads,
+        stages,
+        totalCount,
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.max(1, Math.ceil(totalCount / limitNum))
+      });
+    }
+
+    const [leads, stageCounts] = await Promise.all([
+      StudentLead.find(query).select('-whatsappMessages').sort({ createdAt: -1 }).lean(),
+      stageAggPromise
+    ]);
+    stageCounts.forEach((row) => {
+      const match = stages.find((s) => s.key === row._id);
+      if (match) match.count = row.count;
     });
 
     res.json({

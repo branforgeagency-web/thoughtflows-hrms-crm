@@ -216,4 +216,12 @@ const studentLeadSchema = new mongoose.Schema({
   timestamps: true
 });
 
+studentLeadSchema.index({ createdAt: -1 });
+studentLeadSchema.index({ branch: 1, stage: 1, createdAt: -1 });
+studentLeadSchema.index({ stage: 1, createdAt: -1 });
+studentLeadSchema.index({ counselorAssigned: 1, createdAt: -1 });
+studentLeadSchema.index({ enquiryMonth: 1, createdAt: -1 });
+studentLeadSchema.index({ phone: 1 });
+studentLeadSchema.index({ email: 1 });
+
 export default mongoose.models.StudentLead || mongoose.model('StudentLead', studentLeadSchema);
