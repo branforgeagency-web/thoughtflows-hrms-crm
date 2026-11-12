@@ -908,6 +908,14 @@ export const uploadTrainingMaterial = async (data) => {
 export const trainingMaterialFileUrl = (id, download = false) =>
   withAuthToken(`${API_BASE}/training/materials/${id}/file${download ? '?download=1' : ''}`);
 
+export const fetchTrainingMaterialBuffer = async (id) => {
+  const res = await api.get(`/training/materials/${id}/file`, {
+    params: { stream: 1 },
+    responseType: 'arraybuffer'
+  });
+  return res.data;
+};
+
 export const pinTrainingMaterial = async (id, trainerId, pinned) => {
   const res = await api.put(`/training/materials/${id}/pin`, { trainerId, pinned });
   notifyDataUpdate('materials');

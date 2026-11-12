@@ -3,6 +3,7 @@ import useFileToken from '../hooks/useFileToken';
 import { localDateKey } from '../utils/dateUtils';
 import { Play, Clock, CheckSquare, Users, MessageSquare, Send, Copy, X, RefreshCw, ExternalLink, Maximize2, Minimize2, BookOpen } from 'lucide-react';
 import ZoomMeeting from './ZoomMeeting';
+import LmsMaterialViewer from './LmsMaterialViewer';
 import {
   getLiveClasses,
   startLiveClass,
@@ -11,7 +12,6 @@ import {
   endLiveClass,
   markLiveClassAttendanceSaved,
   recordTrainerAttendance,
-  trainingMaterialFileUrl,
   onDataUpdate
 } from '../services/api';
 
@@ -25,8 +25,9 @@ const fmtTimer = (secs) => [Math.floor(secs / 3600), Math.floor((secs % 3600) / 
 const fmtTime = (d) => (d ? new Date(d).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '');
 const todayKey = () => localDateKey();
 
-export default function ClassSessionRoom({ trainerId, trainerName, batches = [], materials = [], onAttendanceSaved }) {
+export default function ClassSessionRoom({ trainerId, trainerName, batches = [], materials = [], canDownload = false, onAttendanceSaved }) {
   useFileToken(); // keeps file links (downloads / audio) signed with a fresh short-lived token
+  const [viewerMaterial, setViewerMaterial] = useState(null);
   const [batchId, setBatchId] = useState('');
   const batch = batches.find((b) => b.id === batchId) || batches[0] || null;
   const [topic, setTopic] = useState('');
@@ -380,13 +381,18 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
                         <div className="py-6 text-center text-xs text-slate-400">No materials assigned to this batch.</div>
                       ) : (
                         batchMaterials.map((m) => (
-                          <a key={m._id} href={trainingMaterialFileUrl(m._id)} target="_blank" rel="noreferrer" className="p-2.5 rounded-xl border border-slate-700 bg-slate-800/60 hover:border-teal-400 flex items-center gap-2.5 text-xs text-white">
+                          <button
+                            key={m._id}
+                            type="button"
+                            onClick={() => setViewerMaterial(m)}
+                            className="w-full text-left p-2.5 rounded-xl border border-slate-700 bg-slate-800/60 hover:border-teal-400 flex items-center gap-2.5 text-xs text-white cursor-pointer"
+                          >
                             <span className="w-8 h-8 rounded-lg bg-teal-500/20 text-teal-300 flex items-center justify-center font-bold text-[10px] shrink-0">{m.fileFormat}</span>
                             <span className="min-w-0">
                               <span className="block font-bold truncate">{m.title}</span>
                               <span className="block text-[10px] text-slate-400 truncate">{m.category}</span>
                             </span>
-                          </a>
+                          </button>
                         ))
                       )}
                     </div>
@@ -464,10 +470,15 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
                 ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                     {batchMaterials.map((m) => (
-                      <a key={m._id} href={trainingMaterialFileUrl(m._id)} target="_blank" rel="noreferrer" className="p-3 rounded-xl border border-slate-200 hover:border-teal-400 flex items-center gap-3 text-xs">
+                      <button
+                        key={m._id}
+                        type="button"
+                        onClick={() => setViewerMaterial(m)}
+                        className="w-full text-left p-3 rounded-xl border border-slate-200 hover:border-teal-400 flex items-center gap-3 text-xs cursor-pointer"
+                      >
                         <span className="w-9 h-9 rounded-lg bg-teal-50 text-teal-700 flex items-center justify-center font-bold text-[10px] shrink-0">{m.fileFormat}</span>
                         <span className="min-w-0"><span className="block font-bold text-slate-900 truncate">{m.title}</span><span className="block text-[10px] text-slate-500 truncate">{m.category}</span></span>
-                      </a>
+                      </button>
                     ))}
                   </div>
                 )}
@@ -608,6 +619,13 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
             </div>
           </div>
         </div>
+      )}
+      {viewerMaterial && (
+        <LmsMaterialViewer
+          material={viewerMaterial}
+          canDownload={canDownload}
+          onClose={() => setViewerMaterial(null)}
+        />
       )}
     </div>
   );

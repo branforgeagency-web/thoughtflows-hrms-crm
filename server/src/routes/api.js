@@ -39,7 +39,7 @@ import ClassFeedback from '../models/ClassFeedback.js';
 import LmsProgress from '../models/LmsProgress.js';
 import CallLog from '../models/CallLog.js';
 import { MANDATORY_MODULES, MODULE_ITEMS, PASS_MARK, COURSE_PASS_MARK, QUESTION_BANK, courseQuestions, courseModuleFor } from '../constants/hrLms.js';
-import { requireAuth, signToken, signFileToken, checkPassword, hashPassword, hashIfPlain } from '../middleware/auth.js';
+import { requireAuth, normalizeDept, signToken, signFileToken, checkPassword, hashPassword, hashIfPlain } from '../middleware/auth.js';
 import LiveClassSession from '../models/LiveClassSession.js';
 import StudentSubmission from '../models/StudentSubmission.js';
 import { PLACEMENT_EDITORS, autoStage, effectiveStage, blockReason, stageChecks } from '../constants/placement.js';
@@ -10148,6 +10148,33 @@ router.put('/notifications/:id/read', async (req, res) => {
 // ==========================================
 const MAX_MATERIAL_BYTES = 12 * 1024 * 1024;
 
+// Only Head of Department (Training) and Trainer Manager (plus Admin/Leadership)
+// can upload, download, or delete LMS materials. TL & Trainers have view-only access.
+function canManageTrainingMaterials(req) {
+  const u = req.user;
+  if (!u) return false;
+  const dept = normalizeDept(u.department, u.role);
+  if (['admin', 'leadership'].includes(dept) || ['Admin', 'Super Admin'].includes(u.role)) return true;
+
+  const tr = String(u.trainerRole || '').toLowerCase().trim();
+  if (tr === 'tl' || tr === 'trainer' || tr === 'part_time') return false;
+  if (tr === 'head' || tr === 'trainer_head' || tr === 'manager' || tr === 'trainer_manager') return true;
+
+  const r = String(u.role || '').toLowerCase();
+  const email = String(u.email || '').toLowerCase();
+  if (/\bteam lead\b|\btl\b/.test(r)) return false;
+  if (
+    u.leaderId === 'manoj' ||
+    email === 'manoj.head@thoughtflows.in' ||
+    email === 'manoj@thoughtflows.in' ||
+    email.includes('.manager@') ||
+    /department head of training|head of trainer|head of training|trainer head|training head|chief trainer|chief faculty|trainer manager|training manager|training team manager/i.test(r)
+  ) {
+    return true;
+  }
+  return false;
+}
+
 router.get('/training/materials', async (req, res) => {
   try {
     const { batch } = req.query;
@@ -10161,6 +10188,9 @@ router.get('/training/materials', async (req, res) => {
 
 router.post('/training/materials', async (req, res) => {
   try {
+    if (!canManageTrainingMaterials(req)) {
+      return res.status(403).json({ error: 'Only Head of Department and Manager can upload PPT or teaching materials.' });
+    }
     const { title, description, category, fileName, mimeType, data, uploadedBy, uploaderId, branch, storageKey, storageUrl, storageProvider } = req.body || {};
     if (!data && !storageKey && !storageUrl && !fileName) return res.status(400).json({ error: 'A file is required' });
     let base64 = '';
@@ -10182,9 +10212,9 @@ router.post('/training/materials', async (req, res) => {
       storageUrl: storageUrl || '',
       storageProvider: (storageKey || storageUrl) ? (storageProvider || 'amplify') : 'inline',
       data: base64,
-      uploadedBy: uploadedBy || '',
-      uploaderId: isTrainerReq(req) ? myTrainerId(req) : (uploaderId || ''),
-      branch: branch || ''
+      uploadedBy: uploadedBy || req.user?.name || '',
+      uploaderId: String(req.user?.trainerId || req.user?.sub || req.user?.id || uploaderId || ''),
+      branch: branch || req.user?.branch || ''
     });
     const obj = doc.toObject();
     delete obj.data;
@@ -10204,14 +10234,32 @@ router.get('/training/materials/:id/file', async (req, res) => {
       const batch = studentBatchOf(st);
       if (!batch || !(doc.assignments || []).some((a) => a.batch === batch)) return res.status(403).json({ error: 'This material is not assigned to your batch' });
     }
+    const wantsDownload = Boolean(req.query.download);
+    if (wantsDownload && !canManageTrainingMaterials(req)) {
+      return res.status(403).json({ error: 'Download is disabled for TL and Trainers. Please open and view in the dashboard.' });
+    }
     if (doc.storageUrl) {
+      if (req.query.stream === '1' && !wantsDownload) {
+        const remote = await fetch(doc.storageUrl);
+        if (!remote.ok) return res.status(502).json({ error: 'Failed to load material from storage' });
+        const buf = Buffer.from(await remote.arrayBuffer());
+        res.setHeader('Content-Type', doc.mimeType || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(doc.fileName || 'file')}"`);
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        return res.send(buf);
+      }
       return res.redirect(doc.storageUrl);
     }
     if (!doc.data) return res.status(404).json({ error: 'File not found' });
     const buf = Buffer.from(doc.data, 'base64');
     res.setHeader('Content-Type', doc.mimeType || 'application/octet-stream');
-    const disposition = req.query.download ? 'attachment' : 'inline';
+    const disposition = wantsDownload ? 'attachment' : 'inline';
     res.setHeader('Content-Disposition', `${disposition}; filename="${encodeURIComponent(doc.fileName || 'file')}"`);
+    if (!wantsDownload) {
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+    }
     res.send(buf);
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -10261,12 +10309,11 @@ router.post('/training/materials/:id/assign', async (req, res) => {
 router.delete('/training/materials/:id', async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
-    if (isTrainerReq(req)) {
-      const doc = await TrainingMaterial.findById(req.params.id).select('uploaderId');
-      if (!doc) return res.status(404).json({ error: 'Material not found' });
-      if (doc.uploaderId !== myTrainerId(req)) return res.status(403).json({ error: 'Only the trainer who uploaded this material can delete it.' });
+    if (!canManageTrainingMaterials(req)) {
+      return res.status(403).json({ error: 'Only Head of Department and Manager can delete materials.' });
     }
-    await TrainingMaterial.findByIdAndDelete(req.params.id);
+    const deleted = await TrainingMaterial.findByIdAndDelete(req.params.id);
+    if (!deleted) return res.status(404).json({ error: 'Material not found' });
     res.json({ success: true });
   } catch (e) {
     res.status(400).json({ error: e.message });

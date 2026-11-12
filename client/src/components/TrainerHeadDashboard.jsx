@@ -85,6 +85,7 @@ import ClassSessionRoom from './ClassSessionRoom';
 import TeamRosterBoard from './TeamRosterBoard';
 import UtilizationDashboard from './UtilizationDashboard';
 import StaffLoginAttendance from './StaffLoginAttendance';
+import TrainingLibraryMaterials from './TrainingLibraryMaterials';
 import { CreateBatchModal, AutoGroupBatchModal, BatchDetailModal } from './BatchManagementModals';
 import { getCurrentWeekScheduleDays, getWeekRangeString, localDateKey } from '../utils/dateUtils';
 
@@ -313,7 +314,7 @@ export default function TrainerHeadDashboard({
   useEffect(() => {
     loadDashboardData();
     const unsub = onDataUpdate((entity) => {
-      if (['students', 'batches', 'trainers', 'demos', 'doubts', 'trainer_attendance', 'team', 'trainer_settings'].includes(entity)) {
+      if (['students', 'batches', 'trainers', 'demos', 'doubts', 'trainer_attendance', 'team', 'trainer_settings', 'materials'].includes(entity)) {
         loadDashboardData();
       }
     });
@@ -1719,6 +1720,7 @@ export default function TrainerHeadDashboard({
       case 'trainer_attendance': return 'Trainer Attendance & Shift Details';
       case 'demos': return 'Demo Sessions & Conversion Tracker';
       case 'doubts': return 'Student Doubt Box & Escalations';
+      case 'lms_library': return 'LMS · PPT & Course Library';
       case 'utilization': return 'Utilization & Hourly Work Planning Dashboard';
       default: return 'Trainer Portal';
     }
@@ -2124,6 +2126,24 @@ export default function TrainerHeadDashboard({
                   </span>
                 )}
               </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveTab('lms_library')}
+                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
+                  activeTab === 'lms_library'
+                    ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                    : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <BookOpen className="w-4 h-4 shrink-0 text-teal-400" />
+                  <span>LMS · PPT Library</span>
+                </div>
+                <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-teal-500/20 text-teal-300">
+                  {materials.length}
+                </span>
+              </button>
             </div>
           </div>
         </div>
@@ -2231,6 +2251,7 @@ export default function TrainerHeadDashboard({
               trainerName={currentLeaderTrainerName}
               batches={formattedBatchesForSessionRoom}
               materials={materials}
+              canDownload={roleType !== 'tl' && (isHeadRole || isManagerRole)}
               onAttendanceSaved={loadDashboardData}
             />
           </div>
@@ -5456,6 +5477,23 @@ export default function TrainerHeadDashboard({
               </div>
             </div>
           )}
+          {/* ================= SECTION: LMS PPT & MATERIAL LIBRARY ================= */}
+          {activeTab === 'lms_library' && (
+            <TrainingLibraryMaterials
+              currentUser={{
+                name: currentLeaderTrainerName,
+                id: currentLeaderTrainerId,
+                branch: currentUser?.branch || '',
+                role: currentUser?.role || roleType,
+                trainerRole: roleType
+              }}
+              canManage={roleType !== 'tl' && (isHeadRole || isManagerRole)}
+              batches={formattedBatchesForSessionRoom}
+              materials={materials}
+              onChanged={loadDashboardData}
+            />
+          )}
+
           {/* ================= SECTION 9: UTILIZATION & HOURLY WORK TRACKER ================= */}
           {activeTab === 'utilization' && (
             <div className="space-y-6">

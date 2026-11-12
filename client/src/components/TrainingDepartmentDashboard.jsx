@@ -160,6 +160,12 @@ export default function TrainingDepartmentDashboard({
     (trainerCourseKey === 'ALL' && /head|chief|lead/i.test(trainerRole || currentUser?.role || ''))
   );
   const isChiefFaculty = isHeadOfTrainer;
+  const canManageMaterials = (() => {
+    const tr = String(currentUser?.trainerRole || '').toLowerCase();
+    const raw = String(trainerRole || currentUser?.role || '').toLowerCase();
+    if (tr === 'tl' || tr === 'trainer' || tr === 'part_time' || /\bteam lead\b|\btl\b/.test(raw)) return false;
+    return Boolean(isHeadOfTrainer || tr === 'head' || tr === 'manager' || /trainer manager|training manager/i.test(raw));
+  })();
 
   const courseMatches = React.useCallback((text) => {
     if (!trainerCourseKey || trainerCourseKey === 'ALL') return false;
@@ -1738,7 +1744,7 @@ export default function TrainingDepartmentDashboard({
                   }`}
                 >
                   <BookOpen className="w-4 h-4 shrink-0" />
-                  <span>Library & Materials</span>
+                  <span>LMS · PPT &amp; Materials</span>
                 </button>
 
                 <button
@@ -1856,7 +1862,7 @@ export default function TrainingDepartmentDashboard({
               {activeNav === 'students' && 'My Students'}
               {activeNav === 'weak_students' && 'Weak Students'}
               {activeNav === 'assessments' && 'Assessment Desk'}
-              {activeNav === 'library' && 'Library & Materials'}
+              {activeNav === 'library' && 'LMS · PPT & Materials'}
               {activeNav === 'student_desk' && 'Student Submissions & Requests'}
               {activeNav === 'placement' && 'Student Job-Ready Status & Placement Desk'}
               {activeNav === 'profile' && 'My Profile'}
@@ -2174,6 +2180,7 @@ export default function TrainingDepartmentDashboard({
               trainerName={trainerName}
               batches={batches}
               materials={materials}
+              canDownload={canManageMaterials}
               onAttendanceSaved={loadRealData}
             />
           </div>
@@ -5086,7 +5093,14 @@ export default function TrainingDepartmentDashboard({
           {/* ================= TAB 10: LIBRARY & MATERIALS ================= */}
           {activeNav === 'library' && (
             <TrainingLibraryMaterials
-              currentUser={{ name: trainerName, id: trainerId, branch: trainerBranch }}
+              currentUser={{
+                name: trainerName,
+                id: trainerId,
+                branch: trainerBranch,
+                role: trainerRole || currentUser?.role || '',
+                trainerRole: currentUser?.trainerRole || 'trainer'
+              }}
+              canManage={canManageMaterials}
               batches={batches}
               materials={materials}
               onChanged={loadRealData}
