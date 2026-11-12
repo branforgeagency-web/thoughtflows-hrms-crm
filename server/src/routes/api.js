@@ -84,13 +84,13 @@ router.use((req, res, next) => {
   next();
 });
 
-// A Branch Head account with no branch set must not fall through to "all branches"
-const isBranchHeadWithoutBranch = (req) => /branch\s*(manager|head)/i.test(req.user?.role || '')
+// A Branch Head / Business Lead account with no branch set must not fall through to "all branches"
+const isBranchHeadWithoutBranch = (req) => /branch\s*(manager|head)|business\s*lead/i.test(req.user?.role || '')
   && !String(req.user?.branch || '').trim()
   && !/admin/i.test(req.user?.role || '') && !['admin', 'leadership'].includes(req.user?.department);
 router.use((req, res, next) => {
   if (req.user && isBranchHeadWithoutBranch(req) && /^\/(leads|students|demos|recordings)(\/|$)/.test(req.path)) {
-    return res.status(403).json({ error: 'No branch is set on this Branch Head account. Ask Admin to set the branch.' });
+    return res.status(403).json({ error: 'No branch is set on this account. Ask Admin to set the branch.' });
   }
   next();
 });
@@ -1338,7 +1338,7 @@ function matchBranch(value, list) {
 }
 const studentBranchText = (s) => s?.branch || s?.leadBranch || s?.location || '';
 const branchShort = (v) => String(v || '').replace(/\s*(branch|\(.*\)|hq)\b/gi, '').trim();
-const isScopedBranchManager = (req) => (req.user?.role === 'Branch Manager' || /branch\s*(manager|head)/i.test(req.user?.role || '')) && Boolean(req.user?.branch);
+const isScopedBranchManager = (req) => (req.user?.role === 'Branch Manager' || /branch\s*(manager|head)|business\s*lead/i.test(req.user?.role || '')) && Boolean(req.user?.branch);
 const getBranchManagerBranch = (req) => branchShort(req.user?.branch || '');
 
 // Trainer Role Scoping Helpers

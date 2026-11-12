@@ -4,6 +4,7 @@ import {
   PhoneCall,
   Users,
   Building2,
+  TrendingUp,
   Crown,
   Eye,
   EyeOff,
@@ -14,7 +15,7 @@ import {
   ArrowRight
 } from 'lucide-react';
 
-// The four HR Department role desks (order = card order on the HR hub)
+// The five HR Department role desks (order = card order on the HR hub)
 export const HR_ROLE_META = {
   hr: {
     key: 'hr',
@@ -67,6 +68,23 @@ export const HR_ROLE_META = {
     emailLabel: 'Branch Account Email',
     emailPlaceholder: 'e.g. gandhipuram@thoughtflows.in'
   },
+  business: {
+    key: 'business',
+    tier: 'BUSINESS OPERATIONS',
+    name: 'Business Lead',
+    title: 'Business Lead Sign In',
+    subtitle: 'Branch-scoped HR, admissions & operations',
+    desc: 'The HR dashboard for your whole branch — every HR\'s leads, follow-ups, demos, admissions & fees.',
+    scope: '14 BRANCHES · ONE LOGIN EACH',
+    icon: TrendingUp,
+    gradient: 'linear-gradient(135deg, #d97706, #f59e0b)',
+    accentText: 'text-amber-700',
+    ring: 'hover:border-amber-400',
+    badgeBg: 'bg-amber-50 text-amber-700 border-amber-200',
+    adminRole: 'BUSINESS LEAD',
+    emailLabel: 'Business Lead Email',
+    emailPlaceholder: 'Enter Business Lead email'
+  },
   head: {
     key: 'head',
     tier: 'EXECUTIVE LEADERSHIP',
@@ -86,10 +104,11 @@ export const HR_ROLE_META = {
   }
 };
 
-export const HR_ROLE_ORDER = ['hr', 'tl', 'branch', 'head'];
+export const HR_ROLE_ORDER = ['hr', 'tl', 'branch', 'business', 'head'];
 
 const lc = (v) => String(v || '').toLowerCase();
 const isBranchHeadRole = (role) => /branch\s*(manager|head)/i.test(role || '');
+const isBusinessLeadRole = (role) => /business\s*lead/i.test(role || '');
 const isAdminUser = (u) => {
   const r = lc(u?.role);
   const d = lc(u?.department);
@@ -103,6 +122,7 @@ export function inferHrRole(u) {
   const role = String(u.role || '');
   if (u.hrRole && HR_ROLE_META[u.hrRole]) return u.hrRole;
   if (isBranchHeadRole(role)) return 'branch';
+  if (isBusinessLeadRole(role)) return 'business';
   if (!isHrUser(u)) return null;
   if (/\bhead\b|\bhod\b/i.test(role)) return 'head';
   if (/\btl\b|team\s*lead/i.test(role)) return 'tl';
@@ -121,6 +141,8 @@ export function hrRoleAllows(roleKey, u) {
       return isHrUser(u) && /\btl\b|team\s*lead|\bhead\b|\bhod\b/i.test(role);
     case 'branch':
       return isBranchHeadRole(role) && Boolean(String(u.branch || '').trim());
+    case 'business':
+      return isBusinessLeadRole(role) && Boolean(String(u.branch || '').trim());
     case 'head':
       return isHrUser(u) && /\bhead\b|\bhod\b/i.test(role);
     default:
@@ -163,6 +185,10 @@ export default function HrRoleLoginModal({ isOpen, roleKey = 'hr', onClose, onLo
       if (res.data?.success && authedUser) {
         if (roleKey === 'branch' && isBranchHeadRole(authedUser.role) && !String(authedUser.branch || '').trim()) {
           setError('This Branch Head account has no branch set. Ask Admin to set the branch on this user before signing in.');
+          return;
+        }
+        if (roleKey === 'business' && isBusinessLeadRole(authedUser.role) && !String(authedUser.branch || '').trim()) {
+          setError('This Business Lead account has no branch set. Ask Admin to set the branch on this user before signing in.');
           return;
         }
         if (!hrRoleAllows(roleKey, authedUser)) {
@@ -211,7 +237,9 @@ export default function HrRoleLoginModal({ isOpen, roleKey = 'hr', onClose, onLo
             <span className="font-bold text-slate-800 block mb-0.5">Admin-Created Account Required</span>
             {roleKey === 'branch'
               ? 'Sign in with your branch account (e.g. gandhipuram@thoughtflows.in) or a user created in Admin with role "BRANCH HEAD".'
-              : `Sign in with the account created for you in Admin Management with role "${meta.adminRole}".`}
+              : roleKey === 'business'
+                ? 'Sign in with a user created in Admin with role "BUSINESS LEAD" and a branch assigned.'
+                : `Sign in with the account created for you in Admin Management with role "${meta.adminRole}".`}
           </div>
         </div>
 

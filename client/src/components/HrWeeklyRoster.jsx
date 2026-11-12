@@ -6,7 +6,7 @@ import { getTeam, onDataUpdate } from '../services/api';
 // (every HR, TL & manager) and the Branch Head (their own branch only).
 // Everyone else just sees their own week in My Schedule.
 const norm = (v) => String(v || '').trim().toLowerCase();
-const isManagerRole = (role) => /branch\s*(manager|head)|regional\s*manager|operational\s*head/i.test(role || '');
+const isManagerRole = (role) => /branch\s*(manager|head)|business\s*lead|regional\s*manager|operational\s*head/i.test(role || '');
 const branchShort = (v) => norm(v).replace(/\s*(branch|\(.*\)|hq)\b/g, '').trim();
 
 export default function HrWeeklyRoster({ canEdit = false, scopeKind = 'all', scopeNames = null, branch = '' }) {

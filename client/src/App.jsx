@@ -89,7 +89,7 @@ export default function App() {
 
   const [selectedDashboard, setSelectedDashboard] = useState(() => {
     try {
-      // A session opened from the HR hub (HR / HR TL / Branch Head / HR Dept Head) reopens the HR hub
+      // A session opened from the HR hub (HR / HR TL / Branch Head / Business Lead / HR Dept Head) reopens the HR hub
       if (sessionStorage.getItem('thoughtflows_hr_role')) {
         const hrCard = DEPT_CARDS.find(c => c.id === 'hr');
         if (hrCard) return hrCard;
@@ -129,7 +129,7 @@ export default function App() {
     }
   });
 
-  // Which HR hub desk is open ('hr' | 'tl' | 'branch' | 'head' | null)
+  // Which HR hub desk is open ('hr' | 'tl' | 'branch' | 'business' | 'head' | null)
   const [hrRole, setHrRole] = useState(() => {
     try { return sessionStorage.getItem('thoughtflows_hr_role') || null; } catch { return null; }
   });

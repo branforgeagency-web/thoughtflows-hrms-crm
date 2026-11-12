@@ -158,7 +158,7 @@ export default function HrDepartmentHub({ onClose, currentUser, onLogout, onHrAu
     );
   }
 
-  if (selectedRole === 'tl' || selectedRole === 'head' || selectedRole === 'branch') {
+  if (selectedRole === 'tl' || selectedRole === 'head' || selectedRole === 'branch' || selectedRole === 'business') {
     const user = activeHrUser || currentUser || {};
     const branchLabel = String(user.branch || '').replace(/\s*branch\b.*$/i, '').trim();
     const viewScope = selectedRole === 'tl'
@@ -171,7 +171,7 @@ export default function HrDepartmentHub({ onClose, currentUser, onLogout, onHrAu
             ? 'My Team · no HRs report to you yet — ask Admin to set "Reports to"'
             : `My Team (${teamNames.length} HR${teamNames.length === 1 ? '' : 's'}${teamSource === 'branch' ? ` · ${branchLabel || 'branch'} (no one assigned to you yet)` : ''})`
       }
-      : selectedRole === 'branch'
+      : (selectedRole === 'branch' || selectedRole === 'business')
         ? { mode: 'branch', branch: user.branch || '', label: `${branchLabel || 'Branch'} Branch · All HRs` }
         : { mode: 'all', label: 'All Branches · All HRs' };
     if (selectedRole === 'tl' && !teamLoaded) {
@@ -185,7 +185,7 @@ export default function HrDepartmentHub({ onClose, currentUser, onLogout, onHrAu
       <HrDepartmentDashboard
         key={selectedRole}
         onClose={onClose}
-        currentUser={selectedRole === 'branch' ? { ...user, isBranchManager: true } : user}
+        currentUser={(selectedRole === 'branch' || selectedRole === 'business') ? { ...user, isBranchManager: true } : user}
         onLogout={handleHrLogout}
         onSwitchDepartment={onSwitchDepartment}
         theme={theme}
@@ -194,7 +194,7 @@ export default function HrDepartmentHub({ onClose, currentUser, onLogout, onHrAu
     );
   }
 
-  // ---- Landing: 4 role cards ----
+  // ---- Landing: 5 role cards ----
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-[#F8FAFC] font-sans text-slate-800 animate-fadeIn">
       <HrRoleLoginModal
@@ -255,7 +255,7 @@ export default function HrDepartmentHub({ onClose, currentUser, onLogout, onHrAu
               <span className="text-rose-300">Counsellor &amp; Leadership Portals</span>
             </h2>
             <p className="text-slate-300 text-sm mt-4 max-w-lg leading-relaxed">
-              Each role desk has its own login. Sign in as HR, HR Team Lead, Branch Head or HR Department Head to open your dashboard.
+              Each role desk has its own login. Sign in as HR, HR Team Lead, Branch Head, Business Lead or HR Department Head to open your dashboard.
             </p>
           </div>
           <div className="relative z-10 grid grid-cols-2 gap-3.5">
@@ -266,7 +266,7 @@ export default function HrDepartmentHub({ onClose, currentUser, onLogout, onHrAu
           </div>
         </div>
 
-        {/* 4 Role Cards */}
+        {/* 5 Role Cards */}
         <div>
           <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
             <div>
@@ -279,7 +279,7 @@ export default function HrDepartmentHub({ onClose, currentUser, onLogout, onHrAu
             </span>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-5">
             {HR_ROLE_ORDER.map((key) => {
               const role = HR_ROLE_META[key];
               const Icon = role.icon;
