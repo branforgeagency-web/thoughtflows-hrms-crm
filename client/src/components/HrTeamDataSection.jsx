@@ -41,7 +41,8 @@ export default function HrTeamDataSection({
   scopeNames = null,      // team names (Team Lead)
   branch = '',            // branch name (Branch Head)
   scopeLabel = '',
-  matchesName             // (recordOwner, memberName) => boolean
+  matchesName,            // (recordOwner, memberName) => boolean
+  hrLeadCounts = null
 }) {
   const todayKey = localDateKey();
   const monthKey = todayKey.slice(0, 7);
@@ -111,6 +112,14 @@ export default function HrTeamDataSection({
     }, 0);
     const todayAtt = attData.attendance.find((a) => own(a.employeeName)) || null;
     const myLeaves = attData.leaves.filter((l) => own(l.requestedBy));
+    const serverCounts = Array.isArray(hrLeadCounts?.byCounselor)
+      ? hrLeadCounts.byCounselor.filter((c) => c.counselor && same(c.counselor, m.name, c.branch, m.branch))
+      : [];
+    const srvTotalLeads = serverCounts.length ? serverCounts.reduce((acc, c) => acc + (c.totalLeads || 0), 0) : null;
+    const srvNewToday = serverCounts.length ? serverCounts.reduce((acc, c) => acc + (c.newToday || 0), 0) : null;
+    const srvDueToday = serverCounts.length ? serverCounts.reduce((acc, c) => acc + (c.fuToday || 0), 0) : null;
+    const srvOverdue = serverCounts.length ? serverCounts.reduce((acc, c) => acc + (c.overdue || 0), 0) : null;
+    const effectiveTotalLeads = srvTotalLeads !== null ? srvTotalLeads : myLeads.length;
     return {
       ...m,
       leads: myLeads,
@@ -119,10 +128,10 @@ export default function HrTeamDataSection({
       calls: myCalls,
       todayAttendance: todayAtt,
       myLeaves,
-      totalLeads: myLeads.length,
-      newToday: myLeads.filter((l) => dayKey(l.createdAt) === todayKey).length,
-      dueToday: open.filter((l) => l.followUpDate === todayKey).length,
-      overdue: open.filter((l) => l.followUpDate && l.followUpDate < todayKey).length,
+      totalLeads: effectiveTotalLeads,
+      newToday: srvNewToday !== null ? srvNewToday : myLeads.filter((l) => dayKey(l.createdAt) === todayKey).length,
+      dueToday: srvDueToday !== null ? srvDueToday : open.filter((l) => l.followUpDate === todayKey).length,
+      overdue: srvOverdue !== null ? srvOverdue : open.filter((l) => l.followUpDate && l.followUpDate < todayKey).length,
       demosBooked: myDemos.length,
       demosToday: myDemos.filter((d) => dayKey(d.createdAt) === todayKey).length,
       admissionsMonth,
@@ -130,12 +139,19 @@ export default function HrTeamDataSection({
       feesMonth,
       balance,
       callsToday: myCalls.filter((r) => dayKey(r.createdAt) === todayKey).length,
-      conversion: myLeads.length ? Math.round((myStudents.length / myLeads.length) * 100) : 0
+      conversion: effectiveTotalLeads ? Math.round((myStudents.length / effectiveTotalLeads) * 100) : 0
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [members, leads, students, demos, recordings, attData, todayKey, monthKey]);
+  }), [members, leads, students, demos, recordings, attData, todayKey, monthKey, hrLeadCounts]);
 
-  const unassignedLeads = useMemo(() => leads.filter((l) => !leadOwner(l)).length, [leads]);
+  const unassignedLeads = useMemo(() => {
+    if (Array.isArray(hrLeadCounts?.byCounselor)) {
+      return hrLeadCounts.byCounselor
+        .filter((c) => !String(c.counselor || '').trim())
+        .reduce((acc, c) => acc + (c.totalLeads || 0), 0);
+    }
+    return leads.filter((l) => !leadOwner(l)).length;
+  }, [leads, hrLeadCounts]);
 
   const [query, setQuery] = useState('');
   const [branchFilter, setBranchFilter] = useState('All');

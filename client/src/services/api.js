@@ -426,6 +426,16 @@ export const getLeads = async (params) => {
   return res.data;
 };
 
+export const getLeadFilterOptions = async (params) => {
+  const res = await api.get('/leads/filter-options', { params });
+  return res.data;
+};
+
+export const getHrLeadCounts = async (params) => {
+  const res = await api.get('/hr/lead-counts', { params });
+  return res.data;
+};
+
 // Server attaches lmsWarning when a lead goes to a counsellor who hasn't finished
 // LMS certification; dashboards show it as a toast.
 const surfaceLmsWarning = (data) => {

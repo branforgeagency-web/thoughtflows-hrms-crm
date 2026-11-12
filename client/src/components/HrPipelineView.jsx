@@ -26,7 +26,7 @@ import {
   FileText
 } from 'lucide-react';
 
-import { getLeads, updateLead, deleteLead, createEscalation } from '../services/api';
+import { getLeads, getLeadFilterOptions, updateLead, deleteLead, createEscalation } from '../services/api';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 import PaginationBar from './PaginationBar';
 import EditLeadModal from './EditLeadModal';
@@ -106,16 +106,38 @@ export default function HrPipelineView({
   onCallLead,
   initialViewMode = 'kanban',
   currentUser,
+  hrLeadCounts = null,
   page: propPage,
   totalPages: propTotalPages,
   totalCount: propTotalCount,
-  limit: propLimit = 50,
-  onPageChange
+  limit: propLimit = 25,
+  onPageChange,
+  onFilterChange,
+  onViewModeChange
 }) {
   const [viewMode, setViewMode] = useState(initialViewMode); // 'kanban' | 'followup' | 'table'
+  const [boardRenderLimit, setBoardRenderLimit] = useState(50);
+  const handleViewModeSwitch = (nextMode) => {
+    setViewMode(nextMode);
+    setBoardRenderLimit(50);
+    if (onViewModeChange) onViewModeChange(nextMode);
+  };
   const [activeFilter, setActiveFilter] = useState('all'); // all, overdue, today, tomorrow, this_week, demo, fee, admitted
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [monthFilter, setMonthFilter] = useState('all'); // 'all' or 'YYYY-MM' — bulk uploads are tagged by enquiry month
+  const [counselorFilter, setCounselorFilter] = useState('all');
+  const [branchFilter, setBranchFilter] = useState('all');
+  const [courseFilter, setCourseFilter] = useState('all');
+  const [sourceFilter, setSourceFilter] = useState('all');
+  const [stageFilter, setStageFilter] = useState('all');
+  const [filterOptions, setFilterOptions] = useState({
+    counselors: [],
+    branches: [],
+    courses: [],
+    sources: [],
+    months: []
+  });
   const [actionNotice, setActionNotice] = useState(null);
   const [actionLoading, setActionLoading] = useState({});
   const [escalatedIds, setEscalatedIds] = useState(new Set());
@@ -147,13 +169,63 @@ export default function HrPipelineView({
   };
 
   useEffect(() => {
+    getLeadFilterOptions()
+      .then((opts) => {
+        if (opts && typeof opts === 'object') {
+          setFilterOptions({
+            counselors: Array.isArray(opts.counselors) ? opts.counselors : [],
+            branches: Array.isArray(opts.branches) ? opts.branches : [],
+            courses: Array.isArray(opts.courses) ? opts.courses : [],
+            sources: Array.isArray(opts.sources) ? opts.sources : [],
+            months: Array.isArray(opts.months) ? opts.months : []
+          });
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(searchQuery.trim()), 350);
+    return () => clearTimeout(t);
+  }, [searchQuery]);
+
+  const filtersMountedRef = React.useRef(false);
+  useEffect(() => {
+    if (!filtersMountedRef.current) {
+      filtersMountedRef.current = true;
+      return;
+    }
+    const nextFilters = {
+      counselor: counselorFilter,
+      branch: branchFilter,
+      course: courseFilter,
+      source: sourceFilter,
+      stage: stageFilter,
+      enquiryMonth: monthFilter,
+      search: debouncedSearch
+    };
+    if (onFilterChange) {
+      onFilterChange(nextFilters);
+    } else if (propLeads === undefined) {
+      setLocalPage(1);
+    }
+  }, [counselorFilter, branchFilter, courseFilter, sourceFilter, stageFilter, monthFilter, debouncedSearch]);
+
+  useEffect(() => {
     if (propLeads !== undefined) {
       setLeads(propLeads);
     } else {
+      const isTable = viewMode === 'table';
       const params = {
-        ...(currentUser?.name ? { counselor: currentUser.name } : {}),
-        page: localPage,
-        limit: propLimit
+        counselor: counselorFilter !== 'all' ? counselorFilter : (currentUser?.name || undefined),
+        branch: branchFilter !== 'all' ? branchFilter : undefined,
+        course: courseFilter !== 'all' ? courseFilter : undefined,
+        source: sourceFilter !== 'all' ? sourceFilter : undefined,
+        stage: stageFilter !== 'all' ? stageFilter : undefined,
+        enquiryMonth: monthFilter !== 'all' ? monthFilter : undefined,
+        search: debouncedSearch || undefined,
+        page: isTable ? localPage : 1,
+        limit: isTable ? propLimit : 200
       };
       getLeads(params)
         .then(res => {
@@ -165,7 +237,7 @@ export default function HrPipelineView({
         })
         .catch(err => console.error('Error fetching leads:', err));
     }
-  }, [propLeads, currentUser?.name, localPage]);
+  }, [propLeads, currentUser?.name, localPage, viewMode, propLimit, counselorFilter, branchFilter, courseFilter, sourceFilter, stageFilter, monthFilter, debouncedSearch]);
 
   const triggerAction = (msg) => {
     setActionNotice(msg);
@@ -393,17 +465,94 @@ export default function HrPipelineView({
     return key ? MONTH_LABEL(key) : '—';
   };
 
-  // Every distinct month present across this counselor's leads, newest first
+  // Every distinct month present across leads (preferring server-wide filterOptions)
   const availableMonths = useMemo(() => {
-    const set = new Set(leads.map(leadMonthKey).filter(Boolean));
+    const set = new Set([...(filterOptions.months || []), ...leads.map(leadMonthKey).filter(Boolean)]);
     return Array.from(set).sort((a, b) => b.localeCompare(a));
-  }, [leads]);
+  }, [leads, filterOptions.months]);
 
-  // Search + month filtered leads
+  const dedupeFilterValues = (arr, mode = 'title') => {
+    const PLACEHOLDERS = new Set(['n/a', 'na', 'none', 'nil', 'null', 'undefined', 'unknown', 'not mentioned']);
+    const toTitle = (str) =>
+      str.replace(/\w\S*/g, (w) => (w.length <= 2 && w === w.toUpperCase() ? w : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()));
+    const map = new Map();
+    arr.forEach((raw) => {
+      const val = String(raw || '').replace(/\s+/g, ' ').trim();
+      if (!val || !/[a-zA-Z]/.test(val)) return;
+      const key = val.toLowerCase();
+      if (PLACEHOLDERS.has(key)) return;
+      if (!map.has(key)) {
+        map.set(key, mode === 'upper' ? val.toUpperCase() : toTitle(val));
+      }
+    });
+    return Array.from(map.values()).sort((a, b) => a.localeCompare(b));
+  };
+
+  const availableCounselors = useMemo(
+    () => dedupeFilterValues([...(filterOptions.counselors || []), ...leads.map(l => l.counselorAssigned || l.allocatedTo || '')], 'title'),
+    [leads, filterOptions.counselors]
+  );
+
+  const availableBranches = useMemo(
+    () => dedupeFilterValues([...(filterOptions.branches || []), ...leads.map(l => l.branch || '')], 'title'),
+    [leads, filterOptions.branches]
+  );
+
+  const availableCourses = useMemo(
+    () => dedupeFilterValues([...(filterOptions.courses || []), ...leads.map(l => l.course || '')], 'upper'),
+    [leads, filterOptions.courses]
+  );
+
+  const availableSources = useMemo(
+    () => dedupeFilterValues([...(filterOptions.sources || []), ...leads.map(l => l.sourceName || l.sourceBadge || '')], 'title'),
+    [leads, filterOptions.sources]
+  );
+
+  const hasActiveDropdownFilters =
+    counselorFilter !== 'all' ||
+    branchFilter !== 'all' ||
+    courseFilter !== 'all' ||
+    sourceFilter !== 'all' ||
+    stageFilter !== 'all' ||
+    monthFilter !== 'all' ||
+    searchQuery.trim() !== '';
+
+  const resetAllFilters = () => {
+    setSearchQuery('');
+    setDebouncedSearch('');
+    setMonthFilter('all');
+    setCounselorFilter('all');
+    setBranchFilter('all');
+    setCourseFilter('all');
+    setSourceFilter('all');
+    setStageFilter('all');
+    setActiveFilter('all');
+  };
+
+  // Search + dropdown filtered leads
   const searchFilteredLeads = useMemo(() => {
     let out = leads;
     if (monthFilter !== 'all') {
       out = out.filter(l => leadMonthKey(l) === monthFilter);
+    }
+    if (counselorFilter !== 'all') {
+      const cf = counselorFilter.toLowerCase();
+      out = out.filter(l => (l.counselorAssigned || l.allocatedTo || l.spokenBy || '').toLowerCase() === cf);
+    }
+    if (branchFilter !== 'all') {
+      const bf = branchFilter.toLowerCase();
+      out = out.filter(l => (l.branch || '').toLowerCase() === bf);
+    }
+    if (courseFilter !== 'all') {
+      const cr = courseFilter.toLowerCase();
+      out = out.filter(l => (l.course || '').toLowerCase() === cr);
+    }
+    if (sourceFilter !== 'all') {
+      const sf = sourceFilter.toLowerCase();
+      out = out.filter(l => (l.sourceName || l.sourceBadge || '').toLowerCase() === sf);
+    }
+    if (stageFilter !== 'all') {
+      out = out.filter(l => (l.stage || 'new') === stageFilter);
     }
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
@@ -418,7 +567,7 @@ export default function HrPipelineView({
       );
     }
     return out;
-  }, [leads, searchQuery, monthFilter]);
+  }, [leads, searchQuery, monthFilter, counselorFilter, branchFilter, courseFilter, sourceFilter, stageFilter]);
 
   // Stage Pipeline columns
   const PIPELINE_COLUMNS = useMemo(() => {
@@ -699,14 +848,14 @@ export default function HrPipelineView({
   }, [searchFilteredLeads, activeFilter]);
 
   const FILTERS = [
-    { key: 'all', label: 'All', count: stageCounts.total, activeClass: 'bg-slate-900 text-white' },
-    { key: 'overdue', label: '🔴 Overdue', count: stageCounts.overdueCount, activeClass: 'bg-rose-600 text-white' },
-    { key: 'today', label: '🟡 Today', count: stageCounts.todayCount, activeClass: 'bg-amber-600 text-white' },
-    { key: 'tomorrow', label: '⚪ Tomorrow', count: stageCounts.tomorrowCount, activeClass: 'bg-sky-600 text-white' },
-    { key: 'demo', label: '🟣 Demos', count: stageCounts.demoCount, activeClass: 'bg-purple-600 text-white' },
-    { key: 'fee', label: '🟠 Fees', count: stageCounts.feeCount, activeClass: 'bg-amber-700 text-white' },
-    { key: 'done', label: '✓ Done', count: stageCounts.doneCount, activeClass: 'bg-slate-800 text-white' },
-    { key: 'admitted', label: '🟢 Admitted', count: stageCounts.convertedCount, activeClass: 'bg-emerald-600 text-white' }
+    { key: 'all', label: 'All', count: (!hasActiveDropdownFilters && hrLeadCounts?.totalLeads != null) ? hrLeadCounts.totalLeads : stageCounts.total, activeClass: 'bg-slate-900 text-white' },
+    { key: 'overdue', label: '🔴 Overdue', count: (!hasActiveDropdownFilters && hrLeadCounts?.overdueCount != null) ? hrLeadCounts.overdueCount : stageCounts.overdueCount, activeClass: 'bg-rose-600 text-white' },
+    { key: 'today', label: '🟡 Today', count: (!hasActiveDropdownFilters && hrLeadCounts?.todayCount != null) ? hrLeadCounts.todayCount : stageCounts.todayCount, activeClass: 'bg-amber-600 text-white' },
+    { key: 'tomorrow', label: '⚪ Tomorrow', count: (!hasActiveDropdownFilters && hrLeadCounts?.tomorrowCount != null) ? hrLeadCounts.tomorrowCount : stageCounts.tomorrowCount, activeClass: 'bg-sky-600 text-white' },
+    { key: 'demo', label: '🟣 Demos', count: (!hasActiveDropdownFilters && hrLeadCounts?.demoCount != null) ? hrLeadCounts.demoCount : stageCounts.demoCount, activeClass: 'bg-purple-600 text-white' },
+    { key: 'fee', label: '🟠 Fees', count: (!hasActiveDropdownFilters && hrLeadCounts?.feeCount != null) ? hrLeadCounts.feeCount : stageCounts.feeCount, activeClass: 'bg-amber-700 text-white' },
+    { key: 'done', label: '✓ Done', count: (!hasActiveDropdownFilters && hrLeadCounts?.doneCount != null) ? hrLeadCounts.doneCount : stageCounts.doneCount, activeClass: 'bg-slate-800 text-white' },
+    { key: 'admitted', label: '🟢 Admitted', count: (!hasActiveDropdownFilters && hrLeadCounts?.admittedCount != null) ? hrLeadCounts.admittedCount : stageCounts.convertedCount, activeClass: 'bg-emerald-600 text-white' }
   ];
 
   return (
@@ -726,7 +875,7 @@ export default function HrPipelineView({
             Pipeline & <span className="text-[#00897b]">Follow-ups</span>
           </h1>
           <p className="text-xs sm:text-[13px] text-slate-500 font-medium mt-0.5">
-            Unified lead tracker · <strong className="text-slate-800 font-bold">{leads.length} total leads</strong> · {stageCounts.overdueCount} overdue · {stageCounts.todayCount} due today
+            Unified lead tracker · <strong className="text-slate-800 font-bold">{(propTotalCount ?? localTotalCount ?? leads.length).toLocaleString()} total leads</strong> · {stageCounts.overdueCount} overdue · {stageCounts.todayCount} due today
           </p>
         </div>
 
@@ -736,7 +885,7 @@ export default function HrPipelineView({
           <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200 shadow-2xs">
             <button
               type="button"
-              onClick={() => setViewMode('kanban')}
+              onClick={() => handleViewModeSwitch('kanban')}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                 viewMode === 'kanban'
                   ? 'bg-white text-slate-900 shadow-xs'
@@ -749,7 +898,7 @@ export default function HrPipelineView({
             </button>
             <button
               type="button"
-              onClick={() => setViewMode('followup')}
+              onClick={() => handleViewModeSwitch('followup')}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                 viewMode === 'followup'
                   ? 'bg-white text-slate-900 shadow-xs'
@@ -762,7 +911,7 @@ export default function HrPipelineView({
             </button>
             <button
               type="button"
-              onClick={() => setViewMode('table')}
+              onClick={() => handleViewModeSwitch('table')}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                 viewMode === 'table'
                   ? 'bg-white text-slate-900 shadow-xs'
@@ -843,6 +992,85 @@ export default function HrPipelineView({
             })}
           </div>
         </div>
+
+        {/* HR, Branch, Course, Source & Stage Filters */}
+        <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100">
+          <select
+            value={counselorFilter}
+            onChange={(e) => setCounselorFilter(e.target.value)}
+            className="rounded-xl px-3 py-1.5 text-xs font-semibold bg-slate-50 border border-slate-200 focus:bg-white focus:border-[#00897b] outline-none transition-all cursor-pointer"
+            title="Filter by HR / Counsellor"
+          >
+            <option value="all">All HRs / Counsellors</option>
+            {availableCounselors.map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
+
+          <select
+            value={branchFilter}
+            onChange={(e) => setBranchFilter(e.target.value)}
+            className="rounded-xl px-3 py-1.5 text-xs font-semibold bg-slate-50 border border-slate-200 focus:bg-white focus:border-[#00897b] outline-none transition-all cursor-pointer"
+            title="Filter by Branch"
+          >
+            <option value="all">All Branches</option>
+            {availableBranches.map((b) => (
+              <option key={b} value={b}>{b}</option>
+            ))}
+          </select>
+
+          <select
+            value={courseFilter}
+            onChange={(e) => setCourseFilter(e.target.value)}
+            className="rounded-xl px-3 py-1.5 text-xs font-semibold bg-slate-50 border border-slate-200 focus:bg-white focus:border-[#00897b] outline-none transition-all cursor-pointer"
+            title="Filter by Course"
+          >
+            <option value="all">All Courses</option>
+            {availableCourses.map((cr) => (
+              <option key={cr} value={cr}>{cr}</option>
+            ))}
+          </select>
+
+          <select
+            value={sourceFilter}
+            onChange={(e) => setSourceFilter(e.target.value)}
+            className="rounded-xl px-3 py-1.5 text-xs font-semibold bg-slate-50 border border-slate-200 focus:bg-white focus:border-[#00897b] outline-none transition-all cursor-pointer"
+            title="Filter by Lead Source"
+          >
+            <option value="all">All Sources</option>
+            {availableSources.map((src) => (
+              <option key={src} value={src}>{src}</option>
+            ))}
+          </select>
+
+          <select
+            value={stageFilter}
+            onChange={(e) => setStageFilter(e.target.value)}
+            className="rounded-xl px-3 py-1.5 text-xs font-semibold bg-slate-50 border border-slate-200 focus:bg-white focus:border-[#00897b] outline-none transition-all cursor-pointer"
+            title="Filter by Pipeline Stage"
+          >
+            <option value="all">All Stages</option>
+            <option value="new">New</option>
+            <option value="contacted">Contacted</option>
+            <option value="demo_booked">Demo Booked</option>
+            <option value="demo_attended">Demo Attended</option>
+            <option value="fee_followup">Fee Discussion</option>
+            <option value="done">Done</option>
+            <option value="admitted">Admitted</option>
+            <option value="not_mentioned">Not Mentioned</option>
+          </select>
+
+          {hasActiveDropdownFilters && (
+            <button
+              type="button"
+              onClick={resetAllFilters}
+              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 transition-all cursor-pointer"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Clear Filters</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* ========================================================================= */}
@@ -886,7 +1114,8 @@ export default function HrPipelineView({
                       <span>No leads in this stage</span>
                     </div>
                   ) : (
-                    visibleCards.map((card) => {
+                    <>
+                    {visibleCards.slice(0, boardRenderLimit).map((card) => {
                       if (card.isAdmitted) {
                         const studentIdStr = card.rawLead?.admittedStudentId || card.rawLead?.studentId;
 
@@ -1130,7 +1359,17 @@ export default function HrPipelineView({
                           )}
                         </div>
                       );
-                    })
+                    })}
+                    {visibleCards.length > boardRenderLimit && (
+                      <button
+                        type="button"
+                        onClick={() => setBoardRenderLimit((n) => n + 50)}
+                        className="w-full py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-bold text-slate-700 transition cursor-pointer"
+                      >
+                        Show more ({visibleCards.length - boardRenderLimit} remaining)
+                      </button>
+                    )}
+                    </>
                   )}
                 </div>
               </div>
@@ -1152,7 +1391,8 @@ export default function HrPipelineView({
               <p className="text-xs text-slate-400">Try changing the filter or search query above</p>
             </div>
           ) : (
-            filteredFollowUps.map((card) => {
+            <>
+            {filteredFollowUps.slice(0, boardRenderLimit).map((card) => {
               return (
                 <div
                   key={card.id}
@@ -1461,7 +1701,19 @@ export default function HrPipelineView({
                   </div>
                 </div>
               );
-            })
+            })}
+            {filteredFollowUps.length > boardRenderLimit && (
+              <div className="col-span-full flex justify-center pt-2">
+                <button
+                  type="button"
+                  onClick={() => setBoardRenderLimit((n) => n + 50)}
+                  className="px-4 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-bold text-slate-700 transition cursor-pointer"
+                >
+                  Show more ({filteredFollowUps.length - boardRenderLimit} remaining)
+                </button>
+              </div>
+            )}
+            </>
           )}
         </div>
       )}
@@ -1730,17 +1982,19 @@ export default function HrPipelineView({
           </div>
         </div>
       )}
-      <PaginationBar
-        page={propPage ?? localPage}
-        totalPages={propTotalPages ?? localTotalPages}
-        totalCount={propTotalCount ?? localTotalCount}
-        limit={propLimit}
-        itemLabel="leads"
-        onPageChange={(nextPage) => {
-          if (onPageChange) onPageChange(nextPage);
-          else setLocalPage(nextPage);
-        }}
-      />
+      {viewMode === 'table' && (
+        <PaginationBar
+          page={propPage ?? localPage}
+          totalPages={propTotalPages ?? localTotalPages}
+          totalCount={propTotalCount ?? localTotalCount}
+          limit={propLimit}
+          itemLabel="enquiries"
+          onPageChange={(nextPage) => {
+            if (onPageChange) onPageChange(nextPage);
+            else setLocalPage(nextPage);
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -57,7 +57,7 @@ import LeadCallModal from './LeadCallModal';
 import BookNewDemoModal from './BookNewDemoModal';
 import AddLeadModal from './AddLeadModal';
 import CompleteRegistrationModal from './CompleteRegistrationModal';
-import { getStudents, getLeads, createLead, updateLead, updateStudent, getDemos, createDemo, createStudent, getRecordings, getTodayClosure, saveDailyClosure, onDataUpdate, getNotifications, markNotificationRead, markNotificationsRead, getStudentRequests, getStudentTickets, getMyAttendance, setMyAttendance, startMyWork, closeMyWork, logCall, getTodayCallLog, getHrTargets } from '../services/api';
+import { getStudents, getLeads, getHrLeadCounts, createLead, updateLead, updateStudent, getDemos, createDemo, createStudent, getRecordings, getTodayClosure, saveDailyClosure, onDataUpdate, getNotifications, markNotificationRead, markNotificationsRead, getStudentRequests, getStudentTickets, getMyAttendance, setMyAttendance, startMyWork, closeMyWork, logCall, getTodayCallLog, getHrTargets } from '../services/api';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 import { useIncentivePolicy, progressiveIncentive } from '../utils/incentive';
 import { matchesHrOwnerName } from '../utils/hrNameMatch';
@@ -399,10 +399,15 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   const [leadsPage, setLeadsPage] = useState(1);
   const [leadsTotalCount, setLeadsTotalCount] = useState(0);
   const [leadsTotalPages, setLeadsTotalPages] = useState(1);
+  const [leadFilters, setLeadFilters] = useState({});
+  const [leadsViewMode, setLeadsViewMode] = useState('kanban');
+  const [hrLeadCounts, setHrLeadCounts] = useState(null);
   const [studentsPage, setStudentsPage] = useState(1);
   const [studentsTotalCount, setStudentsTotalCount] = useState(0);
   const [studentsTotalPages, setStudentsTotalPages] = useState(1);
   const PAGE_LIMIT = 50;
+  const LEADS_TABLE_LIMIT = 25;
+  const LEADS_BOARD_LIMIT = 200;
   
   // Local daily calls cache for instant reactivity when calling through modal
   // Today's calls come from the server call log (works across devices / browsers)
@@ -532,14 +537,30 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       const dKey = localDateKey();
       const targetStudentsPage = overrides.studentsPage ?? studentsPage;
       const targetLeadsPage = overrides.leadsPage ?? leadsPage;
+      const targetLeadsMode = overrides.leadsViewMode ?? leadsViewMode;
+      const targetLeadsLimit = targetLeadsMode === 'table' ? LEADS_TABLE_LIMIT : LEADS_BOARD_LIMIT;
+      const activeLeadFilters = overrides.leadFilters ?? leadFilters;
+      const leadParams = {
+        ...activeLeadFilters,
+        ...(shouldFilterOnServer && !activeLeadFilters.counselor ? { counselor: counselorFilter } : {}),
+        page: targetLeadsMode === 'table' ? targetLeadsPage : 1,
+        limit: targetLeadsLimit
+      };
+      Object.keys(leadParams).forEach((k) => {
+        if (leadParams[k] === '' || leadParams[k] === 'all' || leadParams[k] === undefined) {
+          delete leadParams[k];
+        }
+      });
 
-      const [stRes, ldRes, dmRes, recRes, closureRes] = await Promise.all([
+      const [stRes, ldRes, dmRes, recRes, closureRes, countsRes] = await Promise.all([
         getStudents({ ...(shouldFilterOnServer ? { hrName: counselorFilter } : {}), page: targetStudentsPage, limit: PAGE_LIMIT }),
-        getLeads({ ...(shouldFilterOnServer ? { counselor: counselorFilter } : {}), page: targetLeadsPage, limit: PAGE_LIMIT }),
+        getLeads(leadParams),
         getDemos(shouldFilterOnServer ? { counselor: counselorFilter } : undefined),
         getRecordings({ ...(shouldFilterOnServer ? { counselor: counselorFilter } : {}), page: 1, limit: PAGE_LIMIT }).catch(() => []),
-        (counselorFilter ? getTodayClosure(counselorFilter, dKey) : Promise.resolve(null)).catch(() => null)
+        (counselorFilter ? getTodayClosure(counselorFilter, dKey) : Promise.resolve(null)).catch(() => null),
+        getHrLeadCounts(shouldFilterOnServer ? { counselor: counselorFilter } : undefined).catch(() => null)
       ]);
+      if (countsRes && typeof countsRes === 'object') setHrLeadCounts(countsRes);
       const stList = Array.isArray(stRes) ? stRes : (Array.isArray(stRes?.students) ? stRes.students : []);
       setStudents(stList);
       setStudentsTotalCount(typeof stRes?.totalCount === 'number' ? stRes.totalCount : stList.length);
@@ -1040,9 +1061,11 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   }, [scopedStudents]);
 
   const NAV_TABS = useMemo(() => {
-    const pipelineCount = scopedLeads.length.toString();
+    const trueLeadsCount = hrLeadCounts?.totalLeads ?? (leadsTotalCount || scopedLeads.length);
+    const trueStudentsCount = hrLeadCounts?.totalStudents ?? (studentsTotalCount || scopedStudents.length);
+    const pipelineCount = trueLeadsCount.toString();
     const followUpCount = scopedLeads.filter(l => l.stage !== 'admitted' && l.stage !== 'closed').length.toString();
-    const admittedCount = scopedStudents.length.toString();
+    const admittedCount = trueStudentsCount.toString();
     const handoverCount = scopedStudents.filter(s => s.handoverStatus !== 'Sent to Training' && s.handoverStatus !== 'Handed Over to Head of Trainer').length.toString();
 
     return [
@@ -1731,6 +1754,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             branch={viewScope?.branch || ''}
             scopeLabel={viewScope?.label || ''}
             matchesName={matchesMyName}
+            hrLeadCounts={hrLeadCounts}
           />
         ) : scopeKind && activeTab === 'HR Attendance' ? (
           <HrAttendanceLeavesSection
@@ -1800,13 +1824,24 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             onCallLead={(lead) => openCallFor(lead, false)}
             initialViewMode={activeTab === 'Follow-up Board' ? 'followup' : 'kanban'}
             currentUser={currentUser}
+            hrLeadCounts={hrLeadCounts}
             page={leadsPage}
             totalPages={leadsTotalPages}
             totalCount={leadsTotalCount}
-            limit={PAGE_LIMIT}
+            limit={LEADS_TABLE_LIMIT}
             onPageChange={(nextPage) => {
               setLeadsPage(nextPage);
-              loadAllData(false, { leadsPage: nextPage });
+              loadAllData(false, { leadsPage: nextPage, leadsViewMode: 'table' });
+            }}
+            onFilterChange={(nextFilters) => {
+              setLeadFilters(nextFilters);
+              setLeadsPage(1);
+              loadAllData(true, { leadsPage: 1, leadFilters: nextFilters });
+            }}
+            onViewModeChange={(nextMode) => {
+              setLeadsViewMode(nextMode);
+              setLeadsPage(1);
+              loadAllData(true, { leadsPage: 1, leadsViewMode: nextMode });
             }}
           />
         ) : activeTab === 'LMS' ? (
@@ -2514,7 +2549,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
                 onClick={() => handleTabChange('Pipeline & Follow-ups')}
                 className="px-4 py-2 rounded-xl bg-[#7c3aed] text-white text-xs font-bold shadow-xs hover:bg-[#6d28d9] transition-all"
               >
-                Open Pipeline & Follow-ups ({scopedLeads.length} Leads)
+                Open Pipeline & Follow-ups ({(hrLeadCounts?.totalLeads ?? (leadsTotalCount || scopedLeads.length)).toLocaleString()} Leads)
               </button>
               <button
                 onClick={() => handleTabChange('Home')}

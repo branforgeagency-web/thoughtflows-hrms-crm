@@ -4071,10 +4071,234 @@ router.delete('/students/:id', async (req, res) => {
 // ==========================================
 // REAL CRM LEADS & PIPELINE API
 // ==========================================
+router.get('/leads/filter-options', async (req, res) => {
+  try {
+    await ensureStaffNamesLoaded();
+    const matchConds = [];
+    if (req.hrTeamNames) {
+      matchConds.push(ownerAnyQuery(req.hrTeamNames, LEAD_OWNER_FIELDS, BRANCH_FIELDS_LEAD));
+    } else if (isScopedHr(req) && req.user?.name) {
+      matchConds.push(leadOwnerQuery(req.user.name, req.user?.branch || ''));
+    } else if (isScopedBranchManager(req)) {
+      const bmBranch = getBranchManagerBranch(req);
+      if (bmBranch) matchConds.push({ branch: { $regex: new RegExp(escapeRegex(bmBranch.trim()), 'i') } });
+    }
+    const matchQuery = matchConds.length > 0 ? { $and: matchConds } : {};
+
+    const [counselors, branches, courses, sources, months] = await Promise.all([
+      StudentLead.distinct('counselorAssigned', matchQuery),
+      StudentLead.distinct('branch', matchQuery),
+      StudentLead.distinct('course', matchQuery),
+      StudentLead.distinct('sourceName', matchQuery),
+      StudentLead.distinct('enquiryMonth', matchQuery)
+    ]);
+
+    const PLACEHOLDERS = new Set(['n/a', 'na', 'none', 'nil', 'null', 'undefined', 'unknown', 'not mentioned']);
+    const toTitleCase = (str) =>
+      str.replace(/\w\S*/g, (w) => (w.length <= 2 && w === w.toUpperCase() ? w : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()));
+
+    const cleanSorted = (arr, { desc = false, mode = 'title' } = {}) => {
+      const map = new Map();
+      (arr || []).forEach((raw) => {
+        const val = String(raw || '').replace(/\s+/g, ' ').trim();
+        if (!val) return;
+        // Skip punctuation-only ('-', '--', '`') and pure numbers/phone numbers
+        if (!/[a-zA-Z]/.test(val)) return;
+        const key = val.toLowerCase();
+        if (PLACEHOLDERS.has(key)) return;
+        if (!map.has(key)) {
+          const formatted = mode === 'upper' ? val.toUpperCase() : mode === 'raw' ? val : toTitleCase(val);
+          map.set(key, formatted);
+        }
+      });
+      return Array.from(map.values()).sort((a, b) => (desc ? b.localeCompare(a) : a.localeCompare(b)));
+    };
+
+    const cleanMonths = (arr) =>
+      Array.from(new Set((arr || []).map((v) => String(v || '').trim()).filter((v) => /^\d{4}-\d{2}$/.test(v))))
+        .sort((a, b) => b.localeCompare(a));
+
+    res.json({
+      counselors: cleanSorted(counselors, { mode: 'title' }),
+      branches: cleanSorted(branches, { mode: 'title' }),
+      courses: cleanSorted(courses, { mode: 'upper' }),
+      sources: cleanSorted(sources, { mode: 'title' }),
+      months: cleanMonths(months)
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/hr/lead-counts', async (req, res) => {
+  try {
+    await ensureStaffNamesLoaded();
+    const { branch, counselor } = req.query;
+    const matchConds = [];
+    const effectiveCounselor = isScopedHr(req) ? req.user?.name : counselor;
+    const isBM = isScopedBranchManager(req);
+    const effectiveBranch = isBM ? getBranchManagerBranch(req) : branch;
+
+    if (req.hrTeamNames) {
+      matchConds.push(ownerAnyQuery(pickTeamNames(req.hrTeamNames, counselor), LEAD_OWNER_FIELDS, BRANCH_FIELDS_LEAD));
+    } else if (effectiveCounselor && effectiveCounselor !== 'all') {
+      const ownerBranch = isScopedHr(req) ? (req.user?.branch || '') : (effectiveBranch && effectiveBranch !== 'all' ? effectiveBranch : '');
+      matchConds.push(leadOwnerQuery(effectiveCounselor, ownerBranch));
+    }
+    if (effectiveBranch && effectiveBranch !== 'all') {
+      matchConds.push({ branch: { $regex: new RegExp(escapeRegex(effectiveBranch.trim()), 'i') } });
+    }
+    const matchQuery = matchConds.length > 0 ? { $and: matchConds } : {};
+
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+    const tomorrowKey = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, '0')}-${String(tomorrow.getDate()).padStart(2, '0')}`;
+
+    const studentMatchConds = [];
+    if (req.hrTeamNames) {
+      studentMatchConds.push(ownerAnyQuery(pickTeamNames(req.hrTeamNames, counselor), STUDENT_OWNER_FIELDS, BRANCH_FIELDS_STUDENT));
+    } else if (effectiveCounselor && effectiveCounselor !== 'all') {
+      const ownerBranch = isScopedHr(req) ? (req.user?.branch || '') : (effectiveBranch && effectiveBranch !== 'all' ? effectiveBranch : '');
+      studentMatchConds.push(ownerQueryWithBranch(effectiveCounselor, ownerBranch, STUDENT_OWNER_FIELDS, BRANCH_FIELDS_STUDENT));
+    } else if (effectiveBranch && effectiveBranch !== 'all') {
+      const bRx = new RegExp(escapeRegex(effectiveBranch.trim()), 'i');
+      studentMatchConds.push({ $or: [{ branch: bRx }, { location: bRx }, { leadBranch: bRx }] });
+    }
+    const studentQuery = studentMatchConds.length > 0 ? { $and: studentMatchConds } : {};
+
+    const [aggResult, totalStudents] = await Promise.all([
+      StudentLead.aggregate([
+        { $match: matchQuery },
+        {
+          $facet: {
+            summary: [
+              {
+                $group: {
+                  _id: null,
+                  totalLeads: { $sum: 1 },
+                  newToday: { $sum: { $cond: [{ $gte: ['$createdAt', todayStart] }, 1, 0] } },
+                  admittedCount: {
+                    $sum: {
+                      $cond: [
+                        { $or: [{ $ne: [{ $ifNull: ['$admittedStudentId', ''] }, ''] }, { $eq: ['$stage', 'admitted'] }] },
+                        1,
+                        0
+                      ]
+                    }
+                  },
+                  doneCount: {
+                    $sum: {
+                      $cond: [
+                        { $and: [{ $eq: [{ $ifNull: ['$admittedStudentId', ''] }, ''] }, { $in: ['$stage', ['done', 'closed']] }] },
+                        1,
+                        0
+                      ]
+                    }
+                  },
+                  demoCount: {
+                    $sum: { $cond: [{ $in: ['$stage', ['demo_booked', 'demo_attended']] }, 1, 0] }
+                  },
+                  feeCount: {
+                    $sum: { $cond: [{ $eq: ['$stage', 'fee_followup'] }, 1, 0] }
+                  },
+                  todayCount: {
+                    $sum: { $cond: [{ $eq: ['$followUpDate', todayKey] }, 1, 0] }
+                  },
+                  tomorrowCount: {
+                    $sum: { $cond: [{ $eq: ['$followUpDate', tomorrowKey] }, 1, 0] }
+                  },
+                  overdueCount: {
+                    $sum: {
+                      $cond: [
+                        {
+                          $and: [
+                            { $not: [{ $in: ['$stage', ['admitted', 'done', 'closed']] }] },
+                            { $eq: [{ $ifNull: ['$admittedStudentId', ''] }, ''] },
+                            {
+                              $or: [
+                                { $and: [{ $ne: [{ $ifNull: ['$followUpDate', ''] }, ''] }, { $lt: ['$followUpDate', todayKey] }] },
+                                { $and: [{ $eq: [{ $ifNull: ['$followUpDate', ''] }, ''] }, { $eq: ['$stage', 'new'] }] }
+                              ]
+                            }
+                          ]
+                        },
+                        1,
+                        0
+                      ]
+                    }
+                  }
+                }
+              }
+            ],
+            byCounselor: [
+              {
+                $group: {
+                  _id: {
+                    counselor: { $ifNull: ['$counselorAssigned', ''] },
+                    branch: { $ifNull: ['$branch', ''] }
+                  },
+                  totalLeads: { $sum: 1 },
+                  newToday: { $sum: { $cond: [{ $gte: ['$createdAt', todayStart] }, 1, 0] } },
+                  fuToday: { $sum: { $cond: [{ $eq: ['$followUpDate', todayKey] }, 1, 0] } },
+                  overdue: {
+                    $sum: {
+                      $cond: [
+                        {
+                          $and: [
+                            { $not: [{ $in: ['$stage', ['admitted', 'done', 'closed']] }] },
+                            { $eq: [{ $ifNull: ['$admittedStudentId', ''] }, ''] },
+                            { $ne: [{ $ifNull: ['$followUpDate', ''] }, ''] },
+                            { $lt: ['$followUpDate', todayKey] }
+                          ]
+                        },
+                        1,
+                        0
+                      ]
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]),
+      Student.countDocuments(studentQuery)
+    ]);
+
+    const s = aggResult?.[0]?.summary?.[0] || {};
+    const byCounselor = (aggResult?.[0]?.byCounselor || []).map((r) => ({
+      counselor: r._id?.counselor || '',
+      branch: r._id?.branch || '',
+      totalLeads: r.totalLeads || 0,
+      newToday: r.newToday || 0,
+      fuToday: r.fuToday || 0,
+      overdue: r.overdue || 0
+    }));
+
+    res.json({
+      totalLeads: s.totalLeads || 0,
+      newToday: s.newToday || 0,
+      overdueCount: s.overdueCount || 0,
+      todayCount: s.todayCount || 0,
+      tomorrowCount: s.tomorrowCount || 0,
+      demoCount: s.demoCount || 0,
+      feeCount: s.feeCount || 0,
+      doneCount: s.doneCount || 0,
+      admittedCount: s.admittedCount || 0,
+      totalStudents: totalStudents || 0,
+      byCounselor
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/leads', async (req, res) => {
   try {
     await ensureStaffNamesLoaded();
-    const { search, stage, branch } = req.query;
+    const { search, stage, branch, course, source, enquiryMonth } = req.query;
     // Counsellors are always pinned to their own leads; Branch Managers are pinned to their branch
     const counselor = isScopedHr(req) ? req.user?.name : req.query.counselor;
     const isBM = isScopedBranchManager(req);
@@ -4088,6 +4312,16 @@ router.get('/leads', async (req, res) => {
     }
     if (targetBranch && targetBranch !== 'all') {
       baseConditions.push({ branch: { $regex: new RegExp(escapeRegex(targetBranch.trim()), 'i') } });
+    }
+    if (course && course !== 'all') {
+      baseConditions.push({ course: { $regex: new RegExp(`^${escapeRegex(String(course).trim())}$`, 'i') } });
+    }
+    if (source && source !== 'all') {
+      const srcRx = new RegExp(`^${escapeRegex(String(source).trim())}$`, 'i');
+      baseConditions.push({ $or: [{ sourceName: srcRx }, { sourceBadge: srcRx }] });
+    }
+    if (enquiryMonth && enquiryMonth !== 'all') {
+      baseConditions.push({ enquiryMonth: String(enquiryMonth).trim() });
     }
     if (search) {
       const searchRegex = { $regex: escapeRegex(String(search).trim()), $options: 'i' };
