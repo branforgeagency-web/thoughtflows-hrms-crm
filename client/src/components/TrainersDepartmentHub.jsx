@@ -259,21 +259,15 @@ export default function TrainersDepartmentHub({
   const [branches, setBranches] = useState([]);
   const [loading, setLoading] = useState(true);
 
+  // Each tile updates as its own request lands, so the hub is usable before
+  // the student list (the heaviest of the five) has finished downloading.
   const loadHubStats = useCallback(() => {
-    Promise.all([
-      getTrainerSettings().catch(() => []),
-      getBatches().catch(() => []),
-      getStudents().catch(() => []),
-      getDemos().catch(() => []),
-      getBranches().catch(() => [])
-    ])
-      .then(([tData, bData, sData, dData, brData]) => {
-        setTrainers(Array.isArray(tData) ? tData : []);
-        setBatches(Array.isArray(bData) ? bData : []);
-        setStudents(Array.isArray(sData) ? sData : []);
-        setDemos(Array.isArray(dData) ? dData : []);
-        setBranches(Array.isArray(brData) ? brData : []);
-      })
+    getTrainerSettings().then((d) => setTrainers(Array.isArray(d) ? d : [])).catch(() => {});
+    getBatches().then((d) => setBatches(Array.isArray(d) ? d : [])).catch(() => {});
+    getDemos().then((d) => setDemos(Array.isArray(d) ? d : [])).catch(() => {});
+    getBranches().then((d) => setBranches(Array.isArray(d) ? d : [])).catch(() => {});
+    getStudents()
+      .then((d) => setStudents(Array.isArray(d) ? d : []))
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);

@@ -63,25 +63,22 @@ export default function MarketingDepartmentDashboard({
 
   useEffect(() => {
     let isMounted = true;
+    // Each panel renders the moment its own request lands rather than the page
+    // waiting on the slowest of seven (the lead list is by far the largest).
     const fetchLiveMarketingData = async () => {
-      const [leadsData, campaignsData, sourcesData, demandsData, creativesData, contentData, branchData] = await Promise.all([
-        getLeads().catch(() => null),
-        getCampaigns().catch(() => null),
-        getMarketingSources().catch(() => null),
-        getLeadDemands().catch(() => null),
-        getCreatives().catch(() => null),
-        getContentPieces().catch(() => null),
-        getBranches().catch(() => null)
-      ]);
+      const apply = (fn) => (data) => { if (isMounted) fn(data); };
+
+      getCampaigns().then(apply((d) => { if (Array.isArray(d)) setCampaignRows(d); })).catch(() => {});
+      getMarketingSources().then(apply((d) => { if (Array.isArray(d)) setLeadSourceRows(d); })).catch(() => {});
+      getLeadDemands().then(apply((d) => { if (Array.isArray(d)) setDemands(d); })).catch(() => {});
+      getCreatives().then(apply((d) => { if (Array.isArray(d)) setCreatives(d); })).catch(() => {});
+      getContentPieces().then(apply((d) => { if (Array.isArray(d)) setContentPieces(d); })).catch(() => {});
+      getBranches().then(apply((d) => { if (Array.isArray(d)) setBranches(d); })).catch(() => {});
+
+      const leadsData = await getLeads().catch(() => null);
       if (!isMounted) return;
       if (leadsData && Array.isArray(leadsData.leads)) setLeads(leadsData.leads);
       else if (Array.isArray(leadsData)) setLeads(leadsData);
-      if (Array.isArray(campaignsData)) setCampaignRows(campaignsData);
-      if (Array.isArray(sourcesData)) setLeadSourceRows(sourcesData);
-      if (Array.isArray(demandsData)) setDemands(demandsData);
-      if (Array.isArray(creativesData)) setCreatives(creativesData);
-      if (Array.isArray(contentData)) setContentPieces(contentData);
-      if (Array.isArray(branchData)) setBranches(branchData);
       setLoaded(true);
     };
     fetchLiveMarketingData();

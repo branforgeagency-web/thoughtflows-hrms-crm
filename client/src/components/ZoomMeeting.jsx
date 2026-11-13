@@ -1,6 +1,26 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { RefreshCw, AlertCircle, X, Maximize2, Minimize2 } from 'lucide-react';
-import ZoomMtgEmbedded from '@zoom/meetingsdk/embedded';
+// The Zoom embedded SDK is ~2MB. It is loaded on demand the first time a
+// meeting actually starts, so it no longer weighs down the initial page load
+// for everybody (most users never join a meeting). `parseZoomLink` and this
+// component's own code stay in the main bundle.
+let ZoomMtgEmbedded = null;
+let zoomSdkPromise = null;
+const loadZoomSdk = () => {
+  if (ZoomMtgEmbedded) return Promise.resolve(ZoomMtgEmbedded);
+  if (!zoomSdkPromise) {
+    zoomSdkPromise = import('@zoom/meetingsdk/embedded')
+      .then((mod) => {
+        ZoomMtgEmbedded = mod.default || mod;
+        return ZoomMtgEmbedded;
+      })
+      .catch((err) => {
+        zoomSdkPromise = null;
+        throw err;
+      });
+  }
+  return zoomSdkPromise;
+};
 import { authHeaders } from '../services/api';
 
 export function parseZoomLink(link = '') {
@@ -26,7 +46,7 @@ let sharedClient = null;
 async function resetSharedClient() {
   if (!sharedClient) return;
   try { await sharedClient.leaveMeeting(); } catch (_) {}
-  try { ZoomMtgEmbedded.destroyClient(); } catch (_) {}
+  try { ZoomMtgEmbedded?.destroyClient(); } catch (_) {}
   sharedClient = null;
 }
 
@@ -205,7 +225,9 @@ export default function ZoomMeeting({
       if (attempt > 1) { setRootKey(k => k + 1); await new Promise(r => setTimeout(r, 300)); }
       if (run !== runRef.current || !containerRef.current) return;
 
-      const client = ZoomMtgEmbedded.createClient();
+      const ZoomSdk = await loadZoomSdk();
+      if (run !== runRef.current) return;
+      const client = ZoomSdk.createClient();
       sharedClient = client;
       clientRef.current = client;
       remoteSharersRef.current = new Set();

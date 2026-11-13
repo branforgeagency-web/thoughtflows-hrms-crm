@@ -141,23 +141,20 @@ export default function CccpDashboard({
   const fetchLiveCccpData = async () => {
     try {
       setLoadingStudents(true);
-      const [stRes, clgRes, cmpRes, plcRes, bilRes, fuRes, rateRes] = await Promise.all([
-        getStudents().catch(() => []),
-        getColleges().catch(() => []),
-        getCompanies().catch(() => []),
-        getPlacements().catch(() => []),
-        getBillingDeals().catch(() => []),
-        getCccpFollowUps().catch(() => []),
-        getCourseFeeRates().catch(() => [])
-      ]);
-      if (Array.isArray(rateRes)) setFeeRates(rateRes);
+
+      // Each panel is applied as soon as its own request lands, so the board
+      // fills in progressively instead of waiting for the slowest of seven.
+      getColleges().then((r) => setCollegesList(Array.isArray(r) ? r : [])).catch(() => {});
+      getCompanies().then((r) => setCompaniesList(Array.isArray(r) ? r : [])).catch(() => {});
+      getPlacements().then((r) => setPlacementStudents(Array.isArray(r) ? r : [])).catch(() => {});
+      getBillingDeals().then((r) => setBillingDeals(Array.isArray(r) ? r : [])).catch(() => {});
+      getCccpFollowUps().then((r) => setFollowUps(Array.isArray(r) ? r : [])).catch(() => {});
+      getCourseFeeRates().then((r) => { if (Array.isArray(r)) setFeeRates(r); }).catch(() => {});
       getBranches().then((b) => Array.isArray(b) && setBranchList(b)).catch(() => {});
+
+      // The student list drives the headline counts, so it gates the spinner.
+      const stRes = await getStudents().catch(() => []);
       setStudents(Array.isArray(stRes) ? stRes : []);
-      setCollegesList(Array.isArray(clgRes) ? clgRes : []);
-      setCompaniesList(Array.isArray(cmpRes) ? cmpRes : []);
-      setPlacementStudents(Array.isArray(plcRes) ? plcRes : []);
-      setBillingDeals(Array.isArray(bilRes) ? bilRes : []);
-      setFollowUps(Array.isArray(fuRes) ? fuRes : []);
     } catch (err) {
       console.warn('CCCP live fetch notice:', err.message);
     } finally {

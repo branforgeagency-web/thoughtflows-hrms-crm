@@ -529,6 +529,51 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Applied when today's EOD closure arrives (or doesn't) — extracted so the
+  // closure lookup can run alongside the lead/student tables instead of
+  // holding them up.
+  const applyTodayClosure = (closureRes, dKey, counselorFilter) => {
+    if (closureRes) {
+      setClosureSubmitted(true);
+      if (closureRes.submittedAt) {
+        setClosureSubmittedAt(new Date(closureRes.submittedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }));
+      }
+      if (closureRes.summary || closureRes.notes) {
+        setEodSummaryText(closureRes.summary || closureRes.notes);
+      }
+      setCustomMetrics({
+        callsMade: closureRes.callsMade,
+        connected: closureRes.connected,
+        demosBooked: closureRes.demosBooked,
+        admissions: closureRes.admissions,
+        feesCollected: closureRes.feesCollected,
+        pendingFus: closureRes.pendingFus
+      });
+      return;
+    }
+    // Check localStorage for today's submission
+    try {
+      const localSaved = localStorage.getItem(`thoughtflows_closure_${dKey}_${counselorFilter || ''}`);
+      if (localSaved) {
+        const parsed = JSON.parse(localSaved);
+        if (parsed.submitted) {
+          setClosureSubmitted(true);
+          setClosureSubmittedAt(parsed.submittedAt || '');
+          if (parsed.summary) setEodSummaryText(parsed.summary);
+          if (parsed.metrics) setCustomMetrics(parsed.metrics);
+        }
+      } else {
+        // New day reset!
+        setClosureSubmitted(false);
+        setClosureSubmittedAt('');
+        setEodSummaryText('');
+        setCustomMetrics(null);
+      }
+    } catch {
+      setClosureSubmitted(false);
+    }
+  };
+
   const loadAllData = async (silent = false, overrides = {}) => {
     try {
       if (!silent) setLoading(true);
@@ -552,15 +597,29 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         }
       });
 
-      const [stRes, ldRes, dmRes, recRes, closureRes, countsRes] = await Promise.all([
+      // Call recordings, the EOD closure and the lead counters are side panels:
+      // they are applied the moment they arrive instead of delaying the lead
+      // and student tables that the page actually opens on.
+      getRecordings({ ...(shouldFilterOnServer ? { counselor: counselorFilter } : {}), page: 1, limit: PAGE_LIMIT })
+        .then((recRes) => {
+          const recList = Array.isArray(recRes) ? recRes : (Array.isArray(recRes?.recordings) ? recRes.recordings : []);
+          setCallRecordings(recList);
+        })
+        .catch(() => {});
+
+      getHrLeadCounts(shouldFilterOnServer ? { counselor: counselorFilter } : undefined)
+        .then((countsRes) => { if (countsRes && typeof countsRes === 'object') setHrLeadCounts(countsRes); })
+        .catch(() => {});
+
+      (counselorFilter ? getTodayClosure(counselorFilter, dKey) : Promise.resolve(null))
+        .catch(() => null)
+        .then((closureRes) => applyTodayClosure(closureRes, dKey, counselorFilter));
+
+      const [stRes, ldRes, dmRes] = await Promise.all([
         getStudents({ ...(shouldFilterOnServer ? { hrName: counselorFilter } : {}), page: targetStudentsPage, limit: PAGE_LIMIT }),
         getLeads(leadParams),
-        getDemos(shouldFilterOnServer ? { counselor: counselorFilter } : undefined),
-        getRecordings({ ...(shouldFilterOnServer ? { counselor: counselorFilter } : {}), page: 1, limit: PAGE_LIMIT }).catch(() => []),
-        (counselorFilter ? getTodayClosure(counselorFilter, dKey) : Promise.resolve(null)).catch(() => null),
-        getHrLeadCounts(shouldFilterOnServer ? { counselor: counselorFilter } : undefined).catch(() => null)
+        getDemos(shouldFilterOnServer ? { counselor: counselorFilter } : undefined)
       ]);
-      if (countsRes && typeof countsRes === 'object') setHrLeadCounts(countsRes);
       const stList = Array.isArray(stRes) ? stRes : (Array.isArray(stRes?.students) ? stRes.students : []);
       setStudents(stList);
       setStudentsTotalCount(typeof stRes?.totalCount === 'number' ? stRes.totalCount : stList.length);
@@ -572,49 +631,6 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       setLeadsTotalPages(ldRes?.totalPages || 1);
 
       setDemos(Array.isArray(dmRes) ? dmRes : []);
-      const recList = Array.isArray(recRes) ? recRes : (Array.isArray(recRes?.recordings) ? recRes.recordings : []);
-      setCallRecordings(recList);
-
-      // Check if closure was submitted today
-      if (closureRes) {
-        setClosureSubmitted(true);
-        if (closureRes.submittedAt) {
-          setClosureSubmittedAt(new Date(closureRes.submittedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }));
-        }
-        if (closureRes.summary || closureRes.notes) {
-          setEodSummaryText(closureRes.summary || closureRes.notes);
-        }
-        setCustomMetrics({
-          callsMade: closureRes.callsMade,
-          connected: closureRes.connected,
-          demosBooked: closureRes.demosBooked,
-          admissions: closureRes.admissions,
-          feesCollected: closureRes.feesCollected,
-          pendingFus: closureRes.pendingFus
-        });
-      } else {
-        // Check localStorage for today's submission
-        try {
-          const localSaved = localStorage.getItem(`thoughtflows_closure_${dKey}_${counselorFilter || ''}`);
-          if (localSaved) {
-            const parsed = JSON.parse(localSaved);
-            if (parsed.submitted) {
-              setClosureSubmitted(true);
-              setClosureSubmittedAt(parsed.submittedAt || '');
-              if (parsed.summary) setEodSummaryText(parsed.summary);
-              if (parsed.metrics) setCustomMetrics(parsed.metrics);
-            }
-          } else {
-            // New day reset!
-            setClosureSubmitted(false);
-            setClosureSubmittedAt('');
-            setEodSummaryText('');
-            setCustomMetrics(null);
-          }
-        } catch {
-          setClosureSubmitted(false);
-        }
-      }
       setLoading(false);
     } catch (err) {
       console.error('Error fetching HR CRM live data:', err);

@@ -8,6 +8,7 @@ import fs from 'fs';
 import { connectDB } from './config/db.js';
 import apiRoutes from './routes/api.js';
 import { requireStaffToken } from './middleware/auth.js';
+import { compressResponses } from './middleware/compress.js';
 
 dotenv.config();
 
@@ -51,9 +52,13 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin']
 }));
 app.options('*', cors());
+// Compress JSON responses before anything else writes a body. Dashboard list
+// endpoints return multi-MB payloads; gzip/brotli cuts them by ~85-90%.
+app.use(compressResponses());
+
 app.use(express.json({ limit: '75mb', verify: (req, _res, buf) => { req.rawBody = buf; } }));
 app.use(express.urlencoded({ limit: '75mb', extended: true }));
-app.use(morgan('dev'));
+if (process.env.NODE_ENV !== 'production') app.use(morgan('dev'));
 
 // Static serving for call recordings
 app.use('/recordings', requireStaffToken, express.static(recordingsDir));

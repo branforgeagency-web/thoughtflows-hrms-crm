@@ -29,14 +29,12 @@ export default function ManagementSummaryBoard({
 
   const loadRealData = async () => {
     try {
-      const [sData, cData, tData] = await Promise.all([
-        getStudents().catch(() => []),
-        getDailyClosures().catch(() => []),
-        getHrTargets().catch(() => [])
+      // Independent datasets — each tile updates as its own request returns.
+      await Promise.all([
+        getStudents().then((d) => { if (Array.isArray(d)) setStudents(d); }).catch(() => {}),
+        getDailyClosures().then((d) => { if (Array.isArray(d)) setClosures(d); }).catch(() => {}),
+        getHrTargets().then((d) => { if (Array.isArray(d)) setTargets(d); }).catch(() => {})
       ]);
-      if (Array.isArray(sData)) setStudents(sData);
-      if (Array.isArray(cData)) setClosures(cData);
-      if (Array.isArray(tData)) setTargets(tData);
     } catch (e) {
       console.warn('Management summary fetch notice:', e);
     }

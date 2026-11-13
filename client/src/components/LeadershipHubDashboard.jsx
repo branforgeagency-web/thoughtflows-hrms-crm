@@ -3344,23 +3344,17 @@ function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, o
   const [rescheduleForm, setRescheduleForm] = useState({ preferredDate: '', timeSlot: '', toTrainerId: '', reason: '' });
   const [rescheduling, setRescheduling] = useState(false);
 
+  // Each zone panel recomputes as its own dataset lands, so the regional view
+  // fills in progressively rather than waiting on the full student list.
   const loadData = useCallback(() => {
-    Promise.all([
-      getTrainerSettings().catch(() => []),
-      getBatches().catch(() => []),
-      getBranches().catch(() => []),
-      getStudents().catch(() => []),
-      getDemos().catch(() => [])
-    ]).then(([tData, bData, brData, sData, dData]) => {
-      setTrainersList(Array.isArray(tData) ? tData : []);
-      setBatchesList(Array.isArray(bData) ? bData : []);
-      setBranchesList(Array.isArray(brData) ? brData : []);
-      setStudentsList(Array.isArray(sData) ? sData : []);
-      setDemosList(Array.isArray(dData) ? dData : []);
-      setLoading(false);
-    }).catch(() => {
-      setLoading(false);
-    });
+    getTrainerSettings().then((d) => setTrainersList(Array.isArray(d) ? d : [])).catch(() => {});
+    getBatches().then((d) => setBatchesList(Array.isArray(d) ? d : [])).catch(() => {});
+    getBranches().then((d) => setBranchesList(Array.isArray(d) ? d : [])).catch(() => {});
+    getDemos().then((d) => setDemosList(Array.isArray(d) ? d : [])).catch(() => {});
+    getStudents()
+      .then((d) => setStudentsList(Array.isArray(d) ? d : []))
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {

@@ -105,8 +105,30 @@ const attachToken = (config) => {
 // Prevents dashboard mounts from firing 15+ simultaneous requests that trip
 // upstream edge rate limits (HTTP 429 Too Many Requests).
 // ---------------------------------------------------------------------------
-const MAX_CONCURRENT_GETS = 3;
-const MIN_DISPATCH_GAP_MS = 45;
+// HTTP/1.1 allows 6 sockets per host and the API is now gzip-compressed, so a
+// hard cap of 3 with a 45ms gap was leaving the browser idle. The 429 backoff
+// below still protects the upstream edge: on the first 429 the pacer
+// automatically drops back to the old conservative settings.
+const FAST_CONCURRENT_GETS = 6;
+const SAFE_CONCURRENT_GETS = 3;
+const FAST_DISPATCH_GAP_MS = 0;
+const SAFE_DISPATCH_GAP_MS = 45;
+let maxConcurrentGets = FAST_CONCURRENT_GETS;
+let minDispatchGapMs = FAST_DISPATCH_GAP_MS;
+let throttleResetTimer = null;
+
+// Back off to the conservative pacing for a while after a 429, then recover.
+const degradePacer = () => {
+  maxConcurrentGets = SAFE_CONCURRENT_GETS;
+  minDispatchGapMs = SAFE_DISPATCH_GAP_MS;
+  if (throttleResetTimer) clearTimeout(throttleResetTimer);
+  throttleResetTimer = setTimeout(() => {
+    throttleResetTimer = null;
+    maxConcurrentGets = FAST_CONCURRENT_GETS;
+    minDispatchGapMs = FAST_DISPATCH_GAP_MS;
+  }, 60000);
+};
+
 const inFlightGets = new Map();
 const getResponseCache = new Map();
 const getQueue = [];
@@ -121,16 +143,81 @@ const clearApiGetCache = () => {
   getResponseCache.clear();
 };
 
+// How long a cached response is served without re-asking the server.
 const getCacheTtlMs = (url, config) => {
   if (config?.responseType || config?.skipCache) return 0;
   const u = String(url || '').toLowerCase();
   if (u.startsWith('/auth/')) return 0;
-  if (['/branches', '/departments', '/settings', '/trainer/heads'].some((p) => u.startsWith(p))) return 30000;
-  if (['/stats', '/hr/hub-summary', '/hr/targets', '/leadership/team', '/hr/staff-attendance', '/notifications', '/student-requests', '/student-tickets'].some((p) => u.startsWith(p))) {
-    return 12000;
+  // Reference data that effectively never changes during a session
+  if (['/branches', '/departments', '/settings', '/trainer/heads', '/courses', '/course-fee-rates', '/trainer/settings', '/trainer/credentials'].some((p) => u.startsWith(p))) {
+    return 10 * 60 * 1000;
   }
-  return 2500;
+  // Summary/aggregate endpoints
+  if (['/stats', '/hr/hub-summary', '/hr/targets', '/leadership/team', '/hr/staff-attendance', '/notifications', '/student-requests', '/student-tickets'].some((p) => u.startsWith(p))) {
+    return 60000;
+  }
+  // Big operational collections (students, leads, demos, batches...)
+  return 45000;
 };
+
+// After the TTL expires a cached response is still handed back *immediately*
+// while a fresh copy is fetched in the background (stale-while-revalidate).
+// This is what makes switching tabs or reopening a dashboard feel instant
+// instead of re-showing a loading state for data the user just looked at.
+const STALE_WHILE_REVALIDATE_MS = 3 * 60 * 1000;
+
+// Map a URL back to the entity name the dashboards already listen for, so a
+// background refresh that brings back changed data triggers the same re-render
+// path as a normal data update.
+const URL_ENTITY = [
+  ['/students', 'students'],
+  ['/leads', 'leads'],
+  ['/demos', 'demos'],
+  ['/batches', 'batches'],
+  ['/branches', 'branches'],
+  ['/trainer/settings', 'trainers'],
+  ['/trainer/doubts', 'doubts'],
+  ['/trainer/attendance', 'trainer_attendance'],
+  ['/trainer/assessments', 'assessments'],
+  ['/training/materials', 'materials'],
+  ['/notifications', 'notifications'],
+  ['/closures', 'closures'],
+  ['/hr/targets', 'targets'],
+  ['/leadership/team', 'team'],
+  ['/cccp/', 'cccp'],
+  ['/marketing/', 'marketing'],
+  ['/recordings', 'recordings'],
+  ['/fees/rates', 'fee_rates']
+];
+const entityForUrl = (url) => {
+  const u = String(url || '').toLowerCase();
+  const hit = URL_ENTITY.find(([prefix]) => u.startsWith(prefix));
+  return hit ? hit[1] : '';
+};
+
+// Cheap change-detector. JSON.stringify on a multi-MB student list would block
+// the main thread, so large arrays are fingerprinted by length plus the first
+// and last records' id/timestamp instead of being serialised in full.
+const payloadSignature = (data) => {
+  if (data === null || data === undefined) return 'nil';
+  if (Array.isArray(data)) {
+    if (data.length > 40) {
+      const mark = (row) => (row && typeof row === 'object'
+        ? `${row._id || row.id || ''}:${row.updatedAt || row.createdAt || ''}`
+        : String(row));
+      return `arr:${data.length}:${mark(data[0])}:${mark(data[data.length - 1])}`;
+    }
+    try { return `arr:${data.length}:${JSON.stringify(data)}`; } catch (_) { return `arr:${data.length}`; }
+  }
+  try {
+    const str = JSON.stringify(data);
+    return str.length > 20000 ? `obj:${str.length}` : `obj:${str}`;
+  } catch (_) {
+    return 'obj';
+  }
+};
+
+// A write to any entity clears the cache, so staleness never outlives an edit.
 
 const buildGetCacheKey = (url, config) => {
   const params = config?.params;
@@ -161,9 +248,9 @@ const pumpGetQueue = () => {
     clearTimeout(pumpTimer);
     pumpTimer = null;
   }
-  while (activeGets < MAX_CONCURRENT_GETS && getQueue.length > 0) {
+  while (activeGets < maxConcurrentGets && getQueue.length > 0) {
     const now = Date.now();
-    const waitMs = Math.max(rateLimitedUntil - now, lastDispatchAt + MIN_DISPATCH_GAP_MS - now);
+    const waitMs = Math.max(rateLimitedUntil - now, lastDispatchAt + minDispatchGapMs - now);
     if (waitMs > 0) {
       pumpTimer = setTimeout(() => {
         pumpTimer = null;
@@ -193,33 +280,23 @@ const enqueueGet = (fn) => new Promise((resolve, reject) => {
 });
 
 const rawApiGet = api.get.bind(api);
-api.get = (url, config = {}) => {
-  const ttl = getCacheTtlMs(url, config);
-  const key = buildGetCacheKey(url, config);
 
-  if (ttl > 0 && getResponseCache.has(key)) {
-    const cached = getResponseCache.get(key);
-    if (Date.now() - cached.at < ttl) {
-      return Promise.resolve(cached.res);
-    }
-    getResponseCache.delete(key);
-  }
-
-  if (inFlightGets.has(key)) {
-    return inFlightGets.get(key);
-  }
+// Issue the network request, cache the result, de-duplicate concurrent callers.
+const dispatchGet = (url, config, ttl, key) => {
+  if (inFlightGets.has(key)) return inFlightGets.get(key);
 
   const reqPromise = (async () => {
     for (let attempt = 0; attempt <= 2; attempt++) {
       try {
         const res = await enqueueGet(() => rawApiGet(url, config));
         if (ttl > 0) {
-          if (getResponseCache.size >= 200) getResponseCache.clear();
+          if (getResponseCache.size >= 300) getResponseCache.clear();
           getResponseCache.set(key, { at: Date.now(), res });
         }
         return res;
       } catch (err) {
         if (err?.response?.status === 429 && attempt < 2) {
+          degradePacer();
           const waitMs = parseRetryAfterMs(err, attempt);
           rateLimitedUntil = Math.max(rateLimitedUntil, Date.now() + waitMs);
           await sleep(waitMs);
@@ -234,6 +311,74 @@ api.get = (url, config = {}) => {
 
   inFlightGets.set(key, reqPromise);
   return reqPromise;
+};
+
+// Every dashboard polls on a 60s timer. In a background tab those polls are
+// pure waste — they load the server and compete for bandwidth with whatever
+// the user is actually looking at. While the tab is hidden a cached answer is
+// served instead, however old; on return the cache is dropped so the next
+// read is fresh.
+let pageHidden = false;
+if (typeof document !== 'undefined') {
+  pageHidden = document.visibilityState === 'hidden';
+  document.addEventListener('visibilitychange', () => {
+    const nowHidden = document.visibilityState === 'hidden';
+    if (pageHidden && !nowHidden) {
+      // Coming back into view: everything on screen should re-read from the server.
+      getResponseCache.clear();
+    }
+    pageHidden = nowHidden;
+  });
+}
+
+api.get = (url, config = {}) => {
+  const ttl = getCacheTtlMs(url, config);
+  const key = buildGetCacheKey(url, config);
+
+  // Hidden tab: answer from cache at any age rather than polling the server.
+  if (pageHidden && !config.skipCache && getResponseCache.has(key)) {
+    return Promise.resolve(getResponseCache.get(key).res);
+  }
+
+  if (ttl > 0 && getResponseCache.has(key)) {
+    const cached = getResponseCache.get(key);
+    const age = Date.now() - cached.at;
+
+    // Fresh — serve straight from cache.
+    if (age < ttl) return Promise.resolve(cached.res);
+
+    // Stale but recent — serve the cached copy *now* so the dashboard paints
+    // immediately, and refresh in the background. The next render (or the
+    // next data-update event) picks up the new data.
+    if (age < ttl + STALE_WHILE_REVALIDATE_MS) {
+      dispatchGet(url, { ...config, silentLoader: true }, ttl, key)
+        .then((fresh) => {
+          // Only nudge a re-render when the payload actually changed; the
+          // cache is fresh by now, so the reload reads it without a request.
+          const changed = payloadSignature(fresh?.data) !== payloadSignature(cached.res?.data);
+          const entity = entityForUrl(url);
+          if (changed && entity && typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('thoughtflows_data_updated', { detail: { entity } }));
+          }
+        })
+        .catch(() => {});
+      return Promise.resolve(cached.res);
+    }
+
+    getResponseCache.delete(key);
+  }
+
+  return dispatchGet(url, config, ttl, key);
+};
+
+// Warm the endpoints every dashboard needs, in the background, right after
+// login — so the first dashboard open reads them out of cache.
+const PREWARM_PATHS = ['/branches', '/departments', '/stats'];
+export const prewarmCommonData = () => {
+  if (!getAuthToken()) return;
+  PREWARM_PATHS.forEach((path) => {
+    api.get(path, { silentLoader: true }).catch(() => {});
+  });
 };
 
 let sessionExpiredHandled = false;

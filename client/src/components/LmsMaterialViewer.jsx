@@ -1,5 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { parse as parsePptx } from 'pptxtojson';
+// pptxtojson is only needed when a PowerPoint material is actually opened,
+// so it is fetched on demand instead of shipping in the main bundle.
+const parsePptx = async (...args) => {
+  const mod = await import('pptxtojson');
+  return (mod.parse || mod.default?.parse)(...args);
+};
 import {
   X,
   ChevronLeft,

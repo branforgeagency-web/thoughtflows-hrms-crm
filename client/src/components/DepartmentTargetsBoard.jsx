@@ -42,27 +42,27 @@ export default function DepartmentTargetsBoard({
   // Load real targets & real activity stats from backend/database
   const loadData = async () => {
     try {
-      const [tData, sData, dData, cData] = await Promise.all([
-        getHrTargets().catch(() => []),
-        getStudents().catch(() => []),
-        getDemos().catch(() => []),
-        getDailyClosures().catch(() => [])
+      // Independent datasets — each board section updates on its own arrival
+      // rather than all four waiting on the student list.
+      await Promise.all([
+        getHrTargets()
+          .then((tData) => {
+            if (!Array.isArray(tData)) return;
+            setTargets(tData.map(t => ({
+              id: t._id || t.id,
+              title: t.title,
+              target: Number(t.target) || 0,
+              achieved: Number(t.achieved) || 0,
+              unit: t.unit || 'Count',
+              period: t.period || 'today',
+              assignedTo: t.assignedTo || 'All HR'
+            })));
+          })
+          .catch(() => {}),
+        getStudents().then((d) => { if (Array.isArray(d)) setStudents(d); }).catch(() => {}),
+        getDemos().then((d) => { if (Array.isArray(d)) setDemos(d); }).catch(() => {}),
+        getDailyClosures().then((d) => { if (Array.isArray(d)) setClosures(d); }).catch(() => {})
       ]);
-
-      if (Array.isArray(tData)) {
-        setTargets(tData.map(t => ({
-          id: t._id || t.id,
-          title: t.title,
-          target: Number(t.target) || 0,
-          achieved: Number(t.achieved) || 0,
-          unit: t.unit || 'Count',
-          period: t.period || 'today',
-          assignedTo: t.assignedTo || 'All HR'
-        })));
-      }
-      if (Array.isArray(sData)) setStudents(sData);
-      if (Array.isArray(dData)) setDemos(dData);
-      if (Array.isArray(cData)) setClosures(cData);
     } catch (e) {
       console.warn('Targets load error:', e);
     }

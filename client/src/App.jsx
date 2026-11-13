@@ -5,14 +5,14 @@ import SevenDashboardsSection from './components/SevenDashboardsSection';
 import ConstellationCanvas from './components/ConstellationCanvas';
 import FloatingStaffDots from './components/FloatingStaffDots';
 import DepartmentsModal from './components/DepartmentsModal';
-import DashboardModal from './components/DashboardModal';
+import DashboardModal, { preloadDashboard } from './components/DashboardModal';
 import LoginModal from './components/LoginModal';
 import CourseCatalogWidget from './components/CourseCatalogWidget';
 import StudentRegistrationPage from './components/StudentRegistrationPage';
 import ScreenGuard from './components/ScreenGuard';
 import GlobalApiLoader from './components/GlobalApiLoader';
 import axios from 'axios';
-import { recordTrainingLogout } from './services/api';
+import { recordTrainingLogout, prewarmCommonData } from './services/api';
 
 export default function App() {
   const [isRegistrationRoute, setIsRegistrationRoute] = useState(() => {
@@ -155,6 +155,9 @@ export default function App() {
   const handleSelectDashboard = (card) => {
     setSelectedDashboard(card);
     sessionStorage.setItem('thoughtflows_dashboard', JSON.stringify(card));
+    // Start downloading this dashboard's code chunk now, while the user is
+    // still reading the card or typing their password.
+    preloadDashboard(card.id);
     // If user is already authenticated in this session, grant immediate access
     if (currentUser) {
       setIsDashboardOpen(true);
@@ -189,6 +192,10 @@ export default function App() {
     if (isHeadOfTrainerUser(user)) targetDept = 'training';
     else if (!targetDept || targetDept === 'Medical Coding Faculty') targetDept = 'training';
     const matchedCard = DEPT_CARDS.find(c => c.id === targetDept) || DEPT_CARDS[0];
+    preloadDashboard(matchedCard.id);
+    // Warm the shared reference data (branches, departments, stats) that every
+    // dashboard asks for, so the first open reads it straight from cache.
+    prewarmCommonData();
     setSelectedDashboard(matchedCard);
     sessionStorage.setItem('thoughtflows_dashboard', JSON.stringify(matchedCard));
     setIsDashboardOpen(true);

@@ -342,21 +342,46 @@ export default function TrainingDepartmentDashboard({
           .then(rows => setMyFeedback((Array.isArray(rows) ? rows : []).find(r => r.trainerId === trainerId) || null))
           .catch(() => setMyFeedback(null));
       }
-      const [stRes, dmRes, ldRes, dbtRes, asmRes, attRes, rosterRes, matRes] = await Promise.all([
-        getStudents().catch(() => []),
-        getDemos().catch(() => []),
-        Promise.resolve([]), // leads belong to HR — not loaded for trainers
-        getTrainerDoubts().catch(() => []),
-        getTrainerAssessments().catch(() => []),
-        trainerId ? getTrainerAttendance({ trainerId, from: monthStartKey }).catch(() => []) : Promise.resolve([]),
+      // Secondary panels are applied the moment each one lands, so the
+      // dashboard is not held behind the slowest of eight requests.
+      getDemos()
+        .then((dmRes) => setDemos(Array.isArray(dmRes) ? dmRes : []))
+        .catch(() => {});
+      getTrainerDoubts()
+        .then((dbtRes) => setDoubts(Array.isArray(dbtRes) ? dbtRes : []))
+        .catch(() => {});
+      getTrainingMaterials()
+        .then((matRes) => setMaterials(Array.isArray(matRes) ? matRes : []))
+        .catch(() => {});
+      (trainerId ? getTrainerAttendance({ trainerId, from: monthStartKey }) : Promise.resolve([]))
+        .then((attRes) => setAttendanceSessions(Array.isArray(attRes) ? attRes : []))
+        .catch(() => {});
+      getTrainerAssessments()
+        .then((asmRes) => {
+          // Only this trainer's tests (plus legacy tests saved before trainer ownership existed)
+          const asmList = (Array.isArray(asmRes) ? asmRes : []).filter(t => !t.trainerId || t.trainerId === trainerId);
+          setAssessmentTests(asmList);
+          const initialScores = {};
+          const initialRationales = {};
+          asmList.forEach(t => {
+            if (t.scores) initialScores[t.id] = t.scores;
+            if (t.rationale) initialRationales[t.id] = t.rationale;
+          });
+          setAssessmentScores(initialScores);
+          setRationaleTexts(initialRationales);
+        })
+        .catch(() => {});
+
+      // leads belong to HR — not loaded for trainers
+      setLeads([]);
+
+      // First paint needs the roster (it may decide the active identity) and
+      // the student list; everything above streams in behind them.
+      const [rosterRes, stRes] = await Promise.all([
         getTrainerSettings().catch(() => []),
-        getTrainingMaterials().catch(() => [])
+        getStudents().catch(() => [])
       ]);
 
-      setStudents(Array.isArray(stRes) ? stRes : []);
-      setDemos(Array.isArray(dmRes) ? dmRes : []);
-      setLeads(Array.isArray(ldRes?.leads) ? ldRes.leads : (Array.isArray(ldRes) ? ldRes : []));
-      setDoubts(Array.isArray(dbtRes) ? dbtRes : []);
       const mergedRoster = [...(Array.isArray(rosterRes) ? rosterRes : [])];
       setTrainerRoster(mergedRoster);
       if (!hasSignedInUser && !pickedIdentity && mergedRoster.length > 0) {
@@ -370,20 +395,7 @@ export default function TrainingDepartmentDashboard({
           courseKey: first.courseKey || first.course || 'CPC'
         });
       }
-      setMaterials(Array.isArray(matRes) ? matRes : []);
-      setAttendanceSessions(Array.isArray(attRes) ? attRes : []);
-
-      // Only this trainer's tests (plus legacy tests saved before trainer ownership existed)
-      const asmList = (Array.isArray(asmRes) ? asmRes : []).filter(t => !t.trainerId || t.trainerId === trainerId);
-      setAssessmentTests(asmList);
-      const initialScores = {};
-      const initialRationales = {};
-      asmList.forEach(t => {
-        if (t.scores) initialScores[t.id] = t.scores;
-        if (t.rationale) initialRationales[t.id] = t.rationale;
-      });
-      setAssessmentScores(initialScores);
-      setRationaleTexts(initialRationales);
+      setStudents(Array.isArray(stRes) ? stRes : []);
     } catch (err) {
       console.error('Error fetching real trainer data:', err);
     } finally {

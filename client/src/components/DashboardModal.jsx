@@ -24,15 +24,51 @@ import {
 } from 'lucide-react';
 import axios from 'axios';
 
-import HrDepartmentHub from './HrDepartmentHub';
-import StudentPortalDashboard from './StudentPortalDashboard';
-import AdminManagementDashboard from './AdminManagementDashboard';
-import TrainingDepartmentDashboard from './TrainingDepartmentDashboard';
-import TrainersDepartmentHub from './TrainersDepartmentHub';
-import CccpDashboard from './CccpDashboard';
-import MarketingDepartmentDashboard from './MarketingDepartmentDashboard';
-import LeadershipHubDashboard from './LeadershipHubDashboard';
-import WiseAppDashboard from './WiseAppDashboard';
+import DashboardSkeleton from './DashboardSkeleton';
+
+// ---------------------------------------------------------------------------
+// Dashboards are code-split: a user who opens the HR dashboard no longer
+// downloads Leadership, Training, CCCP, Marketing and the rest first.
+// Each one is wrapped so the existing JSX below needs no change.
+// ---------------------------------------------------------------------------
+const lazyDashboard = (loader, label) => {
+  const Lazy = React.lazy(loader);
+  const Wrapped = (props) => (
+    <React.Suspense fallback={<DashboardSkeleton label={label} />}>
+      <Lazy {...props} />
+    </React.Suspense>
+  );
+  Wrapped.preload = loader;
+  return Wrapped;
+};
+
+const HrDepartmentHub = lazyDashboard(() => import('./HrDepartmentHub'), 'HR & Admissions');
+const StudentPortalDashboard = lazyDashboard(() => import('./StudentPortalDashboard'), 'Student Portal');
+const AdminManagementDashboard = lazyDashboard(() => import('./AdminManagementDashboard'), 'Admin Management');
+const TrainingDepartmentDashboard = lazyDashboard(() => import('./TrainingDepartmentDashboard'), 'Training Department');
+const TrainersDepartmentHub = lazyDashboard(() => import('./TrainersDepartmentHub'), 'Trainers Department');
+const CccpDashboard = lazyDashboard(() => import('./CccpDashboard'), 'CCCP');
+const MarketingDepartmentDashboard = lazyDashboard(() => import('./MarketingDepartmentDashboard'), 'Marketing');
+const LeadershipHubDashboard = lazyDashboard(() => import('./LeadershipHubDashboard'), 'Leadership Hub');
+const WiseAppDashboard = lazyDashboard(() => import('./WiseAppDashboard'), 'WiseApp');
+
+export const DASHBOARD_CHUNKS = {
+  training: TrainersDepartmentHub,
+  hr: HrDepartmentHub,
+  student: StudentPortalDashboard,
+  admin: AdminManagementDashboard,
+  cccp: CccpDashboard,
+  marketing: MarketingDepartmentDashboard,
+  leadership: LeadershipHubDashboard,
+  wiseapp: WiseAppDashboard
+};
+
+// Start fetching a dashboard's chunk before the user finishes signing in,
+// so the code is already in cache by the time the modal opens.
+export const preloadDashboard = (deptId) => {
+  const target = DASHBOARD_CHUNKS[deptId];
+  if (target?.preload) { try { target.preload(); } catch (_) {} }
+};
 
 export default function DashboardModal({ 
   isOpen, 

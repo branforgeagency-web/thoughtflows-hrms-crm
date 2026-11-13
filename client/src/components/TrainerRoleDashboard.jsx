@@ -128,15 +128,19 @@ export default function TrainerRoleDashboard({
   useEffect(() => { setNavOpen(false); }, [activeNav]);
 
   const loadData = useCallback(() => {
+    // Wave 2 panels — each lands independently, nothing waits on the others.
+    getBranches().then((d) => setBranchesList(Array.isArray(d) ? d : [])).catch(() => {});
+    getStudents().then((d) => setStudentsList(Array.isArray(d) ? d : [])).catch(() => {});
+    getDemos().then((d) => setDemosList(Array.isArray(d) ? d : [])).catch(() => {});
+    getTrainerDoubts().then((d) => setDoubtsList(Array.isArray(d) ? d : [])).catch(() => {});
+    getTrainerCredentials().then((d) => { if (d) setTrainerCredentials(d); }).catch(() => {});
+
+    // Wave 1 — the trainer roster is derived from trainers + batches together,
+    // so only those two gate the first paint.
     Promise.all([
       getTrainerSettings().catch(() => []),
-      getBatches().catch(() => []),
-      getBranches().catch(() => []),
-      getStudents().catch(() => []),
-      getDemos().catch(() => []),
-      getTrainerDoubts().catch(() => []),
-      getTrainerCredentials().catch(() => ({ head: [], managers: [], teamLeads: [], faculty: [] }))
-    ]).then(([tData, bData, brData, sData, dData, dbtData, credData]) => {
+      getBatches().catch(() => [])
+    ]).then(([tData, bData]) => {
       // Pure Real Data: Use trainers returned directly from database / API
       const realTrainers = [...(Array.isArray(tData) ? tData : [])];
       const knownNames = new Set(realTrainers.map((t) => String(t.trainerName || t.name || '').toLowerCase()).filter(Boolean));
@@ -157,13 +161,7 @@ export default function TrainerRoleDashboard({
 
       setTrainersList(realTrainers);
       setBatchesList(Array.isArray(bData) ? bData : []);
-      setBranchesList(Array.isArray(brData) ? brData : []);
-      setStudentsList(Array.isArray(sData) ? sData : []);
-      setDemosList(Array.isArray(dData) ? dData : []);
-      setDoubtsList(Array.isArray(dbtData) ? dbtData : []);
-      if (credData) setTrainerCredentials(credData);
-      setLoading(false);
-    }).catch(() => {
+    }).catch(() => {}).finally(() => {
       setLoading(false);
     });
   }, []);

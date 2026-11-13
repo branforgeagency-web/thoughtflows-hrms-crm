@@ -260,23 +260,20 @@ export default function TrainerHeadDashboard({
   useEffect(() => { setSelectedBranch('all'); }, [activeLeaderId, roleType]);
 
   // Load Real Data from Backend
+  // Data loads in two waves instead of one all-or-nothing Promise.all, which
+  // used to hold the whole dashboard behind the slowest of ten requests.
+  // Wave 1 is everything the first screen needs; wave 2 fills in behind it.
   const loadDashboardData = useCallback(() => {
+    // --- Wave 1: trainers, batches, branches, students -> first paint ---
     Promise.all([
       getStudents().catch(() => []),
       getBatches().catch(() => []),
       getBranches().catch(() => []),
-      getTrainerSettings().catch(() => []),
-      getTrainerAttendance().catch(() => []),
-      getDemos().catch(() => []),
-      getTrainerDoubts().catch(() => []),
-      getTrainerCredentials().catch(() => null),
-      getTrainingMaterials().catch(() => []),
-      getTeam({ departmentCode: 'ACAD' }).catch(() => [])
+      getTrainerSettings().catch(() => [])
     ])
-      .then(([stData, bData, brData, trData, attData, dData, dbtData, credData, matData, tData]) => {
+      .then(([stData, bData, brData, trData]) => {
         // Pure Real Data: Use trainers returned directly from database / API
         const realTrainers = [...(Array.isArray(trData) ? trData : [])];
-        const knownIds = new Set(realTrainers.map((t) => t.trainerId || t.id).filter(Boolean));
         const knownNames = new Set(realTrainers.map((t) => String(t.trainerName || t.name || '').toLowerCase()).filter(Boolean));
 
         // Supplement with any faculty handling active batches/students in the database if not in trainer collection
@@ -295,20 +292,21 @@ export default function TrainerHeadDashboard({
           }
         });
 
-        // Use pure real trainers returned directly from database / API
         setStudents(Array.isArray(stData) ? stData : []);
         setBatches(Array.isArray(bData) ? bData : []);
         setBranches(Array.isArray(brData) ? brData : []);
         setTrainers(realTrainers);
-        setAttendanceRecords(Array.isArray(attData) ? attData : []);
-        setDemos(Array.isArray(dData) ? dData : []);
-        setDoubts(Array.isArray(dbtData) ? dbtData : []);
-        if (credData) setTrainerCredentials(credData);
-        if (Array.isArray(matData)) setMaterials(matData);
-        if (Array.isArray(tData)) setTeamMembers(tData);
-        setLoading(false);
       })
-      .catch(() => setLoading(false));
+      .catch(() => {})
+      .finally(() => setLoading(false));
+
+    // --- Wave 2: secondary panels, each applied the moment it arrives ---
+    getTrainerAttendance().then((d) => setAttendanceRecords(Array.isArray(d) ? d : [])).catch(() => {});
+    getDemos().then((d) => setDemos(Array.isArray(d) ? d : [])).catch(() => {});
+    getTrainerDoubts().then((d) => setDoubts(Array.isArray(d) ? d : [])).catch(() => {});
+    getTrainerCredentials().then((d) => { if (d) setTrainerCredentials(d); }).catch(() => {});
+    getTrainingMaterials().then((d) => { if (Array.isArray(d)) setMaterials(d); }).catch(() => {});
+    getTeam({ departmentCode: 'ACAD' }).then((d) => { if (Array.isArray(d)) setTeamMembers(d); }).catch(() => {});
   }, []);
 
   useEffect(() => {

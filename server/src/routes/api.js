@@ -1234,7 +1234,7 @@ router.get('/closures', async (req, res) => {
     if (req.query.date) query.date = req.query.date;
     const counselor = isScopedHr(req) ? req.user?.name : req.query.counselor;
     if (counselor) query.counselorName = exactNameRx(counselor);
-    const closures = await DailyClosure.find(query).sort({ date: -1, createdAt: -1 });
+    const closures = await DailyClosure.find(query).sort({ date: -1, createdAt: -1 }).lean();
     res.json(closures);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1248,7 +1248,7 @@ router.get('/hr/targets', async (req, res) => {
     const query = {};
     if (period) query.period = period;
     if (assignedTo) query.assignedTo = assignedTo;
-    const targets = await HrTarget.find(query).sort({ createdAt: -1 });
+    const targets = await HrTarget.find(query).sort({ createdAt: -1 }).lean();
     res.json(targets);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1606,7 +1606,7 @@ router.get('/leadership/approvals', async (req, res) => {
     if (effectiveBranch) query.branchName = new RegExp(escapeRegex(branchShort(effectiveBranch)), 'i');
     if (status) query.status = String(status).toLowerCase();
     if (requestedBy) query.requestedBy = exactNameRx(requestedBy);
-    res.json(await Approval.find(query).sort({ createdAt: -1 }));
+    res.json(await Approval.find(query).sort({ createdAt: -1 }).lean());
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1715,7 +1715,7 @@ router.get('/leadership/escalations', async (req, res) => {
     if (req.query.hrName) query.hrName = new RegExp(`^${escapeRegex(String(req.query.hrName).trim())}$`, 'i');
     if (req.query.studentsOnly || req.query.hrName) query.studentId = { $nin: ['', null] };
     if (req.query.studentId) query.studentId = req.query.studentId;
-    const escalations = await Escalation.find(query).sort({ createdAt: -1 });
+    const escalations = await Escalation.find(query).sort({ createdAt: -1 }).lean();
     res.json(escalations);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -2237,7 +2237,7 @@ router.get('/leadership/tasks', async (req, res) => {
     const query = { date: req.query.date || todayStr() };
     if (req.query.departmentCode) Object.assign(query, deptCodeQuery(req.query.departmentCode));
     if (req.query.assignedTo) query.assignedTo = exactNameRx(req.query.assignedTo);
-    res.json(await TeamTask.find(query).sort({ createdAt: -1 }));
+    res.json(await TeamTask.find(query).sort({ createdAt: -1 }).lean());
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -5116,7 +5116,7 @@ router.get('/trainer/heads', async (req, res) => {
 // Trainer Settings Endpoints — the admin-editable demo trainer roster
 router.get('/trainer/settings', async (req, res) => {
   try {
-    let trainers = await Trainer.find().sort({ trainerName: 1 });
+    let trainers = await Trainer.find().sort({ trainerName: 1 }).lean();
     if (isIndividualTrainerUser(req)) {
       trainers = trainers.filter((t) => t.trainerId === req.user.trainerId || (req.user.email && t.email === req.user.email));
     } else if (isTrainerTLUser(req) || isTrainerManagerUser(req)) {
@@ -5311,7 +5311,7 @@ router.get('/trainer/leader-leaves', async (req, res) => {
       q.requestedBy = exactNameRx(req.user?.name || '');
     }
     if (req.query.status) q.status = String(req.query.status).toLowerCase();
-    res.json(await Approval.find(q).sort({ createdAt: -1 }).limit(500));
+    res.json(await Approval.find(q).sort({ createdAt: -1 }).limit(500).lean());
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -5496,7 +5496,7 @@ router.get('/demos', async (req, res) => {
     }
 
     const query = andConditions.length > 0 ? { $and: andConditions } : {};
-    let demos = await Demo.find(query).sort({ createdAt: -1 });
+    let demos = await Demo.find(query).sort({ createdAt: -1 }).lean();
     res.json(demos);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -6031,44 +6031,71 @@ router.delete('/demos/:id', async (req, res) => {
 // ==========================================
 // REAL FEES & COURSE RATES API
 // ==========================================
-router.get('/fees/rates', async (req, res) => {
-  try {
-    let rates = await CourseFeeRate.find().sort({ createdAt: 1 });
-    if (!rates || rates.length === 0) {
-      await CourseFeeRate.insertMany(DEFAULT_COURSE_FEE_RATES);
-      rates = await CourseFeeRate.find().sort({ createdAt: 1 });
-    } else {
-      const existingCodes = new Set(rates.map(r => (r.code || '').toUpperCase()));
-      const missing = DEFAULT_COURSE_FEE_RATES.filter(r => !existingCodes.has(r.code.toUpperCase()));
-      if (missing.length > 0) {
-        await CourseFeeRate.insertMany(missing);
-      }
-      // Ensure existing rates have up-to-date master fee sheet values
-      for (const def of DEFAULT_COURSE_FEE_RATES) {
-        const existing = rates.find(r => (r.code || '').toUpperCase() === def.code.toUpperCase());
-        if (existing) {
-          await CourseFeeRate.updateOne(
-            { _id: existing._id },
-            { 
-              $set: { 
-                category: def.category || existing.category,
-                oldFee: def.oldFee || existing.oldFee || 0,
-                newFeeNoDiscount: def.newFeeNoDiscount || existing.newFeeNoDiscount || 0,
-                examFeeText: def.examFeeText,
-                examFee: def.examFee || 0,
-                duration: def.duration || existing.duration,
-                courseFee: def.courseFee || existing.courseFee,
-                standardFee: def.standardFee || existing.standardFee,
-                originalFee: def.originalFee || existing.originalFee,
-                totalPayable: def.totalPayable || existing.totalPayable
-              } 
-            }
-          );
+// The master fee sheet is reconciled against the DB once per server process
+// instead of on every GET. It used to run one updateOne per course on every
+// single request — roughly 20 sequential round-trips before the dashboard
+// could render — even though the defaults only ever change on deploy.
+let feeRatesSyncedAt = 0;
+let feeRatesSyncPromise = null;
+const FEE_RATES_SYNC_TTL_MS = 60 * 60 * 1000;
+
+const syncCourseFeeRates = async () => {
+  const existing = await CourseFeeRate.find().select('_id code').lean();
+
+  if (!existing.length) {
+    await CourseFeeRate.insertMany(DEFAULT_COURSE_FEE_RATES);
+    return;
+  }
+
+  const byCode = new Map(existing.map((r) => [String(r.code || '').toUpperCase(), r]));
+  const missing = DEFAULT_COURSE_FEE_RATES.filter((r) => !byCode.has(r.code.toUpperCase()));
+  if (missing.length) await CourseFeeRate.insertMany(missing);
+
+  // One round-trip for all the value refreshes instead of one per course
+  const ops = [];
+  for (const def of DEFAULT_COURSE_FEE_RATES) {
+    const row = byCode.get(def.code.toUpperCase());
+    if (!row) continue;
+    ops.push({
+      updateOne: {
+        filter: { _id: row._id },
+        update: {
+          $set: {
+            ...(def.category ? { category: def.category } : {}),
+            ...(def.oldFee ? { oldFee: def.oldFee } : {}),
+            ...(def.newFeeNoDiscount ? { newFeeNoDiscount: def.newFeeNoDiscount } : {}),
+            examFeeText: def.examFeeText,
+            examFee: def.examFee || 0,
+            ...(def.duration ? { duration: def.duration } : {}),
+            ...(def.courseFee ? { courseFee: def.courseFee } : {}),
+            ...(def.standardFee ? { standardFee: def.standardFee } : {}),
+            ...(def.originalFee ? { originalFee: def.originalFee } : {}),
+            ...(def.totalPayable ? { totalPayable: def.totalPayable } : {})
+          }
         }
       }
-      rates = await CourseFeeRate.find().sort({ createdAt: 1 });
-    }
-    // Ensure canonical ordering matching DEFAULT_COURSE_FEE_RATES (AMCT first)
+    });
+  }
+  if (ops.length) await CourseFeeRate.bulkWrite(ops, { ordered: false });
+};
+
+const ensureCourseFeeRates = () => {
+  if (Date.now() - feeRatesSyncedAt < FEE_RATES_SYNC_TTL_MS) return Promise.resolve();
+  if (!feeRatesSyncPromise) {
+    feeRatesSyncPromise = syncCourseFeeRates()
+      .then(() => { feeRatesSyncedAt = Date.now(); })
+      .catch((e) => { console.warn('[fees/rates] sync skipped:', e.message); })
+      .finally(() => { feeRatesSyncPromise = null; });
+  }
+  return feeRatesSyncPromise;
+};
+
+router.get('/fees/rates', async (req, res) => {
+  try {
+    await ensureCourseFeeRates();
+    const rates = await CourseFeeRate.find().sort({ createdAt: 1 }).lean();
+
+    // Canonical ordering matching DEFAULT_COURSE_FEE_RATES (AMCT first)
     const orderMap = new Map();
     DEFAULT_COURSE_FEE_RATES.forEach((c, idx) => orderMap.set(c.code.toUpperCase(), idx));
     rates.sort((a, b) => {
@@ -6701,7 +6728,7 @@ router.get('/trainer/staff-attendance', async (req, res) => {
 // ==========================================
 router.get('/admin/slabs', async (req, res) => {
   try {
-    let slabs = await IncentiveSlab.find().sort({ min: 1 });
+    let slabs = await IncentiveSlab.find().sort({ min: 1 }).lean();
     res.json(slabs);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -6730,7 +6757,7 @@ router.put('/admin/slabs', async (req, res) => {
 
 router.get('/admin/audit-logs', async (req, res) => {
   try {
-    let logs = await AuditLog.find().sort({ createdAt: -1 }).limit(100);
+    let logs = await AuditLog.find().sort({ createdAt: -1 }).limit(100).lean();
     res.json(logs);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -6756,7 +6783,7 @@ router.post('/admin/audit-logs', async (req, res) => {
 
 router.get('/admin/users', async (req, res) => {
   try {
-    let users = await User.find().sort({ createdAt: -1 });
+    let users = await User.find().sort({ createdAt: -1 }).lean();
     const formatted = users.map(u => ({
       id: u._id.toString(),
       _id: u._id.toString(),
@@ -7228,7 +7255,7 @@ router.get('/trainer/doubts', async (req, res) => {
       query.trainerId = trainerId;
     }
     if (studentId) query.studentId = studentId;
-    const doubts = await TrainerDoubt.find(query).sort({ createdAt: -1 });
+    const doubts = await TrainerDoubt.find(query).sort({ createdAt: -1 }).lean();
     res.json(doubts.map(formatDoubt));
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -10475,7 +10502,7 @@ router.get('/training/materials', async (req, res) => {
   try {
     const { batch } = req.query;
     const query = batch ? { 'assignments.batch': batch } : {};
-    const list = await TrainingMaterial.find(query).sort({ createdAt: -1 });
+    const list = await TrainingMaterial.find(query).sort({ createdAt: -1 }).lean();
     res.json(list);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -10687,7 +10714,7 @@ router.put('/training/materials/:id/move', async (req, res) => {
 
 router.get('/training/folders', async (_req, res) => {
   try {
-    const folders = await TrainingFolder.find().sort({ name: 1 });
+    const folders = await TrainingFolder.find().sort({ name: 1 }).lean();
     res.json(folders);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -10872,8 +10899,8 @@ router.post('/cccp/colleges/:id/handover', async (req, res) => {
 // 2. Corporate Companies
 router.get('/cccp/companies', async (req, res) => {
   try {
-    let companies = await CorporatePartner.find().sort({ createdAt: -1 });
-    res.json(companies.map(c => ({ id: c._id.toString(), _id: c._id.toString(), ...c.toObject() })));
+    let companies = await CorporatePartner.find().sort({ createdAt: -1 }).lean();
+    res.json(companies.map((c) => ({ ...c, id: String(c._id) })));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -10953,8 +10980,8 @@ async function syncStageFromRecord(studentId, status, company = '') {
 
 router.get('/cccp/placements', async (req, res) => {
   try {
-    let placements = await PlacementRecord.find().sort({ createdAt: -1 });
-    res.json(placements.map(p => ({ id: p._id.toString(), _id: p._id.toString(), ...p.toObject() })));
+    let placements = await PlacementRecord.find().sort({ createdAt: -1 }).lean();
+    res.json(placements.map((p) => ({ ...p, id: String(p._id) })));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -10994,8 +11021,8 @@ router.delete('/cccp/placements/:id', async (req, res) => {
 // 4. Billing Deals
 router.get('/cccp/billing', async (req, res) => {
   try {
-    let billing = await BillingDeal.find().sort({ createdAt: -1 });
-    res.json(billing.map(b => ({ id: b._id.toString(), _id: b._id.toString(), ...b.toObject() })));
+    let billing = await BillingDeal.find().sort({ createdAt: -1 }).lean();
+    res.json(billing.map((b) => ({ ...b, id: String(b._id) })));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -11033,8 +11060,8 @@ router.delete('/cccp/billing/:id', async (req, res) => {
 // 5. Follow-ups
 router.get('/cccp/followups', async (req, res) => {
   try {
-    let followups = await CccpFollowUp.find().sort({ date: 1, time: 1 });
-    res.json(followups.map(f => ({ id: f._id.toString(), _id: f._id.toString(), ...f.toObject() })));
+    let followups = await CccpFollowUp.find().sort({ date: 1, time: 1 }).lean();
+    res.json(followups.map((f) => ({ ...f, id: String(f._id) })));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -11176,8 +11203,8 @@ router.delete('/marketing/campaigns/:id', async (req, res) => {
 
 router.get('/marketing/creatives', async (req, res) => {
   try {
-    let creatives = await MarketingCreative.find().sort({ createdAt: -1 });
-    res.json(creatives.map(c => ({ id: c._id.toString(), _id: c._id.toString(), ...c.toObject() })));
+    let creatives = await MarketingCreative.find().sort({ createdAt: -1 }).lean();
+    res.json(creatives.map((c) => ({ ...c, id: String(c._id) })));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -11251,7 +11278,7 @@ const pickContent = (body = {}) => Object.fromEntries(Object.entries(body).filte
 
 router.get('/marketing/content', async (req, res) => {
   try {
-    res.json(await ContentPiece.find().sort({ dueDate: 1, createdAt: -1 }));
+    res.json(await ContentPiece.find().sort({ dueDate: 1, createdAt: -1 }).lean());
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -11448,7 +11475,7 @@ const pickSop = (body = {}) => Object.fromEntries(Object.entries(body).filter(([
 router.get('/sops', async (req, res) => {
   try {
     const query = req.query.department ? { department: new RegExp(`^${escapeRegex(req.query.department)}$`, 'i') } : {};
-    res.json(await SopDocument.find(query).sort({ category: 1, title: 1 }));
+    res.json(await SopDocument.find(query).sort({ category: 1, title: 1 }).lean());
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -12814,7 +12841,7 @@ router.get('/student-portal/submissions', async (req, res) => {
       const studentIds = (await Student.find({ trainerId }).select('studentId')).map((s) => s.studentId).filter(Boolean);
       query.$or = [{ trainerId }, { studentId: { $in: studentIds } }];
     }
-    res.json(await StudentSubmission.find(query).sort({ createdAt: -1 }).limit(300));
+    res.json(await StudentSubmission.find(query).sort({ createdAt: -1 }).limit(300).lean());
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -13893,7 +13920,7 @@ router.get('/training/course-syllabus', async (req, res) => {
 
 router.get('/training/course-syllabus/all', async (req, res) => {
   try {
-    const docs = await CourseSyllabus.find().sort({ course: 1 });
+    const docs = await CourseSyllabus.find().sort({ course: 1 }).lean();
     res.json(docs);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -14014,7 +14041,7 @@ router.get('/training/announcements', async (req, res) => {
   try {
     const batch = tidyBatchName(req.query.batch || '');
     const query = batch ? { batchKey: batchMatchKey(batch) } : (isTrainerReq(req) ? { trainerId: myTrainerId(req) } : {});
-    res.json(await BatchAnnouncement.find(query).sort({ createdAt: -1 }).limit(50));
+    res.json(await BatchAnnouncement.find(query).sort({ createdAt: -1 }).limit(50).lean());
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -14152,7 +14179,7 @@ router.get('/trainer/assessments/:id/attempts', async (req, res) => {
     const item = await TrainerAssessment.findById(req.params.id).select('trainerId');
     if (!item) return res.status(404).json({ error: 'Assessment not found' });
     if (item.trainerId && !trainerOwnsRecord(req, item)) return res.status(403).json(NOT_YOUR_RECORD);
-    res.json(await TestAttempt.find({ assessmentId: req.params.id }).sort({ submittedAt: -1, startedAt: -1 }));
+    res.json(await TestAttempt.find({ assessmentId: req.params.id }).sort({ submittedAt: -1, startedAt: -1 }).lean());
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
