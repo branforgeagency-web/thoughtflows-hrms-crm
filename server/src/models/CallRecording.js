@@ -50,9 +50,11 @@ const callRecordingSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
-  // When the audio lives in S3 (via Amplify Storage) rather than the server's
-  // own (ephemeral) local disk. storageProvider 'local' means audioUrl points
-  // at our own /recordings/<file> static route.
+  // Recording audio lives in AWS S3 ('amplify'), identified by storageKey.
+  // 'external' means audioUrl is a link hosted by the telephony provider.
+  // 'local' is LEGACY ONLY — recordings written to this server's own
+  // (ephemeral) /recordings/<file> disk route before the move to S3. Nothing
+  // writes 'local' any more; it stays in the enum so old rows still load.
   storageKey: {
     type: String,
     default: ''
@@ -63,8 +65,8 @@ const callRecordingSchema = new mongoose.Schema({
   },
   storageProvider: {
     type: String,
-    enum: ['amplify', 'local'],
-    default: 'local'
+    enum: ['amplify', 'external', 'local'],
+    default: 'amplify'
   },
   isDeleted: {
     type: Boolean,

@@ -26,6 +26,13 @@ const studentRequestSchema = new mongoose.Schema(
     reasonCategory: { type: String, default: '' },
     documentName: { type: String, default: '' },
     documentMimeType: { type: String, default: '' },
+    // Supporting documents live in AWS S3. `documentKey` is the object key and
+    // `documentStorageUrl` a presigned link; `documentUrl` stays the API path
+    // the dashboards link to.
+    documentKey: { type: String, default: '' },
+    documentStorageUrl: { type: String, default: '' },
+    // DEPRECATED — legacy inline base64 bytes from before the S3-only move.
+    // Nothing writes this any more; kept so older requests still open.
     documentData: { type: String, default: '', select: false },
     documentUrl: { type: String, default: '' },
     attemptNumber: { type: Number, default: 1 }, // For mock_interview: Attempt 1 (assessment) or Attempt 2 (improvement)

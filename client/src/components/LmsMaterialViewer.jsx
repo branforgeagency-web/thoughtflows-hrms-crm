@@ -17,6 +17,33 @@ import {
   Loader2
 } from 'lucide-react';
 import { fetchTrainingMaterialBuffer, trainingMaterialFileUrl } from '../services/api';
+import { getStorageFileUrl } from '../services/amplifyStorage';
+
+// Files at or under this size are downloaded whole and rendered locally (PPTX
+// slide parsing needs the bytes in memory). Anything larger is streamed from
+// the S3 bucket instead, so a 200 MB deck or class video never has to be pulled
+// into a single ArrayBuffer in the browser.
+const STREAM_MIN_BYTES = 12 * 1024 * 1024;
+const VIDEO_EXTS = new Set(['mp4', 'mov', 'webm', 'mkv', 'm4v']);
+const AUDIO_EXTS = new Set(['mp3', 'm4a', 'wav', 'aac', 'ogg', 'opus']);
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif']);
+
+// Best available direct link to the stored object. The presigned URL saved on
+// the material row has a fixed lifetime, so re-sign from the S3 key when we can
+// and only fall back to the saved URL / the API redirect.
+async function resolveDirectUrl(material) {
+  if (material?.storageKey) {
+    try {
+      const fresh = await getStorageFileUrl(material.storageKey, { expiresIn: 3600 });
+      if (fresh) return fresh;
+    } catch (err) {
+      console.warn('Could not re-sign S3 URL, falling back to stored link:', err);
+    }
+  }
+  if (material?.storageUrl) return material.storageUrl;
+  if (material?._id) return trainingMaterialFileUrl(material._id);
+  return '';
+}
 
 // Convert pptxtojson Fill object into CSS background properties
 function fillToCss(fill) {
@@ -34,9 +61,9 @@ function fillToCss(fill) {
     }
     return { backgroundImage: `linear-gradient(${deg}, ${stops})` };
   }
-  if (fill.type === 'image' && fill.value?.base64) {
+  if (fill.type === 'image' && (fill.value?.blob || fill.value?.base64)) {
     return {
-      backgroundImage: `url("${fill.value.base64}")`,
+      backgroundImage: `url("${fill.value.blob || fill.value.base64}")`,
       backgroundSize: 'cover',
       backgroundPosition: 'center',
       opacity: typeof fill.value.opacity === 'number' ? fill.value.opacity : 1
@@ -376,6 +403,7 @@ function SlideCanvas({ slide, size, scale = 1 }) {
 
 export default function LmsMaterialViewer({ material, canDownload = false, onClose }) {
   const [loading, setLoading] = useState(true);
+  const [loadingText, setLoadingText] = useState('Loading presentation in LMS viewer…');
   const [error, setError] = useState('');
   const [viewerMode, setViewerMode] = useState(''); // 'pptx' | 'legacy_ppt' | 'pdf' | 'image' | 'unsupported'
   const [deck, setDeck] = useState(null); // { slides, size }
@@ -410,8 +438,87 @@ export default function LmsMaterialViewer({ material, canDownload = false, onClo
 
     (async () => {
       try {
-        const buffer = await fetchTrainingMaterialBuffer(material._id);
+        const sizeBytes = Number(material?.fileSize) || 0;
+        const isVideo = VIDEO_EXTS.has(ext) || mime.startsWith('video/');
+        const isAudio = AUDIO_EXTS.has(ext) || mime.startsWith('audio/');
+        const isPdf = ext === 'pdf' || mime === 'application/pdf';
+        const isImg = mime.startsWith('image/') || IMAGE_EXTS.has(ext);
+
+        // Video & Audio: always stream directly from storage
+        if (isVideo || isAudio) {
+          const direct = await resolveDirectUrl(material);
+          if (cancelled) return;
+          if (!direct) {
+            setError('This media file has no accessible storage link.');
+            return;
+          }
+          setBlobUrl(direct);
+          if (isVideo) setViewerMode('video');
+          else setViewerMode('audio');
+          return;
+        }
+
+        // PDF & Images: stream directly when large
+        if ((isPdf || isImg) && sizeBytes > STREAM_MIN_BYTES) {
+          const direct = await resolveDirectUrl(material);
+          if (cancelled) return;
+          if (!direct) {
+            setError('This file has no accessible storage link.');
+            return;
+          }
+          setBlobUrl(direct);
+          if (isPdf) setViewerMode('pdf');
+          else setViewerMode('image');
+          return;
+        }
+
+        // Presentations (PPTX, PPT) & other inline materials: fetch bytes and parse
+        let buffer;
+        const direct = await resolveDirectUrl(material);
         if (cancelled) return;
+
+        if (direct && (direct.startsWith('http://') || direct.startsWith('https://')) && !direct.includes('/api/')) {
+          setLoadingText(
+            sizeBytes > 10 * 1024 * 1024
+              ? `Downloading presentation (${(sizeBytes / (1024 * 1024)).toFixed(1)} MB)…`
+              : 'Loading presentation…'
+          );
+          const res = await fetch(direct);
+          if (!res.ok) throw new Error(`Storage returned ${res.status}: ${res.statusText}`);
+
+          const total = Number(res.headers.get('content-length')) || sizeBytes;
+          const reader = res.body?.getReader();
+          if (reader && total > 0) {
+            const chunks = [];
+            let loaded = 0;
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              if (cancelled) return;
+              chunks.push(value);
+              loaded += value.length;
+              const pct = Math.round((loaded / total) * 100);
+              const mbLoaded = (loaded / (1024 * 1024)).toFixed(1);
+              const mbTotal = (total / (1024 * 1024)).toFixed(1);
+              setLoadingText(`Downloading presentation: ${pct}% (${mbLoaded} of ${mbTotal} MB)…`);
+            }
+            const allBytes = new Uint8Array(loaded);
+            let pos = 0;
+            for (const chunk of chunks) {
+              allBytes.set(chunk, pos);
+              pos += chunk.length;
+            }
+            buffer = allBytes.buffer;
+          } else {
+            buffer = await res.arrayBuffer();
+          }
+        } else {
+          setLoadingText('Loading file from server…');
+          buffer = await fetchTrainingMaterialBuffer(material._id);
+        }
+
+        if (cancelled) return;
+        setLoadingText('Rendering presentation slides…');
 
         const bytes = new Uint8Array(buffer);
         const isZip = bytes.length >= 2 && bytes[0] === 0x50 && bytes[1] === 0x4b; // PK
@@ -419,17 +526,28 @@ export default function LmsMaterialViewer({ material, canDownload = false, onClo
         const isPdfMagic = bytes.length >= 4 && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46;
 
         if (ext === 'pptx' || (isZip && (ext === 'ppt' || mime.includes('presentation')))) {
-          const parsed = await parsePptx(buffer, {
-            imageMode: 'base64',
-            videoMode: 'none',
-            audioMode: 'none'
-          });
-          if (cancelled) return;
-          if (!parsed?.slides?.length) {
-            setError('This presentation has no readable slides.');
-          } else {
-            setDeck(parsed);
-            setViewerMode('pptx');
+          try {
+            const parsed = await parsePptx(buffer, {
+              imageMode: 'blob',
+              videoMode: 'none',
+              audioMode: 'none'
+            });
+            if (cancelled) return;
+            if (!parsed?.slides?.length) {
+              setError('This presentation has no readable slides.');
+            } else {
+              setDeck(parsed);
+              setViewerMode('pptx');
+            }
+          } catch (parseErr) {
+            console.warn('PPTX visual parse error, falling back to text outline:', parseErr);
+            const lines = extractLegacyPptText(buffer);
+            if (lines.length > 0) {
+              setLegacyLines(lines);
+              setViewerMode('legacy_ppt');
+            } else {
+              throw new Error('Could not parse presentation slides. The file may be password protected or corrupted.');
+            }
           }
         } else if (ext === 'ppt' || isOle2) {
           const lines = extractLegacyPptText(buffer);
@@ -440,7 +558,7 @@ export default function LmsMaterialViewer({ material, canDownload = false, onClo
           createdUrl = url;
           setBlobUrl(url);
           setViewerMode('pdf');
-        } else if (mime.startsWith('image/') || ['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext)) {
+        } else if (mime.startsWith('image/') || IMAGE_EXTS.has(ext)) {
           const url = URL.createObjectURL(new Blob([buffer], { type: material.mimeType || 'image/png' }));
           createdUrl = url;
           setBlobUrl(url);
@@ -642,7 +760,7 @@ export default function LmsMaterialViewer({ material, canDownload = false, onClo
           {loading && (
             <div className="m-auto flex flex-col items-center gap-3 text-slate-300">
               <Loader2 className="w-8 h-8 animate-spin text-teal-400" />
-              <p className="text-xs font-semibold">Loading presentation in LMS viewer…</p>
+              <p className="text-xs font-semibold">{loadingText || 'Loading presentation in LMS viewer…'}</p>
             </div>
           )}
 
@@ -799,6 +917,53 @@ export default function LmsMaterialViewer({ material, canDownload = false, onClo
                 onContextMenu={!canDownload ? (e) => e.preventDefault() : undefined}
                 className="max-w-full max-h-full object-contain rounded-xl shadow-2xl select-none"
               />
+            </div>
+          )}
+
+          {!loading && !error && viewerMode === 'video' && blobUrl && (
+            <div className="w-full h-full flex items-center justify-center bg-black p-2 sm:p-4">
+              <video
+                src={blobUrl}
+                controls
+                controlsList={canDownload ? undefined : 'nodownload'}
+                disablePictureInPicture={!canDownload}
+                onContextMenu={!canDownload ? (e) => e.preventDefault() : undefined}
+                className="max-w-full max-h-full rounded-xl shadow-2xl"
+              >
+                <track kind="captions" />
+              </video>
+            </div>
+          )}
+
+          {!loading && !error && viewerMode === 'audio' && blobUrl && (
+            <div className="m-auto w-full max-w-xl p-6 rounded-2xl bg-slate-900 border border-slate-700 space-y-4 text-center">
+              <h4 className="text-sm font-bold text-white">{material?.title || 'Recording'}</h4>
+              <audio
+                src={blobUrl}
+                controls
+                controlsList={canDownload ? undefined : 'nodownload'}
+                onContextMenu={!canDownload ? (e) => e.preventDefault() : undefined}
+                className="w-full"
+              />
+            </div>
+          )}
+
+          {!loading && !error && viewerMode === 'too_large' && (
+            <div className="m-auto max-w-md text-center p-6 rounded-2xl bg-slate-900 border border-slate-700 space-y-3">
+              <FileText className="w-10 h-10 text-teal-400 mx-auto" />
+              <h4 className="text-sm font-bold text-white">
+                Too large for inline preview
+                {material?.fileSize
+                  ? ` (${(Number(material.fileSize) / (1024 * 1024)).toFixed(1)} MB)`
+                  : ''}
+              </h4>
+              <p className="text-xs text-slate-400">
+                {canDownload
+                  ? 'This file is stored in the academy S3 bucket. Rendering a .' +
+                    ext +
+                    ' this size inside the browser is not reliable — use the Download button above to open it in its own application.'
+                  : 'This file is stored in the academy S3 bucket, but it is too large to render inside the LMS viewer and downloads are disabled for your role. Ask your Head of Department or Manager to upload a smaller .pptx or .pdf version for in-dashboard viewing.'}
+              </p>
             </div>
           )}
 

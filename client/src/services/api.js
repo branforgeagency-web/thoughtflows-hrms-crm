@@ -559,28 +559,26 @@ export const getRecordings = async (params) => {
   return res.data;
 };
 
-// Recordings saved on the server's local disk don't survive a redeploy/restart
-// (Render's filesystem is ephemeral), so whenever Amplify S3 Storage is configured
-// we upload the audio straight to S3 from the browser and send only the resulting
-// storage key/URL — never the raw base64 — to the server. If Amplify isn't
-// configured (or the upload fails), we fall back to the original base64-to-disk path.
+// All recording audio lives in AWS S3. The upload components send a storage key
+// directly, so this is only a safety net for any caller still passing raw
+// base64: it uploads to the bucket and swaps in the key. There is no fallback —
+// the API rejects inline audio outright, so a failure here must surface rather
+// than turn into a confusing 400 from the server.
 const offloadAudioToS3 = async (payload, prefix) => {
-  if (!payload.audioBase64 || !isAmplifyStorageConfigured()) return payload;
-  try {
-    const file = base64ToAudioFile(payload.audioBase64, payload.fileName);
-    const uploaded = await uploadRecordingFile(file, prefix || 'general');
-    const { audioBase64, ...rest } = payload;
-    return {
-      ...rest,
-      fileName: payload.fileName || file.name,
-      storageKey: uploaded.storageKey,
-      storageUrl: uploaded.storageUrl,
-      storageProvider: 'amplify'
-    };
-  } catch (err) {
-    console.warn('S3 recording upload failed, falling back to server storage:', err?.message || err);
-    return payload;
+  if (!payload.audioBase64) return payload;
+  if (!isAmplifyStorageConfigured()) {
+    throw new Error('S3 recording storage is not configured, so this recording cannot be saved.');
   }
+  const file = base64ToAudioFile(payload.audioBase64, payload.fileName);
+  const uploaded = await uploadRecordingFile(file, prefix || 'general');
+  const { audioBase64, ...rest } = payload;
+  return {
+    ...rest,
+    fileName: payload.fileName || file.name,
+    storageKey: uploaded.storageKey,
+    storageUrl: uploaded.storageUrl,
+    storageProvider: 'amplify'
+  };
 };
 
 const base64ToAudioFile = (dataUrl, fileName) => {

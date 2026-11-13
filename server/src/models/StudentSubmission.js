@@ -1,8 +1,9 @@
 import mongoose from 'mongoose';
 
 // Work a student sends to their trainer from the Student Portal: assignments,
-// resume, video introduction, improvement tasks. The file is stored inline
-// (base64) and only returned by the /file endpoint, never in list calls.
+// resume, video introduction, improvement tasks. Files are stored in the
+// academy's AWS S3 bucket ONLY — this row keeps the metadata plus `storageKey`
+// / `storageUrl`. File bytes are never written to MongoDB.
 const studentSubmissionSchema = new mongoose.Schema(
   {
     studentId: { type: String, required: true },
@@ -25,7 +26,10 @@ const studentSubmissionSchema = new mongoose.Schema(
     fileSize: { type: Number, default: 0 },
     storageKey: { type: String, default: '' },
     storageUrl: { type: String, default: '' },
-    storageProvider: { type: String, enum: ['amplify', 'inline'], default: 'inline' },
+    storageProvider: { type: String, enum: ['amplify', 'inline'], default: 'amplify' },
+    // DEPRECATED — legacy inline base64 bytes from before the S3-only move.
+    // Nothing writes this any more; kept (select:false) so older submissions
+    // still open. 'inline' stays in the enum above for the same reason.
     data: { type: String, default: '', select: false },
     status: {
       type: String,

@@ -24,12 +24,14 @@ export function initAmplifyStorage() {
     // where that file doesn't exist just gets an empty match, not a build error.
     let outputs = null;
     try {
-      const generated = import.meta.glob('../../amplify_outputs.json', { eager: true });
-      const mod = Object.values(generated)[0];
-      const candidate = mod?.default || mod || null;
-      // The placeholder checked into git is just `{ "version": "1.5" }` — only
-      // treat this as real, deployed config once it actually names a bucket.
-      if (candidate?.storage?.bucket_name) outputs = candidate;
+      const generated = import.meta.glob(['../../amplify_outputs.json', '../../../amplify_outputs.json'], { eager: true });
+      for (const mod of Object.values(generated)) {
+        const candidate = mod?.default || mod || null;
+        if (candidate?.storage?.bucket_name) {
+          outputs = candidate;
+          break;
+        }
+      }
     } catch (_) {}
 
     // 2. Check environment variables (supports standard VITE_* and Vercel-friendly non-reserved names)
@@ -55,6 +57,11 @@ export function initAmplifyStorage() {
       import.meta.env?.VITE_AMPLIFY_CLIENT_ID ||
       import.meta.env?.VITE_AWS_USER_POOLS_WEB_CLIENT_ID;
 
+    const envIdentityPoolId =
+      import.meta.env?.VITE_IDENTITY_POOL_ID ||
+      import.meta.env?.VITE_AMPLIFY_IDENTITY_POOL_ID ||
+      import.meta.env?.VITE_AWS_COGNITO_IDENTITY_POOL_ID;
+
     if (outputs) {
       Amplify.configure(outputs);
       activeBucketName = outputs?.storage?.bucket_name || 'thoughtflows-storage';
@@ -73,11 +80,12 @@ export function initAmplifyStorage() {
         }
       };
 
-      if (envUserPoolId && envAppClientId) {
+      if (envUserPoolId || envIdentityPoolId) {
         config.Auth = {
           Cognito: {
-            userPoolId: envUserPoolId,
-            userPoolClientId: envAppClientId
+            ...(envUserPoolId ? { userPoolId: envUserPoolId } : {}),
+            ...(envAppClientId ? { userPoolClientId: envAppClientId } : {}),
+            ...(envIdentityPoolId ? { identityPoolId: envIdentityPoolId } : {})
           }
         };
       }
@@ -114,15 +122,28 @@ export function getActiveBucketName() {
   return activeBucketName;
 }
 
+// Longest lifetime AWS SigV4 allows on a presigned S3 URL (7 days). The URL
+// saved on the material row is only a convenience copy — anything that needs a
+// guaranteed-live link re-signs from `storageKey` via getStorageFileUrl().
+export const MAX_PRESIGN_SECONDS = 604800;
+
 /**
- * Upload a Training Material file to AWS Amplify Storage
- * Path: training-materials/{category}/{timestamp}-{filename}
+ * Upload a Training Material file to AWS Amplify Storage (S3).
+ * Path: training-materials/{category}/{folder}/{timestamp}-{filename}
+ *
+ * aws-amplify/storage switches to S3 multipart upload automatically for files
+ * over 5 MB and uploads the parts in parallel, so large decks and class
+ * recordings (up to the 200 MB LMS cap) stream straight from the browser to the
+ * bucket — they never pass through the Node API server.
  */
 export async function uploadTrainingMaterialFile(file, options = {}) {
-  const { category = 'general', onProgress } = options;
+  const { category = 'general', folder = '', onProgress } = options;
   const cleanCategory = String(category).toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+  const cleanFolder = String(folder || '').toLowerCase().replace(/[^a-z0-9_-]/g, '_');
   const cleanName = sanitizeFileName(file.name);
-  const storagePath = `training-materials/${cleanCategory}/${Date.now()}-${cleanName}`;
+  const storagePath = `training-materials/${cleanCategory}/${
+    cleanFolder ? `${cleanFolder}/` : ''
+  }${Date.now()}-${cleanName}`;
 
   const task = uploadData({
     path: storagePath,
@@ -139,7 +160,7 @@ export async function uploadTrainingMaterialFile(file, options = {}) {
   });
 
   const result = await task.result;
-  const urlResult = await getUrl({ path: storagePath });
+  const urlResult = await getUrl({ path: storagePath, options: { expiresIn: MAX_PRESIGN_SECONDS } });
 
   return {
     storageKey: storagePath,
@@ -313,6 +334,7 @@ export async function listStorageFiles(pathPrefix = '') {
 }
 
 export default {
+  MAX_PRESIGN_SECONDS,
   initAmplifyStorage,
   isAmplifyStorageConfigured,
   getActiveBucketName,

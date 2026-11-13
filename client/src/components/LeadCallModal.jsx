@@ -27,6 +27,11 @@ import {
 
 import BookNewDemoModal from './BookNewDemoModal';
 import { createDemo, getRecordings, saveRecording, recordingUrl } from '../services/api';
+import { isAmplifyStorageConfigured, uploadRecordingFile } from '../services/amplifyStorage';
+
+// Recordings go straight to the AWS S3 bucket, so the old server-side body
+// limit no longer caps this.
+const MAX_RECORDING_MB = 200;
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 import { copyToClipboard } from '../utils/clipboard';
 import { COURSE_CATEGORIES } from '../constants/courses';
@@ -209,8 +214,8 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
   const handleFileUpload = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > 75 * 1024 * 1024) {
-      showToast('File size exceeds 75 MB limit.');
+    if (file.size > MAX_RECORDING_MB * 1024 * 1024) {
+      showToast(`File size exceeds ${MAX_RECORDING_MB} MB limit.`);
       return;
     }
     setUploadedFileName(file.name);
@@ -239,23 +244,26 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
 
     setSaving(true);
 
-    // Convert audio file to base64 if present
-    let audioBase64 = null;
-    if (recordedAudioBlob) {
-      try {
-        audioBase64 = await new Promise((resolve) => {
-          const reader = new FileReader();
-          reader.onloadend = () => resolve(reader.result);
-          reader.readAsDataURL(recordedAudioBlob);
-        });
-      } catch (e) {
-        console.warn('Could not encode audio file:', e);
-      }
-    }
-
+    // Upload the recording straight to the academy's AWS S3 bucket. The audio
+    // bytes never reach the API server and are never stored in MongoDB — only
+    // the S3 key is saved on the recording row.
     let recordingFailed = false;
-    if (audioBase64) {
+    const hasRecording = Boolean(recordedAudioBlob);
+
+    if (hasRecording) {
+      const fileName = uploadedFileName || `phone_call_recording_${Date.now()}.m4a`;
       try {
+        if (!isAmplifyStorageConfigured()) {
+          throw new Error('S3 recording storage is not configured in this build.');
+        }
+        // MediaRecorder hands back a plain Blob with no name; S3 keys are built
+        // from the file name, so wrap it before uploading.
+        const audioFile = recordedAudioBlob instanceof File
+          ? recordedAudioBlob
+          : new File([recordedAudioBlob], fileName, { type: recordedAudioBlob.type || 'audio/webm' });
+
+        const s3Result = await uploadRecordingFile(audioFile, leadForm.phone || 'lead');
+
         await saveRecording({
           leadId: leadData?._id || leadData?.id,
           leadName: leadForm.name || 'Student',
@@ -265,8 +273,10 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
           durationSeconds: uploadedDuration || 60,
           outcome: selectedOutcome || 'Follow-up Needed',
           notes: leadForm.notes,
-          audioBase64,
-          fileName: uploadedFileName || 'phone_call_recording.m4a',
+          storageKey: s3Result.storageKey,
+          storageUrl: s3Result.storageUrl,
+          storageProvider: 'amplify',
+          fileName,
           source: 'phone_upload'
         });
         await fetchLeadRecordings(leadForm.phone);
@@ -297,7 +307,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
       if (recordingFailed) {
         setTimeout(() => showToast('⚠ Details saved, but recording upload failed — click Submit again to retry.'), 3500);
       } else {
-        showToast(audioBase64 ? '✓ Student details & call recording saved!' : '✓ Student details updated successfully!');
+        showToast(hasRecording ? '✓ Student details & call recording saved!' : '✓ Student details updated successfully!');
         setTimeout(() => onClose(), 600);
       }
     } catch (e) {
@@ -917,7 +927,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                     {uploadedFileName || 'Click to select and upload call recording from your phone'}
                   </div>
                   <div className="text-[10px] text-slate-500 font-mono mt-0.5">
-                    Supports M4A, MP3, MP4, WAV, AAC, OPUS, WEBM · up to 75 MB
+                    Supports M4A, MP3, MP4, WAV, AAC, OPUS, WEBM · up to {MAX_RECORDING_MB} MB
                   </div>
                 </div>
               </div>

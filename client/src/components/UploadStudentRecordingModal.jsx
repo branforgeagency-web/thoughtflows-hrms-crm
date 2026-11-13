@@ -17,15 +17,11 @@ import {
   ChevronDown
 } from 'lucide-react';
 import { saveRecording } from '../services/api';
+import { isAmplifyStorageConfigured, uploadRecordingFile } from '../services/amplifyStorage';
 
-const MAX_FILE_BYTES = 50 * 1024 * 1024; // 50 MB
-
-const readAsDataUrl = (file) => new Promise((resolve, reject) => {
-  const r = new FileReader();
-  r.onload = () => resolve(r.result);
-  r.onerror = () => reject(r.error);
-  r.readAsDataURL(file);
-});
+// Recordings stream straight from the browser to the academy's AWS S3 bucket,
+// so the audio never reaches the API server and is never stored in MongoDB.
+const MAX_FILE_BYTES = 200 * 1024 * 1024; // 200 MB
 
 const readDuration = (file) => new Promise((resolve) => {
   const url = URL.createObjectURL(file);
@@ -238,7 +234,9 @@ export default function UploadStudentRecordingModal({
     setErrorMessage('');
 
     if (file.size > MAX_FILE_BYTES) {
-      setErrorMessage(`Selected audio file is too large (${formatFileSize(file.size)}). Max allowed is 50 MB.`);
+      setErrorMessage(
+        `Selected audio file is too large (${formatFileSize(file.size)}). Max allowed is ${MAX_FILE_BYTES / (1024 * 1024)} MB.`
+      );
       return;
     }
 
@@ -303,7 +301,13 @@ export default function UploadStudentRecordingModal({
     try {
       setIsUploading(true);
 
-      const audioBase64 = await readAsDataUrl(audioFile);
+      if (!isAmplifyStorageConfigured()) {
+        throw new Error('S3 recording storage is not configured in this build. Please contact the administrator.');
+      }
+      const s3Result = await uploadRecordingFile(
+        audioFile,
+        studentCustomId || selectedStudent?.studentId || studentName.trim() || 'student'
+      );
 
       const payload = {
         leadName: studentName.trim(),
@@ -316,7 +320,9 @@ export default function UploadStudentRecordingModal({
         durationSeconds: Number(audioDuration) || 0,
         outcome: outcome || 'Follow-up Needed',
         notes: notes.trim(),
-        audioBase64,
+        storageKey: s3Result.storageKey,
+        storageUrl: s3Result.storageUrl,
+        storageProvider: 'amplify',
         fileName: audioFile.name,
         source: 'manual_upload',
         recordedAt: recordedAt ? new Date(recordedAt).toISOString() : new Date().toISOString()

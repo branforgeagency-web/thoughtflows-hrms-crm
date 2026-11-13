@@ -47,7 +47,10 @@ const CATEGORIES = [
   'Exam Practice',
   'Viva & Interview'
 ];
-const MAX_MB = 12;
+// Hard ceiling for one file. Every material is stored in the academy's AWS S3
+// bucket — the database only ever holds the metadata row plus the S3 key. There
+// is deliberately no base64/MongoDB fallback: the bytes never enter Mongo.
+const MAX_MB = 200;
 
 const formatSize = (bytes = 0) =>
   bytes >= 1024 * 1024
@@ -230,9 +233,14 @@ export default function TrainingLibraryMaterials({
     }
   };
 
-  const ALLOWED_EXTS = new Set(['ppt', 'pptx', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'png', 'jpg', 'jpeg', 'webp']);
+  const ALLOWED_EXTS = new Set([
+    'ppt', 'pptx', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'txt',
+    'png', 'jpg', 'jpeg', 'webp', 'gif',
+    // Class recordings and media, which is what the 200 MB ceiling is for
+    'mp4', 'mov', 'webm', 'mkv', 'mp3', 'm4a', 'wav', 'zip'
+  ]);
 
-  const uploadSingleFile = async (file, targetFolder, customTitle = '') => {
+  const uploadSingleFile = async (file, targetFolder, customTitle = '', progressLabel = '') => {
     const payload = {
       title: customTitle || file.name.replace(/\.[^.]+$/, ''),
       description: uploadNote.trim(),
@@ -246,30 +254,35 @@ export default function TrainingLibraryMaterials({
       branch: currentUser.branch || ''
     };
 
-    if (isAmplifyStorageConfigured()) {
-      try {
-        const s3Result = await uploadTrainingMaterialFile(file, { category: uploadCategory });
-        payload.storageKey = s3Result.storageKey;
-        payload.storageUrl = s3Result.storageUrl;
-        payload.storageProvider = 'amplify';
-      } catch (amplifyErr) {
-        console.warn('Amplify upload failed, falling back to database storage:', amplifyErr);
-      }
-    }
-
-    if (!payload.storageUrl) {
-      const data = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
+    // S3 is the only store. The file streams browser -> bucket; the database
+    // row below carries just the metadata and the S3 key.
+    let s3Result;
+    try {
+      s3Result = await uploadTrainingMaterialFile(file, {
+        category: uploadCategory,
+        folder: targetFolder,
+        onProgress: ({ percent, transferred, total }) => {
+          setUploadProgressText(
+            `${progressLabel}${percent}% · ${formatSize(transferred)} of ${formatSize(total)} → AWS S3`
+          );
+        }
       });
-      payload.data = data;
-      payload.storageProvider = 'inline';
+    } catch (amplifyErr) {
+      console.error('S3 upload failed:', amplifyErr);
+      throw new Error(
+        `"${file.name}" (${formatSize(file.size)}) could not be uploaded to the S3 bucket. ${
+          amplifyErr?.message || 'Please check your connection and try again.'
+        }`
+      );
     }
 
+    payload.storageKey = s3Result.storageKey;
+    payload.storageUrl = s3Result.storageUrl;
+    payload.storageProvider = 'amplify';
+
+    setUploadProgressText(`${progressLabel}Saving to library…`);
     await uploadTrainingMaterial(payload);
-    return payload.storageProvider;
+    return 'amplify';
   };
 
   const handleFileUpload = async (e, isFolderUpload = false) => {
@@ -277,8 +290,18 @@ export default function TrainingLibraryMaterials({
     const rawFiles = Array.from(e.target.files || []);
     if (!rawFiles.length) return;
 
+    // Every material lives in S3, so without a configured bucket there is
+    // nowhere to put the file — say so instead of failing per file.
+    if (!isAmplifyStorageConfigured()) {
+      flash('AWS S3 storage is not configured in this build, so materials cannot be uploaded. Contact the administrator.');
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      if (folderInputRef.current) folderInputRef.current.value = '';
+      return;
+    }
+
     // Filter valid files (skip system hidden files like .DS_Store / Thumbs.db)
     const validFiles = [];
+    const oversized = [];
     let skipped = 0;
     for (const f of rawFiles) {
       if (f.name.startsWith('.') || f.name.toLowerCase() === 'thumbs.db' || f.name.toLowerCase() === 'desktop.ini') {
@@ -290,6 +313,7 @@ export default function TrainingLibraryMaterials({
         continue;
       }
       if (f.size > MAX_MB * 1024 * 1024) {
+        oversized.push(`${f.name} (${formatSize(f.size)})`);
         skipped++;
         continue;
       }
@@ -297,7 +321,11 @@ export default function TrainingLibraryMaterials({
     }
 
     if (!validFiles.length) {
-      flash(`No valid files under ${MAX_MB} MB found to upload.`);
+      flash(
+        oversized.length
+          ? `Too large for the ${MAX_MB} MB limit: ${oversized.slice(0, 3).join(', ')}`
+          : `No valid files under ${MAX_MB} MB found to upload.`
+      );
       if (fileInputRef.current) fileInputRef.current.value = '';
       if (folderInputRef.current) folderInputRef.current.value = '';
       return;
@@ -305,15 +333,13 @@ export default function TrainingLibraryMaterials({
 
     setUploading(true);
     let uploadedCount = 0;
-    let lastProvider = 'inline';
     let detectedFolder = uploadFolder.trim();
 
     try {
       for (let i = 0; i < validFiles.length; i++) {
         const file = validFiles[i];
-        setUploadProgressText(
-          validFiles.length > 1 ? `Uploading ${i + 1} of ${validFiles.length}…` : 'Uploading…'
-        );
+        const progressLabel = validFiles.length > 1 ? `File ${i + 1}/${validFiles.length} · ` : '';
+        setUploadProgressText(`${progressLabel}Starting upload…`);
         let targetFolder = uploadFolder.trim();
         if (isFolderUpload && file.webkitRelativePath) {
           const pcFolder = file.webkitRelativePath.split('/')[0]?.trim();
@@ -323,7 +349,7 @@ export default function TrainingLibraryMaterials({
           }
         }
         const customTitle = validFiles.length === 1 && !isFolderUpload ? uploadTitle.trim() : '';
-        lastProvider = await uploadSingleFile(file, targetFolder, customTitle);
+        await uploadSingleFile(file, targetFolder, customTitle, progressLabel);
         uploadedCount++;
       }
 
@@ -335,15 +361,19 @@ export default function TrainingLibraryMaterials({
         setUploadFolder(detectedFolder);
       }
       const folderLabel = detectedFolder ? ` into folder "${detectedFolder}"` : '';
-      const skipNote = skipped > 0 ? ` (${skipped} skipped: unsupported or >${MAX_MB} MB)` : '';
+      const skipNote = skipped > 0 ? ` (${skipped} skipped: unsupported type or over ${MAX_MB} MB)` : '';
       flash(
         uploadedCount === 1
-          ? `"${validFiles[0].name}" uploaded${folderLabel}${lastProvider === 'amplify' ? ' (AWS S3)' : ''}${skipNote}`
-          : `${uploadedCount} files uploaded${folderLabel}${skipNote}`
+          ? `"${validFiles[0].name}" uploaded to AWS S3${folderLabel}${skipNote}`
+          : `${uploadedCount} files uploaded to AWS S3${folderLabel}${skipNote}`
       );
       onChanged?.();
     } catch (err) {
-      flash(err?.response?.data?.error || `Upload failed after ${uploadedCount} file(s)`);
+      flash(
+        err?.response?.data?.error ||
+          err?.message ||
+          `Upload failed after ${uploadedCount} file(s)`
+      );
     }
     setUploading(false);
     setUploadProgressText('');
@@ -474,7 +504,7 @@ export default function TrainingLibraryMaterials({
             </span>
           </div>
           <div className="p-3.5 rounded-xl bg-slate-50/80 border border-slate-200 text-xs text-slate-600 leading-relaxed">
-            Upload <strong>PPT / PPTX</strong> presentations, PDFs, or course materials (max {MAX_MB} MB). Team Leads and Trainers can open and view them inside their LMS dashboard — download and delete are restricted for TL &amp; Trainers.
+            Upload <strong>PPT / PPTX</strong> presentations, PDFs, class recordings, or course materials — <strong>up to {MAX_MB} MB per file</strong>. Every file is stored in the academy&apos;s AWS S3 bucket and streams straight there from your browser — nothing is kept in the database. Team Leads and Trainers can open and view them inside their LMS dashboard — download and delete are restricted for TL &amp; Trainers.
           </div>
           <div className="border border-dashed border-[#009688]/60 bg-[#f9fdfd] rounded-2xl p-4 sm:p-5 space-y-3">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -567,7 +597,7 @@ export default function TrainingLibraryMaterials({
               onChange={(e) => handleFileUpload(e, false)}
               multiple
               className="hidden"
-              accept=".ppt,.pptx,.pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.webp"
+              accept=".ppt,.pptx,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.png,.jpg,.jpeg,.webp,.gif,.mp4,.mov,.webm,.mkv,.mp3,.m4a,.wav,.zip"
             />
             <input
               type="file"

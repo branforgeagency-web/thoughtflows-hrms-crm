@@ -891,34 +891,22 @@ router.post('/recordings', async (req, res) => {
       return res.status(400).json({ error: 'leadName and leadPhone are required' });
     }
 
-    let audioUrl = s3StorageUrl || directAudioUrl || '';
-    const storageProvider = s3StorageUrl ? 'amplify' : 'local';
-
-    // Already uploaded to S3 (Amplify Storage) by the client — nothing to write to local disk.
-    // If an audioBase64 string was sent instead (Amplify not configured), fall back to local disk
-    // (uploads/recordings on this server — note this does NOT survive a redeploy/restart on Render
-    // unless a persistent disk is attached).
-    if (!s3StorageUrl && audioBase64) {
-      const AUDIO_EXTS = ['webm', 'mp3', 'wav', 'ogg', 'opus', 'm4a', 'mp4', 'aac', 'amr', '3gp', 'flac'];
-      const MIME_EXT = { mpeg: 'mp3', 'x-m4a': 'm4a', mp4: 'm4a', 'x-wav': 'wav', wave: 'wav', '3gpp': '3gp', 'x-aac': 'aac', 'x-flac': 'flac' };
-      const mime = (audioBase64.match(/^data:audio\/([\w.+-]+)(?:;[^,]*)?;base64,/i) || [])[1]?.toLowerCase();
-      const nameExt = path.extname(String(fileName || '')).slice(1).toLowerCase();
-      const mimeExt = mime ? (MIME_EXT[mime] || mime) : '';
-      const ext = AUDIO_EXTS.includes(nameExt) ? nameExt : (AUDIO_EXTS.includes(mimeExt) ? mimeExt : 'webm');
-      const base64Data = audioBase64.replace(/^data:[^,]*,/, '');
-      const buffer = Buffer.from(base64Data, 'base64');
-
-      const filename = `call_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.${ext}`;
-      const uploadsDir = path.join(process.cwd(), 'uploads/recordings');
-      if (!fs.existsSync(uploadsDir)) {
-        fs.mkdirSync(uploadsDir, { recursive: true });
-      }
-      fs.writeFileSync(path.join(uploadsDir, filename), buffer);
-      audioUrl = `/recordings/${filename}`;
+    // Recording audio lives in AWS S3 only. The client uploads the file to the
+    // bucket and sends the key; inline base64 is no longer accepted, so nothing
+    // is written to this server's disk (which is ephemeral on Render) or to
+    // MongoDB. `directAudioUrl` is still honoured for telephony-provider
+    // callbacks that hand us a hosted URL.
+    if (audioBase64) {
+      return res.status(400).json({
+        error: 'Call recordings are stored in AWS S3 only. Inline audio data is no longer accepted — please reload the dashboard and try again.'
+      });
     }
 
+    const audioUrl = s3StorageUrl || directAudioUrl || '';
+    const storageProvider = s3StorageUrl ? 'amplify' : 'external';
+
     if (!audioUrl) {
-      return res.status(400).json({ error: 'No audio data or audioUrl provided' });
+      return res.status(400).json({ error: 'No S3 storage key or audioUrl provided' });
     }
 
     // Bridged Knowlarity calls: the notify webhook may already have stored this call
@@ -1055,9 +1043,14 @@ router.post('/recordings/phone-sync', async (req, res) => {
   try {
     const {
       fileName, audioBase64, durationSeconds, lastModified, leadId: forcedLeadId,
-      storageKey, storageUrl: s3StorageUrl, storageProvider: reqStorageProvider
+      storageKey, storageUrl: s3StorageUrl
     } = req.body || {};
-    if (!fileName || (!audioBase64 && !s3StorageUrl)) return res.status(400).json({ error: 'fileName and audioBase64 are required' });
+    if (audioBase64) {
+      return res.status(400).json({
+        error: 'Phone recordings are stored in AWS S3 only. Inline audio data is no longer accepted — please reload the dashboard and try again.'
+      });
+    }
+    if (!fileName || !s3StorageUrl) return res.status(400).json({ error: 'fileName and an S3 storage key are required' });
 
     const counselorName = req.user?.name || '';
     const ext = path.extname(String(fileName)).slice(1).toLowerCase();
@@ -1081,18 +1074,8 @@ router.post('/recordings/phone-sync', async (req, res) => {
       lead = await StudentLead.findOne({ fullName: exactNameRx(parsed.name) }).sort({ updatedAt: -1 });
     }
 
-    // Already uploaded to S3 (Amplify Storage) by the client — nothing to write to local disk.
-    // Otherwise fall back to local disk (does NOT survive a Render redeploy/restart unless a
-    // persistent disk is attached).
-    let audioUrl = s3StorageUrl || '';
-    if (!s3StorageUrl) {
-      const buffer = Buffer.from(String(audioBase64).replace(/^data:[^,]*,/, ''), 'base64');
-      const filename = `phone_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.${ext}`;
-      const uploadsDir = path.join(process.cwd(), 'uploads/recordings');
-      if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-      fs.writeFileSync(path.join(uploadsDir, filename), buffer);
-      audioUrl = `/recordings/${filename}`;
-    }
+    // Uploaded to S3 by the client — nothing is written to this server's disk.
+    const audioUrl = s3StorageUrl;
 
     const recording = await CallRecording.create({
       leadId: lead?._id,
@@ -1105,7 +1088,8 @@ router.post('/recordings/phone-sync', async (req, res) => {
       notes: '',
       audioUrl,
       storageKey: storageKey || '',
-      storageProvider: reqStorageProvider || (s3StorageUrl ? 'amplify' : 'local'),
+      storageUrl: s3StorageUrl || '',
+      storageProvider: 'amplify',
       source: 'phone_sync',
       originalFileName: fileName,
       recordedAt: recordedAt || undefined
@@ -10452,7 +10436,13 @@ router.put('/notifications/:id/read', async (req, res) => {
 // ==========================================
 // TRAINING LIBRARY & MATERIALS
 // ==========================================
-const MAX_MATERIAL_BYTES = 12 * 1024 * 1024;
+// Training material files live in AWS S3 only — the database holds the metadata
+// row and the S3 key, never the bytes. Hard ceiling for one file:
+const MAX_S3_MATERIAL_BYTES = 200 * 1024 * 1024;
+// Above this, an S3-backed file is never proxied through Node — the client is
+// redirected to the bucket so the download/stream uses S3 bandwidth and Range
+// requests instead of this process's memory.
+const MAX_PROXY_STREAM_BYTES = 12 * 1024 * 1024;
 
 // Only Head of Department (Training) and Trainer Manager (plus Admin/Leadership)
 // can upload, download, or delete LMS materials. TL & Trainers have view-only access.
@@ -10497,8 +10487,19 @@ router.post('/training/materials', async (req, res) => {
     if (!canManageTrainingMaterials(req)) {
       return res.status(403).json({ error: 'Only Head of Department and Manager can upload PPT or teaching materials.' });
     }
-    const { title, description, category, folder, fileName, mimeType, data, uploadedBy, uploaderId, branch, storageKey, storageUrl, storageProvider } = req.body || {};
-    if (!data && !storageKey && !storageUrl && !fileName) return res.status(400).json({ error: 'A file is required' });
+    const { title, description, category, folder, fileName, mimeType, uploadedBy, uploaderId, branch, storageKey, storageUrl } = req.body || {};
+    // S3 is the only store. A request carrying inline file bytes comes from a
+    // stale client build — reject it rather than writing a multi-megabyte
+    // base64 blob into MongoDB.
+    if (req.body?.data) {
+      return res.status(400).json({
+        error: 'Training material files are stored in AWS S3 only. Inline file data is no longer accepted — please reload the dashboard and try again.'
+      });
+    }
+    if (!storageKey && !storageUrl) {
+      return res.status(400).json({ error: 'The file must be uploaded to S3 storage before the material can be saved.' });
+    }
+    if (!fileName) return res.status(400).json({ error: 'A file is required' });
     const cleanFolder = String(folder || '').trim();
     if (cleanFolder) {
       await TrainingFolder.updateOne(
@@ -10513,12 +10514,15 @@ router.post('/training/materials', async (req, res) => {
         { upsert: true }
       );
     }
-    let base64 = '';
-    let size = Number(req.body?.fileSize) || 0;
-    if (data) {
-      base64 = String(data).includes(',') ? String(data).split(',').pop() : String(data);
-      size = Math.floor((base64.length * 3) / 4);
-      if (size > MAX_MATERIAL_BYTES) return res.status(413).json({ error: 'File is larger than 12 MB' });
+    // The bytes never reach this server, so the size the client reports is all
+    // we can enforce the library limit against.
+    const size = Number(req.body?.fileSize) || 0;
+    if (size > MAX_S3_MATERIAL_BYTES) {
+      return res.status(413).json({
+        error: `This file is ${(size / (1024 * 1024)).toFixed(1)} MB. The limit for one training material is ${Math.round(
+          MAX_S3_MATERIAL_BYTES / (1024 * 1024)
+        )} MB.`
+      });
     }
     const doc = await TrainingMaterial.create({
       title: title || fileName,
@@ -10531,8 +10535,7 @@ router.post('/training/materials', async (req, res) => {
       fileSize: size,
       storageKey: storageKey || '',
       storageUrl: storageUrl || '',
-      storageProvider: (storageKey || storageUrl) ? (storageProvider || 'amplify') : 'inline',
-      data: base64,
+      storageProvider: 'amplify',
       uploadedBy: uploadedBy || req.user?.name || '',
       uploaderId: String(req.user?.trainerId || req.user?.sub || req.user?.id || uploaderId || ''),
       branch: branch || req.user?.branch || ''
@@ -10560,6 +10563,12 @@ router.get('/training/materials/:id/file', async (req, res) => {
       return res.status(403).json({ error: 'Download is disabled for TL and Trainers. Please open and view in the dashboard.' });
     }
     if (doc.storageUrl) {
+      // Large files are always handed off to S3 directly: proxying them would
+      // pull the whole object into this process's memory and block the event
+      // loop, and it would also lose byte-range support for video seeking.
+      if (Number(doc.fileSize) > MAX_PROXY_STREAM_BYTES) {
+        return res.redirect(doc.storageUrl);
+      }
       if (req.query.stream === '1' && !wantsDownload) {
         const remote = await fetch(doc.storageUrl);
         if (!remote.ok) return res.status(502).json({ error: 'Failed to load material from storage' });
@@ -10572,6 +10581,9 @@ router.get('/training/materials/:id/file', async (req, res) => {
       }
       return res.redirect(doc.storageUrl);
     }
+    // Legacy rows only: materials uploaded before the move to S3-only storage
+    // still carry their bytes base64-inline in MongoDB. Nothing writes this any
+    // more, but it is still served so older materials keep opening.
     if (!doc.data) return res.status(404).json({ error: 'File not found' });
     const buf = Buffer.from(doc.data, 'base64');
     res.setHeader('Content-Type', doc.mimeType || 'application/octet-stream');
@@ -11956,7 +11968,9 @@ router.get('/demos/:id/zoom-join', async (req, res) => {
 // ==========================================
 const LIVE_CLASS_MAX_HOURS = 6;
 const REFERRAL_REWARD_POINTS = 1500;
-const MAX_SUBMISSION_BYTES = 12 * 1024 * 1024;
+// Student portal files live in AWS S3 only — the database holds the metadata
+// row and the S3 key, never the bytes. Hard ceiling for one file:
+const MAX_SUBMISSION_BYTES = 200 * 1024 * 1024;
 
 // A student's batch key is the same one the trainer dashboard groups by
 const studentBatchOf = (st) => st?.batchName || st?.course || '';
@@ -12728,19 +12742,27 @@ router.post('/student-portal/:id/submissions', async (req, res) => {
       materialId = '',
       fileName = '',
       mimeType = '',
-      data = '',
       storageKey = '',
-      storageUrl = '',
-      storageProvider
+      storageUrl = ''
     } = req.body || {};
     if (!type) return res.status(400).json({ error: 'type is required' });
-    if (!data && !link && !storageKey && !storageUrl) return res.status(400).json({ error: 'Attach a file or share a link' });
-    let base64 = '';
-    let size = Number(req.body?.fileSize) || 0;
-    if (data) {
-      base64 = String(data).includes(',') ? String(data).split(',').pop() : String(data);
-      size = Math.floor((base64.length * 3) / 4);
-      if (size > MAX_SUBMISSION_BYTES) return res.status(413).json({ error: 'File is larger than 12 MB' });
+    // S3 is the only store. Inline file bytes come from a stale client build —
+    // reject rather than writing a base64 blob into MongoDB.
+    if (req.body?.data) {
+      return res.status(400).json({
+        error: 'Submission files are stored in AWS S3 only. Inline file data is no longer accepted — please reload the portal and try again.'
+      });
+    }
+    if (!link && !storageKey && !storageUrl) return res.status(400).json({ error: 'Attach a file or share a link' });
+    // The bytes never reach this server, so the reported size is all we can
+    // enforce the limit against.
+    const size = Number(req.body?.fileSize) || 0;
+    if (size > MAX_SUBMISSION_BYTES) {
+      return res.status(413).json({
+        error: `This file is ${(size / (1024 * 1024)).toFixed(1)} MB. The limit for one submission is ${Math.round(
+          MAX_SUBMISSION_BYTES / (1024 * 1024)
+        )} MB.`
+      });
     }
     const doc = await StudentSubmission.create({
       studentId: st.studentId,
@@ -12759,8 +12781,7 @@ router.post('/student-portal/:id/submissions', async (req, res) => {
       fileSize: size,
       storageKey: storageKey || '',
       storageUrl: storageUrl || '',
-      storageProvider: (storageKey || storageUrl) ? (storageProvider || 'amplify') : 'inline',
-      data: base64
+      storageProvider: 'amplify'
     });
     if (type === 'resume' || type === 'video_intro') {
       if (type === 'resume') st.resumeStatus = 'Submitted';
@@ -12917,8 +12938,13 @@ router.post('/student-portal/:id/requests', async (req, res) => {
       const explanation = String(message || details?.explanation || '').trim();
       const startDate = String(details?.startDate || preferredDate || '').trim();
       const endDate = String(details?.endDate || details?.returnDate || '').trim();
-      const documentData = details?.documentData || details?.data || '';
+      const documentKey = details?.documentKey || '';
       const documentName = details?.documentName || details?.fileName || '';
+      if (details?.documentData || details?.data) {
+        return res.status(400).json({
+          error: 'Supporting documents are stored in AWS S3 only. Inline file data is no longer accepted — please reload the portal and try again.'
+        });
+      }
 
       if (!reasonCategory) {
         return res.status(400).json({ error: 'A valid reason category is required for a break request (e.g. Medical, Exams, Emergency, Relocation).' });
@@ -12929,7 +12955,7 @@ router.post('/student-portal/:id/requests', async (req, res) => {
       if (!startDate || !endDate) {
         return res.status(400).json({ error: 'Both break start date and return date are required.' });
       }
-      if (!documentData && !documentName) {
+      if (!documentKey && !documentName) {
         return res.status(400).json({ error: 'Supporting documentation is mandatory for break requests (e.g., medical certificate, exam schedule, employer letter).' });
       }
 
@@ -12999,7 +13025,8 @@ router.post('/student-portal/:id/requests', async (req, res) => {
       reasonCategory: details?.reasonCategory || subject || '',
       documentName: details?.documentName || details?.fileName || '',
       documentMimeType: details?.documentMimeType || details?.mimeType || '',
-      documentData: details?.documentData || details?.data || '',
+      documentKey: details?.documentKey || '',
+      documentStorageUrl: details?.documentStorageUrl || '',
       details: {
         ...details,
         ...(type === 'mock_interview' ? {
@@ -13071,6 +13098,9 @@ router.get('/student-portal/requests/:id/document', async (req, res) => {
     if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
     const doc = await StudentRequest.findById(req.params.id).select('+documentData');
     if (!doc) return res.status(404).json({ error: 'Request not found' });
+    // Current rows: the document is in S3, so hand the client straight to it.
+    if (doc.documentStorageUrl) return res.redirect(doc.documentStorageUrl);
+    // Legacy rows only: bytes stored base64-inline before the S3-only move.
     if (!doc.documentData) return res.status(404).json({ error: 'No supporting document attached' });
 
     const raw = String(doc.documentData);

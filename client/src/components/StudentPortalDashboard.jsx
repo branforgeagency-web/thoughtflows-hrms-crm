@@ -110,12 +110,10 @@ const fmtDateTime = (d) => {
   return Number.isNaN(dt.getTime()) ? String(d) : dt.toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 };
 const fmtSize = (b) => (!b ? '' : b > 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
-const fileToBase64 = (file) => new Promise((resolve, reject) => {
-  const reader = new FileReader();
-  reader.onload = () => resolve(String(reader.result));
-  reader.onerror = reject;
-  reader.readAsDataURL(file);
-});
+// Every student upload goes to the academy's AWS S3 bucket. File bytes are
+// never sent to the API server or stored in MongoDB, so there is deliberately
+// no base64 helper here any more.
+const MAX_UPLOAD_MB = 200;
 const errMsg = (e, fallback) => e?.response?.data?.error || e?.message || fallback;
 const shortCourse = (c = '') => (c.match(/\b(CPC|CIC|COC|CPB|CPMA|CRC|CCS|RHIT|CCA)\b/) || [])[1] || c.split(/[\s—-]/)[0] || '—';
 
@@ -553,33 +551,26 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
   const submitWork = async () => {
     const { type, title, note, link, file, materialId } = form;
     if (!file && !link) { showToast('⚠ Attach a file or paste a link'); return; }
+    if (file && !isAmplifyStorageConfigured()) {
+      showToast('⚠ File uploads are unavailable right now. Please share a link instead, or try again later.', 5000);
+      return;
+    }
     await run(async () => {
       const payload = { type, title: title || file?.name || 'Submission', note, link, materialId };
       if (file) {
-        if (file.size > 12 * 1024 * 1024) throw new Error('File is larger than 12 MB');
+        if (file.size > MAX_UPLOAD_MB * 1024 * 1024) throw new Error(`File is larger than ${MAX_UPLOAD_MB} MB`);
         payload.fileName = file.name;
         payload.fileSize = file.size;
         payload.mimeType = file.type;
 
-        // Try uploading to AWS Amplify S3 Storage if configured
-        if (isAmplifyStorageConfigured()) {
-          try {
-            const s3Result = type === 'resume'
-              ? await uploadResumeFile(file, st.studentId)
-              : await uploadStudentSubmissionFile(file, st.studentId, { type });
-            payload.storageKey = s3Result.storageKey;
-            payload.storageUrl = s3Result.storageUrl;
-            payload.storageProvider = 'amplify';
-          } catch (amplifyErr) {
-            console.warn('Amplify submission upload fallback to inline:', amplifyErr);
-          }
-        }
-
-        // If Amplify was not used or failed, fall back to inline base64
-        if (!payload.storageUrl) {
-          payload.data = await fileToBase64(file);
-          payload.storageProvider = 'inline';
-        }
+        // S3 is the only store — the file streams browser -> bucket and only
+        // the key is saved on the submission row.
+        const s3Result = type === 'resume'
+          ? await uploadResumeFile(file, st.studentId)
+          : await uploadStudentSubmissionFile(file, st.studentId, { type });
+        payload.storageKey = s3Result.storageKey;
+        payload.storageUrl = s3Result.storageUrl;
+        payload.storageProvider = 'amplify';
       }
       await createStudentSubmission(st.studentId, payload);
     }, trainer ? `✓ Sent to ${trainer.trainerName} for review` : '✓ Submitted');
@@ -2960,14 +2951,22 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
 
         const handleSubmit = async () => {
           if (!isValid) return;
-          if (file && file.size > 12 * 1024 * 1024) {
-            showToast('⚠ File size exceeds 12 MB limit');
+          if (file && file.size > MAX_UPLOAD_MB * 1024 * 1024) {
+            showToast(`⚠ File size exceeds the ${MAX_UPLOAD_MB} MB limit`);
+            return;
+          }
+          if (file && !isAmplifyStorageConfigured()) {
+            showToast('⚠ Document uploads are unavailable right now. Please try again later.', 5000);
             return;
           }
           await run(async () => {
-            let documentData = '';
+            // Supporting documents go to S3, never into the request record.
+            let documentKey = '';
+            let documentStorageUrl = '';
             if (file) {
-              documentData = await fileToBase64(file);
+              const s3Result = await uploadStudentSubmissionFile(file, st.studentId, { type: 'break_request' });
+              documentKey = s3Result.storageKey;
+              documentStorageUrl = s3Result.storageUrl;
             }
             await createStudentRequest(st.studentId, {
               type: 'break_request',
@@ -2983,7 +2982,8 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                 durationDays,
                 documentName: file?.name || '',
                 documentMimeType: file?.type || '',
-                documentData
+                documentKey,
+                documentStorageUrl
               }
             });
           }, '✓ Break request submitted for prior approval');

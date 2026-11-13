@@ -1,7 +1,10 @@
 import mongoose from 'mongoose';
 
-// Teaching material uploaded by a trainer. The file itself is stored inline
-// (base64) and is only returned by the /file endpoint, never in list calls.
+// Teaching material uploaded by a trainer.
+// Files are stored in the academy's AWS S3 bucket ONLY: the browser uploads the
+// bytes straight to S3 (multipart, up to 200 MB per file) and this row keeps
+// just the metadata plus `storageKey` / `storageUrl`. File bytes are never
+// written to MongoDB.
 const trainingMaterialSchema = new mongoose.Schema(
   {
     title: { type: String, required: true },
@@ -14,7 +17,11 @@ const trainingMaterialSchema = new mongoose.Schema(
     fileSize: { type: Number, default: 0 },
     storageKey: { type: String, default: '' },
     storageUrl: { type: String, default: '' },
-    storageProvider: { type: String, enum: ['amplify', 'inline'], default: 'inline' },
+    storageProvider: { type: String, enum: ['amplify', 'inline'], default: 'amplify' },
+    // DEPRECATED — legacy inline base64 bytes from before the S3-only move.
+    // Nothing writes this field any more; it is kept (select:false) purely so
+    // materials uploaded under the old scheme still open. 'inline' stays in the
+    // storageProvider enum above for the same reason.
     data: { type: String, default: '', select: false },
     uploadedBy: { type: String, default: '' },
     uploaderId: { type: String, default: '' },

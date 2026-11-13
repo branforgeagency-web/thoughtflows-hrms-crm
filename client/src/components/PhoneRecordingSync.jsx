@@ -1,15 +1,11 @@
 import React, { useRef, useState } from 'react';
 import { Smartphone, UploadCloud, X, CheckCircle2, AlertCircle, Copy, Loader2 } from 'lucide-react';
 import { syncPhoneRecording } from '../services/api';
+import { isAmplifyStorageConfigured, uploadRecordingFile } from '../services/amplifyStorage';
 
-const MAX_BYTES = 50 * 1024 * 1024;
-
-const readAsDataUrl = (file) => new Promise((resolve, reject) => {
-  const r = new FileReader();
-  r.onload = () => resolve(r.result);
-  r.onerror = () => reject(r.error);
-  r.readAsDataURL(file);
-});
+// Recordings stream straight from the browser to the academy's AWS S3 bucket,
+// so the audio never reaches the API server and is never stored in MongoDB.
+const MAX_BYTES = 200 * 1024 * 1024;
 
 const readDuration = (file) => new Promise((resolve) => {
   const url = URL.createObjectURL(file);
@@ -53,11 +49,22 @@ export default function PhoneRecordingSync({ isOpen, onClose, onDone }) {
     for (let k = 0; k < files.length; k++) {
       const file = files[k];
       const i = start + k;
-      if (file.size > MAX_BYTES) { update(i, { status: 'error', detail: 'File larger than 50 MB' }); continue; }
-      update(i, { status: 'uploading', detail: 'Uploading…' });
+      if (file.size > MAX_BYTES) { update(i, { status: 'error', detail: `File larger than ${MAX_BYTES / (1024 * 1024)} MB` }); continue; }
+      if (!isAmplifyStorageConfigured()) { update(i, { status: 'error', detail: 'S3 storage is not configured' }); continue; }
+      update(i, { status: 'uploading', detail: 'Uploading to S3…' });
       try {
-        const [audioBase64, durationSeconds] = await Promise.all([readAsDataUrl(file), readDuration(file)]);
-        const res = await syncPhoneRecording({ fileName: file.name, audioBase64, durationSeconds, lastModified: file.lastModified });
+        const [s3Result, durationSeconds] = await Promise.all([
+          uploadRecordingFile(file, 'phone-sync'),
+          readDuration(file)
+        ]);
+        const res = await syncPhoneRecording({
+          fileName: file.name,
+          storageKey: s3Result.storageKey,
+          storageUrl: s3Result.storageUrl,
+          storageProvider: 'amplify',
+          durationSeconds,
+          lastModified: file.lastModified
+        });
         if (res.status === 'matched') update(i, { status: 'matched', detail: `→ ${res.lead.fullName} (${res.lead.phone})` });
         else if (res.status === 'duplicate') update(i, { status: 'duplicate', detail: 'Already synced' });
         else update(i, { status: 'unmatched', detail: `No lead found for ${res.parsed?.phone || res.parsed?.name || 'this file'} — saved as "Unknown caller"` });
