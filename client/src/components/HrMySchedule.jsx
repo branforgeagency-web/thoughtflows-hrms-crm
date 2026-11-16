@@ -29,7 +29,7 @@ export default function HrMySchedule({
   const [showLeaveModal, setShowLeaveModal] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
 
-  const userName = currentUser?.name || '';
+  const userName = currentUser?.name || currentUser?.userName || '';
 
   // Local break state fallback if parent props not provided
   const [localBreak, setLocalBreak] = useState(false);
@@ -75,7 +75,8 @@ export default function HrMySchedule({
   const loadScheduleData = async () => {
     try {
       const [aData, tData] = await Promise.all([
-        userName ? getApprovals({ departmentCode: 'DEP-HR-001', requestedBy: userName }).catch(() => []) : Promise.resolve([]),
+        // mine=1: the server matches the signed-in account, so own leaves always show
+        getApprovals({ mine: 1, ...(userName ? { requestedBy: userName } : {}) }).catch(() => []),
         Promise.all([
           getTeam({ departmentCode: 'DEP-HR-001' }).catch(() => []),
           getTeam({ departmentCode: 'LEAD' }).catch(() => [])
@@ -84,7 +85,7 @@ export default function HrMySchedule({
 
       if (Array.isArray(aData)) {
         const leaves = aData
-          .filter(a => a.kind === 'Leave Approval' || a.title?.includes('Leave'))
+          .filter(a => /leave/i.test(a.kind || '') || /leave/i.test(a.title || ''))
           .map(a => {
             const dateStr = a.createdAt
               ? new Date(a.createdAt).toLocaleDateString('en-US', { day: 'numeric', month: 'short' })
@@ -107,10 +108,10 @@ export default function HrMySchedule({
       }
 
       if (Array.isArray(tData) && tData.length > 0) {
-        const uFirst = userName.split(' ')[0].toLowerCase();
+        const uFirst = (userName.split(' ')[0] || '').toLowerCase();
         // Exact name first; first-name match only when it is unambiguous
-        const exact = tData.find(m => m.name.toLowerCase() === userName.toLowerCase());
-        const byFirst = tData.filter(m => m.name.toLowerCase().split(' ')[0] === uFirst);
+        const exact = userName ? tData.find(m => String(m.name || '').toLowerCase() === userName.toLowerCase()) : null;
+        const byFirst = uFirst ? tData.filter(m => String(m.name || '').toLowerCase().split(' ')[0] === uFirst) : [];
         const myRec = exact || (byFirst.length === 1 ? byFirst[0] : null);
         if (myRec) setTeamRosterData(myRec);
       }

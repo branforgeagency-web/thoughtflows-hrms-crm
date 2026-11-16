@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import { fetchCurrentLocation } from '../utils/geolocation';
 import { 
   Building2, 
   Lock, 
@@ -120,10 +121,12 @@ export default function BranchLoginModal({
     setLoading(true);
 
     try {
+      const loc = await fetchCurrentLocation({ timeoutMs: 3500 }).catch(() => null);
       const res = await axios.post('/api/auth/login', {
         email: normEmail,
         password,
-        department: 'leadership'
+        department: 'leadership',
+        ...(loc?.success ? { location: loc, address: loc.address } : {})
       });
 
       if (res.data?.success && res.data?.user) {

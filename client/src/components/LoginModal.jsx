@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Eye, EyeOff } from 'lucide-react';
+import { fetchCurrentLocation } from '../utils/geolocation';
 
 export const TRAINER_PROFILES = [
   {
@@ -196,10 +197,12 @@ export default function LoginModal({
 
     // 1. Try server-side authentication first
     try {
+      const loc = await fetchCurrentLocation({ timeoutMs: 3500 }).catch(() => null);
       const res = await axios.post('/api/auth/login', { 
         email: normalizedEmail, 
         password,
-        department: activeDept.id
+        department: activeDept.id,
+        ...(loc?.success ? { location: loc, address: loc.address } : {})
       });
       if (res.data?.success && res.data?.user) {
         setLoading(false);

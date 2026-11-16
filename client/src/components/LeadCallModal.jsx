@@ -22,11 +22,12 @@ import {
   ChevronDown,
   Circle,
   Smartphone,
-  Copy
+  Copy,
+  Loader2
 } from 'lucide-react';
 
 import BookNewDemoModal from './BookNewDemoModal';
-import { createDemo, getRecordings, saveRecording, recordingUrl } from '../services/api';
+import { createDemo, getRecordings, saveRecording, recordingUrl, downloadRecordingAudio } from '../services/api';
 import { isAmplifyStorageConfigured, uploadRecordingFile } from '../services/amplifyStorage';
 
 // Recordings go straight to the AWS S3 bucket, so the old server-side body
@@ -83,6 +84,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
   const [recordedAudioBlob, setRecordedAudioBlob] = useState(null);
   const [recordedAudioUrl, setRecordedAudioUrl] = useState(null);
   const [uploadedFileName, setUploadedFileName] = useState('');
+  const [downloadingRecordingId, setDownloadingRecordingId] = useState(null);
   const [uploadedDuration, setUploadedDuration] = useState(0);
   const [leadRecordings, setLeadRecordings] = useState([]);
   const [loadingRecordings, setLoadingRecordings] = useState(false);
@@ -1061,24 +1063,47 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                           </span>
                         </td>
                         <td className="py-2.5 px-3">
-                          {rec.audioUrl ? (
-                            <RecordingAudio src={recordingUrl(rec.audioUrl)} className="h-7 w-56 max-w-full accent-[#00897b]" />
+                          {rec.audioUrl || rec.storageKey ? (
+                            <RecordingAudio
+                              src={rec.audioUrl}
+                              storageKey={rec.storageKey}
+                              recording={rec}
+                              className="h-7 w-56 max-w-full accent-[#00897b]"
+                            />
                           ) : (
                             <span className="text-slate-400 italic text-[10.5px]">No audio file</span>
                           )}
                         </td>
                         <td className="py-2.5 px-3 text-center whitespace-nowrap">
-                          {rec.audioUrl && (
-                            <a
-                              href={recordingUrl(rec.audioUrl)}
-                              download={`call_${rec.leadName}_${rec.leadPhone}.webm`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="p-1 rounded bg-slate-100 hover:bg-teal-100 text-teal-800 inline-block transition-all"
+                          {(rec.audioUrl || rec.storageKey) && (
+                            <button
+                              type="button"
+                              disabled={downloadingRecordingId === rec._id}
+                              onClick={async () => {
+                                try {
+                                  setDownloadingRecordingId(rec._id);
+                                  const safeName = (rec.leadName || 'call').replace(/[^a-zA-Z0-9_-]/g, '_');
+                                  const safePhone = (rec.leadPhone || '').replace(/[^0-9]/g, '');
+                                  const ext = (rec.fileName && rec.fileName.split('.').pop()) ||
+                                    (String(rec.storageKey || rec.audioUrl).split('?')[0].match(/\.(\w+)$/) || [])[1] || 'webm';
+                                  const filename = `call_${safeName}${safePhone ? `_${safePhone}` : ''}.${ext}`;
+                                  await downloadRecordingAudio(rec, filename, rec.storageKey);
+                                } catch (err) {
+                                  console.error('Download failed:', err);
+                                  showToast('Could not download audio: ' + (err.message || 'Error'));
+                                } finally {
+                                  setDownloadingRecordingId(null);
+                                }
+                              }}
+                              className="p-1 rounded bg-slate-100 hover:bg-teal-100 text-teal-800 inline-block transition-all cursor-pointer disabled:opacity-50"
                               title="Download Audio"
                             >
-                              <Download className="w-3.5 h-3.5" />
-                            </a>
+                              {downloadingRecordingId === rec._id ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Download className="w-3.5 h-3.5" />
+                              )}
+                            </button>
                           )}
                         </td>
                       </tr>

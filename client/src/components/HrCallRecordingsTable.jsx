@@ -16,9 +16,10 @@ import {
   Volume2,
   AlertCircle,
   Smartphone,
-  UploadCloud
+  UploadCloud,
+  Loader2
 } from 'lucide-react';
-import { getRecordings, deleteRecording, onDataUpdate, recordingUrl, syncEdesyRecordings, getStudents, getLeads } from '../services/api';
+import { getRecordings, deleteRecording, onDataUpdate, recordingUrl, downloadRecordingAudio, syncEdesyRecordings, getStudents, getLeads } from '../services/api';
 import RecordingAudio from './RecordingAudio';
 import PhoneRecordingSync from './PhoneRecordingSync';
 import UploadStudentRecordingModal from './UploadStudentRecordingModal';
@@ -37,6 +38,7 @@ export default function HrCallRecordingsTable({ currentUser, students = [], allS
   const [toastMsg, setToastMsg] = useState(null);
   const [internalStudents, setInternalStudents] = useState([]);
   const [internalLeads, setInternalLeads] = useState([]);
+  const [downloadingId, setDownloadingId] = useState(null);
 
   const showToast = (msg) => {
     setToastMsg(msg);
@@ -447,11 +449,13 @@ export default function HrCallRecordingsTable({ currentUser, students = [], allS
 
                     {/* Audio Player (Inline) */}
                     <td className="py-3.5 px-4">
-                      {rec.audioUrl ? (
+                      {rec.audioUrl || rec.storageKey ? (
                         <div className="flex items-center gap-2">
                           <RecordingAudio
                             controls
-                            src={recordingUrl(rec.audioUrl)}
+                            src={rec.audioUrl}
+                            storageKey={rec.storageKey}
+                            recording={rec}
                             preload="metadata"
                             className="h-8 w-64 max-w-full accent-[#0e6977]"
                           />
@@ -464,17 +468,35 @@ export default function HrCallRecordingsTable({ currentUser, students = [], allS
                     {/* Actions */}
                     <td className="py-3.5 px-4 text-center whitespace-nowrap">
                       <div className="flex items-center justify-center gap-1.5">
-                        {rec.audioUrl && (
-                          <a
-                            href={recordingUrl(rec.audioUrl)}
-                            download={`call_${rec.leadName}_${rec.leadPhone}.${(String(rec.audioUrl).split('?')[0].match(/\.(\w+)$/) || [])[1] || 'webm'}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="p-1.5 rounded-lg bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 transition-all"
+                        {(rec.audioUrl || rec.storageKey) && (
+                          <button
+                            type="button"
+                            disabled={downloadingId === rec._id}
+                            onClick={async () => {
+                              try {
+                                setDownloadingId(rec._id);
+                                const safeName = (rec.leadName || 'call').replace(/[^a-zA-Z0-9_-]/g, '_');
+                                const safePhone = (rec.leadPhone || '').replace(/[^0-9]/g, '');
+                                const ext = (rec.fileName && rec.fileName.split('.').pop()) ||
+                                  (String(rec.storageKey || rec.audioUrl).split('?')[0].match(/\.(\w+)$/) || [])[1] || 'webm';
+                                const filename = `call_${safeName}${safePhone ? `_${safePhone}` : ''}.${ext}`;
+                                await downloadRecordingAudio(rec, filename, rec.storageKey);
+                              } catch (err) {
+                                console.error('Failed to download recording:', err);
+                                showToast('Could not download recording: ' + (err.message || 'Error'));
+                              } finally {
+                                setDownloadingId(null);
+                              }
+                            }}
+                            className="p-1.5 rounded-lg bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 transition-all cursor-pointer disabled:opacity-50"
                             title="Download Audio Recording"
                           >
-                            <Download className="w-3.5 h-3.5" />
-                          </a>
+                            {downloadingId === rec._id ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <Download className="w-3.5 h-3.5" />
+                            )}
+                          </button>
                         )}
                         <button
                           onClick={() => handleDelete(rec._id, rec.leadName)}

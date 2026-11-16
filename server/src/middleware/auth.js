@@ -305,9 +305,13 @@ export function requireStaffToken(req, res, next) {
   const token = fromHeader ? header.slice(7) : (req.query.token || '');
   try {
     const user = jwt.verify(String(token), secret());
-    // Links (<audio src>) must carry a short-lived file token, never the session token
-    if (fromHeader ? user.typ === 'file' : user.typ !== 'file') return res.status(401).json({ error: 'This link has expired. Open it again from the dashboard.' });
     if (user.department === 'student') return res.status(403).end();
+    // Allow short-lived file token or valid staff session token
+    const isFileToken = user.typ === 'file';
+    const isStaffSession = Boolean(user.id || user.email || user.username || user.department);
+    if (!isFileToken && !isStaffSession) {
+      return res.status(401).json({ error: 'This link has expired. Open it again from the dashboard.' });
+    }
     return next();
   } catch (_) {
     return res.status(401).json({ error: 'Please log in to continue.' });

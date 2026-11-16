@@ -9,7 +9,8 @@ import {
   AlertCircle,
   LogIn,
   LogOut,
-  Users
+  Users,
+  MapPin
 } from 'lucide-react';
 import { decideApproval, getHrStaffAttendance, onDataUpdate } from '../services/api';
 import { localDateKey } from '../utils/dateUtils';
@@ -357,11 +358,33 @@ export default function HrAttendanceLeavesSection({
                     <td className="py-3 px-3 text-slate-600 font-medium whitespace-nowrap">
                       {row.branchName || '—'}
                     </td>
-                    <td className="py-3 px-3 font-bold text-emerald-700 whitespace-nowrap">
-                      {fmtTime(row.workStartTime, row.checkIn)}
+                    <td className="py-3 px-3">
+                      <div className="font-bold text-emerald-700 whitespace-nowrap">
+                        {fmtTime(row.workStartTime, row.checkIn)}
+                      </div>
+                      {(row.loginAddress || row.loginLocation?.address) && (
+                        <div className="flex items-center gap-1 text-[10.5px] font-medium text-emerald-800 mt-0.5 max-w-[200px] truncate" title={row.loginAddress || row.loginLocation?.address}>
+                          <MapPin size={11} className="text-emerald-600 flex-shrink-0" />
+                          <span className="truncate">{row.loginAddress || row.loginLocation?.address}</span>
+                          {row.loginLocation?.mapsUrl && (
+                            <a href={row.loginLocation.mapsUrl} target="_blank" rel="noopener noreferrer" className="text-[9.5px] font-bold text-emerald-700 underline flex-shrink-0 ml-0.5" title="View location on Google Maps">↗</a>
+                          )}
+                        </div>
+                      )}
                     </td>
-                    <td className="py-3 px-3 font-bold text-slate-700 whitespace-nowrap">
-                      {fmtTime(row.workEndTime, row.checkOut)}
+                    <td className="py-3 px-3">
+                      <div className="font-bold text-slate-700 whitespace-nowrap">
+                        {fmtTime(row.workEndTime, row.checkOut)}
+                      </div>
+                      {(row.logoutAddress || row.logoutLocation?.address) && (
+                        <div className="flex items-center gap-1 text-[10.5px] font-medium text-rose-800 mt-0.5 max-w-[200px] truncate" title={row.logoutAddress || row.logoutLocation?.address}>
+                          <MapPin size={11} className="text-rose-600 flex-shrink-0" />
+                          <span className="truncate">{row.logoutAddress || row.logoutLocation?.address}</span>
+                          {row.logoutLocation?.mapsUrl && (
+                            <a href={row.logoutLocation.mapsUrl} target="_blank" rel="noopener noreferrer" className="text-[9.5px] font-bold text-rose-700 underline flex-shrink-0 ml-0.5" title="View location on Google Maps">↗</a>
+                          )}
+                        </div>
+                      )}
                     </td>
                     <td className="py-3 px-3 text-slate-600 whitespace-nowrap">
                       {row.breakMinutesTotal ? `${row.breakMinutesTotal} min` : '0 min'}

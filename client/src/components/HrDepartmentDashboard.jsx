@@ -32,7 +32,8 @@ import {
   FileText,
   Send,
   ShieldCheck,
-  Play
+  Play,
+  MapPin
 } from 'lucide-react';
 import HrEodReportSection from './HrEodReportSection';
 import { StartWorkConfirmationModal, CloseWorkConfirmationModal } from './WorkSessionModals';
@@ -57,7 +58,8 @@ import LeadCallModal from './LeadCallModal';
 import BookNewDemoModal from './BookNewDemoModal';
 import AddLeadModal from './AddLeadModal';
 import CompleteRegistrationModal from './CompleteRegistrationModal';
-import { getStudents, getLeads, getHrLeadCounts, createLead, updateLead, updateStudent, getDemos, createDemo, createStudent, getRecordings, getTodayClosure, saveDailyClosure, onDataUpdate, getNotifications, markNotificationRead, markNotificationsRead, getStudentRequests, getStudentTickets, getMyAttendance, setMyAttendance, startMyWork, closeMyWork, logCall, getTodayCallLog, getHrTargets } from '../services/api';
+import { getStudents, getLeads, getHrLeadCounts, createLead, updateLead, updateStudent, getDemos, createDemo, createStudent, getRecordings, getTodayClosure, saveDailyClosure, onDataUpdate, getNotifications, markNotificationRead, markNotificationsRead, getStudentRequests, getStudentTickets, getMyAttendance, setMyAttendance, startMyWork, closeMyWork, updateMyAttendanceLocation, logCall, getTodayCallLog, getHrTargets } from '../services/api';
+import { fetchCurrentLocation } from '../utils/geolocation';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 import { useIncentivePolicy, progressiveIncentive } from '../utils/incentive';
 import { matchesHrOwnerName } from '../utils/hrNameMatch';
@@ -246,6 +248,19 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         if (promptIfNew && sStatus === 'Not Started' && !dismissed) {
           setShowStartWorkModal(true);
         }
+
+        // If active/started today but login location is missing, detect and update in background
+        if (!rec.loginLocation && (sStatus === 'In Progress' || rec.workStartTime)) {
+          fetchCurrentLocation({ timeoutMs: 4000 })
+            .then((loc) => {
+              if (loc?.success) {
+                updateMyAttendanceLocation(loc)
+                  .then((updated) => { if (updated) setAttendanceRecord(updated); })
+                  .catch(() => {});
+              }
+            })
+            .catch(() => {});
+        }
       }
     } catch (e) {
       console.warn('Failed to fetch attendance state:', e);
@@ -280,11 +295,12 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     return () => clearInterval(interval);
   }, [sessionStatus, workStartTime, accumulatedBreak, isOnBreak, breakSeconds]);
 
-  // 1. Confirm Start Work: record official work login time
-  const handleConfirmStartWork = async () => {
+  // 1. Confirm Start Work: record official work login time and location
+  const handleConfirmStartWork = async (passedLocation) => {
     setWorkModalLoading(true);
     try {
-      const res = await startMyWork(currentUser?.branch);
+      const loc = passedLocation || (await fetchCurrentLocation({ timeoutMs: 3500 }).catch(() => null));
+      const res = await startMyWork(currentUser?.branch, loc);
       setAttendanceRecord(res);
       setSessionStatus('In Progress');
       setWorkStartTime(res.workStartTime || new Date().toISOString());
@@ -294,7 +310,8 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       }
       setWorkingDurationText(res.durationText || '0 hrs 1 min');
       setShowStartWorkModal(false);
-      showToast(`✓ Work started at ${res.checkIn || formatTimeDisplay(res.workStartTime)}!`);
+      const locNote = res.loginAddress || res.loginLocation?.address ? ` · 📍 ${res.loginAddress || res.loginLocation?.address}` : '';
+      showToast(`✓ Work started at ${res.checkIn || formatTimeDisplay(res.workStartTime)}${locNote}!`);
     } catch (err) {
       showToast(`⚠ Could not record start work: ${err?.response?.data?.error || err.message}`);
     } finally {
@@ -315,6 +332,11 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   // Logout only asks to close the day while a work session is running;
   // signing out before starting (or after closing) never touches attendance
   const signOutNow = () => {
+    if (sessionStatus === 'In Progress') {
+      fetchCurrentLocation({ timeoutMs: 2500 })
+        .then(loc => closeMyWork(currentUser?.branch, loc))
+        .catch(() => {});
+    }
     if (onLogout) onLogout();
     else if (onClose) onClose();
   };
@@ -329,12 +351,13 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     showToast('Work session remains active.');
   };
 
-  // 2. Confirm Close Work: record logout time, calculate total working duration between start & end
-  const handleConfirmCloseWork = async (summaryOverride) => {
+  // 2. Confirm Close Work: record logout time & location, calculate total working duration between start & end
+  const handleConfirmCloseWork = async (summaryOverride, passedLocation) => {
     setWorkModalLoading(true);
     try {
+      const loc = passedLocation || (await fetchCurrentLocation({ timeoutMs: 3500 }).catch(() => null));
       // Record official logout time and calculate total working duration in backend
-      const res = await closeMyWork(currentUser?.branch);
+      const res = await closeMyWork(currentUser?.branch, loc);
       setAttendanceRecord(res);
       setSessionStatus('Completed');
       setWorkEndTime(res.workEndTime || new Date().toISOString());
@@ -353,7 +376,8 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       try { localStorage.removeItem(breakStartKey); } catch (_) {}
       setBreakStartTime(null);
       setIsOnBreak(false);
-      showToast('✓ Today\'s work closed successfully! Total Duration: ' + (res.durationText || workingDurationText));
+      const locNote = res.logoutAddress || res.logoutLocation?.address ? ` (📍 ${res.logoutAddress || res.logoutLocation?.address})` : '';
+      showToast(`✓ Today's work closed successfully! Total Duration: ${res.durationText || workingDurationText}${locNote}`);
 
       setTimeout(signOutNow, 700);
     } catch (err) {
@@ -585,8 +609,12 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       const targetLeadsMode = overrides.leadsViewMode ?? leadsViewMode;
       const targetLeadsLimit = targetLeadsMode === 'table' ? LEADS_TABLE_LIMIT : LEADS_BOARD_LIMIT;
       const activeLeadFilters = overrides.leadFilters ?? leadFilters;
+      // Branch Head desk: always ask for this branch only (the server also pins
+      // a Branch Head to their own branch; this covers Admin opening the desk)
+      const branchParam = scopeKind === 'branch' && viewScope?.branch ? { branch: viewScope.branch } : {};
       const leadParams = {
         ...activeLeadFilters,
+        ...branchParam,
         ...(shouldFilterOnServer && !activeLeadFilters.counselor ? { counselor: counselorFilter } : {}),
         page: targetLeadsMode === 'table' ? targetLeadsPage : 1,
         limit: targetLeadsLimit
@@ -600,14 +628,14 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       // Call recordings, the EOD closure and the lead counters are side panels:
       // they are applied the moment they arrive instead of delaying the lead
       // and student tables that the page actually opens on.
-      getRecordings({ ...(shouldFilterOnServer ? { counselor: counselorFilter } : {}), page: 1, limit: PAGE_LIMIT })
+      getRecordings({ ...(shouldFilterOnServer ? { counselor: counselorFilter } : {}), ...branchParam, page: 1, limit: PAGE_LIMIT })
         .then((recRes) => {
           const recList = Array.isArray(recRes) ? recRes : (Array.isArray(recRes?.recordings) ? recRes.recordings : []);
           setCallRecordings(recList);
         })
         .catch(() => {});
 
-      getHrLeadCounts(shouldFilterOnServer ? { counselor: counselorFilter } : undefined)
+      getHrLeadCounts(shouldFilterOnServer ? { counselor: counselorFilter, ...branchParam } : (branchParam.branch ? branchParam : undefined))
         .then((countsRes) => { if (countsRes && typeof countsRes === 'object') setHrLeadCounts(countsRes); })
         .catch(() => {});
 
@@ -616,9 +644,9 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         .then((closureRes) => applyTodayClosure(closureRes, dKey, counselorFilter));
 
       const [stRes, ldRes, dmRes] = await Promise.all([
-        getStudents({ ...(shouldFilterOnServer ? { hrName: counselorFilter } : {}), page: targetStudentsPage, limit: PAGE_LIMIT }),
+        getStudents({ ...(shouldFilterOnServer ? { hrName: counselorFilter } : {}), ...branchParam, page: targetStudentsPage, limit: PAGE_LIMIT }),
         getLeads(leadParams),
-        getDemos(shouldFilterOnServer ? { counselor: counselorFilter } : undefined)
+        getDemos(shouldFilterOnServer ? { counselor: counselorFilter, ...branchParam } : (branchParam.branch ? branchParam : undefined))
       ]);
       const stList = Array.isArray(stRes) ? stRes : (Array.isArray(stRes?.students) ? stRes.students : []);
       setStudents(stList);
@@ -700,6 +728,116 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       ? teamNames.some((n) => matchesMyName(candidateName, n, candidateBranch, ''))
       : matchesMyName(candidateName, myName, candidateBranch, branchName)
   );
+
+  // ── Personal (Signed-in Person's) Records ─────────────────────────────────
+  // The Home workspace dashboard strictly displays this logged-in counselor's own data,
+  // while leadership views (HR-wise Data, Attendance, Team Board) preserve branch/team scope.
+  const myStudents = useMemo(() => {
+    if (!myName) return students;
+    return students.filter((s) => {
+      const rb = s.branch || s.leadBranch || s.location || '';
+      return (
+        matchesMyName(s.hrName, myName, rb, branchName) ||
+        matchesMyName(s.counselor, myName, rb, branchName) ||
+        matchesMyName(s.counselorName, myName, rb, branchName) ||
+        matchesMyName(s.allocatedTo, myName, rb, branchName)
+      );
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [students, myName, branchName]);
+
+  const myLeads = useMemo(() => {
+    let baseLeads = leads;
+    if (myName) {
+      baseLeads = leads.filter((l) => {
+        const rb = l.branch || l.location || '';
+        return (
+          matchesMyName(l.counselorAssigned, myName, rb, branchName) ||
+          matchesMyName(l.allocatedTo, myName, rb, branchName) ||
+          matchesMyName(l.spokenBy, myName, rb, branchName)
+        );
+      });
+    }
+
+    const leadPhones = new Set(
+      baseLeads.map((l) => (l.phone || '').replace(/\D/g, '').slice(-10)).filter(Boolean)
+    );
+    const leadStudentIds = new Set(
+      baseLeads.map((l) => l.admittedStudentId).filter(Boolean)
+    );
+
+    const syntheticAdmittedLeads = myStudents
+      .filter((s) => {
+        const ph = (s.phone || '').replace(/\D/g, '').slice(-10);
+        const hasByPhone = ph.length === 10 && leadPhones.has(ph);
+        const hasById = s.studentId && leadStudentIds.has(s.studentId);
+        return !hasByPhone && !hasById;
+      })
+      .map((s) => ({
+        _id: `synth-${s._id || s.studentId}`,
+        id: `synth-${s._id || s.studentId}`,
+        isSynthetic: true,
+        studentMongoId: s._id || '',
+        fullName: s.name,
+        name: s.name,
+        phone: s.phone || '',
+        whatsappNumber: s.whatsappNumber || s.phone || '',
+        email: s.email || '',
+        course: s.course || '',
+        branch: s.branch || '',
+        location: s.location || s.branch || '',
+        education: s.qualification || '',
+        passoutYear: s.passoutYear || '',
+        source: s.source || 'Direct Admission',
+        sourceName: s.source || 'Direct Admission',
+        stage: 'admitted',
+        status: 'completed',
+        counselorAssigned: s.hrName || currentUser?.name || '',
+        allocatedTo: s.hrName || currentUser?.name || '',
+        admittedStudentId: s.studentId,
+        batchTiming: s.batchTiming || '',
+        followUpDate: '',
+        followUpTime: '',
+        notes: `Admitted Student ID: ${s.studentId}`,
+        createdAt: s.createdAt || s.registeredAt || new Date().toISOString()
+      }));
+
+    return [...baseLeads, ...syntheticAdmittedLeads];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leads, myStudents, myName, branchName, currentUser?.name]);
+
+  const myDemos = useMemo(() => {
+    if (!myName) return demos;
+    const leadPhones = new Set(
+      myLeads.map((l) => (l.phone || '').replace(/\D/g, '').slice(-10)).filter(Boolean)
+    );
+    return demos.filter((d) => {
+      const ph = (d.phone || '').replace(/\D/g, '').slice(-10);
+      const isLeadCandidate = ph.length === 10 && leadPhones.has(ph);
+      const rb = d.branch || d.location || '';
+      const isMine = (
+        matchesMyName(d.bookedBy, myName, rb, branchName) ||
+        matchesMyName(d.counselor, myName, rb, branchName) ||
+        matchesMyName(d.hrName, myName, rb, branchName) ||
+        matchesMyName(d.counselorAssigned, myName, rb, branchName) ||
+        matchesMyName(d.allocatedTo, myName, rb, branchName)
+      );
+      return isMine || isLeadCandidate;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [demos, myLeads, myName, branchName]);
+
+  const myRecordings = useMemo(() => {
+    if (!myName) return callRecordings;
+    return callRecordings.filter((r) => matchesMyName(r.counselorName, myName));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [callRecordings, myName]);
+
+  const myTodayCallLogs = useMemo(() => {
+    if (!myName) return todayCallLogs;
+    return todayCallLogs.filter((c) => !c.counselorName || matchesMyName(c.counselorName, myName));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [todayCallLogs, myName]);
 
   const rawScopedStudents = useMemo(() => {
     if (viewAll || serverScoped) return students;
@@ -853,21 +991,22 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   const monthlyTarget = { value: headTarget || policyTarget, fromHead: Boolean(headTarget) };
 
   const monthPrefix = todayKey.slice(0, 7);
-  const admissionsThisMonth = useMemo(() => scopedStudents.filter(s => {
-    if (!viewAll && myName && !ownerMatch(s.hrName, s.branch || s.leadBranch || s.location || '')) return false;
+  // Home Golden Target & KPI card 4: strictly this logged-in person's closed admissions
+  const admissionsThisMonth = useMemo(() => myStudents.filter(s => {
+    if (myName && !matchesMyName(s.hrName, myName, s.branch || s.leadBranch || s.location || '', branchName)) return false;
     const d = new Date(s.admissionDate || s.createdAt);
     return !isNaN(d.getTime()) && localDateKey(d).slice(0, 7) === monthPrefix;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }).length, [scopedStudents, monthPrefix, myName, branchName, viewAll, teamNames]);
+  }).length, [myStudents, monthPrefix, myName, branchName]);
 
-  // Dynamic priorities for tomorrow
+  // Dynamic priorities for tomorrow (person's own overdue count for Home card 2)
   const overdueCount = useMemo(() => {
-    return scopedLeads.filter(l => l.followUpDate && l.followUpDate < todayKey && l.stage !== 'admitted' && l.stage !== 'closed').length;
-  }, [scopedLeads, todayKey]);
+    return myLeads.filter(l => l.followUpDate && l.followUpDate < todayKey && l.stage !== 'admitted' && l.stage !== 'closed').length;
+  }, [myLeads, todayKey]);
 
   const feePendingCount = useMemo(() => {
-    return scopedLeads.filter(l => l.stage === 'fee_followup' || l.stage === 'demo_attended').length;
-  }, [scopedLeads]);
+    return myLeads.filter(l => l.stage === 'fee_followup' || l.stage === 'demo_attended').length;
+  }, [myLeads]);
 
   // End of day numbers (strictly calculated for TODAY - resets each day)
   const buildDailyMetrics = (L, S, D, R, C, admissionOwner) => {
@@ -925,24 +1064,18 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [scopedLeads, scopedStudents, scopedDemos, scopedRecordings, todayCallLogs, todayKey, viewAll, myName, teamNames]
   );
-  // The EOD report is always the signed-in person's OWN day. On a leadership
-  // desk the dashboard shows team numbers, so the EOD uses only their own records.
+  // The EOD report and Home dashboard cards are ALWAYS strictly the signed-in person's OWN day
   const eodDailyMetrics = useMemo(() => {
-    if (!scopeKind) return computedDailyMetrics;
-    const mine = (rec, ...names) => {
-      const rb = rec?.branch || rec?.leadBranch || rec?.location || '';
-      return names.some((n) => matchesMyName(n, myName, rb, branchName));
-    };
     return buildDailyMetrics(
-      scopedLeads.filter((l) => mine(l, l.counselorAssigned, l.allocatedTo, l.spokenBy)),
-      scopedStudents.filter((st) => mine(st, st.hrName, st.counselor, st.counselorName, st.allocatedTo)),
-      scopedDemos.filter((d) => mine(d, d.bookedBy, d.counselor, d.hrName, d.counselorAssigned, d.allocatedTo)),
-      scopedRecordings.filter((r) => matchesMyName(r.counselorName, myName)),
-      todayCallLogs.filter((c) => !c.counselorName || matchesMyName(c.counselorName, myName)),
+      myLeads,
+      myStudents,
+      myDemos,
+      myRecordings,
+      myTodayCallLogs,
       (n, rb = '') => matchesMyName(n, myName, rb, branchName)
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scopeKind, computedDailyMetrics, scopedLeads, scopedStudents, scopedDemos, scopedRecordings, todayCallLogs, myName, branchName]);
+  }, [myLeads, myStudents, myDemos, myRecordings, myTodayCallLogs, myName, branchName, todayKey]);
 
   // If user corrected/edited numbers, use customMetrics; otherwise use live computed daily metrics
   const closureMetrics = useMemo(() => {
@@ -964,8 +1097,8 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     }
     return eodDailyMetrics;
   }, [customMetrics, eodDailyMetrics]);
-  // Home KPI cards: the desk's numbers (team / branch / all on leadership desks)
-  const homeMetrics = scopeKind ? computedDailyMetrics : closureMetrics;
+  // Home KPI cards: always the signed-in ID person's numbers
+  const homeMetrics = closureMetrics;
 
   // 3. Submit EOD Report to HR Head (saves report with HR user details, date, submission time, work session info, and CRM metrics)
   const handleEodReportSubmit = async (customSummary = null, attendanceOverride = null) => {
@@ -1076,6 +1209,22 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     return { count, totalBal };
   }, [scopedStudents]);
 
+  // Pending fees for the logged-in ID person (Home Golden Target Banner)
+  const myPendingFeesStats = useMemo(() => {
+    let count = 0;
+    let totalBal = 0;
+    myStudents.forEach(s => {
+      const fee = Number(s.courseFee) || 0;
+      const paid = Number(s.paidAmount) || 0;
+      const bal = (s.pendingBalance != null && !isNaN(Number(s.pendingBalance))) ? Number(s.pendingBalance) : Math.max(0, fee - paid);
+      if (bal > 0) {
+        count++;
+        totalBal += bal;
+      }
+    });
+    return { count, totalBal };
+  }, [myStudents]);
+
   const NAV_TABS = useMemo(() => {
     const trueLeadsCount = hrLeadCounts?.totalLeads ?? (leadsTotalCount || scopedLeads.length);
     const trueStudentsCount = hrLeadCounts?.totalStudents ?? (studentsTotalCount || scopedStudents.length);
@@ -1107,9 +1256,10 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
 
   // Today's Priority Queue: overdue follow-ups first, then today's, then
   // fee-due admitted students, then fee-stage leads, then brand-new leads.
+  // Strictly for the signed-in ID person on the Home workspace desk.
   const priorityQueue = useMemo(() => {
     // Admitted students with pending / overdue fee installments
-    const feeDueItems = scopedStudents
+    const feeDueItems = myStudents
       .filter(s => {
         const fee = Number(s.courseFee) || 0;
         const paid = Number(s.paidAmount) || 0;
@@ -1143,7 +1293,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       if (l.stage === 'new' && !(l.callCount > 0)) return 3;
       return 4;
     };
-    const leadItems = scopedLeads
+    const leadItems = myLeads
       .filter(l => l.stage !== 'admitted' && l.stage !== 'closed')
       .map(l => ({ lead: l, rank: rankOf(l) }))
       .filter(x => x.rank < 9)
@@ -1177,13 +1327,13 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       });
 
     return [...feeDueItems, ...leadItems].slice(0, 8);
-  }, [scopedLeads, scopedStudents, todayKey]);
+  }, [myLeads, myStudents, todayKey]);
 
-  // Recent Activity: real events with their real timestamps, newest first
+  // Recent Activity: real events with their real timestamps, newest first (strictly for this logged-in person)
   const recentActivities = useMemo(() => {
     const list = [];
     const push = (at, e) => { const d = new Date(at); if (!isNaN(d.getTime())) list.push({ ...e, at: d }); };
-    scopedStudents.forEach(s => {
+    myStudents.forEach(s => {
       push(s.createdAt, {
         primary: `${s.name} admitted`,
         secondary: [s.course, s.studentId && `ID: ${s.studentId}`].filter(Boolean).join(' • '),
@@ -1195,18 +1345,18 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         tag: 'FEE', tagStyle: 'bg-teal-50 text-teal-700 border-teal-200'
       }));
     });
-    scopedDemos.forEach(d => push(d.updatedAt || d.createdAt, {
+    myDemos.forEach(d => push(d.updatedAt || d.createdAt, {
       primary: `${d.candidateName} demo ${d.status || 'booked'}`,
       secondary: [d.course, d.trainer && `with ${d.trainer}`, d.preferredDate].filter(Boolean).join(' • '),
       tag: 'DEMO', tagStyle: 'bg-blue-50 text-blue-700 border-blue-200'
     }));
-    scopedLeads.forEach(l => push(l.createdAt, {
+    myLeads.forEach(l => push(l.createdAt, {
       primary: `New lead: ${l.fullName || l.name}`,
       secondary: [l.sourceName || l.source, l.course].filter(Boolean).join(' • '),
       tag: 'NEW LEAD', tagStyle: 'bg-cyan-50 text-cyan-700 border-cyan-200'
     }));
-    const leadName = new Map(scopedLeads.map(l => [String(l._id || l.id), l.fullName || l.name]));
-    todayCallLogs.forEach(c => push(c.time, {
+    const leadName = new Map(myLeads.map(l => [String(l._id || l.id), l.fullName || l.name]));
+    myTodayCallLogs.forEach(c => push(c.time, {
       primary: `Called ${leadName.get(String(c.id)) || 'a lead'}`,
       secondary: [c.outcome, c.duration ? `${Math.round(c.duration)}s` : ''].filter(Boolean).join(' • '),
       tag: 'CALL', tagStyle: 'bg-slate-50 text-slate-700 border-slate-200'
@@ -1220,7 +1370,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
           ? e.at.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false })
           : e.at.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })
       }));
-  }, [scopedStudents, scopedDemos, scopedLeads, todayCallLogs, todayKey]);
+  }, [myStudents, myDemos, myLeads, myTodayCallLogs, todayKey]);
 
   // Header search across my leads, students and demos
   const searchInputRef = React.useRef(null);
@@ -1919,38 +2069,12 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
                 {[todayDisplay, branchName].filter(Boolean).join(' • ')} • You have <strong className="text-slate-800 font-semibold">{homeMetrics.pendingFus} pending follow-ups</strong> in your pipeline
               </p>
             </div>
-            {/* Scoping status pill */}
+            {/* Scoping status pill - Home tab is personal workspace */}
             <div className="flex items-center gap-2">
-              {scopeKind ? (
-                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-800 text-xs font-bold shadow-xs">
-                  <span className="w-2 h-2 rounded-full bg-indigo-500" />
-                  <span>{viewScope?.label || 'Scoped view'}: {scopedLeads.length} Leads • {scopedStudents.length} Students</span>
-                </div>
-              ) : isElevatedUser ? (
-                <div className="flex items-center bg-white p-1 rounded-xl border border-slate-200 shadow-xs text-xs font-bold">
-                  <button
-                    onClick={() => setScopeMode('mine')}
-                    className={`px-3 py-1 rounded-lg transition-all ${
-                      scopeMode === 'mine' ? 'bg-[#0e6977] text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    👤 My Leads ({scopedLeads.length})
-                  </button>
-                  <button
-                    onClick={() => setScopeMode('all')}
-                    className={`px-3 py-1 rounded-lg transition-all ${
-                      scopeMode === 'all' ? 'bg-[#0e6977] text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    🌐 All Leads ({leads.length})
-                  </button>
-                </div>
-              ) : (
-                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-teal-50 border border-teal-200 text-teal-800 text-xs font-bold shadow-xs">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500" />
-                  <span>My Workspace: {scopedLeads.length} Leads • {scopedStudents.length} Students</span>
-                </div>
-              )}
+              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-teal-50 border border-teal-200 text-teal-800 text-xs font-bold shadow-xs">
+                <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                <span>My Workspace: {myLeads.length} Leads • {myStudents.length} Students</span>
+              </div>
             </div>
           </div>
         </div>
@@ -1990,22 +2114,48 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
           </div>
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 pt-3.5">
-            <div className="bg-slate-50/80 border border-slate-200/70 rounded-xl p-3 text-center">
-              <div className="text-[10px] font-bold text-slate-400 uppercase">Work Start Time</div>
-              <div className="text-base sm:text-lg font-black text-slate-900 mt-1 font-mono">
-                {attendanceRecord?.checkIn || formatTimeDisplay(workStartTime) || 'Not Started'}
+            <div className="bg-slate-50/80 border border-slate-200/70 rounded-xl p-3 text-center flex flex-col justify-between">
+              <div>
+                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Login / Start Time</div>
+                <div className="text-base sm:text-lg font-black text-slate-900 mt-1 font-mono">
+                  {attendanceRecord?.checkIn || formatTimeDisplay(workStartTime) || 'Not Started'}
+                </div>
               </div>
-              <div className="text-[10px] text-slate-400 mt-0.5">Recorded on Start Work</div>
+              {attendanceRecord?.loginAddress || attendanceRecord?.loginLocation?.address ? (
+                <div className="mt-1.5 flex items-center justify-center gap-1 text-[10.5px] font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200/70 rounded-lg py-0.5 px-2 max-w-full truncate" title={attendanceRecord.loginAddress || attendanceRecord.loginLocation?.address}>
+                  <MapPin className="w-3 h-3 text-emerald-600 flex-shrink-0" />
+                  <span className="truncate">{attendanceRecord.loginAddress || attendanceRecord.loginLocation?.address}</span>
+                  {attendanceRecord?.loginLocation?.mapsUrl && (
+                    <a href={attendanceRecord.loginLocation.mapsUrl} target="_blank" rel="noopener noreferrer" className="text-[9.5px] font-bold text-emerald-700 underline flex-shrink-0 ml-0.5" title="View location on Google Maps">↗</a>
+                  )}
+                </div>
+              ) : (
+                <div className="text-[10px] text-slate-400 mt-0.5">Recorded on Start Work</div>
+              )}
             </div>
 
-            <div className="bg-slate-50/80 border border-slate-200/70 rounded-xl p-3 text-center">
-              <div className="text-[10px] font-bold text-slate-400 uppercase">Work End Time</div>
-              <div className={`text-base sm:text-lg font-black mt-1 font-mono ${
-                attendanceRecord?.checkOut || workEndTime ? 'text-slate-900' : sessionStatus === 'In Progress' ? 'text-teal-600' : 'text-slate-400'
-              }`}>
-                {attendanceRecord?.checkOut || formatTimeDisplay(workEndTime) || (sessionStatus === 'In Progress' ? 'In Progress' : '--:--')}
+            <div className="bg-slate-50/80 border border-slate-200/70 rounded-xl p-3 text-center flex flex-col justify-between">
+              <div>
+                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Logout / End Time</div>
+                <div className={`text-base sm:text-lg font-black mt-1 font-mono ${
+                  attendanceRecord?.checkOut || workEndTime ? 'text-slate-900' : sessionStatus === 'In Progress' ? 'text-teal-600' : 'text-slate-400'
+                }`}>
+                  {attendanceRecord?.checkOut || formatTimeDisplay(workEndTime) || (sessionStatus === 'In Progress' ? 'In Progress' : '--:--')}
+                </div>
               </div>
-              <div className="text-[10px] text-slate-400 mt-0.5">Recorded on Close Work</div>
+              {attendanceRecord?.logoutAddress || attendanceRecord?.logoutLocation?.address ? (
+                <div className="mt-1.5 flex items-center justify-center gap-1 text-[10.5px] font-semibold text-rose-800 bg-rose-50 border border-rose-200/70 rounded-lg py-0.5 px-2 max-w-full truncate" title={attendanceRecord.logoutAddress || attendanceRecord.logoutLocation?.address}>
+                  <MapPin className="w-3 h-3 text-rose-600 flex-shrink-0" />
+                  <span className="truncate">{attendanceRecord.logoutAddress || attendanceRecord.logoutLocation?.address}</span>
+                  {attendanceRecord?.logoutLocation?.mapsUrl && (
+                    <a href={attendanceRecord.logoutLocation.mapsUrl} target="_blank" rel="noopener noreferrer" className="text-[9.5px] font-bold text-rose-700 underline flex-shrink-0 ml-0.5" title="View location on Google Maps">↗</a>
+                  )}
+                </div>
+              ) : sessionStatus === 'In Progress' ? (
+                <div className="text-[10px] text-teal-600 font-medium mt-0.5">Active session in progress</div>
+              ) : (
+                <div className="text-[10px] text-slate-400 mt-0.5">Recorded on Close Work</div>
+              )}
             </div>
 
             <div className="bg-teal-50/50 border border-teal-200/70 rounded-xl p-3 text-center">
@@ -2124,8 +2274,8 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
                 title="View Pending Dues in Fees CRM"
               >
                 <span>PENDING DUES:</span>
-                <strong className="text-amber-800 font-mono">₹{pendingFeesStats.totalBal.toLocaleString('en-IN')}</strong>
-                <span className="text-slate-500">({pendingFeesStats.count})</span>
+                <strong className="text-amber-800 font-mono">₹{myPendingFeesStats.totalBal.toLocaleString('en-IN')}</strong>
+                <span className="text-slate-500">({myPendingFeesStats.count})</span>
               </button>
             </div>
           </div>
@@ -2178,9 +2328,9 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
                 <Calendar className="w-3.5 h-3.5" />
               </div>
             </div>
-            <div className="text-3xl font-extrabold text-slate-900">{scopedDemos.length}</div>
+            <div className="text-3xl font-extrabold text-slate-900">{myDemos.length}</div>
             <div className="text-xs text-slate-500 mt-1 font-medium">
-              {scopedDemos.filter(d => !d.trainer || d.trainer === 'Unassigned').length} pending faculty · {scopedDemos.filter(d => d.trainer && d.trainer !== 'Unassigned' && !['attended', 'completed', 'fee'].includes(String(d.status).toLowerCase())).length} assigned · {scopedDemos.filter(d => ['attended', 'completed', 'fee'].includes(String(d.status).toLowerCase())).length} attended
+              {myDemos.filter(d => !d.trainer || d.trainer === 'Unassigned').length} pending faculty · {myDemos.filter(d => d.trainer && d.trainer !== 'Unassigned' && !['attended', 'completed', 'fee'].includes(String(d.status).toLowerCase())).length} assigned · {myDemos.filter(d => ['attended', 'completed', 'fee'].includes(String(d.status).toLowerCase())).length} attended
             </div>
           </div>
 
@@ -2196,7 +2346,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             </div>
             <div className="text-3xl font-extrabold text-[#0e6977]">{admissionsThisMonth}</div>
             <div className="text-xs text-[#0e6977] mt-1 font-bold flex items-center gap-1">
-              <TrendingUp className="w-3 h-3" /> {scopedStudents.length} enrolled in total
+              <TrendingUp className="w-3 h-3" /> {myStudents.length} enrolled in total
             </div>
           </div>
         </div>

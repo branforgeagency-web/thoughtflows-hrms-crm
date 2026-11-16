@@ -199,7 +199,7 @@ export async function uploadStudentSubmissionFile(file, studentId = 'general', o
   });
 
   const result = await task.result;
-  const urlResult = await getUrl({ path: storagePath });
+  const urlResult = await getUrl({ path: storagePath, options: { expiresIn: MAX_PRESIGN_SECONDS } });
 
   return {
     storageKey: storagePath,
@@ -231,7 +231,7 @@ export async function uploadResumeFile(file, studentId = 'general', options = {}
   });
 
   const result = await task.result;
-  const urlResult = await getUrl({ path: storagePath });
+  const urlResult = await getUrl({ path: storagePath, options: { expiresIn: MAX_PRESIGN_SECONDS } });
 
   return {
     storageKey: storagePath,
@@ -263,7 +263,7 @@ export async function uploadRecordingFile(file, entityPrefix = 'general', option
   });
 
   const result = await task.result;
-  const urlResult = await getUrl({ path: storagePath });
+  const urlResult = await getUrl({ path: storagePath, options: { expiresIn: MAX_PRESIGN_SECONDS } });
 
   return {
     storageKey: storagePath,
@@ -277,28 +277,71 @@ export async function uploadRecordingFile(file, entityPrefix = 'general', option
 }
 
 /**
- * Get a presigned download / stream URL for a file stored in Amplify Storage
+ * Extract the relative storage key/path from a key or an S3 presigned / bucket URL.
+ * Handles:
+ *  - recordings/...
+ *  - training-materials/...
+ *  - resumes/...
+ *  - student-submissions/...
+ *  - public/...
+ */
+export function extractStorageKey(input = '') {
+  if (!input || typeof input !== 'string') return '';
+  const clean = input.trim();
+  if (/^(recordings|training-materials|resumes|student-submissions|public)\//i.test(clean)) {
+    return clean.split('?')[0];
+  }
+  const match = clean.match(/(?:amazonaws\.com(?::\d+)?\/[^\/]+\/|(?:amazonaws\.com(?::\d+)?\/))?(recordings\/[^\?#]+|training-materials\/[^\?#]+|resumes\/[^\?#]+|student-submissions\/[^\?#]+|public\/[^\?#]+)/i);
+  if (match && match[1]) {
+    try {
+      return decodeURIComponent(match[1]);
+    } catch (_) {
+      return match[1];
+    }
+  }
+  return '';
+}
+
+/**
+ * Get a presigned download / stream URL for a file stored in Amplify Storage.
+ * Accepts either a storage key (e.g. 'recordings/...') or an existing/expired S3 URL,
+ * extracts the key, and generates a fresh live presigned URL with SigV4.
  */
 export async function getStorageFileUrl(storageKey, options = {}) {
   if (!storageKey) return null;
-  // If already a full URL (CDN/CloudFront/Presigned), return it directly
+
+  // Extract storage key even if a full S3 URL was passed
+  const key = extractStorageKey(storageKey);
+
+  if (key) {
+    try {
+      if (!isAmplifyStorageConfigured()) {
+        initAmplifyStorage();
+      }
+      const res = await getUrl({
+        path: key,
+        options: {
+          expiresIn: options.expiresIn || MAX_PRESIGN_SECONDS,
+          validateObjectExistence: options.validateObjectExistence ?? false
+        }
+      });
+      return res.url.toString();
+    } catch (err) {
+      console.warn('Failed to get fresh Amplify storage URL for:', key, err);
+      // Fallback: if input was a full URL, return it
+      if (storageKey.startsWith('http://') || storageKey.startsWith('https://')) {
+        return storageKey;
+      }
+      return null;
+    }
+  }
+
+  // If already an external non-S3 URL (e.g. telephony provider callback or CDN), return it directly
   if (storageKey.startsWith('http://') || storageKey.startsWith('https://')) {
     return storageKey;
   }
 
-  try {
-    const res = await getUrl({
-      path: storageKey,
-      options: {
-        expiresIn: options.expiresIn || 3600, // 1 hour default expiration
-        validateObjectExistence: options.validateObjectExistence ?? false
-      }
-    });
-    return res.url.toString();
-  } catch (err) {
-    console.error('Failed to get Amplify storage URL for:', storageKey, err);
-    return null;
-  }
+  return null;
 }
 
 /**
@@ -342,6 +385,7 @@ export default {
   uploadStudentSubmissionFile,
   uploadResumeFile,
   uploadRecordingFile,
+  extractStorageKey,
   getStorageFileUrl,
   removeStorageFile,
   listStorageFiles

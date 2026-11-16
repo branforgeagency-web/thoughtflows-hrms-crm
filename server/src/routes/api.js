@@ -822,8 +822,14 @@ router.get('/recordings', async (req, res) => {
         ...(mongoose.isValidObjectId(studentId) ? [{ studentMongoId: studentId }] : [])
       ];
     }
+    const recBranch = !req.hrTeamNames && !isScopedHr(req) ? requestBranchScope(req) : '';
     if (req.hrTeamNames) {
       const names = pickTeamNames(req.hrTeamNames, req.query.counselorName || req.query.counselor);
+      query.counselorName = { $in: names.map((n) => counselorNameRx(n)) };
+    } else if (recBranch) {
+      // Branch Head: only the calls of their own branch's HR staff
+      const staff = await branchHrNames(recBranch);
+      const names = staff.length ? pickTeamNames(staff, req.query.counselorName || req.query.counselor) : [NO_MATCH_NAME];
       query.counselorName = { $in: names.map((n) => counselorNameRx(n)) };
     } else if (counselorName && counselorName !== 'all') query.counselorName = counselorNameRx(counselorName);
     if (search) {
@@ -839,6 +845,21 @@ router.get('/recordings', async (req, res) => {
       ];
       if (query.$and) query.$and.push({ $or: searchOr }); else query.$or = searchOr;
     }
+    const enrichRecording = (r) => {
+      if (!r) return r;
+      if (!r.storageKey && r.audioUrl) {
+        const match = String(r.audioUrl).match(/(?:amazonaws\.com(?::\d+)?\/[^\/]+\/|(?:amazonaws\.com(?::\d+)?\/))?(recordings\/[^\?#]+)/i);
+        if (match && match[1]) {
+          try {
+            r.storageKey = decodeURIComponent(match[1]);
+          } catch (_) {
+            r.storageKey = match[1];
+          }
+        }
+      }
+      return r;
+    };
+
     const hasPagination = req.query.page !== undefined || req.query.limit !== undefined;
     if (hasPagination) {
       const pageNum = Math.max(1, parseInt(req.query.page, 10) || 1);
@@ -849,7 +870,7 @@ router.get('/recordings', async (req, res) => {
         CallRecording.countDocuments(query)
       ]);
       return res.json({
-        recordings,
+        recordings: recordings.map(enrichRecording),
         totalCount,
         page: pageNum,
         limit: limitNum,
@@ -857,7 +878,7 @@ router.get('/recordings', async (req, res) => {
       });
     }
     const recordings = await CallRecording.find(query).sort({ createdAt: -1 }).lean();
-    res.json(recordings);
+    res.json(recordings.map(enrichRecording));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -954,6 +975,14 @@ router.post('/recordings', async (req, res) => {
       }
     }
 
+    let resolvedKey = storageKey || '';
+    if (!resolvedKey && audioUrl) {
+      const match = String(audioUrl).match(/(?:amazonaws\.com(?::\d+)?\/[^\/]+\/|(?:amazonaws\.com(?::\d+)?\/))?(recordings\/[^\?#]+)/i);
+      if (match && match[1]) {
+        try { resolvedKey = decodeURIComponent(match[1]); } catch (_) { resolvedKey = match[1]; }
+      }
+    }
+
     const recording = new CallRecording({
       leadId: resolvedLeadId,
       studentId: resolvedStudentId,
@@ -963,7 +992,7 @@ router.post('/recordings', async (req, res) => {
       counselorName: counselorName || req.user?.name || '',
       counselorPhone: counselorPhone || '',
       callSid: callSid || '',
-      storageKey: storageKey || '',
+      storageKey: resolvedKey,
       storageProvider: reqStorageProvider || storageProvider,
       durationSeconds: Number(durationSeconds) || 0,
       outcome: outcome || 'Follow-up Needed',
@@ -1076,6 +1105,13 @@ router.post('/recordings/phone-sync', async (req, res) => {
 
     // Uploaded to S3 by the client — nothing is written to this server's disk.
     const audioUrl = s3StorageUrl;
+    let resolvedKey = storageKey || '';
+    if (!resolvedKey && audioUrl) {
+      const match = String(audioUrl).match(/(?:amazonaws\.com(?::\d+)?\/[^\/]+\/|(?:amazonaws\.com(?::\d+)?\/))?(recordings\/[^\?#]+)/i);
+      if (match && match[1]) {
+        try { resolvedKey = decodeURIComponent(match[1]); } catch (_) { resolvedKey = match[1]; }
+      }
+    }
 
     const recording = await CallRecording.create({
       leadId: lead?._id,
@@ -1087,7 +1123,7 @@ router.post('/recordings/phone-sync', async (req, res) => {
       outcome: 'Phone Call',
       notes: '',
       audioUrl,
-      storageKey: storageKey || '',
+      storageKey: resolvedKey,
       storageUrl: s3StorageUrl || '',
       storageProvider: 'amplify',
       source: 'phone_sync',
@@ -1233,7 +1269,13 @@ router.get('/closures', async (req, res) => {
     const query = {};
     if (req.query.date) query.date = req.query.date;
     const counselor = isScopedHr(req) ? req.user?.name : req.query.counselor;
-    if (counselor) query.counselorName = exactNameRx(counselor);
+    const closureBranch = !isScopedHr(req) ? requestBranchScope(req) : '';
+    if (closureBranch) {
+      // Branch Head: EOD reports of their own branch's HR staff only
+      const staff = await branchHrNames(closureBranch);
+      const names = staff.length ? pickTeamNames(staff, counselor) : [NO_MATCH_NAME];
+      query.counselorName = { $in: names.map((n) => exactNameRx(n)) };
+    } else if (counselor) query.counselorName = exactNameRx(counselor);
     const closures = await DailyClosure.find(query).sort({ date: -1, createdAt: -1 }).lean();
     res.json(closures);
   } catch (err) {
@@ -1248,6 +1290,12 @@ router.get('/hr/targets', async (req, res) => {
     const query = {};
     if (period) query.period = period;
     if (assignedTo) query.assignedTo = assignedTo;
+    if (isScopedBranchManager(req)) {
+      // Branch Head: targets for "All HR" and for their own branch's HR staff
+      const staff = await branchHrNames(getBranchManagerBranch(req));
+      const allowed = [/^all\s*hr$/i, ...staff.map((n) => exactNameRx(n))];
+      query.$and = [{ assignedTo: { $in: allowed } }];
+    }
     const targets = await HrTarget.find(query).sort({ createdAt: -1 }).lean();
     res.json(targets);
   } catch (err) {
@@ -1600,6 +1648,17 @@ const deptCodeQuery = (code) => {
 router.get('/leadership/approvals', async (req, res) => {
   try {
     const { departmentCode, branchName, status, requestedBy } = req.query;
+    // "My requests": everything the signed-in person applied for, matched on the
+    // login token's name (and the name the page sent) — no branch / desk filter,
+    // so the applicant always sees the leave their approver sees.
+    if (String(req.query.mine || '') === '1') {
+      const names = Array.from(new Set([req.user?.name, req.user?.userName, requestedBy]
+        .map((v) => String(v || '').trim()).filter(Boolean)));
+      if (!names.length) return res.json([]);
+      const mineQuery = { requestedBy: { $in: names.map((n) => exactNameRx(n)) } };
+      if (status) mineQuery.status = String(status).toLowerCase();
+      return res.json(await Approval.find(mineQuery).sort({ createdAt: -1 }).lean());
+    }
     const query = departmentCode ? deptCodeQuery(departmentCode) : {};
     const isBM = isScopedBranchManager(req);
     const effectiveBranch = isBM ? req.user.branch : (branchName || req.query.branch);
@@ -2126,6 +2185,12 @@ router.get('/hr/staff-attendance', async (req, res) => {
           checkOut: '',
           workStartTime: null,
           workEndTime: null,
+          loginLocation: null,
+          loginAddress: '',
+          loginTime: null,
+          logoutLocation: null,
+          logoutAddress: '',
+          logoutTime: null,
           breakMinutesTotal: 0,
           calculatedWorkingMinutes: 0,
           durationText: '—',
@@ -2587,6 +2652,18 @@ async function applySelfAttendance(req, action, source = '') {
       rec.department = req.user?.department || 'hr';
       rec.userEmail = req.user?.email || '';
       if (source && !rec.startSource) rec.startSource = source;
+
+      // Geolocation tracking on login / start work
+      if (req.body?.location) {
+        rec.loginLocation = req.body.location;
+        if (req.body.location.address) rec.loginAddress = req.body.location.address;
+      }
+      if (req.body?.address && !rec.loginAddress) {
+        rec.loginAddress = req.body.address;
+      }
+      if (!rec.loginTime) {
+        rec.loginTime = now;
+      }
     } else if (action === 'close_work' || action === 'close' || action === 'out') {
       closeBreak();
       // Record logout time (the latest close wins — a re-opened day closes again later)
@@ -2596,6 +2673,16 @@ async function applySelfAttendance(req, action, source = '') {
       rec.status = 'out';
       if (source) rec.endSource = source;
 
+      // Geolocation tracking on logout / close work
+      if (req.body?.location) {
+        rec.logoutLocation = req.body.location;
+        if (req.body.location.address) rec.logoutAddress = req.body.location.address;
+      }
+      if (req.body?.address) {
+        rec.logoutAddress = req.body.address;
+      }
+      rec.logoutTime = now;
+
       if (rec.workStartTime) {
         const diffMins = Math.max(0, Math.round((new Date(rec.workEndTime).getTime() - new Date(rec.workStartTime).getTime()) / 60000));
         const netMins = Math.max(0, diffMins - (rec.breakMinutes || 0));
@@ -2604,6 +2691,25 @@ async function applySelfAttendance(req, action, source = '') {
       } else {
         rec.workingMinutes = 0;
         rec.hoursWorked = 0;
+      }
+    } else if (action === 'update_location') {
+      const loc = req.body?.location;
+      if (loc) {
+        const isClosed = rec.sessionStatus === 'Completed' || (rec.workEndTime && !rec.workStartTime);
+        if (isClosed) {
+          rec.logoutLocation = loc;
+          if (loc.address) rec.logoutAddress = loc.address;
+          if (!rec.logoutTime) rec.logoutTime = now;
+        } else {
+          rec.loginLocation = loc;
+          if (loc.address) rec.loginAddress = loc.address;
+          if (!rec.loginTime) rec.loginTime = now;
+        }
+      }
+      if (req.body?.address) {
+        const isClosed = rec.sessionStatus === 'Completed' || (rec.workEndTime && !rec.workStartTime);
+        if (isClosed) rec.logoutAddress = req.body.address;
+        else rec.loginAddress = req.body.address;
       }
     } else if (action === 'in') {
       if (!rec.workStartTime) {
@@ -2630,8 +2736,8 @@ async function applySelfAttendance(req, action, source = '') {
 
 router.post('/attendance/me', async (req, res) => {
   try {
-    const { action } = req.body || {}; // 'start_work' | 'start' | 'close_work' | 'close' | 'in' | 'break' | 'resume' | 'out'
-    const validActions = ['start_work', 'start', 'close_work', 'close', 'in', 'break', 'resume', 'out'];
+    const { action } = req.body || {}; // 'start_work' | 'start' | 'close_work' | 'close' | 'in' | 'break' | 'resume' | 'out' | 'update_location'
+    const validActions = ['start_work', 'start', 'close_work', 'close', 'in', 'break', 'resume', 'out', 'update_location'];
     if (!validActions.includes(action)) return res.status(400).json({ error: 'Invalid action' });
     const rec = await applySelfAttendance(req, action, 'manual');
     res.json(attendanceView(rec));
@@ -2918,6 +3024,33 @@ const pickTeamNames = (team, requested) => {
   const one = team.find((n) => namesMatch(n, requested) || normName(n) === normName(requested));
   return one ? [one] : ['__no_such_team_member__'];
 };
+
+// Branch Head scope: the HR staff of one branch (HR users + HR team roster).
+// Used to keep recordings, EOD closures, targets etc. to that branch only.
+const branchHrCache = new Map(); // branch key → { at, names }
+async function branchHrNames(branch) {
+  const short = branchShort(branch);
+  const key = short.toLowerCase();
+  if (!key) return [];
+  const hit = branchHrCache.get(key);
+  if (hit && Date.now() - hit.at < 60000) return hit.names;
+  const bRx = new RegExp(escapeRegex(short), 'i');
+  const [users, team] = await Promise.all([
+    User.find({ $and: [HR_STAFF, ACTIVE_USER, { branch: bRx }] }).select('name').lean(),
+    TeamMember.find({ $and: [deptCodeQuery('DEP-HR-001'), { branchName: bRx }] }).select('name').lean()
+  ]);
+  const names = Array.from(new Set([...users, ...team].map((u) => String(u.name || '').trim()).filter(Boolean)));
+  branchHrCache.set(key, { at: Date.now(), names });
+  return names;
+}
+// Branch to scope this request to: a Branch Head is always pinned to their own
+// branch; Admin / leadership may pass ?branch= (e.g. opening a Branch Head desk).
+const requestBranchScope = (req) => {
+  if (isScopedBranchManager(req)) return getBranchManagerBranch(req);
+  const q = String(req.query?.branch || '').trim();
+  return q && q !== 'all' ? branchShort(q) : '';
+};
+const NO_MATCH_NAME = '__no_branch_staff__';
 
 const leadOwner = (l) => l?.counselorAssigned || l?.allocatedTo || l?.spokenBy || l?.counselor || l?.hrName || '';
 const leadOwnerQuery = (name, branch = '') => ownerQueryWithBranch(name, branch, LEAD_OWNER_FIELDS, BRANCH_FIELDS_LEAD);
@@ -6625,6 +6758,15 @@ router.post('/auth/login', async (req, res) => {
             console.warn('Auto attendance on login failed:', err.message);
           }
         }
+        // HR staff: login = record attendance with location
+        if (mapping.department === 'hr' || /hr|counsel/i.test(dbUser.role || '')) {
+          try {
+            const locBody = req.body?.location ? { location: req.body.location, address: req.body.address } : {};
+            await applySelfAttendance({ user: grantedUser, body: locBody, query: {} }, 'start_work', 'login');
+          } catch (err) {
+            console.warn('Auto HR attendance on login failed:', err.message);
+          }
+        }
         return grant(grantedUser, `Welcome ${dbUser.name}`);
       }
       const isBuiltIn = normalizedEmail === 'admin' || Object.values(DEPARTMENT_PORTALS).some(d => d.defaultEmail.toLowerCase() === normalizedEmail);
@@ -6664,12 +6806,13 @@ router.post('/auth/login', async (req, res) => {
   return deny('Access denied. This account is not registered in ThoughtFlows ERP.');
 });
 
-// Logout — training staff: logout = attendance close (latest logout of the day wins)
+// Logout — training staff and HR staff: logout = attendance close (latest logout of the day wins)
 router.post('/auth/logout', async (req, res) => {
   try {
     const u = req.user || {};
     const isTraining = u.department === 'training' || Boolean(u.trainerRole);
-    if (!isTraining) return res.json({ success: true });
+    const isHR = u.department === 'hr' || /hr|counsel/i.test(u.role || '');
+    if (!isTraining && !isHR) return res.json({ success: true });
     const rec = await applySelfAttendance(req, 'close_work', 'logout');
     res.json({ success: true, attendance: attendanceView(rec) });
   } catch (e) {
@@ -13104,6 +13247,14 @@ router.get('/student-portal/requests', async (req, res) => {
     if (trainerId) {
       const studentIds = (await Student.find({ trainerId }).select('studentId')).map((s) => s.studentId).filter(Boolean);
       query.$or = [{ trainerId }, { studentId: { $in: studentIds } }];
+    }
+    const reqBranch = requestBranchScope(req);
+    if (reqBranch) {
+      // Branch Head: requests from their own branch's students only
+      const bRx = new RegExp(escapeRegex(reqBranch), 'i');
+      const ids = (await Student.find({ $or: [{ branch: bRx }, { leadBranch: bRx }, { location: bRx }] }).select('studentId').lean())
+        .map((s) => s.studentId).filter(Boolean);
+      query.$and = [{ studentId: { $in: ids } }];
     }
     const docs = await StudentRequest.find(query).sort({ createdAt: -1 }).limit(300);
     res.json(docs.map((d) => {

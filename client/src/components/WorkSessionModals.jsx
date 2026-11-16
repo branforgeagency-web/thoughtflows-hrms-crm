@@ -10,8 +10,10 @@ import {
   Calendar, 
   User, 
   Building2,
-  ArrowRight
+  ArrowRight,
+  MapPin
 } from 'lucide-react';
+import { fetchCurrentLocation } from '../utils/geolocation';
 
 /**
  * Modal 1: Confirmation popup asking “Are you ready to start today’s work?”
@@ -26,6 +28,7 @@ export function StartWorkConfirmationModal({
   branchName = ''
 }) {
   const [currentTime, setCurrentTime] = useState('');
+  const [locData, setLocData] = useState({ loading: true, address: '', mapsUrl: '', success: false });
 
   useEffect(() => {
     if (!isOpen) return;
@@ -35,7 +38,27 @@ export function StartWorkConfirmationModal({
     };
     updateTime();
     const timer = setInterval(updateTime, 1000);
-    return () => clearInterval(timer);
+
+    // Fetch live location
+    let alive = true;
+    setLocData({ loading: true, address: '', mapsUrl: '', success: false });
+    fetchCurrentLocation({ timeoutMs: 5000 })
+      .then((res) => {
+        if (!alive) return;
+        if (res?.success) {
+          setLocData({ loading: false, address: res.address, mapsUrl: res.mapsUrl, success: true, location: res });
+        } else {
+          setLocData({ loading: false, address: res?.error || 'Location detected', mapsUrl: '', success: false, location: res });
+        }
+      })
+      .catch((err) => {
+        if (alive) setLocData({ loading: false, address: err.message || 'Unable to fetch location', mapsUrl: '', success: false });
+      });
+
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
   }, [isOpen]);
 
   if (!isOpen) return null;
@@ -109,6 +132,31 @@ export function StartWorkConfirmationModal({
             </div>
           </div>
 
+          {/* Live Login Location Badge */}
+          <div className="flex items-center gap-2.5 p-3 rounded-2xl bg-emerald-50/80 border border-emerald-200/80 text-xs">
+            <div className="w-8 h-8 rounded-xl bg-emerald-100 flex items-center justify-center text-emerald-700 flex-shrink-0">
+              <MapPin className="w-4 h-4 animate-pulse" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">
+                Current Login Location
+              </div>
+              <div className="font-bold text-emerald-950 truncate text-xs mt-0.5">
+                {locData.loading ? 'Detecting current GPS location...' : (locData.address || 'Location detected')}
+              </div>
+            </div>
+            {locData.mapsUrl && (
+              <a
+                href={locData.mapsUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[10.5px] font-bold text-emerald-700 underline flex-shrink-0 hover:text-emerald-900"
+              >
+                View Map ↗
+              </a>
+            )}
+          </div>
+
           <p className="text-[11px] text-slate-400 italic text-center">
             If you click Cancel, your work login time will not be recorded and your session remains Not Started.
           </p>
@@ -125,7 +173,7 @@ export function StartWorkConfirmationModal({
             </button>
             <button
               type="button"
-              onClick={onConfirmStart}
+              onClick={() => onConfirmStart(locData?.location)}
               disabled={loading}
               className="px-5 py-2.5 rounded-xl bg-[#0e6977] hover:bg-[#094c56] text-white text-xs font-extrabold shadow-md hover:shadow-lg transition-all active:scale-[0.98] cursor-pointer flex items-center gap-2"
             >
@@ -172,6 +220,7 @@ export function CloseWorkConfirmationModal({
   const [closeTime, setCloseTime] = useState('');
   const [localSummary, setLocalSummary] = useState(eodSummary || '');
   const [showSummaryField, setShowSummaryField] = useState(!closureSubmitted);
+  const [locData, setLocData] = useState({ loading: true, address: '', mapsUrl: '', success: false });
 
   useEffect(() => {
     setLocalSummary(eodSummary || '');
@@ -181,6 +230,24 @@ export function CloseWorkConfirmationModal({
     if (!isOpen) return;
     const now = new Date();
     setCloseTime(now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true }));
+
+    // Fetch live logout location
+    let alive = true;
+    setLocData({ loading: true, address: '', mapsUrl: '', success: false });
+    fetchCurrentLocation({ timeoutMs: 5000 })
+      .then((res) => {
+        if (!alive) return;
+        if (res?.success) {
+          setLocData({ loading: false, address: res.address, mapsUrl: res.mapsUrl, success: true, location: res });
+        } else {
+          setLocData({ loading: false, address: res?.error || 'Location detected', mapsUrl: '', success: false, location: res });
+        }
+      })
+      .catch((err) => {
+        if (alive) setLocData({ loading: false, address: err.message || 'Unable to fetch location', mapsUrl: '', success: false });
+      });
+
+    return () => { alive = false; };
   }, [isOpen]);
 
   if (!isOpen) return null;
@@ -189,7 +256,7 @@ export function CloseWorkConfirmationModal({
     if (onEodSummaryChange && localSummary !== eodSummary) {
       onEodSummaryChange(localSummary);
     }
-    onConfirmClose(localSummary);
+    onConfirmClose(localSummary, locData?.location);
   };
 
   return (
@@ -262,6 +329,31 @@ export function CloseWorkConfirmationModal({
                 </div>
               </div>
             </div>
+          </div>
+
+          {/* Live Logout Location Badge */}
+          <div className="flex items-center gap-2.5 p-3 rounded-2xl bg-rose-50/80 border border-rose-200/80 text-xs">
+            <div className="w-8 h-8 rounded-xl bg-rose-100 flex items-center justify-center text-rose-700 flex-shrink-0">
+              <MapPin className="w-4 h-4 animate-pulse" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-[10px] font-bold text-rose-800 uppercase tracking-wider">
+                Current Logout Location
+              </div>
+              <div className="font-bold text-rose-950 truncate text-xs mt-0.5">
+                {locData.loading ? 'Detecting current GPS location...' : (locData.address || 'Location detected')}
+              </div>
+            </div>
+            {locData.mapsUrl && (
+              <a
+                href={locData.mapsUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[10.5px] font-bold text-rose-700 underline flex-shrink-0 hover:text-rose-900"
+              >
+                View Map ↗
+              </a>
+            )}
           </div>
 
           {/* EOD Report Status Notice & Optional Summary Field */}

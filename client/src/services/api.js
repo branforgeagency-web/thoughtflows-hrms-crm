@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { isAmplifyStorageConfigured, uploadRecordingFile } from './amplifyStorage';
+import { isAmplifyStorageConfigured, uploadRecordingFile, getStorageFileUrl, extractStorageKey, MAX_PRESIGN_SECONDS } from './amplifyStorage';
 
 const RAW_API_URL = import.meta.env.VITE_API_URL || '';
 const API_BASE = RAW_API_URL 
@@ -79,8 +79,109 @@ export const openProtectedFile = async (url) => {
   if (win) win.location.href = target; else if (typeof window !== 'undefined') window.location.href = target;
 };
 
-// Call recordings saved on our server need the session token to play
-export const recordingUrl = (url) => (url && String(url).startsWith('/recordings') ? withAuthToken(url) : url);
+// Call recordings: synchronous URL formatter (fallback / initial render)
+export const recordingUrl = (url, storageKey) => {
+  if (!url && !storageKey) return '';
+  const raw = url || '';
+  if (raw.startsWith('blob:') || raw.startsWith('data:')) return raw;
+  if (raw.startsWith('/recordings')) {
+    const full = RAW_API_URL ? `${RAW_API_URL.replace(/\/api\/?$/, '')}${raw}` : raw;
+    return withAuthToken(full);
+  }
+  return raw;
+};
+
+// Asynchronously resolve a guaranteed-fresh, live playable/downloadable URL for a call recording.
+// Re-signs AWS S3 storage keys and expired S3 links using SigV4 presigning, ensures valid file tokens
+// for server-hosted files, and passes external URLs directly.
+export const resolveRecordingAudioUrl = async (recOrUrl, customStorageKey) => {
+  if (!recOrUrl) return '';
+  const url = typeof recOrUrl === 'string' ? recOrUrl : (recOrUrl.audioUrl || recOrUrl.storageUrl || '');
+  const key = customStorageKey || (typeof recOrUrl === 'object' ? recOrUrl.storageKey : '');
+
+  // 1. Blob and data URLs: return immediately (used during recording preview)
+  if (url.startsWith('blob:') || url.startsWith('data:')) {
+    return url;
+  }
+
+  // 2. AWS S3 storage: re-sign using Amplify Storage
+  const s3Key = key || extractStorageKey(url);
+  if (s3Key) {
+    try {
+      const freshUrl = await getStorageFileUrl(s3Key, { expiresIn: MAX_PRESIGN_SECONDS });
+      if (freshUrl) return freshUrl;
+    } catch (err) {
+      console.warn('Could not re-sign S3 URL for recording:', s3Key, err);
+    }
+  }
+
+  // 3. Local server file (/recordings/...)
+  if (url.startsWith('/recordings')) {
+    try {
+      await ensureFileToken();
+    } catch (_) {}
+    const full = RAW_API_URL ? `${RAW_API_URL.replace(/\/api\/?$/, '')}${url}` : url;
+    return withAuthToken(full);
+  }
+
+  // 4. External telephony provider URL or fallback
+  return url;
+};
+
+// Safely download a call recording audio file.
+// Resolves the fresh signed URL, fetches as a Blob (to bypass cross-origin browser download restrictions),
+// and triggers a same-origin Blob download with the proper filename.
+export const downloadRecordingAudio = async (recOrUrl, customFilename, storageKey) => {
+  const url = await resolveRecordingAudioUrl(recOrUrl, storageKey);
+  if (!url) {
+    throw new Error('Recording audio URL is not available.');
+  }
+
+  let filename = customFilename;
+  if (!filename) {
+    const leadName = (typeof recOrUrl === 'object' && recOrUrl.leadName ? recOrUrl.leadName : 'call').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const leadPhone = (typeof recOrUrl === 'object' && recOrUrl.leadPhone ? recOrUrl.leadPhone : '').replace(/[^0-9]/g, '');
+    const ext = (typeof recOrUrl === 'object' && recOrUrl.fileName && recOrUrl.fileName.split('.').pop()) ||
+      (String(url).split('?')[0].match(/\.(\w+)$/) || [])[1] || 'webm';
+    filename = `call_${leadName}${leadPhone ? `_${leadPhone}` : ''}.${ext}`;
+  }
+
+  if (url.startsWith('blob:')) {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    return;
+  }
+
+  try {
+    const response = await fetch(url, { mode: 'cors' });
+    if (!response.ok) {
+      throw new Error(`HTTP error ${response.status}`);
+    }
+    const blob = await response.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+  } catch (fetchErr) {
+    console.warn('Direct blob fetch failed, falling back to window.open:', fetchErr);
+    const fallbackLink = document.createElement('a');
+    fallbackLink.href = url;
+    fallbackLink.download = filename;
+    fallbackLink.target = '_blank';
+    fallbackLink.rel = 'noopener noreferrer';
+    document.body.appendChild(fallbackLink);
+    fallbackLink.click();
+    document.body.removeChild(fallbackLink);
+  }
+};
 
 const attachToken = (config) => {
   const t = getAuthToken();
@@ -1869,20 +1970,42 @@ export const getMyAttendance = async (branchName) => {
   return res.data;
 };
 
-export const setMyAttendance = async (action, branchName) => {
-  const res = await api.post('/attendance/me', { action, ...(branchName ? { branchName } : {}) });
+export const setMyAttendance = async (action, branchName, location) => {
+  const res = await api.post('/attendance/me', { 
+    action, 
+    ...(branchName ? { branchName } : {}),
+    ...(location ? { location, address: location.address } : {})
+  });
   notifyDataUpdate('attendance');
   return res.data;
 };
 
-export const startMyWork = async (branchName) => {
-  const res = await api.post('/attendance/me', { action: 'start_work', ...(branchName ? { branchName } : {}) });
+export const startMyWork = async (branchName, location) => {
+  const res = await api.post('/attendance/me', { 
+    action: 'start_work', 
+    ...(branchName ? { branchName } : {}),
+    ...(location ? { location, address: location.address } : {})
+  });
   notifyDataUpdate('attendance');
   return res.data;
 };
 
-export const closeMyWork = async (branchName) => {
-  const res = await api.post('/attendance/me', { action: 'close_work', ...(branchName ? { branchName } : {}) });
+export const closeMyWork = async (branchName, location) => {
+  const res = await api.post('/attendance/me', { 
+    action: 'close_work', 
+    ...(branchName ? { branchName } : {}),
+    ...(location ? { location, address: location.address } : {})
+  });
+  notifyDataUpdate('attendance');
+  return res.data;
+};
+
+export const updateMyAttendanceLocation = async (location) => {
+  const res = await api.post('/attendance/me', { 
+    action: 'update_location', 
+    location, 
+    address: location?.address 
+  });
   notifyDataUpdate('attendance');
   return res.data;
 };

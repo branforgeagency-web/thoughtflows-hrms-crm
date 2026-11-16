@@ -28,7 +28,26 @@ const attendanceSchema = new mongoose.Schema(
       type: String, 
       enum: ['Not Started', 'In Progress', 'Completed', 'not_started', 'in_progress', 'completed'], 
       default: 'Not Started' 
-    }
+    },
+    // Geolocation tracking on login and logout
+    loginLocation: {
+      latitude: Number,
+      longitude: Number,
+      accuracy: Number,
+      address: String,
+      mapsUrl: String
+    },
+    loginAddress: { type: String, default: '' },
+    loginTime: { type: Date, default: null },
+    logoutLocation: {
+      latitude: Number,
+      longitude: Number,
+      accuracy: Number,
+      address: String,
+      mapsUrl: String
+    },
+    logoutAddress: { type: String, default: '' },
+    logoutTime: { type: Date, default: null }
   },
   { timestamps: true }
 );

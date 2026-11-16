@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import { fetchCurrentLocation } from '../utils/geolocation';
 import {
   PhoneCall,
   Users,
@@ -180,7 +181,13 @@ export default function HrRoleLoginModal({ isOpen, roleKey = 'hr', onClose, onLo
     setLoading(true);
     setError('');
     try {
-      const res = await axios.post('/api/auth/login', { email: email.trim(), password, role: roleKey });
+      const loc = await fetchCurrentLocation({ timeoutMs: 3500 }).catch(() => null);
+      const res = await axios.post('/api/auth/login', { 
+        email: email.trim(), 
+        password, 
+        role: roleKey,
+        ...(loc?.success ? { location: loc, address: loc.address } : {})
+      });
       const authedUser = res.data?.user;
       if (res.data?.success && authedUser) {
         if (roleKey === 'branch' && isBranchHeadRole(authedUser.role) && !String(authedUser.branch || '').trim()) {
