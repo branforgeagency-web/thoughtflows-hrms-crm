@@ -563,7 +563,7 @@ export default function HrPipelineView({
         (l.counselorAssigned || '').toLowerCase().includes(q) ||
         (l.allocatedTo || '').toLowerCase().includes(q) ||
         (l.spokenBy || '').toLowerCase().includes(q) ||
-        (l.notes || l.followUpNote || '').toLowerCase().includes(q)
+        `${l.followUpNote || ''} ${l.notes || ''}`.toLowerCase().includes(q)
       );
     }
     return out;
@@ -1735,6 +1735,7 @@ export default function HrPipelineView({
                   <th className="py-3 px-3.5">Enquiry Date</th>
                   <th className="py-3 px-3.5">Enquiry Month</th>
                   <th className="py-3 px-3.5">Follow-up</th>
+                  <th className="py-3 px-3.5">Remarks</th>
                   <th className="py-3 px-3.5">Counsellor</th>
                   <th className="py-3 px-3.5 text-center">Actions</th>
                 </tr>
@@ -1742,7 +1743,7 @@ export default function HrPipelineView({
               <tbody className="divide-y divide-slate-100 text-[11px]">
                 {tableLeads.length === 0 ? (
                   <tr>
-                    <td colSpan="10" className="py-12 text-center text-slate-400">
+                    <td colSpan="11" className="py-12 text-center text-slate-400">
                       <div className="text-3xl mb-1">📭</div>
                       <div className="font-bold text-slate-600">No student enquiries found</div>
                       <p className="text-xs text-slate-400 mt-0.5">Try adjusting your search query or filter</p>
@@ -1843,6 +1844,17 @@ export default function HrPipelineView({
                             </div>
                           ) : (
                             <span className="text-slate-400 text-[10px]">No schedule</span>
+                          )}
+                        </td>
+
+                        {/* Remarks — latest follow-up note, falls back to uploaded notes */}
+                        <td className="py-3 px-3.5 text-slate-600 max-w-[220px]">
+                          {(lead.followUpNote || lead.notes) ? (
+                            <div className="line-clamp-2 text-[10.5px] leading-snug" title={lead.followUpNote || lead.notes}>
+                              {lead.followUpNote || lead.notes}
+                            </div>
+                          ) : (
+                            <span className="text-slate-400 text-[10px]">—</span>
                           )}
                         </td>
 

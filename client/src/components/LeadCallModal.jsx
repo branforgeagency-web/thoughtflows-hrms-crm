@@ -55,6 +55,25 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
   const [selectedOutcome, setSelectedOutcome] = useState('');
   const [followUpDate, setFollowUpDate] = useState('');
   const [followUpTime, setFollowUpTime] = useState('');
+  const followUpPickerRef = useRef(null);
+  // "+ Add follow-up" — pick the outcome, pre-fill tomorrow, and bring the picker into view
+  const handleAddFollowUp = () => {
+    setSelectedOutcome('Follow-up Needed');
+    if (!followUpDate) {
+      const t = new Date();
+      t.setDate(t.getDate() + 1);
+      const pad = (n) => String(n).padStart(2, '0');
+      setFollowUpDate(`${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}`);
+    }
+    if (!followUpTime) setFollowUpTime('11:00');
+    setTimeout(() => {
+      const el = followUpPickerRef.current;
+      if (!el) return;
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      const input = el.querySelector('input[type="date"]');
+      if (input) input.focus({ preventScroll: true });
+    }, 50);
+  };
   const [toastMsg, setToastMsg] = useState(null);
   const [showBookDemoModal, setShowBookDemoModal] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -587,7 +606,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
                 )}
                 <button
                   type="button"
-                  onClick={() => setSelectedOutcome('Follow-up Needed')}
+                  onClick={handleAddFollowUp}
                   className="w-full py-2 border-2 border-dashed border-teal-300 hover:border-teal-500 text-teal-700 bg-teal-50/50 hover:bg-teal-50 font-bold rounded-xl text-xs transition-all cursor-pointer"
                 >
                   + Add follow-up
@@ -844,7 +863,7 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
 
               {/* Follow-up date / time picker when outcome requires it */}
               {NEEDS_FOLLOW_UP_DATE.includes(selectedOutcome) && (
-                <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-xl space-y-2">
+                <div ref={followUpPickerRef} className="p-3 bg-amber-50/70 border border-amber-200 rounded-xl space-y-2">
                   <div className="text-[10px] font-black uppercase tracking-wider text-amber-800 font-mono">
                     SCHEDULE NEXT FOLLOW-UP
                   </div>

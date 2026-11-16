@@ -47,7 +47,7 @@ function EditLeadModalContent({ isOpen, onClose, lead, onSuccess, onDelete }) {
   }, [course, branch]);
   const [followUpDate, setFollowUpDate] = useState(lead.followUpDate || '');
   const [followUpTime, setFollowUpTime] = useState(lead.followUpTime || '11:00 AM');
-  const [followUpNote, setFollowUpNote] = useState(lead.followUpNote || '');
+  const [followUpNote, setFollowUpNote] = useState(lead.followUpNote || lead.notes || '');
   const [category, setCategory] = useState(lead.category || 'Fresh Graduate');
 
   const [saving, setSaving] = useState(false);
@@ -87,7 +87,7 @@ function EditLeadModalContent({ isOpen, onClose, lead, onSuccess, onDelete }) {
       setBudget(lead.budget || '₹20K-30K');
       setFollowUpDate(lead.followUpDate || '');
       setFollowUpTime(lead.followUpTime || '11:00 AM');
-      setFollowUpNote(lead.followUpNote || '');
+      setFollowUpNote(lead.followUpNote || lead.notes || '');
       setCategory(lead.category || 'Fresh Graduate');
       setErrorMessage(null);
     }
@@ -126,6 +126,7 @@ function EditLeadModalContent({ isOpen, onClose, lead, onSuccess, onDelete }) {
         followUpDate,
         followUpTime,
         followUpNote,
+        notes: followUpNote,
         followUpStatus: lead.followUpStatus || '',
         category
       };
