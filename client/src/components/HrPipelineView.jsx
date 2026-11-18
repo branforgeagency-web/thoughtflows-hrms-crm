@@ -113,7 +113,8 @@ export default function HrPipelineView({
   limit: propLimit = 25,
   onPageChange,
   onFilterChange,
-  onViewModeChange
+  onViewModeChange,
+  scopeBranch = ''       // Branch Head desk: HR & branch lists limited to this branch
 }) {
   const [viewMode, setViewMode] = useState(initialViewMode); // 'kanban' | 'followup' | 'table'
   const [boardRenderLimit, setBoardRenderLimit] = useState(50);
@@ -169,7 +170,7 @@ export default function HrPipelineView({
   };
 
   useEffect(() => {
-    getLeadFilterOptions()
+    getLeadFilterOptions(scopeBranch ? { branch: scopeBranch } : undefined)
       .then((opts) => {
         if (opts && typeof opts === 'object') {
           setFilterOptions({
@@ -182,7 +183,7 @@ export default function HrPipelineView({
         }
       })
       .catch(() => {});
-  }, []);
+  }, [scopeBranch]);
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(searchQuery.trim()), 350);
@@ -1013,8 +1014,8 @@ export default function HrPipelineView({
             className="rounded-xl px-3 py-1.5 text-xs font-semibold bg-slate-50 border border-slate-200 focus:bg-white focus:border-[#00897b] outline-none transition-all cursor-pointer"
             title="Filter by Branch"
           >
-            <option value="all">All Branches</option>
-            {availableBranches.map((b) => (
+            <option value="all">{scopeBranch ? `${scopeBranch} (my branch)` : 'All Branches'}</option>
+            {!scopeBranch && availableBranches.map((b) => (
               <option key={b} value={b}>{b}</option>
             ))}
           </select>

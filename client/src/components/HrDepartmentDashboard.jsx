@@ -2077,6 +2077,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             totalPages={leadsTotalPages}
             totalCount={leadsTotalCount}
             limit={LEADS_TABLE_LIMIT}
+            scopeBranch={scopeKind === 'branch' ? (viewScope?.branch || currentUser?.branch || '') : ''}
             onPageChange={(nextPage) => {
               setLeadsPage(nextPage);
               loadAllData(false, { leadsPage: nextPage, leadsViewMode: 'table' });
@@ -2308,8 +2309,13 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         </div>
         </>)}
 
-        {/* Golden Target Progress Banner */}
-        <div className="bg-gradient-to-r from-[#fff9eb] via-[#fffbeb] to-[#fef3c7] border border-[#fde68a] rounded-2xl p-4 sm:p-5 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+        {/* Golden Target Progress Banner — click to open the Targets section
+            (Branch Head / HR Department Head assign targets there; roster from the HR Roster tab) */}
+        <div role="button" tabIndex={0}
+          onClick={() => setActiveTab('My Targets')}
+          onKeyDown={(e) => { if (e.key === 'Enter') setActiveTab('My Targets'); }}
+          title={(scopeKind === 'branch' || scopeKind === 'all') ? 'Open Targets to assign / update your HRs\' monthly targets' : 'Open My Targets'}
+          className="bg-gradient-to-r from-[#fff9eb] via-[#fffbeb] to-[#fef3c7] border border-[#fde68a] rounded-2xl p-4 sm:p-5 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 cursor-pointer hover:shadow-md hover:border-amber-400 transition-all">
           <div className="flex items-center gap-3.5">
             <div className="w-11 h-11 rounded-xl bg-amber-400/20 border border-amber-300/60 flex items-center justify-center text-amber-700 flex-shrink-0">
               <Award className="w-6 h-6 stroke-[2.2]" />
@@ -2331,6 +2337,20 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
                   : `${monthlyTarget.value - admissionsThisMonth} more to hit your target — then each extra admission earns incentive.`}
                 {monthlyTarget.value && !monthlyTarget.fromHead && ' (Admin default target.)'}
               </p>
+              {(scopeKind === 'branch' || scopeKind === 'all') ? (
+                <div className="flex items-center gap-2 mt-2 flex-wrap">
+                  <button type="button" onClick={(e) => { e.stopPropagation(); setActiveTab('My Targets'); }}
+                    className="px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-bold cursor-pointer">
+                    Assign / update targets →
+                  </button>
+                  <button type="button" onClick={(e) => { e.stopPropagation(); setActiveTab('HR Roster'); }}
+                    className="px-2.5 py-1 rounded-lg bg-white border border-amber-300 hover:bg-amber-50 text-amber-900 text-[11px] font-bold cursor-pointer">
+                    Update roster →
+                  </button>
+                </div>
+              ) : (
+                <div className="text-[11px] font-bold text-amber-700 mt-1">View my targets →</div>
+              )}
             </div>
           </div>
 

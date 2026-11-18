@@ -4653,6 +4653,9 @@ router.get('/leads/filter-options', async (req, res) => {
     } else if (isScopedBranchManager(req)) {
       const bmBranch = getBranchManagerBranch(req);
       if (bmBranch) matchConds.push({ branch: { $regex: new RegExp(escapeRegex(bmBranch.trim()), 'i') } });
+    } else if (req.query.branch && req.query.branch !== 'all') {
+      // Branch desk opened by Admin / Leadership: only that branch's HRs & values
+      matchConds.push({ branch: { $regex: new RegExp(escapeRegex(branchShort(String(req.query.branch))), 'i') } });
     }
     const matchQuery = matchConds.length > 0 ? { $and: matchConds } : {};
 
