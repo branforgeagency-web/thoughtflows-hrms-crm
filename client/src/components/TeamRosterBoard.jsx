@@ -12,10 +12,15 @@ import {
   Users, 
   ShieldCheck, 
   Briefcase,
-  Filter
+  Filter,
+  ChevronLeft,
+  ChevronRight,
+  Layers,
+  SlidersHorizontal,
+  Grid
 } from 'lucide-react';
 import { getTeam, setTeamMemberShift, onDataUpdate, getTrainerSettings, getLeaderLeaves } from '../services/api';
-import { getCurrentWeekScheduleDays, localDateKey } from '../utils/dateUtils';
+import { getCurrentWeekScheduleDays, localDateKey, getMonthDays, getMonthWeeks } from '../utils/dateUtils';
 
 export default function TeamRosterBoard({ 
   customMembers = null, 
@@ -47,9 +52,39 @@ export default function TeamRosterBoard({
   const [shiftFilter, setShiftFilter] = useState('All');
   const [toastMessage, setToastMessage] = useState(null);
 
-  // Modal for Weekly Roster Allocation / View
+  // Month-wise Roster State
+  const now = new Date();
+  const [selectedYear, setSelectedYear] = useState(now.getFullYear());
+  const [selectedMonth, setSelectedMonth] = useState(now.getMonth()); // 0-indexed (0=Jan, 10=Nov)
+  const currentMonthKey = `${selectedYear}-${String(selectedMonth + 1).padStart(2, '0')}`;
+  const currentMonthName = new Date(selectedYear, selectedMonth, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+
+  const handlePrevMonth = () => {
+    if (selectedMonth === 0) {
+      setSelectedMonth(11);
+      setSelectedYear(prev => prev - 1);
+    } else {
+      setSelectedMonth(prev => prev - 1);
+    }
+  };
+  const handleNextMonth = () => {
+    if (selectedMonth === 11) {
+      setSelectedMonth(0);
+      setSelectedYear(prev => prev + 1);
+    } else {
+      setSelectedMonth(prev => prev + 1);
+    }
+  };
+
+  // Modal for Month-wise Roster Allocation / View
   const [scheduleModalMember, setScheduleModalMember] = useState(null);
-  const [editingSchedule, setEditingSchedule] = useState([]);
+  const [modalYear, setModalYear] = useState(now.getFullYear());
+  const [modalMonth, setModalMonth] = useState(now.getMonth());
+  const [modalTab, setModalTab] = useState('calendar'); // 'calendar' | 'weeks' | 'bulk'
+  const [selectedWeekIdx, setSelectedWeekIdx] = useState(0);
+  const [editingMonthDays, setEditingMonthDays] = useState([]);
+  const [bulkShift, setBulkShift] = useState('10–7');
+  const [bulkOffDays, setBulkOffDays] = useState(['SUN']);
   const [isSaving, setIsSaving] = useState(false);
 
   const showToast = (msg) => {
@@ -57,6 +92,47 @@ export default function TeamRosterBoard({
     setTimeout(() => {
       setToastMessage(null);
     }, 4000);
+  };
+
+  // Helper to initialize month days for a member
+  const initMonthDaysForMember = (member, year, monthIdx) => {
+    const mKey = `${year}-${String(monthIdx + 1).padStart(2, '0')}`;
+    const baseDays = getMonthDays(year, monthIdx);
+    const existing = member?.monthlySchedule?.[mKey];
+    if (Array.isArray(existing) && existing.length) {
+      const byDate = new Map(existing.map(d => [d.fullDate, d]));
+      return baseDays.map(b => {
+        const found = byDate.get(b.fullDate);
+        if (found) {
+          const isOff = found.timing === 'Week Off' || found.timing === 'On Leave' || found.type === 'off' || found.isOff;
+          return {
+            ...b,
+            timing: found.timing || b.timing,
+            type: isOff ? 'off' : 'work',
+            isOff
+          };
+        }
+        return b;
+      });
+    }
+    // Fallback: check member.weeklySchedule to project onto day of week
+    if (Array.isArray(member?.weeklySchedule) && member.weeklySchedule.length) {
+      const byDayKey = new Map(member.weeklySchedule.map(w => [String(w.dayKey || w.day || '').slice(0, 3).toUpperCase(), w]));
+      return baseDays.map(b => {
+        const matched = byDayKey.get(b.dayKey);
+        if (matched) {
+          const isOff = matched.timing === 'Week Off' || matched.timing === 'On Leave' || matched.type === 'off' || matched.isOff;
+          return {
+            ...b,
+            timing: matched.timing || b.timing,
+            type: isOff ? 'off' : 'work',
+            isOff
+          };
+        }
+        return b;
+      });
+    }
+    return baseDays;
   };
 
   // Load team members from DB
@@ -78,7 +154,8 @@ export default function TeamRosterBoard({
             pendingCount: m.pending || 0,
             status: m.available !== false ? 'Available' : 'On Leave',
             shift: m.shift || 'General Shift',
-            weeklySchedule: m.weeklySchedule || null
+            weeklySchedule: m.weeklySchedule || null,
+            monthlySchedule: m.monthlySchedule || {}
           }));
         setMembers(mapped);
       }
@@ -130,10 +207,22 @@ export default function TeamRosterBoard({
     return unsub;
   }, [departmentCode, todayKey]);
 
-  // { available, reason } for today — manual "On Leave" toggle, approved leave or week off
+  // { available, reason } for today — manual "On Leave" toggle, approved leave, or roster week off
   const todayStatus = (m) => {
     if (m.status === 'On Leave') return { available: false, reason: 'On Leave' };
     if (leaveTodayByName[String(m.name || '').trim().toLowerCase()]) return { available: false, reason: 'On Leave' };
+    
+    // Check if month-wise schedule has today's date
+    const curMonthKey = todayKey.slice(0, 7);
+    const mSched = m.monthlySchedule?.[curMonthKey];
+    if (Array.isArray(mSched) && mSched.length) {
+      const todayDoc = mSched.find((d) => d.fullDate === todayKey);
+      if (todayDoc) {
+        if (todayDoc.timing === 'On Leave') return { available: false, reason: 'On Leave' };
+        if (todayDoc.timing === 'Week Off' || todayDoc.type === 'off' || todayDoc.isOff) return { available: false, reason: 'Week Off' };
+      }
+    }
+
     const sched = Array.isArray(m.weeklySchedule) && m.weeklySchedule.length ? m.weeklySchedule : getCurrentWeekScheduleDays();
     const today = sched.find((d) => String(d.day || d.dayName || d.dayKey || '').trim().slice(0, 3).toLowerCase() === todayAbbr);
     if (today) {
@@ -141,6 +230,35 @@ export default function TeamRosterBoard({
       if (today.timing === 'Week Off' || today.type === 'off' || today.isOff) return { available: false, reason: 'Week Off' };
     }
     return { available: true, reason: '' };
+  };
+
+  // Helper for monthly stats for any member in the selected month
+  const getMemberMonthStats = (m) => {
+    const mSched = m.monthlySchedule?.[currentMonthKey] || initMonthDaysForMember(m, selectedYear, selectedMonth);
+    const workDays = mSched.filter(d => !d.isOff && d.timing !== 'Week Off' && d.timing !== 'On Leave').length;
+    const weekOffs = mSched.filter(d => d.isOff || d.timing === 'Week Off').length;
+    return { workDays, weekOffs, days: mSched };
+  };
+
+  // Helper for mini week preview of the member
+  const getMemberWeekPreview = (m) => {
+    const curMonthDays = m.monthlySchedule?.[currentMonthKey];
+    if (Array.isArray(curMonthDays) && curMonthDays.length) {
+      const weekDays = getCurrentWeekScheduleDays();
+      return weekDays.map(w => {
+        const found = curMonthDays.find(d => d.fullDate === w.fullDate);
+        if (found) {
+          return {
+            ...w,
+            timing: found.timing,
+            type: found.type,
+            isOff: found.isOff
+          };
+        }
+        return w;
+      });
+    }
+    return Array.isArray(m.weeklySchedule) && m.weeklySchedule.length ? m.weeklySchedule : getCurrentWeekScheduleDays();
   };
 
   const availableCount = useMemo(() => {
@@ -199,60 +317,120 @@ export default function TeamRosterBoard({
     });
   }, [members, searchQuery, statusFilter, roleCategoryFilter, branchFilter, shiftFilter, leaveTodayByName]);
 
-  // Open Weekly Roster Allocation Modal
+  // Open Month-wise Roster Allocation Modal
   const handleOpenScheduleModal = (member) => {
     setScheduleModalMember(member);
-    const existing = Array.isArray(member.weeklySchedule) && member.weeklySchedule.length ? member.weeklySchedule : null;
-    setEditingSchedule(existing || getCurrentWeekScheduleDays());
+    setModalYear(selectedYear);
+    setModalMonth(selectedMonth);
+    setModalTab('calendar');
+    setSelectedWeekIdx(0);
+    setEditingMonthDays(initMonthDaysForMember(member, selectedYear, selectedMonth));
   };
 
-  // Change single day schedule in modal
-  const handleDayTimingChange = (index, newTiming) => {
+  const handleModalMonthChange = (direction) => {
+    let nextY = modalYear;
+    let nextM = modalMonth;
+    if (direction === 'prev') {
+      if (modalMonth === 0) { nextM = 11; nextY -= 1; }
+      else { nextM -= 1; }
+    } else {
+      if (modalMonth === 11) { nextM = 0; nextY += 1; }
+      else { nextM += 1; }
+    }
+    setModalYear(nextY);
+    setModalMonth(nextM);
+    setSelectedWeekIdx(0);
+    setEditingMonthDays(initMonthDaysForMember(scheduleModalMember, nextY, nextM));
+  };
+
+  const handleMonthDayTimingChange = (fullDate, newTiming) => {
     if (readOnly) return;
-    setEditingSchedule(prev => {
-      const copy = [...prev];
+    setEditingMonthDays(prev => {
       const isOff = newTiming === 'Week Off' || newTiming === 'On Leave';
-      copy[index] = {
-        ...copy[index],
-        timing: newTiming,
-        type: isOff ? 'off' : 'work',
-        isOff
-      };
-      return copy;
+      return prev.map(d => {
+        if (d.fullDate === fullDate) {
+          return {
+            ...d,
+            timing: newTiming,
+            type: isOff ? 'off' : 'work',
+            isOff
+          };
+        }
+        return d;
+      });
     });
   };
 
-  // Save allocated weekly roster (Head of Trainer only)
-  const handleSaveWeeklySchedule = async (e) => {
+  const handleApplyBulkToMonth = () => {
+    if (readOnly) return;
+    setEditingMonthDays(prev => {
+      return prev.map(d => {
+        const isOff = bulkOffDays.includes(d.dayKey);
+        return {
+          ...d,
+          timing: isOff ? 'Week Off' : bulkShift,
+          type: isOff ? 'off' : 'work',
+          isOff
+        };
+      });
+    });
+    setModalTab('calendar');
+    showToast(`✓ Applied ${bulkShift} (with ${bulkOffDays.join(', ')} off) to all days of ${new Date(modalYear, modalMonth, 1).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}`);
+  };
+
+  const handleSaveMonthSchedule = async (e) => {
     e?.preventDefault();
     if (!scheduleModalMember || readOnly) return;
     setIsSaving(true);
+    const mKey = `${modalYear}-${String(modalMonth + 1).padStart(2, '0')}`;
+    const primaryTiming = editingMonthDays.find(d => !d.isOff && d.timing !== 'Week Off')?.timing || 'General Shift';
+
+    const currentWeekScheduleDaysDerived = getCurrentWeekScheduleDays().map(w => {
+      const match = editingMonthDays.find(d => d.fullDate === w.fullDate);
+      if (match) {
+        return {
+          ...w,
+          timing: match.timing,
+          type: match.type,
+          isOff: match.isOff
+        };
+      }
+      return w;
+    });
 
     try {
-      const primaryTiming = editingSchedule.find(d => !d.isOff && d.timing !== 'Week Off')?.timing || 'General Shift';
       await setTeamMemberShift(scheduleModalMember.id, {
         name: scheduleModalMember.name,
         role: scheduleModalMember.role,
         shift: primaryTiming,
-        weeklySchedule: editingSchedule,
-        editorRole: editorRole || 'head'
+        monthKey: mKey,
+        monthDays: editingMonthDays,
+        weeklySchedule: currentWeekScheduleDaysDerived,
+        editorRole: editorRole || 'branch_head'
       });
 
       setMembers(prev => prev.map(m => {
         if (m.id === scheduleModalMember.id) {
-          return { ...m, weeklySchedule: editingSchedule, shift: primaryTiming };
+          const curMonthly = (m.monthlySchedule && typeof m.monthlySchedule === 'object') ? { ...m.monthlySchedule } : {};
+          curMonthly[mKey] = editingMonthDays;
+          return {
+            ...m,
+            monthlySchedule: curMonthly,
+            weeklySchedule: currentWeekScheduleDaysDerived,
+            shift: primaryTiming
+          };
         }
         return m;
       }));
 
-      showToast(`✓ Weekly schedule allocated for ${scheduleModalMember.name}`);
+      showToast(`✓ Month roster saved for ${scheduleModalMember.name} (${new Date(modalYear, modalMonth, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })})`);
       if (onRosterChange) onRosterChange();
+      setScheduleModalMember(null);
     } catch (err) {
-      console.error('Failed to save weekly schedule:', err);
-      showToast(`⚠ Could not save the schedule: ${err?.response?.data?.error || err.message}`);
+      console.error('Failed to save roster:', err);
+      showToast(`⚠ Could not save the roster: ${err?.response?.data?.error || err.message}`);
     } finally {
       setIsSaving(false);
-      setScheduleModalMember(null);
     }
   };
 
@@ -280,6 +458,31 @@ export default function TeamRosterBoard({
     showToast(`Availability status toggled to "${nextStatus}"`);
     if (onRosterChange) onRosterChange();
   };
+
+  const modalMonthName = useMemo(() => {
+    return new Date(modalYear, modalMonth, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  }, [modalYear, modalMonth]);
+
+  const monthWeeks = useMemo(() => {
+    if (!editingMonthDays || !editingMonthDays.length) return [];
+    const weeks = [];
+    let currentWeek = [];
+    editingMonthDays.forEach((d) => {
+      currentWeek.push(d);
+      const dObj = new Date(d.fullDate);
+      if (dObj.getDay() === 0) {
+        weeks.push(currentWeek);
+        currentWeek = [];
+      }
+    });
+    if (currentWeek.length > 0) {
+      weeks.push(currentWeek);
+    }
+    return weeks;
+  }, [editingMonthDays]);
+
+  const workDaysInMonth = editingMonthDays.filter(d => !d.isOff && d.timing !== 'Week Off' && d.timing !== 'On Leave').length;
+  const offDaysInMonth = editingMonthDays.length - workDaysInMonth;
 
   return (
     <div className="w-full bg-white rounded-3xl border border-slate-200/90 p-5 sm:p-7 shadow-xs">
@@ -335,17 +538,40 @@ export default function TeamRosterBoard({
           <div className="flex items-center gap-2.5">
             <span className="text-xl sm:text-2xl select-none">📅</span>
             <h3 className="text-xl sm:text-2xl font-bold text-[#0f172a] tracking-tight">
-              {readOnly ? readOnlyTitle : 'Team Roster & Weekly Schedule Allocator'}
+              {readOnly ? readOnlyTitle : 'Team Roster & Monthly Schedule Allocator'}
             </h3>
           </div>
           <p className="text-xs sm:text-sm text-slate-400 font-mono mt-1 font-medium pl-0.5">
-            {managerLabel} Console &middot; {readOnly ? 'View daily work shifts and week offs for your team' : 'Allocate work days, shift timings, and week offs'}
+            {managerLabel} Console &middot; {readOnly ? 'View daily work shifts and week offs for your team' : 'Allocate work days, shift timings, and week offs month-wise'}
           </p>
         </div>
 
         {/* Filter & Search Bar */}
         <div className="flex items-center gap-2.5 flex-wrap sm:flex-nowrap">
-          <div className="relative flex-1 sm:w-64">
+          {/* Month Navigator Pill */}
+          <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-slate-200/90 shadow-2xs shrink-0">
+            <button
+              type="button"
+              onClick={handlePrevMonth}
+              className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-slate-100 text-slate-600 transition-all cursor-pointer"
+              title="Previous Month"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <span className="px-2 py-0.5 text-xs font-black text-slate-800 tracking-tight min-w-[105px] text-center select-none font-mono">
+              {currentMonthName}
+            </span>
+            <button
+              type="button"
+              onClick={handleNextMonth}
+              className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-slate-100 text-slate-600 transition-all cursor-pointer"
+              title="Next Month"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="relative flex-1 sm:w-56">
             <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
@@ -562,6 +788,19 @@ export default function TeamRosterBoard({
                       <span className="text-[11px] font-mono text-slate-400 font-semibold">
                         Shift: {m.shift}
                       </span>
+                      {(() => {
+                        const mDays = Array.isArray(m.monthlySchedule?.[currentMonthKey]) ? m.monthlySchedule[currentMonthKey] : null;
+                        if (mDays && mDays.length > 0) {
+                          const wCount = mDays.filter(d => !d.isOff && d.timing !== 'Week Off' && d.timing !== 'On Leave').length;
+                          const oCount = mDays.length - wCount;
+                          return (
+                            <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-md bg-purple-50 text-purple-700 border border-purple-200">
+                              📅 {currentMonthName}: {wCount} Work &middot; {oCount} Off
+                            </span>
+                          );
+                        }
+                        return null;
+                      })()}
                     </div>
 
                     {/* 7-Day Mini Schedule Preview */}
@@ -598,17 +837,17 @@ export default function TeamRosterBoard({
                       className="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
                     >
                       <Eye className="w-3.5 h-3.5 text-slate-500" />
-                      <span>View Schedule</span>
+                      <span>View Month Roster</span>
                     </button>
                   ) : (
-                    /* Head of Trainer: Allocate Weekly Roster Button */
+                    /* Head / Branch Head: Allocate Monthly Roster Button */
                     <button
                       type="button"
                       onClick={() => handleOpenScheduleModal(m)}
-                      className="px-3.5 py-1.5 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200/90 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
+                      className="px-3.5 py-1.5 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200/90 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 shadow-2xs"
                     >
                       <Calendar className="w-3.5 h-3.5 text-purple-600" />
-                      <span>Allocate Roster</span>
+                      <span>Allocate Month Roster</span>
                     </button>
                   )}
 
@@ -656,140 +895,360 @@ export default function TeamRosterBoard({
         )}
       </div>
 
-      {/* Modal for Allocating / Viewing Weekly Roster */}
+      {/* Modal for Allocating / Viewing Month Roster */}
       {scheduleModalMember && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl p-6 max-w-lg w-full shadow-2xl border border-slate-200 space-y-5 animate-in fade-in zoom-in-95">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div>
-                <div className="flex items-center gap-2">
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl p-5 sm:p-6 max-w-2xl w-full shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95 my-auto max-h-[92vh] flex flex-col">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3 shrink-0">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-xl">📅</span>
                   <h3 className="font-extrabold text-slate-900 text-base">
-                    {readOnly ? 'Weekly Schedule' : 'Allocate Weekly Schedule'}
+                    {readOnly ? 'Month Roster View' : 'Allocate Month Roster'}
                   </h3>
+                  <span className="text-[11px] font-bold px-2 py-0.5 rounded-md bg-purple-100 text-purple-800">
+                    {scheduleModalMember.name}
+                  </span>
+                  <span className="text-[10px] text-slate-500 font-mono">
+                    ({scheduleModalMember.role}{scheduleModalMember.branchName ? ` · ${scheduleModalMember.branchName}` : ''})
+                  </span>
                 </div>
-                <p className="text-xs text-slate-500 font-mono mt-0.5">
-                  Member: <strong className="text-purple-700">{scheduleModalMember.name}</strong> ({scheduleModalMember.role})
-                </p>
+              </div>
+
+              {/* Month Navigator in Modal */}
+              <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200 shrink-0 mx-2">
+                <button
+                  type="button"
+                  onClick={() => handleModalMonthChange(-1)}
+                  className="w-7 h-7 flex items-center justify-center rounded-lg bg-white hover:bg-slate-50 text-slate-700 shadow-2xs transition-all cursor-pointer"
+                  title="Previous Month"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+                <span className="px-2 text-xs font-black text-slate-800 min-w-[95px] text-center font-mono select-none">
+                  {modalMonthName}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleModalMonthChange(1)}
+                  className="w-7 h-7 flex items-center justify-center rounded-lg bg-white hover:bg-slate-50 text-slate-700 shadow-2xs transition-all cursor-pointer"
+                  title="Next Month"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
               </div>
 
               <button
                 type="button"
                 onClick={() => setScheduleModalMember(null)}
-                className="w-7 h-7 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 flex items-center justify-center text-xs font-bold cursor-pointer"
+                className="w-7 h-7 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 flex items-center justify-center text-xs font-bold cursor-pointer shrink-0"
               >
                 ✕
               </button>
             </div>
 
-            {readOnly ? (
-              <p className="text-xs text-amber-900 bg-amber-50 p-3 rounded-xl border border-amber-200/70 flex items-center gap-2">
-                <Lock className="w-4 h-4 text-amber-700 shrink-0" />
-                <span><strong>Read-Only View:</strong> This weekly schedule is managed and updated by Head of Trainer only.</span>
-              </p>
-            ) : (
-              <p className="text-xs text-slate-600 bg-purple-50 p-3 rounded-xl border border-purple-200/70">
-                ⚡ <strong>{managerLabel} Control:</strong> Set work shift timings or assign <strong>Week Off</strong> for each day. This updates {scheduleModalMember.name}&apos;s schedule in real time.
-              </p>
-            )}
+            {/* Read-only / Authority notice & Summary Bar */}
+            <div className="flex items-center justify-between gap-3 flex-wrap bg-slate-50 p-2.5 rounded-2xl border border-slate-200/80 text-xs shrink-0">
+              <div className="flex items-center gap-2">
+                <span className="text-slate-500 font-medium">Month Summary:</span>
+                <span className="font-black text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
+                  💼 {workDaysInMonth} Work Days
+                </span>
+                <span className="font-black text-rose-700 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200">
+                  🏝️ {offDaysInMonth} Off / Leave
+                </span>
+              </div>
 
-            {/* 7 Days Allocation Grid */}
-            <div className="space-y-2.5 max-h-[340px] overflow-y-auto pr-1">
-              {editingSchedule.map((item, idx) => {
-                const isOff = item.timing === 'Week Off' || item.timing === 'On Leave' || item.type === 'off' || item.isOff;
-
-                return (
-                  <div 
-                    key={idx}
-                    className={`p-3 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 transition-all ${
-                      isOff 
-                        ? 'bg-rose-50/70 border-rose-200/80' 
-                        : 'bg-slate-50 border-slate-200/80'
+              {/* View switcher tabs */}
+              <div className="flex items-center gap-1 bg-white p-0.5 rounded-xl border border-slate-200 text-xs font-bold">
+                <button
+                  type="button"
+                  onClick={() => setModalTab('calendar')}
+                  className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer flex items-center gap-1 ${
+                    modalTab === 'calendar' ? 'bg-purple-600 text-white shadow-2xs' : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Grid className="w-3.5 h-3.5" />
+                  <span>Calendar</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setModalTab('weeks')}
+                  className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer flex items-center gap-1 ${
+                    modalTab === 'weeks' ? 'bg-purple-600 text-white shadow-2xs' : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Layers className="w-3.5 h-3.5" />
+                  <span>Week-wise</span>
+                </button>
+                {!readOnly && (
+                  <button
+                    type="button"
+                    onClick={() => setModalTab('bulk')}
+                    className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer flex items-center gap-1 ${
+                      modalTab === 'bulk' ? 'bg-purple-600 text-white shadow-2xs' : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
-                    <div>
-                      <div className="text-xs font-black text-slate-900 flex items-center gap-2">
-                        <span>{item.dayName || item.day}</span>
-                        <span className="text-[10px] text-slate-400 font-mono font-semibold">{item.dateStr}</span>
-                      </div>
-                      <div className="text-[11px] font-mono mt-0.5">
-                        {isOff ? (
-                          <span className="text-rose-700 font-bold">🏝️ Week Off / Leave</span>
-                        ) : (
-                          <span className="text-emerald-700 font-bold">💼 Work Day ({item.timing})</span>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Shift Selector Pill Buttons (Only in Edit mode) */}
-                    {!readOnly ? (
-                      <div className="flex items-center gap-1 flex-wrap">
-                        <button
-                          type="button"
-                          onClick={() => handleDayTimingChange(idx, '10–7')}
-                          className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold transition-all cursor-pointer ${
-                            item.timing === '10–7' && !isOff
-                              ? 'bg-purple-600 text-white shadow-2xs'
-                              : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
-                          }`}
-                        >
-                          10–7 General
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDayTimingChange(idx, '9–6')}
-                          className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold transition-all cursor-pointer ${
-                            item.timing === '9–6' && !isOff
-                              ? 'bg-blue-600 text-white shadow-2xs'
-                              : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
-                          }`}
-                        >
-                          9–6 Morning
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDayTimingChange(idx, '12–9')}
-                          className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold transition-all cursor-pointer ${
-                            item.timing === '12–9' && !isOff
-                              ? 'bg-amber-600 text-white shadow-2xs'
-                              : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
-                          }`}
-                        >
-                          12–9 Evening
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDayTimingChange(idx, 'Week Off')}
-                          className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold transition-all cursor-pointer ${
-                            isOff
-                              ? 'bg-rose-600 text-white shadow-2xs'
-                              : 'bg-white text-slate-700 border border-slate-200 hover:bg-rose-50 hover:text-rose-700'
-                          }`}
-                        >
-                          Week Off
-                        </button>
-                      </div>
-                    ) : (
-                      <span className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold ${
-                        isOff ? 'bg-rose-100 text-rose-800' : 'bg-emerald-100 text-emerald-800'
-                      }`}>
-                        {isOff ? 'Week Off' : item.timing}
-                      </span>
-                    )}
-                  </div>
-                );
-              })}
+                    <SlidersHorizontal className="w-3.5 h-3.5" />
+                    <span>Quick Apply</span>
+                  </button>
+                )}
+              </div>
             </div>
 
-            {/* Actions */}
-            <div className="flex items-center gap-3 pt-2">
+            {/* Modal Body: Scrollable area */}
+            <div className="flex-1 overflow-y-auto pr-1 space-y-3 min-h-[280px] max-h-[420px]">
+              {/* TAB 1: CALENDAR VIEW */}
+              {modalTab === 'calendar' && (
+                <div className="space-y-2">
+                  <p className="text-[11px] text-slate-500 font-medium">
+                    {readOnly ? 'Viewing full schedule for ' : 'Click to change timings or toggle week offs for any day in '}{modalMonthName}:
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {editingMonthDays.map((item, idx) => {
+                      const isOff = item.timing === 'Week Off' || item.timing === 'On Leave' || item.type === 'off' || item.isOff;
+                      return (
+                        <div
+                          key={item.fullDate || idx}
+                          className={`p-2.5 rounded-xl border flex items-center justify-between gap-2 transition-all ${
+                            item.isToday
+                              ? 'bg-purple-50/70 border-purple-300 ring-1 ring-purple-300'
+                              : isOff
+                                ? 'bg-rose-50/50 border-rose-200'
+                                : 'bg-slate-50/80 border-slate-200'
+                          }`}
+                        >
+                          <div className="min-w-0">
+                            <div className="text-xs font-black text-slate-900 flex items-center gap-1.5">
+                              <span>{item.dayName}, {item.day}</span>
+                              {item.isToday && (
+                                <span className="text-[9px] bg-purple-600 text-white px-1.5 py-0.2 rounded font-mono">Today</span>
+                              )}
+                            </div>
+                            <div className="text-[10px] font-mono mt-0.5">
+                              {isOff ? (
+                                <span className="text-rose-700 font-bold">🏝️ Week Off</span>
+                              ) : (
+                                <span className="text-emerald-700 font-bold">💼 {item.timing}</span>
+                              )}
+                            </div>
+                          </div>
+
+                          {!readOnly ? (
+                            <div className="flex items-center gap-1">
+                              {['10–7', '9–6', '12–9'].map((sh) => (
+                                <button
+                                  key={sh}
+                                  type="button"
+                                  onClick={() => handleMonthDayTimingChange(item.fullDate, sh)}
+                                  className={`px-1.5 py-0.5 rounded text-[10px] font-extrabold cursor-pointer transition-all ${
+                                    item.timing === sh && !isOff
+                                      ? 'bg-purple-600 text-white shadow-2xs'
+                                      : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
+                                  }`}
+                                >
+                                  {sh}
+                                </button>
+                              ))}
+                              <button
+                                type="button"
+                                onClick={() => handleMonthDayTimingChange(item.fullDate, 'Week Off')}
+                                className={`px-1.5 py-0.5 rounded text-[10px] font-extrabold cursor-pointer transition-all ${
+                                  isOff
+                                    ? 'bg-rose-600 text-white shadow-2xs'
+                                    : 'bg-white text-slate-700 border border-slate-200 hover:bg-rose-50 hover:text-rose-700'
+                                }`}
+                              >
+                                Off
+                              </button>
+                            </div>
+                          ) : (
+                            <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded ${
+                              isOff ? 'bg-rose-100 text-rose-800' : 'bg-emerald-100 text-emerald-800'
+                            }`}>
+                              {isOff ? 'OFF' : item.timing}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 2: WEEK-BY-WEEK */}
+              {modalTab === 'weeks' && (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+                    {monthWeeks.map((wk, wIdx) => (
+                      <button
+                        key={wIdx}
+                        type="button"
+                        onClick={() => setSelectedWeekIdx(wIdx)}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
+                          selectedWeekIdx === wIdx
+                            ? 'bg-slate-900 text-white shadow-xs'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        Week {wIdx + 1} ({wk[0]?.dayName?.slice(0, 3)} {wk[0]?.day} - {wk[wk.length - 1]?.dayName?.slice(0, 3)} {wk[wk.length - 1]?.day})
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="space-y-2">
+                    {(monthWeeks[selectedWeekIdx] || []).map((item) => {
+                      const isOff = item.timing === 'Week Off' || item.timing === 'On Leave' || item.type === 'off' || item.isOff;
+                      return (
+                        <div
+                          key={item.fullDate}
+                          className={`p-3 rounded-2xl border flex items-center justify-between gap-2.5 transition-all ${
+                            isOff ? 'bg-rose-50/70 border-rose-200/80' : 'bg-slate-50 border-slate-200/80'
+                          }`}
+                        >
+                          <div>
+                            <div className="text-xs font-black text-slate-900 flex items-center gap-2">
+                              <span>{item.dayName}, {item.day} {modalMonthName}</span>
+                              {item.isToday && (
+                                <span className="text-[9px] bg-purple-600 text-white px-1.5 py-0.2 rounded font-mono">Today</span>
+                              )}
+                            </div>
+                            <div className="text-[11px] font-mono mt-0.5">
+                              {isOff ? (
+                                <span className="text-rose-700 font-bold">🏝️ Week Off</span>
+                              ) : (
+                                <span className="text-emerald-700 font-bold">💼 Work Day ({item.timing})</span>
+                              )}
+                            </div>
+                          </div>
+
+                          {!readOnly ? (
+                            <div className="flex items-center gap-1 flex-wrap">
+                              {['10–7', '9–6', '12–9'].map((sh) => (
+                                <button
+                                  key={sh}
+                                  type="button"
+                                  onClick={() => handleMonthDayTimingChange(item.fullDate, sh)}
+                                  className={`px-2 py-1 rounded-lg text-[10px] font-extrabold cursor-pointer transition-all ${
+                                    item.timing === sh && !isOff
+                                      ? 'bg-purple-600 text-white shadow-2xs'
+                                      : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
+                                  }`}
+                                >
+                                  {sh}
+                                </button>
+                              ))}
+                              <button
+                                type="button"
+                                onClick={() => handleMonthDayTimingChange(item.fullDate, 'Week Off')}
+                                className={`px-2 py-1 rounded-lg text-[10px] font-extrabold cursor-pointer transition-all ${
+                                  isOff
+                                    ? 'bg-rose-600 text-white shadow-2xs'
+                                    : 'bg-white text-slate-700 border border-slate-200 hover:bg-rose-50 hover:text-rose-700'
+                                }`}
+                              >
+                                Week Off
+                              </button>
+                            </div>
+                          ) : (
+                            <span className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold ${
+                              isOff ? 'bg-rose-100 text-rose-800' : 'bg-emerald-100 text-emerald-800'
+                            }`}>
+                              {isOff ? 'Week Off' : item.timing}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 3: QUICK BULK APPLY */}
+              {!readOnly && modalTab === 'bulk' && (
+                <div className="p-4 bg-purple-50/60 rounded-2xl border border-purple-200/80 space-y-4">
+                  <div className="flex items-center gap-2">
+                    <SlidersHorizontal className="w-4 h-4 text-purple-700" />
+                    <h4 className="text-xs font-black text-purple-950 uppercase tracking-wide">
+                      Bulk Auto-Apply for {modalMonthName}
+                    </h4>
+                  </div>
+                  <p className="text-xs text-slate-600">
+                    Quickly configure the default working shift and weekly off days for {scheduleModalMember.name} across the whole month.
+                  </p>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-bold text-slate-700">1. Select Standard Work Shift:</label>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {[
+                        { val: '10–7', label: '10:00 AM – 07:00 PM (General)' },
+                        { val: '9–6', label: '09:00 AM – 06:00 PM (Morning)' },
+                        { val: '12–9', label: '12:00 PM – 09:00 PM (Evening)' }
+                      ].map(s => (
+                        <button
+                          key={s.val}
+                          type="button"
+                          onClick={() => setBulkShift(s.val)}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                            bulkShift === s.val
+                              ? 'bg-purple-700 text-white shadow-xs'
+                              : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
+                          }`}
+                        >
+                          {s.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-bold text-slate-700">2. Select Regular Weekly Off Days:</label>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => {
+                        const selected = bulkOffDays.includes(day);
+                        return (
+                          <button
+                            key={day}
+                            type="button"
+                            onClick={() => {
+                              setBulkOffDays(prev => 
+                                prev.includes(day) ? prev.filter(d => d !== day) : [...prev, day]
+                              );
+                            }}
+                            className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+                              selected
+                                ? 'bg-rose-600 text-white shadow-xs'
+                                : 'bg-white text-slate-600 border border-slate-200 hover:bg-rose-50 hover:text-rose-700'
+                            }`}
+                          >
+                            {day} {selected ? '✓' : ''}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleApplyBulkToMonth}
+                    className="w-full py-2.5 bg-purple-700 hover:bg-purple-800 text-white text-xs font-extrabold rounded-xl transition-all shadow-xs flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    <span>⚡ Apply Pattern to All Days in {modalMonthName}</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="flex items-center gap-3 pt-3 border-t border-slate-100 shrink-0">
               {readOnly ? (
                 <button
                   type="button"
                   onClick={() => setScheduleModalMember(null)}
                   className="w-full py-2.5 bg-slate-800 hover:bg-slate-900 text-white font-bold rounded-xl text-xs transition-all cursor-pointer"
                 >
-                  Close Schedule
+                  Close
                 </button>
               ) : (
                 <>
@@ -803,11 +1262,11 @@ export default function TeamRosterBoard({
                   <button
                     type="button"
                     disabled={isSaving}
-                    onClick={handleSaveWeeklySchedule}
-                    className="flex-1 py-2.5 bg-purple-700 hover:bg-purple-800 text-white font-extrabold rounded-xl text-xs transition-all shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                    onClick={handleSaveMonthSchedule}
+                    className="flex-1 py-2.5 bg-purple-700 hover:bg-purple-800 disabled:bg-purple-400 text-white font-extrabold rounded-xl text-xs transition-all shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
                   >
                     <Save className="w-4 h-4" />
-                    <span>{isSaving ? 'Saving Roster...' : 'Save Weekly Schedule'}</span>
+                    <span>{isSaving ? 'Saving Roster...' : `Save ${modalMonthName} Roster`}</span>
                   </button>
                 </>
               )}

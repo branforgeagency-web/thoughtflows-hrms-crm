@@ -12,7 +12,8 @@ const teamMemberSchema = new mongoose.Schema(
     quality: { type: Number, default: null },
     available: { type: Boolean, default: true },
     shift: { type: String, default: 'general' },
-    weeklySchedule: { type: mongoose.Schema.Types.Mixed, default: null }
+    weeklySchedule: { type: mongoose.Schema.Types.Mixed, default: null },
+    monthlySchedule: { type: mongoose.Schema.Types.Mixed, default: {} }
   },
   { timestamps: true }
 );

@@ -43,7 +43,7 @@ export function signFileToken(user) {
   const { iat, exp, typ, ...claims } = user || {};
   return jwt.sign({ ...claims, typ: 'file' }, secret(), { expiresIn: FILE_TOKEN_TTL });
 }
-const FILE_ROUTES = [/^\/training\/materials\/[^/]+\/file$/, /^\/student-portal\/submissions\/[^/]+\/file$/];
+const FILE_ROUTES = [/^\/recordings\/[^/]+\/audio$/, /^\/training\/materials\/[^/]+\/file$/, /^\/student-portal\/submissions\/[^/]+\/file$/];
 
 // ---------------------------------------------------------------------------
 // Passwords

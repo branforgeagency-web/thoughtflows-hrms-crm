@@ -168,17 +168,22 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
     setUploadedDuration(0);
 
     if (leadData) {
-      const p = leadData.phone || '';
-      let formattedTimeIn = leadData.timeIn || '';
-      if (!formattedTimeIn && leadData.createdAt) {
+      // The dashboard may pass a small summary with the full saved lead nested
+      // under leadData.leadData — read every field (remarks, course, etc.) from both
+      const ld = leadData.leadData && typeof leadData.leadData === 'object'
+        ? { ...leadData.leadData, ...Object.fromEntries(Object.entries(leadData).filter(([, v]) => v !== undefined && v !== null && v !== '')) }
+        : leadData;
+      const p = ld.phone || '';
+      let formattedTimeIn = ld.timeIn || '';
+      if (!formattedTimeIn && ld.createdAt) {
         try {
-          formattedTimeIn = new Date(leadData.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          formattedTimeIn = new Date(ld.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         } catch {
           formattedTimeIn = '';
         }
       }
 
-      let resolvedCourse = leadData.course || leadData.interestedCourse || '';
+      let resolvedCourse = ld.course || ld.interestedCourse || '';
       if (resolvedCourse) {
         for (const cat of COURSE_CATEGORIES) {
           const match = cat.courses?.find(
@@ -195,32 +200,32 @@ export default function LeadCallModal({ isOpen, onClose, leadData, onSave, curre
       }
 
       setLeadForm({
-        name: leadData.fullName || leadData.name || '',
+        name: ld.fullName || ld.name || '',
         phone: p,
-        whatsappNumber: leadData.whatsappNumber || leadData.alternatePhone || '',
-        source: leadData.sourceName || leadData.source || '',
-        leadFor: leadData.leadFor || leadData.cameFor || '',
+        whatsappNumber: ld.whatsappNumber || ld.alternatePhone || '',
+        source: ld.sourceName || ld.source || '',
+        leadFor: ld.leadFor || ld.cameFor || '',
         timeIn: formattedTimeIn,
-        branch: leadData.branch || currentUser?.branch || '',
-        status: leadData.stage ? String(leadData.stage).toUpperCase() : (leadData.status ? String(leadData.status).toUpperCase() : ''),
-        fetchedBy: leadData.fetchedBy || leadData.sourceName || leadData.source || '',
-        allocatedTo: leadData.allocatedTo || leadData.counselorAssigned || '',
-        spokenBy: leadData.spokenBy || (currentUser?.name ? `${currentUser.name} · YOU` : 'YOU'),
-        age: leadData.age ? String(leadData.age) : '',
-        gender: leadData.gender || '',
-        education: leadData.education || leadData.qualification || '',
-        currentRole: leadData.currentRole || leadData.category || '',
-        experienceYrs: leadData.experienceYrs ? String(leadData.experienceYrs) : '',
-        location: leadData.location || leadData.city || '',
+        branch: ld.branch || currentUser?.branch || '',
+        status: ld.stage ? String(ld.stage).toUpperCase() : (ld.status ? String(ld.status).toUpperCase() : ''),
+        fetchedBy: ld.fetchedBy || ld.sourceName || ld.source || '',
+        allocatedTo: ld.allocatedTo || ld.counselorAssigned || '',
+        spokenBy: ld.spokenBy || (currentUser?.name ? `${currentUser.name} · YOU` : 'YOU'),
+        age: ld.age ? String(ld.age) : '',
+        gender: ld.gender || '',
+        education: ld.education || ld.qualification || '',
+        currentRole: ld.currentRole || ld.category || '',
+        experienceYrs: ld.experienceYrs ? String(ld.experienceYrs) : '',
+        location: ld.location || ld.city || '',
         course: resolvedCourse,
-        budget: leadData.budget || '',
-        batchTiming: leadData.batchTiming || '',
-        decisionStatus: leadData.decisionStatus || '',
-        notes: leadData.notes || leadData.followUpNote || leadData.discussionNote || ''
+        budget: ld.budget || '',
+        batchTiming: ld.batchTiming || '',
+        decisionStatus: ld.decisionStatus || '',
+        notes: ld.followUpNote || ld.notes || ld.discussionNote || ''
       });
-      setSelectedOutcome(leadData.callOutcome || leadData.lastCallOutcome || leadData.outcome || '');
-      setFollowUpDate(leadData.followUpDate || '');
-      setFollowUpTime(leadData.followUpTime || '');
+      setSelectedOutcome(ld.callOutcome || ld.lastCallOutcome || ld.outcome || '');
+      setFollowUpDate(ld.followUpDate || '');
+      setFollowUpTime(ld.followUpTime || '');
       setChecklist((prev) => prev.map((item) => ({ ...item, checked: false })));
       fetchLeadRecordings(p);
     }

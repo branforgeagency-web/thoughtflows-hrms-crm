@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import mongoose from 'mongoose';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import Department from '../models/Department.js';
 import Branch from '../models/Branch.js';
@@ -60,6 +61,7 @@ import { BRANCH_MASTER, DEPARTMENT_MASTER, DEPT_CODE_BY_DASHBOARD } from '../con
 import TrainerHourlyWork from '../models/TrainerHourlyWork.js';
 import { DEFAULT_WORK_SLOTS } from '../constants/trainerHierarchy.js';
 import wiseappRouter from './wiseapp.js';
+import { isS3Configured, copyRemoteRecordingToS3, putRecordingBuffer, streamS3Object } from '../utils/s3Storage.js';
 
 const router = express.Router();
 
@@ -232,7 +234,18 @@ async function upsertBridgeRecording({ callSid, leadId, leadName, leadPhone, cou
   if (counselorName) rec.counselorName = counselorName;
   if (counselorPhone) rec.counselorPhone = counselorPhone;
   if (Number(durationSeconds)) rec.durationSeconds = Number(durationSeconds);
-  if (audioUrl) rec.audioUrl = audioUrl;
+  if (audioUrl && /^recordings\//i.test(audioUrl)) {
+    // Already copied into S3 (downloadAndStoreRecording) — store the key
+    rec.audioUrl = audioUrl;
+    rec.storageKey = audioUrl;
+    rec.storageProvider = 'amplify';
+  } else if (audioUrl && audioUrl !== rec.audioUrl && !rec.storageKey) {
+    // Provider link (Knowlarity / Edesy): copy it into S3 once so it never expires
+    const key = /^https?:\/\//i.test(audioUrl) ? await copyRemoteRecordingToS3(audioUrl, `${source}_${callSid}`) : '';
+    rec.audioUrl = key || audioUrl;
+    if (key) { rec.storageKey = key; rec.storageProvider = 'amplify'; }
+    else if (/^https?:\/\//i.test(audioUrl)) rec.storageProvider = 'external';
+  }
   if (outcome) rec.outcome = outcome;
   if (notes) rec.notes = notes;
   if (!rec.audioUrl) return null; // Knowlarity had no recording (call not answered)
@@ -329,6 +342,12 @@ function mapEdesyStatus(raw) {
 // and served back from our own /recordings/<file> static route (see server.js).
 async function downloadAndStoreRecording(remoteUrl, prefix) {
   if (!remoteUrl) return '';
+  // Permanent copy in the S3 bucket (returns the 'recordings/...' key)
+  if (isS3Configured()) {
+    const key = await copyRemoteRecordingToS3(remoteUrl, prefix);
+    if (key) return key;
+  }
+  // Fallback only when S3 is not configured: the API server's disk
   try {
     const response = await fetch(remoteUrl);
     if (!response.ok) return '';
@@ -884,6 +903,75 @@ router.get('/recordings', async (req, res) => {
   }
 });
 
+// Permanent playback link for a call recording: streams the file from the S3
+// bucket with the server's own AWS credentials, so it never expires (unlike a
+// presigned URL). The <audio> tag reaches it with a short-lived ?token=.
+router.get('/recordings/:id/audio', async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Recording not found' });
+    const rec = await CallRecording.findById(req.params.id).lean();
+    if (!rec || rec.isDeleted) return res.status(404).json({ error: 'Recording not found' });
+    if (isScopedHr(req) && !namesMatch(req.user?.name || '', rec.counselorName || '')) {
+      return res.status(403).json({ error: 'This recording belongs to another counsellor.' });
+    }
+    let key = rec.storageKey || '';
+    if (!key) {
+      const m = String(rec.audioUrl || '').match(/(recordings\/[^?#]+)/i);
+      if (m && !String(rec.audioUrl).startsWith('/recordings/')) { try { key = decodeURIComponent(m[1]); } catch (_) { key = m[1]; } }
+    }
+    if (key && isS3Configured()) return await streamS3Object(key, req, res);
+    if (/^https?:\/\//i.test(rec.audioUrl || '')) return res.redirect(rec.audioUrl);
+    return res.status(404).json({ error: 'Recording file is not in S3 yet.' });
+  } catch (err) {
+    if (!res.headersSent) res.status(err?.name === 'NoSuchKey' ? 404 : 500).json({ error: err.message });
+  }
+});
+
+// One-time move of older recordings into S3 (Admin / Leadership): files kept on
+// the API server's disk ('/recordings/...') and provider-hosted links. Runs in
+// batches; call again until "remaining" is 0.
+router.post('/recordings/migrate-to-s3', async (req, res) => {
+  try {
+    const dept = String(req.user?.department || '').toLowerCase();
+    if (!['admin', 'leadership'].includes(dept) && !/admin/i.test(req.user?.role || '')) {
+      return res.status(403).json({ error: 'Only Admin can run the recordings migration.' });
+    }
+    if (!isS3Configured()) return res.status(503).json({ error: 'S3 is not configured on the server (AWS_* keys in server/.env).' });
+    const pending = { isDeleted: { $ne: true }, $or: [{ storageKey: { $in: ['', null] } }, { storageKey: { $exists: false } }], audioUrl: { $nin: ['', null] } };
+    const batch = await CallRecording.find(pending).sort({ createdAt: -1 }).limit(Math.min(100, Number(req.body?.limit) || 25));
+    const localDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../uploads/recordings');
+    let moved = 0; const failed = [];
+    for (const rec of batch) {
+      let key = '';
+      const url = String(rec.audioUrl || '');
+      try {
+        if (url.startsWith('/recordings/')) {
+          const file = path.join(localDir, path.basename(url.split('?')[0]));
+          if (fs.existsSync(file)) {
+            const ext = path.extname(file).slice(1).toLowerCase() || 'webm';
+            const type = { mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', webm: 'audio/webm', m4a: 'audio/mp4' }[ext] || 'application/octet-stream';
+            key = await putRecordingBuffer(fs.readFileSync(file), { prefix: `${rec.source || 'local'}_${rec._id}`, contentType: type, ext });
+          }
+        } else if (/amazonaws\.com/i.test(url)) {
+          const m = url.match(/(recordings\/[^?#]+)/i);
+          if (m) { try { key = decodeURIComponent(m[1]); } catch (_) { key = m[1]; } }
+        } else if (/^https?:\/\//i.test(url)) {
+          key = await copyRemoteRecordingToS3(url, `${rec.source || 'external'}_${rec._id}`);
+        }
+      } catch (e) { /* recorded as failed below */ }
+      if (key) {
+        rec.storageKey = key; rec.storageProvider = 'amplify';
+        if (!/amazonaws\.com/i.test(url)) rec.audioUrl = key;
+        await rec.save(); moved++;
+      } else failed.push({ id: rec._id, audioUrl: url });
+    }
+    const remaining = await CallRecording.countDocuments(pending);
+    res.json({ success: true, moved, failed: failed.length, failedItems: failed.slice(0, 20), remaining });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/recordings', async (req, res) => {
   try {
     const {
@@ -923,8 +1011,14 @@ router.post('/recordings', async (req, res) => {
       });
     }
 
-    const audioUrl = s3StorageUrl || directAudioUrl || '';
-    const storageProvider = s3StorageUrl ? 'amplify' : 'external';
+    let audioUrl = s3StorageUrl || directAudioUrl || '';
+    let storageProvider = s3StorageUrl || storageKey ? 'amplify' : 'external';
+    // A hosted provider link: keep our own permanent S3 copy instead of a link that expires
+    let copiedKey = '';
+    if (!storageKey && !s3StorageUrl && /^https?:\/\//i.test(directAudioUrl || '') && !/amazonaws\.com/i.test(directAudioUrl)) {
+      copiedKey = await copyRemoteRecordingToS3(directAudioUrl, `${source || 'external'}_${callSid || Date.now()}`);
+      if (copiedKey) { audioUrl = copiedKey; storageProvider = 'amplify'; }
+    }
 
     if (!audioUrl) {
       return res.status(400).json({ error: 'No S3 storage key or audioUrl provided' });
@@ -975,7 +1069,7 @@ router.post('/recordings', async (req, res) => {
       }
     }
 
-    let resolvedKey = storageKey || '';
+    let resolvedKey = storageKey || copiedKey || '';
     if (!resolvedKey && audioUrl) {
       const match = String(audioUrl).match(/(?:amazonaws\.com(?::\d+)?\/[^\/]+\/|(?:amazonaws\.com(?::\d+)?\/))?(recordings\/[^\?#]+)/i);
       if (match && match[1]) {
@@ -2237,7 +2331,7 @@ router.get('/hr/staff-attendance', async (req, res) => {
 
 router.patch('/leadership/team/:id/shift', async (req, res) => {
   try {
-    const { shift, weeklySchedule, available, name, editorRole } = req.body || {};
+    const { shift, weeklySchedule, monthlySchedule, monthKey, monthDays, available, name, editorRole } = req.body || {};
     const updateData = {};
     if (shift !== undefined) updateData.shift = shift;
     if (weeklySchedule !== undefined) updateData.weeklySchedule = weeklySchedule;
@@ -2252,17 +2346,29 @@ router.patch('/leadership/team/:id/shift', async (req, res) => {
     }
     if (!target) return res.status(404).json({ error: 'Team member not found — staff appear here once Admin creates their account.' });
 
-    // HR & managers' weekly roster is set by the HR Department Head or the
-    // Branch Head (own branch only) — Admin / Leadership keep access
+    // Handle month-wise roster update
+    if (monthKey && monthDays) {
+      const curMonthly = (target.monthlySchedule && typeof target.monthlySchedule === 'object') ? { ...target.monthlySchedule } : {};
+      curMonthly[monthKey] = monthDays;
+      updateData.monthlySchedule = curMonthly;
+    } else if (monthlySchedule !== undefined) {
+      updateData.monthlySchedule = monthlySchedule;
+    }
+
+    // HR & managers' weekly/monthly roster is set by the HR Department Head, Branch Head / Branch Manager, or Admin / Leadership
     if (/^(DEP-HR-001|HR|LEAD)?$/i.test(String(target.departmentCode || ''))) {
       const role = String(req.user?.role || '');
-      if (isScopedHr(req) || (isHrLeaderUser(req) && !/\bhead\b|\bhod\b/i.test(role))) {
-        return res.status(403).json({ error: 'The weekly roster can only be updated by the HR Department Head or your Branch Head.' });
+      const dept = String(req.user?.department || '').toLowerCase();
+      const isHead = /\b(head|hod|director|founder|chief|admin)\b/i.test(role) || /admin|leadership/i.test(dept);
+      const isBranchHead = isScopedBranchManager(req) || /branch\s*(manager|head)|business\s*lead/i.test(role) || Boolean(req.user?.isBranchManager);
+
+      if (!isHead && !isBranchHead) {
+        return res.status(403).json({ error: 'The roster can only be updated by the HR Department Head or your Branch Head.' });
       }
-      if (isScopedBranchManager(req)) {
-        const mine = bClean(getBranchManagerBranch(req));
+      if (isBranchHead && !isHead) {
+        const mine = bClean(getBranchManagerBranch(req) || req.user?.branch || '');
         const theirs = bClean(target.branchName || '');
-        if (!theirs || !(theirs.includes(mine) || mine.includes(theirs))) {
+        if (mine && theirs && !(theirs.includes(mine) || mine.includes(theirs))) {
           return res.status(403).json({ error: 'Branch Heads can only update the roster of their own branch.' });
         }
       }

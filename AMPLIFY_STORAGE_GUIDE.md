@@ -46,12 +46,17 @@ MongoDB (`TrainingMaterial.data`, `StudentSubmission.data`,
 but the read paths are kept so older records still open. The `'inline'` and
 `'local'` enum values remain for the same reason.
 
-> **Still on local disk:** `downloadAndStoreRecording()` pulls Edesy's
-> ~1-hour-signed recording links to `uploads/recordings/` on the API server.
-> This runs server-side from a webhook, so it cannot use the browser Amplify
-> SDK — moving it to S3 needs `@aws-sdk/client-s3` plus AWS credentials in the
-> server environment. Until then these recordings do not survive a Render
-> redeploy.
+> **Provider recordings (Edesy / Knowlarity):** the server copies every
+> provider recording into the same bucket under `recordings/<provider>_<callSid>/`
+> using `@aws-sdk/client-s3` (`server/src/utils/s3Storage.js`). Set
+> `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` and
+> `AWS_STORAGE_BUCKET_NAME` in the server environment (Render too). Only if
+> those are missing does it fall back to the server disk.
+>
+> **Playback never expires:** `GET /api/recordings/:id/audio` streams the file
+> from S3 with the server's credentials. The player uses a fresh presigned link
+> first and falls back to this route. Older disk / provider-link recordings can
+> be moved with `POST /api/recordings/migrate-to-s3` (Admin, batches of 25).
 
 ---
 

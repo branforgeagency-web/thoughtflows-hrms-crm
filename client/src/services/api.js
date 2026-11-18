@@ -91,6 +91,18 @@ export const recordingUrl = (url, storageKey) => {
   return raw;
 };
 
+// Permanent playback link for a saved recording: the API server streams it from
+// the S3 bucket with its own credentials, so the link itself never expires.
+export const recordingStreamUrl = (rec) => {
+  const id = rec && typeof rec === 'object' ? (rec._id || rec.id) : '';
+  if (!id || !/^[a-f0-9]{24}$/i.test(String(id))) return '';
+  return withAuthToken(`${API_BASE.replace(/\/$/, '')}/recordings/${id}/audio`);
+};
+export const recordingStreamUrlAsync = async (rec) => {
+  try { await ensureFileToken(); } catch (_) {}
+  return recordingStreamUrl(rec);
+};
+
 // Asynchronously resolve a guaranteed-fresh, live playable/downloadable URL for a call recording.
 // Re-signs AWS S3 storage keys and expired S3 links using SigV4 presigning, ensures valid file tokens
 // for server-hosted files, and passes external URLs directly.
@@ -113,6 +125,9 @@ export const resolveRecordingAudioUrl = async (recOrUrl, customStorageKey) => {
     } catch (err) {
       console.warn('Could not re-sign S3 URL for recording:', s3Key, err);
     }
+    // Amplify could not sign it: fall back to the server's permanent link
+    const stream = typeof recOrUrl === 'object' ? await recordingStreamUrlAsync(recOrUrl) : '';
+    if (stream) return stream;
   }
 
   // 3. Local server file (/recordings/...)
@@ -240,8 +255,14 @@ let pumpTimer = null;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Bumped on every write. A GET that was already on the wire when a write
+// landed carries pre-write data: it must not be cached, nor handed to callers
+// who ask after the write (they get a fresh request instead).
+let cacheGeneration = 0;
 const clearApiGetCache = () => {
+  cacheGeneration += 1;
   getResponseCache.clear();
+  inFlightGets.clear();
 };
 
 // How long a cached response is served without re-asking the server.
@@ -386,11 +407,12 @@ const rawApiGet = api.get.bind(api);
 const dispatchGet = (url, config, ttl, key) => {
   if (inFlightGets.has(key)) return inFlightGets.get(key);
 
+  const startedGeneration = cacheGeneration;
   const reqPromise = (async () => {
     for (let attempt = 0; attempt <= 2; attempt++) {
       try {
         const res = await enqueueGet(() => rawApiGet(url, config));
-        if (ttl > 0) {
+        if (ttl > 0 && startedGeneration === cacheGeneration) {
           if (getResponseCache.size >= 300) getResponseCache.clear();
           getResponseCache.set(key, { at: Date.now(), res });
         }
@@ -407,7 +429,7 @@ const dispatchGet = (url, config, ttl, key) => {
       }
     }
   })().finally(() => {
-    inFlightGets.delete(key);
+    if (inFlightGets.get(key) === reqPromise) inFlightGets.delete(key);
   });
 
   inFlightGets.set(key, reqPromise);

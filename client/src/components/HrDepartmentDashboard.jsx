@@ -523,7 +523,8 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     currentUser?.department === 'leadership';
 
   const [scopeMode, setScopeMode] = useState('mine'); // 'mine' | 'all'
-  const scopeKind = viewScope?.mode || null; // 'team' | 'branch' | 'all' | null (own desk)
+  const isBranchHeadUser = /branch\s*(head|manager)|business\s*lead/i.test(currentUser?.role || '');
+  const scopeKind = viewScope?.mode || (isBranchHeadUser && currentUser?.branch ? 'branch' : null); // 'team' | 'branch' | 'all' | null (own desk)
   const teamNamesKey = (viewScope?.names || []).join('|');
   const teamNames = useMemo(
     () => (scopeKind === 'team' ? Array.from(new Set([currentUser?.name, ...(viewScope?.names || [])].filter(Boolean))) : null),
@@ -598,7 +599,11 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     }
   };
 
+  const loadSeqRef = React.useRef(0);
   const loadAllData = async (silent = false, overrides = {}) => {
+    // Only the newest load may write to state — an older, slower response
+    // (started before a save) must never overwrite fresher data.
+    const loadSeq = ++loadSeqRef.current;
     try {
       if (!silent) setLoading(true);
       const counselorFilter = currentUser?.name?.trim();
@@ -648,6 +653,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         getLeads(leadParams),
         getDemos(shouldFilterOnServer ? { counselor: counselorFilter, ...branchParam } : (branchParam.branch ? branchParam : undefined))
       ]);
+      if (loadSeq !== loadSeqRef.current) return;
       const stList = Array.isArray(stRes) ? stRes : (Array.isArray(stRes?.students) ? stRes.students : []);
       setStudents(stList);
       setStudentsTotalCount(typeof stRes?.totalCount === 'number' ? stRes.totalCount : stList.length);
@@ -671,7 +677,9 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     loadAllData();
     const unsub = onDataUpdate((entity) => {
       if (entity === 'leads' || entity === 'students' || entity === 'demos' || entity === 'recordings' || entity === 'closures' || entity === 'placements') {
-        loadAllData(true);
+        // Go through the ref so the reload uses the current page/filters/view
+        if (reloadDataRef.current) reloadDataRef.current();
+        else loadAllData(true);
       }
     });
     return unsub;
@@ -1235,10 +1243,13 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
 
     return [
       { name: 'Home', badge: null, icon: Home, iconBg: 'bg-[#0e6977]', color: 'teal' },
-      // Team Lead / Branch Head / Department Head: HR-wise data + HR Attendance & Leaves
+      // Team Lead / Branch Head / Department Head: HR-wise data + HR Attendance & Leaves + HR Roster
       ...(scopeKind ? [
         { name: 'HR-wise Data', badge: null, icon: Users, iconBg: 'bg-indigo-600', color: 'indigo' },
-        { name: 'HR Attendance', badge: null, icon: Clock, iconBg: 'bg-emerald-600', color: 'emerald' }
+        { name: 'HR Attendance', badge: null, icon: Clock, iconBg: 'bg-emerald-600', color: 'emerald' },
+        ...((scopeKind === 'all' || scopeKind === 'branch') ? [
+          { name: 'HR Roster', badge: null, icon: Calendar, iconBg: 'bg-purple-600', color: 'purple' }
+        ] : [])
       ] : []),
       { name: 'Pipeline & Follow-ups', badge: pipelineCount, icon: Filter, iconBg: 'bg-[#7c3aed]', badgeBg: 'bg-rose-500', color: 'purple' },
       { name: 'Demo Desk', badge: scopedDemos.length > 0 ? scopedDemos.length.toString() : null, icon: Monitor, iconBg: 'bg-cyan-600', color: 'cyan' },
@@ -1428,7 +1439,14 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     const synthetic = Boolean(lead.isSynthetic);
     const dbId = synthetic ? lead.studentMongoId : (lead._id || lead.id || lead.studentId);
     if (synthetic) isStudent = true;
+    // Use the latest saved copy of the lead so remarks / follow-up details
+    // entered on a previous call show up when the form is reopened
+    if (!isStudent && !synthetic) {
+      const latest = leads.find((l) => (l._id || l.id) === dbId);
+      if (latest) lead = { ...lead, ...latest };
+    }
     setSelectedCallLead({
+      ...lead,
       id: dbId,
       _id: dbId,
       name: lead.fullName || lead.name,
@@ -1929,7 +1947,13 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             branch={viewScope?.branch || ''}
             canDecideLeaves={scopeKind === 'all' || scopeKind === 'branch'}
           />
-) : activeTab === 'My Schedule' ? (
+        ) : (scopeKind === 'all' || scopeKind === 'branch') && activeTab === 'HR Roster' ? (
+          <HrWeeklyRoster
+            canEdit
+            scopeKind={scopeKind}
+            branch={viewScope?.branch || currentUser?.branch || ''}
+          />
+        ) : activeTab === 'My Schedule' ? (
           <div className="space-y-6">
           <HrMySchedule 
             isOnBreak={isOnBreak} 

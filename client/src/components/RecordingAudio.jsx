@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { resolveRecordingAudioUrl, recordingUrl } from '../services/api';
+import { resolveRecordingAudioUrl, recordingUrl, recordingStreamUrlAsync } from '../services/api';
 import { AlertCircle, RefreshCw } from 'lucide-react';
 
 // Browser (MediaRecorder) .webm files are saved without a duration header, so the
@@ -25,6 +25,7 @@ export default function RecordingAudio({
   const [loading, setLoading] = useState(!isDirectUrl && Boolean(rawUrl || rawKey));
   const [loadError, setLoadError] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
+  const [usedStream, setUsedStream] = useState(false);
 
   // Resolve guaranteed fresh signed URL (re-signs expired S3 links)
   useEffect(() => {
@@ -46,7 +47,7 @@ export default function RecordingAudio({
     setLoading(true);
     setLoadError(false);
 
-    resolveRecordingAudioUrl(rawUrl, rawKey)
+    resolveRecordingAudioUrl(recording && (!src || src === recording.audioUrl) ? recording : rawUrl, rawKey)
       .then((freshUrl) => {
         if (isMounted && freshUrl) {
           setResolvedSrc(freshUrl);
@@ -100,6 +101,13 @@ export default function RecordingAudio({
     // If not retried yet and has S3 key or URL, try one refresh
     if (retryCount === 0 && (rawKey || rawUrl.includes('amazonaws.com') || rawUrl.includes('recordings'))) {
       setRetryCount((c) => c + 1);
+    } else if (!usedStream && (recording?._id || recording?.id)) {
+      // Direct S3 link failed twice: play through the server's permanent link
+      setUsedStream(true);
+      const stream = await recordingStreamUrlAsync(recording);
+      if (stream) { setResolvedSrc(stream); setLoadError(false); return; }
+      setLoadError(true);
+      if (onError) onError(e);
     } else {
       setLoadError(true);
       if (onError) onError(e);
@@ -114,11 +122,12 @@ export default function RecordingAudio({
     return (
       <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-rose-50 border border-rose-200 text-rose-700 text-xs">
         <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-        <span className="truncate max-w-[120px]">Audio expired / unavailable</span>
+        <span className="truncate max-w-[120px]">Audio unavailable</span>
         <button
           type="button"
           onClick={() => {
             setLoadError(false);
+            setUsedStream(false);
             setRetryCount((c) => c + 1);
           }}
           className="p-1 hover:bg-rose-100 rounded text-rose-800 transition-colors cursor-pointer"

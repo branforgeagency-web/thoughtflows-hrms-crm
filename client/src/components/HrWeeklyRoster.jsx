@@ -37,7 +37,8 @@ export default function HrWeeklyRoster({ canEdit = false, scopeKind = 'all', sco
       pendingCount: m.pending || 0,
       status: m.available !== false ? 'Available' : 'On Leave',
       shift: m.shift || 'General Shift',
-      weeklySchedule: m.weeklySchedule || null
+      weeklySchedule: m.weeklySchedule || null,
+      monthlySchedule: m.monthlySchedule || {}
     })));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopeKind, branch, (scopeNames || []).join('|')]);
@@ -55,9 +56,9 @@ export default function HrWeeklyRoster({ canEdit = false, scopeKind = 'all', sco
       departmentCode="DEP-HR-001"
       managerLabel={scopeKind === 'branch' ? 'Branch Head' : 'HR Department Head'}
       readOnly={!canEdit}
-      readOnlyTitle="HR Weekly Roster & Shifts"
-      readOnlyNotice="The HR weekly roster is set by the HR Department Head and Branch Heads."
-      editorRole="head"
+      readOnlyTitle="HR Roster & Shifts"
+      readOnlyNotice="The HR roster is set by the HR Department Head and Branch Heads."
+      editorRole={scopeKind === 'branch' ? 'branch_head' : 'head'}
       staffLabel="HR Counsellors"
       editorLabel="HR Department Head or Branch Head"
       showRoleFilter

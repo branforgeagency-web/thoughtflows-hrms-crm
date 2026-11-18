@@ -68,3 +68,66 @@ export function localDateKey(d = new Date()) {
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
 }
+
+export function getMonthDays(year, monthIndex) {
+  const targetYear = typeof year === 'number' ? year : new Date().getFullYear();
+  const targetMonth = typeof monthIndex === 'number' ? monthIndex : new Date().getMonth();
+  const date = new Date(targetYear, targetMonth, 1);
+  const days = [];
+  const nowKey = localDateKey();
+  const monthsShort = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const dayKeys = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+
+  while (date.getMonth() === targetMonth) {
+    const dKey = localDateKey(date);
+    const dayOfWeek = date.getDay(); // 0 = Sun, 1 = Mon ...
+    const dayKey = dayKeys[dayOfWeek];
+    const isToday = dKey === nowKey;
+    const dayNum = date.getDate();
+    const monthStr = monthsShort[targetMonth];
+    const dateStr = `${dayNum} ${monthStr}`;
+
+    let timing = '10–7';
+    let type = 'work';
+    if (dayKey === 'SUN') {
+      timing = 'Week Off';
+      type = 'off';
+    } else if (dayKey === 'FRI' || dayKey === 'SAT') {
+      timing = '12–9';
+    }
+
+    days.push({
+      dayKey,
+      dayName: dayNames[dayOfWeek],
+      dayNum,
+      dateStr,
+      fullDate: dKey,
+      dayOfWeek,
+      type,
+      timing,
+      isOff: type === 'off',
+      ...(isToday ? { isToday: true } : {})
+    });
+    date.setDate(date.getDate() + 1);
+  }
+  return days;
+}
+
+export function getMonthWeeks(year, monthIndex) {
+  const days = getMonthDays(year, monthIndex);
+  const weeks = [];
+  let currentWeek = [];
+  days.forEach((d) => {
+    currentWeek.push(d);
+    // Break week on Sunday
+    if (d.dayOfWeek === 0) {
+      weeks.push(currentWeek);
+      currentWeek = [];
+    }
+  });
+  if (currentWeek.length > 0) {
+    weeks.push(currentWeek);
+  }
+  return weeks;
+}
