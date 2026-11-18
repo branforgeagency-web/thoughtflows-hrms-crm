@@ -80,6 +80,14 @@ export default function HrTeamDataSection({
         const r = roster.find((x) => norm(x.name) === norm(n));
         add(n, { role: r?.role, branch: r?.branchName });
       });
+    } else if (scopeKind === 'branch') {
+      // Branch Head: only this branch's HR staff (same list as HR Attendance) —
+      // no department heads, no other-branch owners found on the records.
+      const isHead = (role) => /department\s*head|dept\.?\s*head|\bhead\b|\bhod\b|manager|business\s*lead/i.test(role || '');
+      const bKey = norm(branch).replace(/\s*(branch|\(.*\))\s*/g, '');
+      const inBranch = (b) => !bKey || norm(b).includes(bKey);
+      roster.filter((r) => !isHead(r.role) && inBranch(r.branchName)).forEach((r) => add(r.name, { role: r.role, branch: r.branchName }));
+      attData.attendance.filter((a) => !isHead(a.staffRole) && inBranch(a.branchName)).forEach((a) => add(a.employeeName, { role: a.staffRole, branch: a.branchName }));
     } else {
       roster.filter((r) => !/head/i.test(r.role || '')).forEach((r) => add(r.name, { role: r.role, branch: r.branchName }));
       // Owners present in the data but not on the roster (older / bulk-uploaded names)
@@ -89,7 +97,7 @@ export default function HrTeamDataSection({
     }
     return list;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roster, scopeKind, (scopeNames || []).join('|'), leads, students, demos]);
+  }, [roster, attData, scopeKind, branch, (scopeNames || []).join('|'), leads, students, demos]);
 
   const rows = useMemo(() => members.map((m) => {
     const own = (owner, recBranch = '') => owner && same(owner, m.name, recBranch, m.branch);

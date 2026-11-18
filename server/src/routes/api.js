@@ -1483,6 +1483,24 @@ function matchBranch(value, list) {
 const studentBranchText = (s) => s?.branch || s?.leadBranch || s?.location || '';
 const branchShort = (v) => String(v || '').replace(/\s*(branch|\(.*\)|hq)\b/gi, '').trim();
 const isScopedBranchManager = (req) => (req.user?.role === 'Branch Manager' || /branch\s*(manager|head)|business\s*lead/i.test(req.user?.role || '')) && Boolean(req.user?.branch);
+// Department Heads (HR Department Head, Dept Head · X, Head of …, HOD) sit above a
+// branch: a Branch Head never sees their records, attendance, calls or requests.
+const isDeptHeadRole = (role) => {
+  const r = String(role || '');
+  return /department\s*head|dept\.?\s*head|\bhead\s+of\b|\bhod\b/i.test(r) && !/branch\s*(head|manager)/i.test(r);
+};
+const deptHeadCache = { at: 0, names: new Set() };
+async function deptHeadNameSet() {
+  if (Date.now() - deptHeadCache.at < 60000) return deptHeadCache.names;
+  const [users, team] = await Promise.all([
+    User.find({}).select('name role').lean(),
+    TeamMember.find({}).select('name role').lean()
+  ]);
+  const names = new Set([...users, ...team].filter((u) => isDeptHeadRole(u.role)).map((u) => normName(u.name)).filter(Boolean));
+  deptHeadCache.at = Date.now();
+  deptHeadCache.names = names;
+  return names;
+}
 const getBranchManagerBranch = (req) => branchShort(req.user?.branch || '');
 
 // Trainer Role Scoping Helpers
@@ -1759,7 +1777,12 @@ router.get('/leadership/approvals', async (req, res) => {
     if (effectiveBranch) query.branchName = new RegExp(escapeRegex(branchShort(effectiveBranch)), 'i');
     if (status) query.status = String(status).toLowerCase();
     if (requestedBy) query.requestedBy = exactNameRx(requestedBy);
-    res.json(await Approval.find(query).sort({ createdAt: -1 }).lean());
+    let approvals = await Approval.find(query).sort({ createdAt: -1 }).lean();
+    if (isBM) {
+      const heads = await deptHeadNameSet();
+      approvals = approvals.filter((a) => !heads.has(normName(a.requestedBy)));
+    }
+    res.json(approvals);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1868,7 +1891,11 @@ router.get('/leadership/escalations', async (req, res) => {
     if (req.query.hrName) query.hrName = new RegExp(`^${escapeRegex(String(req.query.hrName).trim())}$`, 'i');
     if (req.query.studentsOnly || req.query.hrName) query.studentId = { $nin: ['', null] };
     if (req.query.studentId) query.studentId = req.query.studentId;
-    const escalations = await Escalation.find(query).sort({ createdAt: -1 }).lean();
+    let escalations = await Escalation.find(query).sort({ createdAt: -1 }).lean();
+    if (isBM) {
+      const heads = await deptHeadNameSet();
+      escalations = escalations.filter((e) => !heads.has(normName(e.raisedBy)) && !heads.has(normName(e.hrName)));
+    }
     res.json(escalations);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -2081,7 +2108,11 @@ router.get('/leadership/team', async (req, res) => {
     const effectiveBranch = isBM ? req.user.branch : (branchName || req.query.branch);
     const query = departmentCode ? deptCodeQuery(departmentCode) : {};
     if (effectiveBranch) query.branchName = new RegExp(escapeRegex(branchShort(effectiveBranch)), 'i');
-    const team = await TeamMember.find(query).sort({ name: 1 });
+    let team = await TeamMember.find(query).sort({ name: 1 });
+    if (isBM) {
+      const heads = await deptHeadNameSet();
+      team = team.filter((m) => !isDeptHeadRole(m.role) && !heads.has(normName(m.name)));
+    }
     const withMetrics = await teamMetrics(team);
     withMetrics.sort((a, b) => (b.quality ?? -1) - (a.quality ?? -1));
     res.json(withMetrics);
@@ -2197,9 +2228,11 @@ router.get('/hr/staff-attendance', async (req, res) => {
       ? new Set([normName(req.user?.name)])
       : (tlNames ? new Set(tlNames.map(normName).filter(Boolean)) : null);
 
+    const hiddenHeads = isBM ? await deptHeadNameSet() : null;
     const matchesScope = (name, branchName) => {
       const nKey = normName(name);
       if (allowedNameSet && !allowedNameSet.has(nKey)) return false;
+      if (hiddenHeads && (hiddenHeads.has(nKey) || isDeptHeadRole(rosterMap.get(nKey)?.role))) return false;
       if (branchFilterKey) {
         const bKey = branchShort(branchName || rosterMap.get(nKey)?.branchName || '').toLowerCase();
         if (!bKey || !bKey.includes(branchFilterKey)) return false;
@@ -2365,6 +2398,9 @@ router.patch('/leadership/team/:id/shift', async (req, res) => {
       if (!isHead && !isBranchHead) {
         return res.status(403).json({ error: 'The roster can only be updated by the HR Department Head or your Branch Head.' });
       }
+      if (isBranchHead && !isHead && isDeptHeadRole(target.role)) {
+        return res.status(403).json({ error: 'Branch Heads cannot update a Department Head\'s roster.' });
+      }
       if (isBranchHead && !isHead) {
         const mine = bClean(getBranchManagerBranch(req) || req.user?.branch || '');
         const theirs = bClean(target.branchName || '');
@@ -2471,8 +2507,13 @@ router.get('/leadership/attendance/branch/:branchName', async (req, res) => {
     const date = todayStr();
     const cleanB = branchShort(branchName);
     const bRx = new RegExp(escapeRegex(cleanB), 'i');
-    const team = await TeamMember.find({ branchName: bRx });
-    const existing = await Attendance.find({ branchName: bRx, date });
+    let team = await TeamMember.find({ branchName: bRx });
+    let existing = await Attendance.find({ branchName: bRx, date });
+    if (isBM) {
+      const heads = await deptHeadNameSet();
+      team = team.filter((m) => !isDeptHeadRole(m.role) && !heads.has(normName(m.name)));
+      existing = existing.filter((r) => !heads.has(normName(r.employeeName)));
+    }
     const byName = {};
     existing.forEach((r) => { byName[r.employeeName] = r; });
     const rows = team.map((m) => byName[m.name] || { branchName, employeeName: m.name, date, status: 'absent', checkIn: null, checkOut: null, hoursWorked: 0 });
@@ -2615,7 +2656,8 @@ router.get('/calls/log', async (req, res) => {
     } else if (req.query.scope === 'desk' && isScopedBranchManager(req)) {
       // Branch Head: calls of the HR staff in their branch
       const bRx = new RegExp(escapeRegex(getBranchManagerBranch(req)), 'i');
-      const staff = await User.find({ $and: [HR_STAFF, { branch: bRx }, ACTIVE_USER] }).select('name').lean();
+      const staff = (await User.find({ $and: [HR_STAFF, { branch: bRx }, ACTIVE_USER] }).select('name role').lean())
+        .filter((u) => !isDeptHeadRole(u.role));
       query.counselorName = { $in: [req.user?.name, ...staff.map((u) => u.name)].filter(Boolean).map((n) => exactNameRx(n)) };
     } else if (req.query.scope === 'desk' && (isLead || isHrLeaderUser(req) || /admin/i.test(role))) {
       // HR Department Head / Admin: every counsellor's calls
@@ -3142,10 +3184,13 @@ async function branchHrNames(branch) {
   if (hit && Date.now() - hit.at < 60000) return hit.names;
   const bRx = new RegExp(escapeRegex(short), 'i');
   const [users, team] = await Promise.all([
-    User.find({ $and: [HR_STAFF, ACTIVE_USER, { branch: bRx }] }).select('name').lean(),
-    TeamMember.find({ $and: [deptCodeQuery('DEP-HR-001'), { branchName: bRx }] }).select('name').lean()
+    User.find({ $and: [HR_STAFF, ACTIVE_USER, { branch: bRx }] }).select('name role').lean(),
+    TeamMember.find({ $and: [deptCodeQuery('DEP-HR-001'), { branchName: bRx }] }).select('name role').lean()
   ]);
-  const names = Array.from(new Set([...users, ...team].map((u) => String(u.name || '').trim()).filter(Boolean)));
+  const heads = await deptHeadNameSet();
+  const names = Array.from(new Set([...users, ...team]
+    .filter((u) => !isDeptHeadRole(u.role) && !heads.has(normName(u.name)))
+    .map((u) => String(u.name || '').trim()).filter(Boolean)));
   branchHrCache.set(key, { at: Date.now(), names });
   return names;
 }
@@ -3736,7 +3781,8 @@ async function buildDuplicateInfo({ matchedStudent, matchedLead, digits, mail, f
     ? `Lastly contacted by HR: ${hrInfo.hrName}`
     : 'Assigned HR: Not Assigned';
 
-  const errorMessage = `Duplicate record: A student is already registered with ${fieldReason} (${memberName}${idText}). ${hrText}.`;
+  const branchText = existingDoc.branch || existingDoc.location || '';
+  const errorMessage = `Duplicate record: A student is already registered with ${fieldReason} (${memberName}${idText}${branchText ? ` · ${branchText} branch` : ''}). ${hrText}.`;
 
   return {
     isDuplicate: true,
@@ -11693,7 +11739,7 @@ router.get('/marketing/sources', async (req, res) => {
 // ==========================================
 // Org-wide settings read by several dashboards (e.g. Admin's incentive policy
 // drives HR's target banner)
-const SETTING_KEYS = ['incentive_policy'];
+const SETTING_KEYS = ['incentive_policy', 'hr_google_sheets'];
 router.get('/settings/:key', async (req, res) => {
   try {
     if (!SETTING_KEYS.includes(req.params.key)) return res.status(404).json({ error: 'Unknown setting' });
@@ -11715,6 +11761,67 @@ router.put('/settings/:key', async (req, res) => {
     res.json({ key: doc.key, value: doc.value, updatedBy: doc.updatedBy, updatedAt: doc.updatedAt });
   } catch (e) {
     res.status(400).json({ error: e.message });
+  }
+});
+
+// ==========================================
+// GOOGLE SHEET → LEADS IMPORT
+// ==========================================
+// Reads a Google Sheet as CSV (the sheet must be shared "Anyone with the link
+// can view") and hands it back as clean tab-separated text, one row per line,
+// so the dashboard can run it through the same parser as Bulk Upload.
+// Only docs.google.com sheet IDs are accepted — the server builds the URL itself.
+function csvToRows(text) {
+  const rows = [];
+  let row = [];
+  let cell = '';
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { cell += '"'; i++; } else inQuotes = false;
+      } else cell += ch;
+    } else if (ch === '"') inQuotes = true;
+    else if (ch === ',') { row.push(cell); cell = ''; }
+    else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i + 1] === '\n') i++;
+      row.push(cell); rows.push(row); row = []; cell = '';
+    } else cell += ch;
+  }
+  if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
+  return rows;
+}
+
+router.get('/hr/google-sheet/rows', async (req, res) => {
+  try {
+    const raw = String(req.query.url || '');
+    const idMatch = raw.match(/docs\.google\.com\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+    if (!idMatch) return res.status(400).json({ error: 'Not a Google Sheets link' });
+    const gid = (raw.match(/[#&?]gid=(\d+)/) || [])[1] || String(req.query.gid || '').replace(/\D/g, '');
+    const exportUrl = `https://docs.google.com/spreadsheets/d/${idMatch[1]}/export?format=csv${gid ? `&gid=${gid}` : ''}`;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20000);
+    let resp;
+    try {
+      resp = await fetch(exportUrl, { redirect: 'follow', signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+    const type = resp.headers.get('content-type') || '';
+    if (!resp.ok || /text\/html/i.test(type)) {
+      return res.status(403).json({
+        error: 'Could not read the sheet. In Google Sheets click Share → General access → "Anyone with the link" (Viewer), then try again.'
+      });
+    }
+    const text = await resp.text();
+    const rows = csvToRows(text)
+      .map((r) => r.map((c) => String(c || '').replace(/[\t\r\n]+/g, ' ').trim()))
+      .filter((r) => r.some((c) => c !== ''));
+    res.json({ rowCount: Math.max(0, rows.length - 1), tsv: rows.map((r) => r.join('\t')).join('\n') });
+  } catch (e) {
+    res.status(500).json({ error: e.name === 'AbortError' ? 'Google Sheets took too long to respond' : e.message });
   }
 });
 

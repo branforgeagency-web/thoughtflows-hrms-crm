@@ -461,6 +461,8 @@ export function parseGoogleSheetOrCsv(rawText) {
   const extraNotesIndices = [];
 
   headers.forEach((h, idx) => {
+    // HOLD columns (Hold, Hold Date, On Hold, Hold Reason…) are not imported
+    if (/\bhold\b/i.test(h)) return;
     if (/^(name|full\s*name|candidate\s*name|student\s*name|candidate|lead\s*name)$/i.test(h)) fieldIndex.name = idx;
     else if (/^(phone|mobile|contact|contact\s*no|mobile\s*no|phone\s*no|mobile\s*number|phone\s*number|primary\s*mobile)$/i.test(h)) fieldIndex.phone = idx;
     else if (/^(whatsapp|whatsapp\s*no|whatsapp\s*number|wa|alt\s*phone|alternate\s*no|additional\s*no)$/i.test(h)) fieldIndex.whatsapp = idx;
@@ -477,7 +479,7 @@ export function parseGoogleSheetOrCsv(rawText) {
     else if (/^(location|city|place|native|address|candidate\s*location)$/i.test(h)) fieldIndex.location = idx;
     else if (/^(date|enquiry\s*date|lead\s*date|entry\s*date|call\s*date|contact\s*date|registration\s*date)$/i.test(h)) fieldIndex.date = idx;
     else if (/^(month|enquiry\s*month|lead\s*month)$/i.test(h)) fieldIndex.month = idx;
-    else if (/^(note|notes|remarks|comment|comments|handover\s*note|enquiry\s*notes|follow\s*up|follow\s*up\s*1|follow\s*up\s*2|hold|lost|lead)$/i.test(h)) {
+    else if (/^(note|notes|remarks|comment|comments|handover\s*note|enquiry\s*notes|follow\s*up|follow\s*up\s*1|follow\s*up\s*2|lost|lead)$/i.test(h)) {
       if (fieldIndex.notes === undefined) fieldIndex.notes = idx;
       else extraNotesIndices.push(idx);
     }
@@ -485,7 +487,14 @@ export function parseGoogleSheetOrCsv(rawText) {
 
   // Header-less paste: keep any column we couldn't identify as a note, not lost.
   if (!hasRecognizedHeader) {
+    const sampleRows = dataRows.slice(0, 50);
+    const mostlyDates = (idx) => {
+      const cells = sampleRows.map(r => String(r[idx] || '').trim()).filter(Boolean);
+      return cells.length > 0 && cells.filter(v => parseDateCell(v)).length / cells.length >= 0.5;
+    };
     headers.forEach((h, idx) => {
+      // A second date column (e.g. a hold date) is not a note — leave it out
+      if (!h && mostlyDates(idx)) return;
       if (!h) {
         if (fieldIndex.notes === undefined) fieldIndex.notes = idx;
         else extraNotesIndices.push(idx);

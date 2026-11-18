@@ -431,8 +431,7 @@ export default function BranchManagerDashboard({
       });
       loadBranchData();
     } catch (err) {
-      showToast(`✅ Call allocated for ${allocateForm.studentName || 'Student'}!`);
-      loadBranchData();
+      showToast(`⚠ ${err?.response?.data?.error || err.message || 'Could not allocate this call'}`);
     }
   };
 

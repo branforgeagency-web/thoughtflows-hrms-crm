@@ -1735,6 +1735,11 @@ export const getSetting = async (key) => {
   return res.data;
 };
 
+export const getGoogleSheetRows = async (url) => {
+  const res = await api.get('/hr/google-sheet/rows', { params: { url }, skipCache: true });
+  return res.data;
+};
+
 export const saveSetting = async (key, value) => {
   const res = await api.put(`/settings/${key}`, { value });
   notifyDataUpdate('settings');

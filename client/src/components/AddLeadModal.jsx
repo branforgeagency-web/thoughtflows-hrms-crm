@@ -186,7 +186,10 @@ function AddLeadModalContent({ isOpen, onClose, onAddLead, onBulkImported, initi
       });
 
       setImportResult(res);
-      showToast(`✓ Successfully imported ${res.createdCount} enquiries to dashboard!`);
+      const dupN = res?.duplicateCount || 0;
+      showToast(dupN
+        ? `⚠ Imported ${res.createdCount || 0} · ${dupN} skipped — already registered (any branch)`
+        : `✓ Successfully imported ${res.createdCount} enquiries to dashboard!`);
       if (onBulkImported) {
         onBulkImported(res);
       }

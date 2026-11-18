@@ -38,6 +38,8 @@ import {
 import HrEodReportSection from './HrEodReportSection';
 import { StartWorkConfirmationModal, CloseWorkConfirmationModal } from './WorkSessionModals';
 import HrPipelineView from './HrPipelineView';
+import HrGoogleSheetTab, { useGoogleSheetAutoImport } from './HrGoogleSheetTab';
+import HrKpiDrilldownModal from './HrKpiDrilldownModal';
 import HrFollowUpBoard from './HrFollowUpBoard';
 import HrDemoDesk from './HrDemoDesk';
 import HrAdmittedStudentsCrm from './HrAdmittedStudentsCrm';
@@ -441,7 +443,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     let alive = true;
     // Leadership desks count the whole desk's calls (team / branch / all)
     const load = () => getTodayCallLog(viewScope?.mode ? { scope: 'desk' } : undefined)
-      .then((r) => { if (alive && Array.isArray(r?.list)) setTodayCallLogs(r.list.map((c) => ({ id: c.leadId, time: c.createdAt, outcome: c.outcome, duration: c.durationSeconds, connected: c.connected, counselorName: c.counselorName || '' }))); })
+      .then((r) => { if (alive && Array.isArray(r?.list)) setTodayCallLogs(r.list.map((c) => ({ id: c.leadId, time: c.createdAt, outcome: c.outcome, duration: c.durationSeconds, connected: c.connected, counselorName: c.counselorName || '', leadName: c.leadName || '' }))); })
       .catch(() => {});
     load();
     const t = setInterval(() => {
@@ -672,6 +674,11 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     }
   };
   reloadDataRef.current = () => loadAllData(true);
+
+  // Pull new rows from the counsellor's linked Google Sheet in the background
+  useGoogleSheetAutoImport(currentUser, (r) => {
+    if (typeof showToast === 'function') showToast(`✓ ${r.createdCount} new enquir${r.createdCount === 1 ? 'y' : 'ies'} imported from Google Sheet`);
+  });
 
   useEffect(() => {
     loadAllData();
@@ -1108,6 +1115,55 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   // Home KPI cards: always the signed-in ID person's numbers
   const homeMetrics = closureMetrics;
 
+  // Home KPI card drill-down: the records behind each count (same rules as the counts)
+  const [kpiDrill, setKpiDrill] = useState(null); // 'calls' | 'followups' | 'demos' | 'admissions'
+  const kpiDrillData = useMemo(() => {
+    if (!kpiDrill) return null;
+    const leadById = new Map(leads.map((l) => [String(l._id || l.id), l]));
+    const recordingsToday = myRecordings.filter((r) => isToday(r.createdAt));
+    const calls = (myTodayCallLogs.length >= recordingsToday.length
+      ? myTodayCallLogs.map((c, i) => {
+          const lead = leadById.get(String(c.id)) || null;
+          return { key: `c${i}`, time: c.time, name: c.leadName || lead?.fullName || lead?.name || '', phone: lead?.phone || '', outcome: c.outcome, duration: c.duration, connected: Boolean(c.connected), lead };
+        })
+      : recordingsToday.map((r, i) => {
+          const lead = leadById.get(String(r.leadId)) || null;
+          return { key: `r${i}`, time: r.createdAt, name: r.leadName || lead?.fullName || '', phone: r.leadPhone || lead?.phone || '', outcome: r.outcome, duration: r.durationSeconds, connected: Boolean(r.outcome && r.outcome !== 'Not Reachable'), lead };
+        })
+    ).sort((a, b) => new Date(b.time) - new Date(a.time));
+
+    const followups = myLeads
+      .filter((l) => {
+        if (l.stage === 'admitted' || l.stage === 'closed') return false;
+        if (l.followUpDate) return l.followUpDate <= todayKey;
+        return l.stage === 'new' || l.stage === 'contacted';
+      })
+      .map((l) => ({
+        key: String(l._id || l.id),
+        lead: l,
+        bucket: !l.followUpDate ? 'nodate' : (l.followUpDate < todayKey ? 'overdue' : 'today')
+      }))
+      .sort((a, b) => String(a.lead.followUpDate || '9999').localeCompare(String(b.lead.followUpDate || '9999')));
+
+    const demos = myDemos.map((d) => {
+      const st = String(d.status || '').toLowerCase();
+      const bucket = ['attended', 'completed', 'fee'].includes(st) ? 'attended'
+        : (!d.trainer || d.trainer === 'Unassigned') ? 'pending' : 'assigned';
+      return { key: String(d._id || d.id), demo: d, bucket };
+    });
+
+    const admissions = myStudents
+      .filter((s) => !myName || matchesMyName(s.hrName, myName, s.branch || s.leadBranch || s.location || '', branchName))
+      .map((s) => {
+        const d = new Date(s.admissionDate || s.createdAt);
+        return { key: String(s._id || s.id), student: s, thisMonth: !isNaN(d.getTime()) && localDateKey(d).slice(0, 7) === monthPrefix, at: d.getTime() || 0 };
+      })
+      .sort((a, b) => b.at - a.at);
+
+    return { calls, followups, demos, admissions };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kpiDrill, leads, myRecordings, myTodayCallLogs, myLeads, myDemos, myStudents, todayKey, monthPrefix, myName, branchName]);
+
   // 3. Submit EOD Report to HR Head (saves report with HR user details, date, submission time, work session info, and CRM metrics)
   const handleEodReportSubmit = async (customSummary = null, attendanceOverride = null) => {
     setEodSubmitting(true);
@@ -1252,6 +1308,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         ] : [])
       ] : []),
       { name: 'Pipeline & Follow-ups', badge: pipelineCount, icon: Filter, iconBg: 'bg-[#7c3aed]', badgeBg: 'bg-rose-500', color: 'purple' },
+      { name: 'Google Sheet', badge: null, icon: FileSpreadsheet, iconBg: 'bg-green-600', color: 'emerald' },
       { name: 'Demo Desk', badge: scopedDemos.length > 0 ? scopedDemos.length.toString() : null, icon: Monitor, iconBg: 'bg-cyan-600', color: 'cyan' },
       { name: 'Admitted Students', badge: admittedCount, icon: GraduationCap, iconBg: 'bg-emerald-600', badgeBg: 'bg-emerald-500', color: 'emerald' },
       { name: 'Call Recordings', badge: scopedRecordings.length > 0 ? String(scopedRecordings.length) : null, icon: PhoneCall, iconBg: 'bg-sky-600', badgeBg: 'bg-sky-500', color: 'sky' },
@@ -1953,6 +2010,11 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             scopeKind={scopeKind}
             branch={viewScope?.branch || currentUser?.branch || ''}
           />
+        ) : activeTab === 'Google Sheet' ? (
+          <HrGoogleSheetTab
+            currentUser={currentUser}
+            canEditTeamSheet={Boolean(scopeKind) || isElevatedUser}
+          />
         ) : activeTab === 'My Schedule' ? (
           <div className="space-y-6">
           <HrMySchedule 
@@ -2308,7 +2370,8 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         {/* 4 Metric Cards in a Row */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4">
           {/* Card 1 */}
-          <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs hover:border-[#73C1CC]/70 transition-all flex flex-col justify-between text-left">
+          <div onClick={() => setKpiDrill('calls')} title="Click to see today's calls"
+            className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs hover:border-[#73C1CC]/70 hover:shadow-md transition-all flex flex-col justify-between text-left cursor-pointer">
             <div className="flex items-center justify-between mb-3">
               <span className="text-[11px] font-extrabold tracking-wider text-slate-500 uppercase">
                 CALLS LOGGED
@@ -2322,7 +2385,8 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
           </div>
 
           {/* Card 2 */}
-          <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs hover:border-amber-400/50 transition-all flex flex-col justify-between text-left">
+          <div onClick={() => setKpiDrill('followups')} title="Click to see follow-ups due"
+            className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs hover:border-amber-400/50 hover:shadow-md transition-all flex flex-col justify-between text-left cursor-pointer">
             <div className="flex items-center justify-between mb-3">
               <span className="text-[11px] font-extrabold tracking-wider text-slate-500 uppercase">
                 FOLLOW-UPS DUE
@@ -2337,12 +2401,9 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
 
           {/* Card 3 */}
           <div 
-            onClick={() => {
-              setBookDemoInitialData(null);
-              setShowBookDemoModal(true);
-            }}
-            className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs hover:border-[#73C1CC]/80 transition-all flex flex-col justify-between text-left cursor-pointer group"
-            title="Click to schedule a new demo"
+            onClick={() => setKpiDrill('demos')}
+            className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs hover:border-[#73C1CC]/80 hover:shadow-md transition-all flex flex-col justify-between text-left cursor-pointer group"
+            title="Click to see booked demos"
           >
             <div className="flex items-center justify-between mb-3">
               <span className="text-[11px] font-extrabold tracking-wider text-slate-500 uppercase">
@@ -2359,7 +2420,8 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
           </div>
 
           {/* Card 4 */}
-          <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs hover:border-[#73C1CC]/70 transition-all flex flex-col justify-between text-left">
+          <div onClick={() => setKpiDrill('admissions')} title="Click to see admissions"
+            className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs hover:border-[#73C1CC]/70 hover:shadow-md transition-all flex flex-col justify-between text-left cursor-pointer">
             <div className="flex items-center justify-between mb-3">
               <span className="text-[11px] font-extrabold tracking-wider text-slate-500 uppercase">
                 ADMISSIONS • THIS MONTH
@@ -2751,6 +2813,17 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
           </div>
         )}
       </main>
+
+      {/* Home KPI card drill-down */}
+      {kpiDrill && kpiDrillData && (
+        <HrKpiDrilldownModal
+          kind={kpiDrill}
+          data={kpiDrillData}
+          onClose={() => setKpiDrill(null)}
+          onCallLead={(lead) => { setKpiDrill(null); openCallFor(lead, false); }}
+          onBookDemo={() => { setKpiDrill(null); setBookDemoInitialData(null); setShowBookDemoModal(true); }}
+        />
+      )}
 
       {/* Lead Call Modal */}
       <LeadCallModal
