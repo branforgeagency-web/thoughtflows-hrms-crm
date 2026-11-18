@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Target, Plus, Trash2, Calendar, Users, CheckCircle2, X, Download } from 'lucide-react';
 import {
-  getHrTargetProgress, createHrTarget, deleteHrTarget, logHrTargetProgress, getTeam, onDataUpdate
+  getHrTargetProgress, createHrTarget, deleteHrTarget, logHrTargetProgress, onDataUpdate
 } from '../services/api';
 
 // Monthly targets & tasks for branch HRs.
@@ -19,7 +19,6 @@ const METRICS = [
   { key: 'custom', label: 'Custom Task (HR logs it)' }
 ];
 const norm = (v) => String(v || '').trim().replace(/\s+/g, ' ').toLowerCase();
-const isHeadRole = (r) => /\bhead\b|\bhod\b|manager|business\s*lead|director|founder|admin/i.test(r || '');
 const istNow = () => new Date(Date.now() + 330 * 60000);
 const thisMonthKey = () => istNow().toISOString().slice(0, 7);
 const todayKey = () => istNow().toISOString().slice(0, 10);
@@ -61,15 +60,18 @@ export default function HrMonthlyTasks({ currentUser, scopeKind = null, branch =
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [month, activeBranch]);
 
-  // Branch HRs for the "Assign to" list
+  // HRs for the "Assign to" list come with the progress data (already scoped by the server)
   useEffect(() => {
     if (!isManagerView) return;
-    getTeam({ departmentCode: 'DEP-HR-001', ...(activeBranch ? { branchName: activeBranch } : {}) })
-      .then((rows) => setRoster((Array.isArray(rows) ? rows : []).filter((r) => r.name && !isHeadRole(r.role))))
-      .catch(() => setRoster([]));
-  }, [isManagerView, activeBranch]);
+    setRoster((Array.isArray(data.hrs) ? data.hrs : []).map((h) => ({ name: h.name, branchName: h.branch || '' })));
+  }, [isManagerView, data.hrs]);
 
-  const branches = useMemo(() => Array.from(new Set(roster.map((r) => r.branchName).filter(Boolean))).sort(), [roster]);
+  // Branch filter options stay complete even after one branch is picked
+  const [allBranches, setAllBranches] = useState([]);
+  useEffect(() => {
+    if (!branchFilter && Array.isArray(data.branches) && data.branches.length) setAllBranches(data.branches);
+  }, [branchFilter, data.branches]);
+  const branches = allBranches;
   const canAssign = Boolean(data.canAssign) && isManagerView;
   const curWeek = month === thisMonthKey() ? Math.min(5, Math.floor((Number(todayKey().slice(8, 10)) - 1) / 7) + 1) : null;
 

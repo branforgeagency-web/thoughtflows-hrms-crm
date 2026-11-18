@@ -102,16 +102,17 @@ router.use(async (req, res, next) => {
       const or = [];
       if (mongoose.isValidObjectId(u.sub)) or.push({ _id: u.sub });
       if (u.email) or.push({ email: exactNameRx(u.email) });
-      const doc = or.length ? await User.findOne({ $or: or }).select('role branch department').lean() : null;
+      const doc = or.length ? await User.findOne({ $or: or }).select('role branch').lean() : null;
       hit = { at: Date.now(), doc };
       liveUserCache.set(key, hit);
     }
     if (hit.doc) {
+      // Only role & branch: the token's department is the login mapping (e.g. HR Department
+      // Head → leadership desk), not the raw User.department, so it must be kept as is.
       req.user = {
         ...u,
         role: hit.doc.role || u.role || '',
-        branch: hit.doc.branch || u.branch || '',
-        department: hit.doc.department || u.department || ''
+        branch: hit.doc.branch || u.branch || ''
       };
     }
   } catch (_) { /* keep the token's values */ }
@@ -1595,9 +1596,19 @@ router.get('/hr/targets/progress', async (req, res) => {
     if (scopeBranch) {
       hrPool = (await branchHrNames(scopeBranch)).map((name) => ({ name, branch: scopeBranch }));
     } else {
-      const users = await User.find({ $and: [HR_STAFF, ACTIVE_USER] }).select('name role branch').lean();
-      hrPool = users.filter((u) => u.name && !isDeptHeadRole(u.role) && !/\bhead\b|\bhod\b|manager|business\s*lead/i.test(u.role || ''))
-        .map((u) => ({ name: String(u.name).trim(), branch: branchShort(u.branch || '') }));
+      const [users, team] = await Promise.all([
+        User.find({ $and: [HR_STAFF, ACTIVE_USER] }).select('name role branch').lean(),
+        TeamMember.find(deptCodeQuery('DEP-HR-001')).select('name role branchName').lean()
+      ]);
+      const notHead = (r) => !isDeptHeadRole(r) && !/\bhead\b|\bhod\b|manager|business\s*lead/i.test(r || '');
+      const seen = new Map();
+      users.filter((u) => u.name && notHead(u.role)).forEach((u) => seen.set(normName(u.name), { name: String(u.name).trim(), branch: branchShort(u.branch || '') }));
+      team.filter((m) => m.name && notHead(m.role)).forEach((m) => {
+        const k = normName(m.name);
+        if (!seen.has(k)) seen.set(k, { name: String(m.name).trim(), branch: branchShort(m.branchName || '') });
+        else if (!seen.get(k).branch && m.branchName) seen.get(k).branch = branchShort(m.branchName);
+      });
+      hrPool = [...seen.values()];
     }
     const poolByKey = new Map(hrPool.map((h) => [normName(h.name), h]));
 
@@ -1719,7 +1730,12 @@ router.get('/hr/targets/progress', async (req, res) => {
       };
     });
 
-    res.json({ month, weeks, rows, metrics: TARGET_METRICS, canAssign: canAssignHrTargets(req), branch: scopeBranch || '' });
+    // HRs this viewer can assign to (for the "Assign to" list) and the branches among them
+    const hrs = (selfOnly ? [] : hrPool)
+      .filter((h) => !teamNames || teamNames.some((n) => normName(n) === normName(h.name)))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const branches = Array.from(new Set(hrs.map((h) => h.branch).filter(Boolean))).sort();
+    res.json({ month, weeks, rows, hrs, branches, metrics: TARGET_METRICS, canAssign: canAssignHrTargets(req), branch: scopeBranch || '' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
