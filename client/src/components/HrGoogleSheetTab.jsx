@@ -288,30 +288,6 @@ export default function HrGoogleSheetTab({ currentUser, canEditTeamSheet = false
         </div>
       </div>
 
-      {/* Import into CRM */}
-      {embedUrl && (
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 px-3 py-2 flex items-center gap-3 flex-wrap">
-          <button type="button" onClick={handleImportNow} disabled={importing}
-            className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-60 cursor-pointer">
-            <DownloadCloud className={`w-4 h-4 ${importing ? 'animate-pulse' : ''}`} />
-            {importing ? 'Importing…' : 'Import new rows to CRM'}
-          </button>
-          {source === 'mine' && (
-            <label className="inline-flex items-center gap-2 text-xs font-semibold text-emerald-900 cursor-pointer select-none">
-              <input type="checkbox" checked={autoOn} onChange={toggleAuto} className="w-4 h-4 accent-emerald-600" />
-              Auto-import every 10 min
-            </label>
-          )}
-          <span className="text-[11px] text-slate-600">
-            {lastImport?.error
-              ? <span className="text-rose-600">⚠ {lastImport.error}</span>
-              : lastImport
-                ? `Last import ${new Date(lastImport.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}: ${lastImport.createdCount} new, ${lastImport.duplicateCount} already in CRM${lastImport.skipped ? `, ${lastImport.skipped} skipped (no mobile/email)` : ''}`
-                : 'Adds rows to Pipeline & Follow-ups. Rows already in the CRM (same mobile/email) are skipped.'}
-          </span>
-        </div>
-      )}
-
       {/* Link editor */}
       {editing && (
         <div className="rounded-xl border border-teal-200 bg-teal-50/60 p-3 space-y-2">

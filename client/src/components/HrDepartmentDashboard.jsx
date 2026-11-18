@@ -38,7 +38,7 @@ import {
 import HrEodReportSection from './HrEodReportSection';
 import { StartWorkConfirmationModal, CloseWorkConfirmationModal } from './WorkSessionModals';
 import HrPipelineView from './HrPipelineView';
-import HrGoogleSheetTab, { useGoogleSheetAutoImport } from './HrGoogleSheetTab';
+import HrGoogleSheetTab from './HrGoogleSheetTab';
 import HrKpiDrilldownModal from './HrKpiDrilldownModal';
 import HrFollowUpBoard from './HrFollowUpBoard';
 import HrDemoDesk from './HrDemoDesk';
@@ -674,11 +674,6 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     }
   };
   reloadDataRef.current = () => loadAllData(true);
-
-  // Pull new rows from the counsellor's linked Google Sheet in the background
-  useGoogleSheetAutoImport(currentUser, (r) => {
-    if (typeof showToast === 'function') showToast(`✓ ${r.createdCount} new enquir${r.createdCount === 1 ? 'y' : 'ies'} imported from Google Sheet`);
-  });
 
   useEffect(() => {
     loadAllData();
