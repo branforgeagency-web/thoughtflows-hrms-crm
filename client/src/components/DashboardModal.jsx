@@ -31,7 +31,24 @@ import DashboardSkeleton from './DashboardSkeleton';
 // downloads Leadership, Training, CCCP, Marketing and the rest first.
 // Each one is wrapped so the existing JSX below needs no change.
 // ---------------------------------------------------------------------------
-const lazyDashboard = (loader, label) => {
+// A tab left open across a deploy can't load the old chunk names any more:
+// reload once to get the new build (guarded so it never loops).
+const STALE_CHUNK_RX = /Failed to fetch dynamically imported module|Importing a module script failed|error loading dynamically imported module/i;
+const loadOrReload = (loader) => () => loader().catch((err) => {
+  if (STALE_CHUNK_RX.test(String(err?.message || err))) {
+    let last = 0;
+    try { last = Number(sessionStorage.getItem('tf_chunk_reload_at') || 0); } catch (_) {}
+    if (Date.now() - last > 20000) {
+      try { sessionStorage.setItem('tf_chunk_reload_at', String(Date.now())); } catch (_) {}
+      window.location.reload();
+      return new Promise(() => {}); // keep the skeleton up while the page reloads
+    }
+  }
+  throw err;
+});
+
+const lazyDashboard = (rawLoader, label) => {
+  const loader = loadOrReload(rawLoader);
   const Lazy = React.lazy(loader);
   const Wrapped = (props) => (
     <React.Suspense fallback={<DashboardSkeleton label={label} />}>

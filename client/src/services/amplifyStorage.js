@@ -263,7 +263,14 @@ export async function uploadRecordingFile(file, entityPrefix = 'general', option
   });
 
   const result = await task.result;
-  const urlResult = await getUrl({ path: storagePath, options: { expiresIn: MAX_PRESIGN_SECONDS } });
+  // validateObjectExistence: fail here (and save nothing) if the file did not land in S3,
+  // instead of saving a recording whose download later says "NoSuchKey".
+  let urlResult;
+  try {
+    urlResult = await getUrl({ path: storagePath, options: { expiresIn: MAX_PRESIGN_SECONDS, validateObjectExistence: true } });
+  } catch (err) {
+    throw new Error(`Upload to S3 did not complete for "${file.name}" — please try again.`);
+  }
 
   return {
     storageKey: storagePath,

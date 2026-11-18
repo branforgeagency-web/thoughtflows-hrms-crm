@@ -1,0 +1,27 @@
+version: 1
+backend:
+  phases:
+    build:
+      commands:
+        - npm install --legacy-peer-deps
+        - npx ampx pipeline-deploy --branch $AWS_BRANCH --app-id $AWS_APP_ID
+frontend:
+  phases:
+    preBuild:
+      commands:
+        # The backend phase above just wrote the real amplify_outputs.json (bucket
+        # name, region, etc.) to the repo root. Copy it into client/ so the Vite
+        # build can pick it up (see client/src/services/amplifyStorage.js).
+        - cp amplify_outputs.json client/amplify_outputs.json
+        - npm install --prefix client --legacy-peer-deps
+    build:
+      commands:
+        - npm run build --prefix client
+  artifacts:
+    baseDirectory: client/dist
+    files:
+      - '**/*'
+  cache:
+    paths:
+      - node_modules/**/*
+      - client/node_modules/**/*

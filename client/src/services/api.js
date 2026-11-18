@@ -171,8 +171,22 @@ export const downloadRecordingAudio = async (recOrUrl, customFilename, storageKe
     return;
   }
 
+  const MISSING_MSG = 'This recording file is missing from storage (the upload did not finish). Please upload it again from the phone (Sync Phone Recordings).';
   try {
-    const response = await fetch(url, { mode: 'cors' });
+    let response = await fetch(url, { mode: 'cors' });
+    if (response.status === 404 || response.status === 403) {
+      // S3 has no object at that key — try the server's permanent stream before giving up
+      const stream = typeof recOrUrl === 'object' ? await recordingStreamUrlAsync(recOrUrl) : '';
+      if (stream && stream !== url) {
+        const viaServer = await fetch(stream).catch(() => null);
+        if (viaServer && viaServer.ok) response = viaServer;
+      }
+      if (!response.ok) {
+        const err = new Error(MISSING_MSG);
+        err.isMissingFile = true;
+        throw err;
+      }
+    }
     if (!response.ok) {
       throw new Error(`HTTP error ${response.status}`);
     }
@@ -186,6 +200,7 @@ export const downloadRecordingAudio = async (recOrUrl, customFilename, storageKe
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
   } catch (fetchErr) {
+    if (fetchErr?.isMissingFile) throw fetchErr;
     console.warn('Direct blob fetch failed, falling back to window.open:', fetchErr);
     const fallbackLink = document.createElement('a');
     fallbackLink.href = url;

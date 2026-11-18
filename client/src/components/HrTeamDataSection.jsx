@@ -349,7 +349,19 @@ function HrDrillDown({ row, todayKey, onBack }) {
   const att = row.todayAttendance;
   const fmt = (v) => {
     const k = dayKey(v);
-    return k ? new Date(`${k}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '—';
+    return k ? new Date(`${k}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—';
+  };
+  const fmtTime = (t) => {
+    const m = String(t || '').match(/^(\d{1,2}):(\d{2})/);
+    if (!m) return String(t || '');
+    const h = Number(m[1]);
+    return `${((h + 11) % 12) + 1}:${m[2]} ${h >= 12 ? 'pm' : 'am'}`;
+  };
+  const fmtDateTime = (v) => {
+    if (!v) return '—';
+    const d = new Date(v);
+    if (Number.isNaN(d.getTime())) return '—';
+    return `${fmt(v)}, ${d.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' })}`;
   };
 
   return (
@@ -407,15 +419,17 @@ function HrDrillDown({ row, todayKey, onBack }) {
       <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs overflow-x-auto">
         {(tab === 'followups' || tab === 'leads') && (
           <Table
-            head={['Lead', 'Phone', 'Course', 'Branch', 'Stage', 'Follow-up', 'Added']}
+            head={['Lead', 'Phone', 'Course', 'Branch', 'Stage', 'Enquiry Date', 'Last Contacted', 'Follow-up', 'Added On']}
             rows={(tab === 'followups' ? followups : row.leads).map((l) => [
               l.fullName || l.name || '—',
               l.phone || '—',
               l.course || '—',
               l.branch || l.location || '—',
               STAGE_LABEL[l.stage] || l.stage || '—',
-              <span className={l.followUpDate && l.followUpDate < todayKey && isOpenLead(l) ? 'text-rose-600 font-bold' : l.followUpDate === todayKey ? 'text-amber-600 font-bold' : ''}>{l.followUpDate ? fmt(l.followUpDate) : '—'}</span>,
-              fmt(l.createdAt)
+              l.enquiryDate ? fmt(l.enquiryDate) : (l.enquiryMonth ? new Date(`${l.enquiryMonth}-01T00:00:00`).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' }) : '—'),
+              fmtDateTime(l.lastCallTime),
+              <span className={l.followUpDate && l.followUpDate < todayKey && isOpenLead(l) ? 'text-rose-600 font-bold' : l.followUpDate === todayKey ? 'text-amber-600 font-bold' : (l.followUpDate ? '' : 'text-slate-400')}>{l.followUpDate ? `${fmt(l.followUpDate)}${l.followUpTime ? `, ${fmtTime(l.followUpTime)}` : ''}` : 'Not set'}</span>,
+              fmtDateTime(l.createdAt)
             ])}
             empty="No leads"
           />

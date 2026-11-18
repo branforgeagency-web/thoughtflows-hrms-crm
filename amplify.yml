@@ -1,4 +1,19 @@
 version: 1
+# index.html must never be cached, or browsers keep loading an old build whose
+# script files were removed by the next deploy (404 on assets/*.js).
+customHeaders:
+  - pattern: '**/*.html'
+    headers:
+      - key: 'Cache-Control'
+        value: 'no-cache, no-store, must-revalidate'
+  - pattern: '/'
+    headers:
+      - key: 'Cache-Control'
+        value: 'no-cache, no-store, must-revalidate'
+  - pattern: 'assets/**'
+    headers:
+      - key: 'Cache-Control'
+        value: 'public, max-age=31536000, immutable'
 backend:
   phases:
     build:

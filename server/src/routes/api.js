@@ -1180,8 +1180,18 @@ router.post('/recordings/phone-sync', async (req, res) => {
     if (!AUDIO_EXTS_SYNC.includes(ext)) return res.status(400).json({ error: `Not an audio file (.${ext || '?'})` });
 
     // Skip files this counsellor already synced
-    const dup = await CallRecording.findOne({ originalFileName: fileName, counselorName });
-    if (dup) return res.json({ status: 'duplicate', recording: dup });
+    const dup = await CallRecording.findOne({ originalFileName: fileName, counselorName, isDeleted: { $ne: true } });
+    if (dup) {
+      // Same file synced again: point the record at this fresh upload, so a recording
+      // whose earlier upload never reached S3 ("NoSuchKey" on download) is repaired.
+      if (storageKey && storageKey !== dup.storageKey) {
+        dup.storageKey = storageKey;
+        dup.storageUrl = s3StorageUrl;
+        dup.audioUrl = s3StorageUrl;
+        await dup.save();
+      }
+      return res.json({ status: 'duplicate', recording: dup });
+    }
 
     const parsed = parsePhoneRecordingName(fileName);
     const recordedAt = parsed.recordedAt || (lastModified ? new Date(Number(lastModified)) : null);
@@ -4451,7 +4461,8 @@ router.get('/hr/lead-counts', async (req, res) => {
                   admittedCount: {
                     $sum: {
                       $cond: [
-                        { $or: [{ $ne: [{ $ifNull: ['$admittedStudentId', ''] }, ''] }, { $eq: ['$stage', 'admitted'] }] },
+                        // Admitted = an actual admission (student record) exists — same as the Admitted Students tab
+                        { $or: [{ $ne: [{ $ifNull: ['$admittedStudentId', ''] }, ''] }, { $ne: [{ $ifNull: ['$studentId', ''] }, ''] }] },
                         1,
                         0
                       ]
@@ -4460,7 +4471,21 @@ router.get('/hr/lead-counts', async (req, res) => {
                   doneCount: {
                     $sum: {
                       $cond: [
-                        { $and: [{ $eq: [{ $ifNull: ['$admittedStudentId', ''] }, ''] }, { $in: ['$stage', ['done', 'closed']] }] },
+                        // Done = no admission yet, but the lead's flow is finished (incl. stage "admitted"
+                        // without a student record) — same rule as the pipeline's Done column
+                        {
+                          $and: [
+                            { $eq: [{ $ifNull: ['$admittedStudentId', ''] }, ''] },
+                            { $eq: [{ $ifNull: ['$studentId', ''] }, ''] },
+                            {
+                              $or: [
+                                { $in: ['$stage', ['done', 'closed', 'admitted']] },
+                                { $eq: [{ $toLower: { $ifNull: ['$status', ''] } }, 'completed'] },
+                                { $in: [{ $toLower: { $ifNull: ['$followUpStatus', ''] } }, ['done', 'no_followup_needed', 'not_interested']] }
+                              ]
+                            }
+                          ]
+                        },
                         1,
                         0
                       ]
