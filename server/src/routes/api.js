@@ -87,8 +87,39 @@ router.use((req, res, next) => {
   next();
 });
 
+// The login token keeps the role/branch the user had when they signed in (valid 7 days).
+// Re-read them from the User record (cached 60s) so a changed role or branch applies at
+// once — e.g. a Branch Head is always pinned to their current branch.
+const liveUserCache = new Map(); // key → { at, doc }
+router.use(async (req, res, next) => {
+  try {
+    const u = req.user;
+    if (!u || u.studentId || u.trainerId) return next();
+    const key = String(u.sub || u.email || '').toLowerCase();
+    if (!key) return next();
+    let hit = liveUserCache.get(key);
+    if (!hit || Date.now() - hit.at > 60000) {
+      const or = [];
+      if (mongoose.isValidObjectId(u.sub)) or.push({ _id: u.sub });
+      if (u.email) or.push({ email: exactNameRx(u.email) });
+      const doc = or.length ? await User.findOne({ $or: or }).select('role branch department').lean() : null;
+      hit = { at: Date.now(), doc };
+      liveUserCache.set(key, hit);
+    }
+    if (hit.doc) {
+      req.user = {
+        ...u,
+        role: hit.doc.role || u.role || '',
+        branch: hit.doc.branch || u.branch || '',
+        department: hit.doc.department || u.department || ''
+      };
+    }
+  } catch (_) { /* keep the token's values */ }
+  next();
+});
+
 // A Branch Head / Business Lead account with no branch set must not fall through to "all branches"
-const isBranchHeadWithoutBranch = (req) => /branch\s*(manager|head)|business\s*lead/i.test(req.user?.role || '')
+const isBranchHeadWithoutBranch = (req) => /branch\s*(manager|head)|business\s*(lead|head)/i.test(req.user?.role || '')
   && !String(req.user?.branch || '').trim()
   && !/admin/i.test(req.user?.role || '') && !['admin', 'leadership'].includes(req.user?.department);
 router.use((req, res, next) => {
@@ -1407,17 +1438,74 @@ router.get('/hr/targets', async (req, res) => {
   }
 });
 
+// Who may assign HR targets / monthly tasks: Branch Head (own branch only),
+// HR Department Head / HR heads, Admin & Leadership. Counsellors and Team Leads cannot.
+const canAssignHrTargets = (req) => {
+  const role = String(req.user?.role || '');
+  const dept = String(req.user?.department || '').toLowerCase();
+  if (['admin', 'leadership'].includes(dept) || /admin/i.test(role)) return true;
+  if (isScopedBranchManager(req)) return true;
+  return /\bhead\b|\bhod\b|director|founder/i.test(role);
+};
+const TARGET_METRICS = {
+  admissions: 'Admissions',
+  fees: 'Fees Collected',
+  demos: 'Demos Booked',
+  calls: 'Calls Made',
+  leads: 'Leads Added',
+  custom: 'Custom Task'
+};
+const monthKeyIst = (d = new Date()) => new Date(new Date(d).getTime() + 330 * 60000).toISOString().slice(0, 7);
+const dayKeyIst = (v) => {
+  if (!v) return '';
+  if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? '' : new Date(d.getTime() + 330 * 60000).toISOString().slice(0, 10);
+};
+// Week of the month: 1–7 → W1, 8–14 → W2, 15–21 → W3, 22–28 → W4, 29–31 → W5
+const weekOfMonth = (dayKey) => Math.min(5, Math.floor((Number(dayKey.slice(8, 10)) - 1) / 7) + 1);
+const monthWeeks = (month) => {
+  const [y, m] = month.split('-').map(Number);
+  const days = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const weeks = [];
+  for (let w = 1; w <= 5; w += 1) {
+    const from = (w - 1) * 7 + 1;
+    if (from > days) break;
+    const to = w === 5 ? days : Math.min(days, w * 7);
+    weeks.push({ week: w, from: `${month}-${String(from).padStart(2, '0')}`, to: `${month}-${String(to).padStart(2, '0')}`, days: to - from + 1 });
+  }
+  return { days, weeks };
+};
+
 router.post('/hr/targets', async (req, res) => {
   try {
-    const { title, target, achieved, unit, period, assignedTo, assignedBy } = req.body;
+    if (!canAssignHrTargets(req)) return res.status(403).json({ error: 'Only the Branch Head or HR Department Head can assign targets.' });
+    const { title, target, achieved, unit, period, assignedTo, assignedBy, month, metric, notes } = req.body;
+    const metricKey = TARGET_METRICS[metric] ? metric : (month ? 'custom' : '');
+    let branch = String(req.body.branch || '').trim();
+    const who = String(assignedTo || 'All HR').trim() || 'All HR';
+    if (isScopedBranchManager(req)) {
+      // Branch Head: only "All HR" of their own branch, or one of their branch's HRs
+      branch = getBranchManagerBranch(req);
+      if (!/^all\s*hr$/i.test(who)) {
+        const staff = await branchHrNames(branch);
+        if (!staff.some((n) => normName(n) === normName(who))) {
+          return res.status(403).json({ error: `${who} is not an HR of your branch.` });
+        }
+      }
+    }
     const newTarget = await HrTarget.create({
-      title: title || 'New Target',
+      title: title || (metricKey ? TARGET_METRICS[metricKey] : 'New Target'),
       target: Number(target) || 0,
       achieved: Number(achieved) || 0,
-      unit: unit || 'Count',
-      period: period || 'today',
-      assignedTo: assignedTo || 'All HR',
-      assignedBy: assignedBy || req.user?.name || ''
+      unit: unit || (metricKey === 'fees' ? '₹' : 'Count'),
+      period: month ? 'month' : (period || 'today'),
+      assignedTo: who,
+      assignedBy: assignedBy || req.user?.name || '',
+      month: month && /^\d{4}-\d{2}$/.test(month) ? month : '',
+      metric: metricKey || 'custom',
+      branch: branchShort(branch),
+      notes: String(notes || '')
     });
     res.status(201).json(newTarget);
   } catch (err) {
@@ -1425,10 +1513,25 @@ router.post('/hr/targets', async (req, res) => {
   }
 });
 
+const targetInBranchScope = async (req, t) => {
+  if (!isScopedBranchManager(req)) return true;
+  const mine = getBranchManagerBranch(req);
+  if (/^all\s*hr$/i.test(t.assignedTo || '')) return !t.branch || bClean(t.branch) === bClean(mine);
+  const staff = await branchHrNames(mine);
+  return staff.some((n) => normName(n) === normName(t.assignedTo));
+};
+
 router.put('/hr/targets/:id', async (req, res) => {
   try {
-    const updated = await HrTarget.findByIdAndUpdate(req.params.id, req.body, { new: true });
-    if (!updated) return res.status(404).json({ error: 'Target not found' });
+    if (!canAssignHrTargets(req)) return res.status(403).json({ error: 'Only the Branch Head or HR Department Head can change targets.' });
+    const existing = await HrTarget.findById(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Target not found' });
+    if (!(await targetInBranchScope(req, existing))) return res.status(403).json({ error: 'This target belongs to another branch.' });
+    const update = { ...req.body };
+    delete update._id; delete update.entries; delete update.assignedBy;
+    if (isScopedBranchManager(req)) { delete update.branch; delete update.assignedTo; }
+    if (update.target !== undefined) update.target = Number(update.target) || 0;
+    const updated = await HrTarget.findByIdAndUpdate(req.params.id, update, { new: true });
     res.json(updated);
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -1437,10 +1540,188 @@ router.put('/hr/targets/:id', async (req, res) => {
 
 router.delete('/hr/targets/:id', async (req, res) => {
   try {
+    if (!canAssignHrTargets(req)) return res.status(403).json({ error: 'Only the Branch Head or HR Department Head can delete targets.' });
+    const existing = await HrTarget.findById(req.params.id);
+    if (!existing) return res.json({ success: true });
+    if (!(await targetInBranchScope(req, existing))) return res.status(403).json({ error: 'This target belongs to another branch.' });
     await HrTarget.findByIdAndDelete(req.params.id);
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ error: err.message });
+  }
+});
+
+// HR logs progress on a "custom" monthly task (e.g. "Visit 3 colleges").
+router.post('/hr/targets/:id/log', async (req, res) => {
+  try {
+    const t = await HrTarget.findById(req.params.id);
+    if (!t) return res.status(404).json({ error: 'Task not found' });
+    if (t.metric !== 'custom') return res.status(400).json({ error: 'This task is counted automatically from your work.' });
+    const me = String(req.user?.name || '').trim();
+    const isForMe = /^all\s*hr$/i.test(t.assignedTo || '') || normName(t.assignedTo) === normName(me);
+    const hr = canAssignHrTargets(req) && req.body?.hr ? String(req.body.hr) : me;
+    if (!isForMe && !canAssignHrTargets(req)) return res.status(403).json({ error: 'This task is not assigned to you.' });
+    const date = dayKeyIst(req.body?.date) || dayKeyIst(new Date());
+    if (t.month && date.slice(0, 7) !== t.month) return res.status(400).json({ error: `Date must be in ${t.month}.` });
+    const count = Number(req.body?.count);
+    if (!Number.isFinite(count) || count === 0) return res.status(400).json({ error: 'Enter how many you completed.' });
+    t.entries.push({ hr, date, count, at: new Date() });
+    await t.save();
+    res.json(t);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Monthly task progress: one row per (task × HR) with completed counts for each
+// week of the month and the whole month, computed live from the HR's records.
+//   ?month=YYYY-MM (default: this month IST)   ?branch=  (Admin / HR Head filter)
+router.get('/hr/targets/progress', async (req, res) => {
+  try {
+    const month = /^\d{4}-\d{2}$/.test(String(req.query.month || '')) ? req.query.month : monthKeyIst();
+    const { days, weeks } = monthWeeks(month);
+    const [yy, mm] = month.split('-').map(Number);
+    const startUtc = new Date(Date.UTC(yy, mm - 1, 1) - 330 * 60000);
+    const endUtc = new Date(Date.UTC(yy, mm, 1) - 330 * 60000);
+
+    // Whose rows this viewer may see
+    const isBM = isScopedBranchManager(req);
+    const scopeBranch = isBM ? getBranchManagerBranch(req) : branchShort(String(req.query.branch || '').replace(/^all$/i, ''));
+    const selfOnly = isScopedHr(req);
+    const teamNames = !selfOnly && req.hrTeamNames ? req.hrTeamNames : null;
+
+    // Every HR in scope (for expanding "All HR" tasks)
+    let hrPool;
+    if (scopeBranch) {
+      hrPool = (await branchHrNames(scopeBranch)).map((name) => ({ name, branch: scopeBranch }));
+    } else {
+      const users = await User.find({ $and: [HR_STAFF, ACTIVE_USER] }).select('name role branch').lean();
+      hrPool = users.filter((u) => u.name && !isDeptHeadRole(u.role) && !/\bhead\b|\bhod\b|manager|business\s*lead/i.test(u.role || ''))
+        .map((u) => ({ name: String(u.name).trim(), branch: branchShort(u.branch || '') }));
+    }
+    const poolByKey = new Map(hrPool.map((h) => [normName(h.name), h]));
+
+    const tq = { $or: [{ month }] };
+    if (month === monthKeyIst()) tq.$or.push({ month: { $in: ['', null] }, period: 'month' }); // older monthly targets
+    const tasks = await HrTarget.find(tq).sort({ createdAt: 1 }).lean();
+
+    const rowsSeed = [];
+    for (const t of tasks) {
+      const isAll = /^all\s*hr$/i.test(String(t.assignedTo || '').trim());
+      let people;
+      if (isAll) {
+        if (t.branch) {
+          // "All HR" of one branch
+          if (scopeBranch && bClean(t.branch) !== bClean(scopeBranch)) continue;
+          people = scopeBranch ? hrPool : (await branchHrNames(t.branch)).map((name) => ({ name, branch: t.branch }));
+        } else {
+          people = hrPool; // "All HR" across the organisation (HR Department Head)
+        }
+      } else {
+        const known = poolByKey.get(normName(t.assignedTo));
+        if (scopeBranch && !known) continue; // not an HR of this branch
+        people = [known || { name: String(t.assignedTo).trim(), branch: t.branch || '' }];
+      }
+      for (const p of people) {
+        if (selfOnly && !namesMatch(req.user?.name || '', p.name)) continue;
+        if (teamNames && !teamNames.some((n) => normName(n) === normName(p.name))) continue;
+        rowsSeed.push({ t, hr: p.name, hrBranch: p.branch || '' });
+      }
+    }
+
+    const hrNames = Array.from(new Set(rowsSeed.map((r) => r.hr)));
+    const metricsNeeded = new Set(rowsSeed.map((r) => r.t.metric || 'custom'));
+    const empty = () => ({ total: 0, weeks: weeks.map(() => 0) });
+    const tally = new Map(); // `${metric}::${hrKey}` → { total, weeks[] }
+    const add = (metric, hr, dayKey, amount = 1) => {
+      if (!dayKey || dayKey.slice(0, 7) !== month) return;
+      const k = `${metric}::${normName(hr)}`;
+      if (!tally.has(k)) tally.set(k, empty());
+      const bucket = tally.get(k);
+      bucket.total += amount;
+      bucket.weeks[weekOfMonth(dayKey) - 1] += amount;
+    };
+    const ownerOf = (candidates, recBranch, hrBranchOf) => hrNames.find((hr) => candidates.some((c) => c && namesMatch(hr, c, hrBranchOf(hr), recBranch)));
+    const hrBranchOf = (hr) => poolByKey.get(normName(hr))?.branch || '';
+
+    if (hrNames.length) {
+      const jobs = [];
+      if (metricsNeeded.has('admissions') || metricsNeeded.has('fees')) {
+        jobs.push(Student.find({ $or: [{ createdAt: { $gte: startUtc } }, { admissionDate: { $gte: startUtc } }, { 'receipts.0': { $exists: true } }] })
+          .select('hrName counselor counselorName branch leadBranch location admissionDate createdAt receipts paidAmount').lean()
+          .then((list) => list.forEach((s) => {
+            const recBranch = s.branch || s.leadBranch || s.location || '';
+            const owner = ownerOf([s.hrName, s.counselor, s.counselorName], recBranch, hrBranchOf);
+            if (!owner) return;
+            if (metricsNeeded.has('admissions')) add('admissions', owner, dayKeyIst(s.admissionDate || s.createdAt));
+            if (metricsNeeded.has('fees')) {
+              const receipts = Array.isArray(s.receipts) ? s.receipts : [];
+              if (receipts.length) receipts.forEach((r) => add('fees', owner, dayKeyIst(r.date || r.at), Number(r.amount) || 0));
+              else add('fees', owner, dayKeyIst(s.admissionDate || s.createdAt), Number(s.paidAmount) || 0);
+            }
+          })));
+      }
+      if (metricsNeeded.has('demos')) {
+        jobs.push(Demo.find({ createdAt: { $gte: startUtc, $lt: endUtc } })
+          .select('bookedBy counselor counselorName hrName allocatedTo branch location createdAt').lean()
+          .then((list) => list.forEach((d) => {
+            const owner = ownerOf([d.bookedBy, d.counselor, d.counselorName, d.hrName, d.allocatedTo], d.branch || d.location || '', hrBranchOf);
+            if (owner) add('demos', owner, dayKeyIst(d.createdAt));
+          })));
+      }
+      if (metricsNeeded.has('calls')) {
+        jobs.push(CallLog.find({ date: { $gte: `${month}-01`, $lte: `${month}-31` } }).select('counselorName date').lean()
+          .then((list) => list.forEach((c) => {
+            const owner = ownerOf([c.counselorName], '', hrBranchOf);
+            if (owner) add('calls', owner, c.date);
+          })));
+      }
+      if (metricsNeeded.has('leads')) {
+        jobs.push(StudentLead.find({ createdAt: { $gte: startUtc, $lt: endUtc } })
+          .select('counselorAssigned allocatedTo branch createdAt').lean()
+          .then((list) => list.forEach((l) => {
+            const owner = ownerOf([l.counselorAssigned, l.allocatedTo], l.branch || '', hrBranchOf);
+            if (owner) add('leads', owner, dayKeyIst(l.createdAt));
+          })));
+      }
+      await Promise.all(jobs);
+    }
+
+    const rows = rowsSeed.map(({ t, hr, hrBranch }) => {
+      const metric = t.metric || 'custom';
+      let got;
+      if (metric === 'custom') {
+        got = empty();
+        (t.entries || []).filter((e) => normName(e.hr) === normName(hr) && String(e.date || '').slice(0, 7) === month)
+          .forEach((e) => { const n = Number(e.count) || 0; got.total += n; got.weeks[weekOfMonth(e.date) - 1] += n; });
+      } else {
+        got = tally.get(`${metric}::${normName(hr)}`) || empty();
+      }
+      const target = Number(t.target) || 0;
+      return {
+        taskId: String(t._id),
+        title: t.title,
+        metric,
+        metricLabel: TARGET_METRICS[metric] || 'Task',
+        unit: t.unit || (metric === 'fees' ? '₹' : 'Count'),
+        notes: t.notes || '',
+        assignedTo: t.assignedTo,
+        assignedBy: t.assignedBy || '',
+        taskBranch: t.branch || '',
+        hr,
+        hrBranch,
+        target,
+        // Even weekly share of the monthly target (by the days in each week)
+        weeklyTargets: weeks.map((w) => (target ? Math.ceil((target * w.days) / days) : 0)),
+        weeks: got.weeks,
+        monthDone: got.total,
+        percent: target ? Math.round((got.total / target) * 100) : 0
+      };
+    });
+
+    res.json({ month, weeks, rows, metrics: TARGET_METRICS, canAssign: canAssignHrTargets(req), branch: scopeBranch || '' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1492,7 +1773,18 @@ function matchBranch(value, list) {
 }
 const studentBranchText = (s) => s?.branch || s?.leadBranch || s?.location || '';
 const branchShort = (v) => String(v || '').replace(/\s*(branch|\(.*\)|hq)\b/gi, '').trim();
-const isScopedBranchManager = (req) => (req.user?.role === 'Branch Manager' || /branch\s*(manager|head)|business\s*lead/i.test(req.user?.role || '')) && Boolean(req.user?.branch);
+// Branch Head / Branch Manager / Business Lead (any role naming a branch, e.g. "Branch HR Head")
+// is pinned to their own branch. Only Admin / Leadership and Department Heads see every branch.
+const BRANCH_ROLE_RX = /branch|business\s*(lead|head)|\bbm\b/i;
+const isOrgWideViewer = (req) => {
+  const role = String(req.user?.role || '');
+  const dept = String(req.user?.department || '').toLowerCase();
+  if (['admin', 'leadership'].includes(dept) || /\badmin\b|director|founder|\bceo\b/i.test(role)) return true;
+  return /department\s*head|dept\.?\s*head|\bhead\s+of\b|\bhod\b/i.test(role) && !/branch/i.test(role);
+};
+const isScopedBranchManager = (req) => Boolean(req.user?.branch)
+  && !isOrgWideViewer(req)
+  && (req.user?.role === 'Branch Manager' || BRANCH_ROLE_RX.test(req.user?.role || '') || Boolean(req.user?.isBranchManager));
 // Department Heads (HR Department Head, Dept Head · X, Head of …, HOD) sit above a
 // branch: a Branch Head never sees their records, attendance, calls or requests.
 const isDeptHeadRole = (role) => {

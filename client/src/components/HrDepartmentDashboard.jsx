@@ -525,7 +525,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     currentUser?.department === 'leadership';
 
   const [scopeMode, setScopeMode] = useState('mine'); // 'mine' | 'all'
-  const isBranchHeadUser = /branch\s*(head|manager)|business\s*lead/i.test(currentUser?.role || '');
+  const isBranchHeadUser = /branch\s*(head|manager)|branch\s*hr\s*head|business\s*(lead|head)|\bbm\b/i.test(currentUser?.role || '');
   const scopeKind = viewScope?.mode || (isBranchHeadUser && currentUser?.branch ? 'branch' : null); // 'team' | 'branch' | 'all' | null (own desk)
   const teamNamesKey = (viewScope?.names || []).join('|');
   const teamNames = useMemo(
@@ -618,7 +618,8 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       const activeLeadFilters = overrides.leadFilters ?? leadFilters;
       // Branch Head desk: always ask for this branch only (the server also pins
       // a Branch Head to their own branch; this covers Admin opening the desk)
-      const branchParam = scopeKind === 'branch' && viewScope?.branch ? { branch: viewScope.branch } : {};
+      const deskBranch = viewScope?.branch || (scopeKind === 'branch' ? currentUser?.branch : '') || '';
+      const branchParam = scopeKind === 'branch' && deskBranch ? { branch: deskBranch } : {};
       const leadParams = {
         ...activeLeadFilters,
         ...branchParam,
@@ -2029,7 +2030,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
           )}
           </div>
         ) : activeTab === 'My Targets' ? (
-          <HrMyTargets currentUser={currentUser} students={scopedStudents} />
+          <HrMyTargets currentUser={currentUser} students={scopedStudents} scopeKind={scopeKind} branch={viewScope?.branch || (scopeKind === 'branch' ? currentUser?.branch : '') || ''} />
         ) : activeTab === 'Admitted Students' ? (
           <HrAdmittedStudentsCrm 
             students={scopedStudents} 

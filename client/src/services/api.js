@@ -933,6 +933,19 @@ export const updateHrTarget = async (id, targetData) => {
   return res.data;
 };
 
+// Monthly tasks: weekly & monthly completion per HR (Branch Head / HR Head / HR)
+export const getHrTargetProgress = async (params) => {
+  const res = await api.get('/hr/targets/progress', { params });
+  return res.data;
+};
+
+// HR logs progress on a custom monthly task
+export const logHrTargetProgress = async (id, entry) => {
+  const res = await api.post(`/hr/targets/${id}/log`, entry);
+  notifyDataUpdate('targets');
+  return res.data;
+};
+
 export const deleteHrTarget = async (id) => {
   const res = await api.delete(`/hr/targets/${id}`);
   notifyDataUpdate('targets');

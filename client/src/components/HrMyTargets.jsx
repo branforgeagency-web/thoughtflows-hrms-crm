@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { getStudents, getHrTargets, onDataUpdate } from '../services/api';
 import { useIncentivePolicy, progressiveIncentive } from '../utils/incentive';
+import HrMonthlyTasks from './HrMonthlyTasks';
 import { matchesHrOwnerName, normHrName as normName } from '../utils/hrNameMatch';
 
 const monthKey = (d) => {
@@ -17,7 +18,15 @@ const inr = (n) => `₹${(Number(n) || 0).toLocaleString('en-IN')}`;
 
 // My Targets & Earnings — admissions from the student records, the target from
 // the Head of HR (or Admin's default) and incentive from Admin's policy bands.
-export default function HrMyTargets({ students: propStudents, currentUser }) {
+export default function HrMyTargets(props) {
+  // Branch Head / HR Department Head: assign month-wise tasks & track their HRs
+  if (props.scopeKind === 'branch' || props.scopeKind === 'all') {
+    return <HrMonthlyTasks currentUser={props.currentUser} scopeKind={props.scopeKind} branch={props.branch} />;
+  }
+  return <HrMyTargetsCounsellor {...props} />;
+}
+
+function HrMyTargetsCounsellor({ students: propStudents, currentUser, scopeKind = null, branch = '' }) {
   const [showBands, setShowBands] = useState(false);
   const [allStudents, setAllStudents] = useState(propStudents || []);
   const [headTarget, setHeadTarget] = useState(null);
@@ -192,6 +201,8 @@ export default function HrMyTargets({ students: propStudents, currentUser }) {
           <span>admissions vs last month</span>
         </div>
       </div>
+
+      <HrMonthlyTasks currentUser={currentUser} scopeKind={scopeKind} branch={branch} />
 
       {showBands && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">

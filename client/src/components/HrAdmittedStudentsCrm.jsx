@@ -194,6 +194,18 @@ export default function HrAdmittedStudentsCrm({
 
   // Filter students (Supports Name, ID, Phone, Course, Email, and Txn ID / Receipt No)
   const filteredStudents = students.filter(s => {
+    // Filters from the overview cards
+    if (activeTabFilter === 'admitted_month') {
+      const created = s.createdAt ? new Date(s.createdAt) : null;
+      const now = new Date();
+      if (!created || isNaN(created.getTime()) || created.getMonth() !== now.getMonth() || created.getFullYear() !== now.getFullYear()) return false;
+    }
+    if (activeTabFilter === 'onboarding_done' || activeTabFilter === 'onboarding_progress') {
+      const m = /^(\d+)\s*\/\s*(\d+)/.exec(s.onboardStatus || '');
+      const done = Boolean(m && m[1] === m[2]);
+      if (activeTabFilter === 'onboarding_done' ? !done : done) return false;
+    }
+    if (activeTabFilter === 'interviewing' && !/interview/i.test(s.placementStatus || '')) return false;
     if (activeTabFilter === 'in_course' && s.statusGroup !== 'in_course') return false;
     if (activeTabFilter === 'placed' && s.statusGroup !== 'placed') return false;
     if (activeTabFilter === 'on_hold' && s.statusGroup !== 'on_hold') return false;
@@ -268,6 +280,21 @@ export default function HrAdmittedStudentsCrm({
   }, [students]);
 
   const currentMonthLabel = new Date().toLocaleString('en-US', { month: 'long' }).toUpperCase();
+
+  // Clicking a card shows those students in the table below (click again to clear)
+  const CARD_FILTER_LABELS = {
+    admitted_month: `Admitted in ${new Date().toLocaleString('en-US', { month: 'long' })}`,
+    onboarding_done: 'Onboarding done',
+    onboarding_progress: 'Onboarding in progress',
+    interviewing: 'Interviewing'
+  };
+  const pickCard = (key) => {
+    setActiveTabFilter((cur) => (cur === key ? 'all' : key));
+    setTimeout(() => {
+      const el = document.getElementById('admitted-students-table');
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 50);
+  };
 
   return (
     <div className="space-y-4 pb-12">
@@ -383,7 +410,9 @@ export default function HrAdmittedStudentsCrm({
       {/* 4 Overview Metric Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
         {/* Card 1 */}
-        <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/90 shadow-xs border-l-4 border-l-cyan-500 flex flex-col justify-between">
+        <div role="button" tabIndex={0} onClick={() => pickCard('admitted_month')} onKeyDown={(e) => e.key === 'Enter' && pickCard('admitted_month')}
+          title="Click to show these students"
+          className={`bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/90 shadow-xs border-l-4 border-l-cyan-500 flex flex-col justify-between cursor-pointer hover:shadow-md hover:-translate-y-0.5 transition-all ${activeTabFilter === 'admitted_month' ? 'ring-2 ring-[#00897b] ring-offset-1' : ''}`}>
           <div className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400 font-mono">
             ADMITTED · {currentMonthLabel}
           </div>
@@ -396,47 +425,64 @@ export default function HrAdmittedStudentsCrm({
         </div>
 
         {/* Card 2 */}
-        <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/90 shadow-xs border-l-4 border-l-teal-500 flex flex-col justify-between">
+        <div role="button" tabIndex={0} onClick={() => pickCard('onboarding_done')} onKeyDown={(e) => e.key === 'Enter' && pickCard('onboarding_done')}
+          title="Click to show these students"
+          className={`bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/90 shadow-xs border-l-4 border-l-teal-500 flex flex-col justify-between cursor-pointer hover:shadow-md hover:-translate-y-0.5 transition-all ${activeTabFilter === 'onboarding_done' ? 'ring-2 ring-[#00897b] ring-offset-1' : ''}`}>
           <div className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400 font-mono">
             ONBOARDING DONE
           </div>
           <div className="text-3xl sm:text-4xl font-black text-slate-900 my-2">
             {stats.onboardingDone}
           </div>
-          <div className="text-xs text-emerald-600 font-mono font-medium">
+          <button type="button" onClick={(e) => { e.stopPropagation(); pickCard('onboarding_progress'); }}
+            className={`self-start text-xs font-mono font-medium hover:underline cursor-pointer ${activeTabFilter === 'onboarding_progress' ? 'text-[#00897b] font-bold underline' : 'text-emerald-600'}`}>
             {stats.onboardingInProgress} in progress
-          </div>
+          </button>
         </div>
 
         {/* Card 3 */}
-        <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/90 shadow-xs border-l-4 border-l-cyan-600 flex flex-col justify-between">
+        <div role="button" tabIndex={0} onClick={() => pickCard('in_course')} onKeyDown={(e) => e.key === 'Enter' && pickCard('in_course')}
+          title="Click to show these students"
+          className={`bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/90 shadow-xs border-l-4 border-l-cyan-600 flex flex-col justify-between cursor-pointer hover:shadow-md hover:-translate-y-0.5 transition-all ${activeTabFilter === 'in_course' ? 'ring-2 ring-[#00897b] ring-offset-1' : ''}`}>
           <div className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400 font-mono">
             IN COURSE
           </div>
           <div className="text-3xl sm:text-4xl font-black text-slate-900 my-2">
             {stats.inCourse}
           </div>
-          <div className="text-xs text-emerald-600 font-mono font-medium">
+          <button type="button" onClick={(e) => { e.stopPropagation(); pickCard('on_hold'); }}
+            className={`self-start text-xs font-mono font-medium hover:underline cursor-pointer ${activeTabFilter === 'on_hold' ? 'text-[#00897b] font-bold underline' : 'text-emerald-600'}`}>
             {stats.onHold} on hold
-          </div>
+          </button>
         </div>
 
         {/* Card 4 */}
-        <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/90 shadow-xs border-l-4 border-l-teal-600 flex flex-col justify-between">
+        <div role="button" tabIndex={0} onClick={() => pickCard('placed')} onKeyDown={(e) => e.key === 'Enter' && pickCard('placed')}
+          title="Click to show these students"
+          className={`bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/90 shadow-xs border-l-4 border-l-teal-600 flex flex-col justify-between cursor-pointer hover:shadow-md hover:-translate-y-0.5 transition-all ${activeTabFilter === 'placed' ? 'ring-2 ring-[#00897b] ring-offset-1' : ''}`}>
           <div className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400 font-mono">
             PLACED
           </div>
           <div className="text-3xl sm:text-4xl font-black text-slate-900 my-2">
             {stats.placed}
           </div>
-          <div className="text-xs text-emerald-600 font-mono font-medium">
+          <button type="button" onClick={(e) => { e.stopPropagation(); pickCard('interviewing'); }}
+            className={`self-start text-xs font-mono font-medium hover:underline cursor-pointer ${activeTabFilter === 'interviewing' ? 'text-[#00897b] font-bold underline' : 'text-emerald-600'}`}>
             {stats.interviewing} interviewing
-          </div>
+          </button>
         </div>
       </div>
 
       {/* Filter Row & Search */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
+      {CARD_FILTER_LABELS[activeTabFilter] && (
+        <div className="flex items-center gap-2 text-xs">
+          <span className="px-3 py-1.5 rounded-full bg-[#00897b] text-white font-bold">
+            Showing: {CARD_FILTER_LABELS[activeTabFilter]} · {filteredStudents.length}
+          </span>
+          <button type="button" onClick={() => setActiveTabFilter('all')} className="text-slate-500 hover:text-slate-800 font-semibold underline cursor-pointer">Clear</button>
+        </div>
+      )}
+      <div id="admitted-students-table" className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
         <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
           <button
             onClick={() => setActiveTabFilter('all')}

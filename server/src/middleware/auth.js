@@ -123,6 +123,7 @@ const STAFF_RULES = [
   ['POST', /^\/hr\/targets$/, ['hr']],
   ['PUT', /^\/hr\/targets\/[^/]+$/, ['hr']],
   ['DELETE', /^\/hr\/targets\/[^/]+$/, ['hr']],
+  ['POST', /^\/hr\/targets\/[^/]+\/log$/, ['hr']],
   // Training
   ['PUT', /^\/students\/[^/]+\/(syllabus-complete|recommendation)$/, ['training']],
   ['POST', /^\/students\/[^/]+\/remedial$/, ['training']],
