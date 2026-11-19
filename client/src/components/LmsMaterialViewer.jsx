@@ -33,9 +33,7 @@ const STREAM_MIN_BYTES = 12 * 1024 * 1024;
 // (animations, transitions, fonts, layered images) but refuses files over ~100 MB.
 const OFFICE_VIEW_MAX_BYTES = 100 * 1024 * 1024;
 const PRESENTATION_EXTS = new Set(['pptx', 'ppt', 'ppsx', 'pps', 'potx']);
-const VIEW_PREF_KEY = 'tf_lms_ppt_view';
-const readViewPref = () => { try { return localStorage.getItem(VIEW_PREF_KEY) || 'office'; } catch (_) { return 'office'; } };
-const writeViewPref = (v) => { try { localStorage.setItem(VIEW_PREF_KEY, v); } catch (_) {} };
+
 const VIDEO_EXTS = new Set(['mp4', 'mov', 'webm', 'mkv', 'm4v']);
 const AUDIO_EXTS = new Set(['mp3', 'm4a', 'wav', 'aac', 'ogg', 'opus']);
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif']);
@@ -565,11 +563,11 @@ export default function LmsMaterialViewer({ material, canDownload = false, onClo
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [stageSize, setStageSize] = useState({ width: 800, height: 500 });
   // 'office' = PowerPoint web viewer (animations), 'quick' = built-in slide renderer
-  const [pptView, setPptView] = useState(readViewPref);
+  // Presentations always open exactly as uploaded (PowerPoint's own viewer)
+  const pptView = 'office';
   const [officeUrl, setOfficeUrl] = useState('');
   const [officeLoading, setOfficeLoading] = useState(false);
   const [officeUnavailable, setOfficeUnavailable] = useState(''); // why Animated view can't be used
-  const switchPptView = (v) => { writeViewPref(v); setPptView(v); };
 
   const containerRef = useRef(null);
   const stageRef = useRef(null);
@@ -917,33 +915,12 @@ export default function LmsMaterialViewer({ material, canDownload = false, onClo
               </>
             )}
 
-            {(officeUrl || viewerMode === 'office' || officeUnavailable) && (
-              <div className="flex items-center bg-slate-800 rounded-xl border border-slate-700 overflow-hidden text-[11px] font-bold">
-                <button
-                  type="button"
-                  onClick={() => (officeUrl ? switchPptView('office') : null)}
-                  disabled={!officeUrl}
-                  className={`px-2.5 py-2 ${officeUrl ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'} ${pptView === 'office' && officeUrl ? 'bg-teal-600 text-white' : 'text-slate-300 hover:bg-slate-700'}`}
-                  title={officeUrl ? 'PowerPoint view — animations, transitions and exact layout' : officeUnavailable}
-                >
-                  Animated view
-                </button>
-                <button
-                  type="button"
-                  onClick={() => switchPptView('quick')}
-                  className={`px-2.5 py-2 cursor-pointer ${pptView === 'quick' || !officeUrl ? 'bg-teal-600 text-white' : 'text-slate-300 hover:bg-slate-700'}`}
-                  title="Built-in viewer — works offline after first open, no animations"
-                >
-                  Quick view
-                </button>
-              </div>
-            )}
             {!officeUrl && officeUnavailable && (
               <span
                 className="px-2.5 py-1 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-200 text-[11px] font-semibold max-w-[260px] truncate"
                 title={officeUnavailable}
               >
-                No animations — hover for why
+                Simplified preview — hover for why
               </span>
             )}
 
@@ -1127,7 +1104,6 @@ export default function LmsMaterialViewer({ material, canDownload = false, onClo
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-slate-300 pointer-events-none">
                   <Loader2 className="w-8 h-8 animate-spin text-teal-400" />
                   <p className="text-xs font-semibold">Preparing PowerPoint view with animations…</p>
-                  <p className="text-[11px] text-slate-500">Stuck? Switch to Quick view.</p>
                 </div>
               )}
               <iframe
