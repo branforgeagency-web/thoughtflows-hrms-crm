@@ -1322,6 +1322,12 @@ export const uploadTrainingMaterial = async (data) => {
 export const trainingMaterialFileUrl = (id, download = false) =>
   withAuthToken(`${API_BASE}/training/materials/${id}/file${download ? '?download=1' : ''}`);
 
+// Server-signed, short-lived direct storage link (for the PowerPoint web viewer)
+export const getTrainingMaterialViewUrl = async (id) => {
+  const res = await api.get(`/training/materials/${id}/view-url`);
+  return res.data;
+};
+
 export const fetchTrainingMaterialBuffer = async (id) => {
   const res = await api.get(`/training/materials/${id}/file`, {
     params: { stream: 1 },

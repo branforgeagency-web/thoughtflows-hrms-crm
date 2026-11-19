@@ -21,7 +21,7 @@ import {
   AlertCircle,
   Loader2
 } from 'lucide-react';
-import { fetchTrainingMaterialBuffer, trainingMaterialFileUrl } from '../services/api';
+import { fetchTrainingMaterialBuffer, trainingMaterialFileUrl, getTrainingMaterialViewUrl } from '../services/api';
 import { getStorageFileUrl, storedInActiveBucket } from '../services/amplifyStorage';
 
 // Files at or under this size are downloaded whole and rendered locally (PPTX
@@ -568,6 +568,7 @@ export default function LmsMaterialViewer({ material, canDownload = false, onClo
   const [pptView, setPptView] = useState(readViewPref);
   const [officeUrl, setOfficeUrl] = useState('');
   const [officeLoading, setOfficeLoading] = useState(false);
+  const [officeUnavailable, setOfficeUnavailable] = useState(''); // why Animated view can't be used
   const switchPptView = (v) => { writeViewPref(v); setPptView(v); };
 
   const containerRef = useRef(null);
@@ -629,10 +630,26 @@ export default function LmsMaterialViewer({ material, canDownload = false, onClo
         // Presentations: PowerPoint web viewer (real animations) when the file is small enough
         const isPresentation = PRESENTATION_EXTS.has(ext) || mime.includes('presentation') || mime.includes('powerpoint');
         setOfficeUrl('');
+        setOfficeUnavailable('');
+        if (isPresentation && sizeBytes > OFFICE_VIEW_MAX_BYTES) {
+          setOfficeUnavailable(`File is ${(sizeBytes / (1024 * 1024)).toFixed(0)} MB — PowerPoint's web viewer only opens files up to 100 MB. Compress pictures and re-upload to get animations.`);
+        }
         if (isPresentation && (!sizeBytes || sizeBytes <= OFFICE_VIEW_MAX_BYTES)) {
           setLoadingText('Opening presentation…');
-          const direct = await resolveDirectUrl(material);
+          // Ask the server for a signed storage link first (works for every bucket),
+          // then fall back to signing in the browser.
+          let direct = '';
+          try {
+            const v = await getTrainingMaterialViewUrl(material._id);
+            direct = v?.url || '';
+          } catch (err) {
+            console.warn('view-url failed, trying browser signing:', err?.response?.data?.error || err?.message);
+          }
+          if (!direct) direct = await resolveDirectUrl(material);
           if (cancelled) return;
+          if (!(direct && direct.startsWith('https://') && !direct.includes('/api/'))) {
+            setOfficeUnavailable('This file has no cloud storage link, so PowerPoint view can\'t open it. Re-upload the file to enable animations.');
+          }
           // Microsoft fetches the file itself, so it needs a direct storage link (not our login-protected API)
           if (direct && direct.startsWith('https://') && !direct.includes('/api/')) {
             const url = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(direct)}`;
@@ -900,32 +917,33 @@ export default function LmsMaterialViewer({ material, canDownload = false, onClo
               </>
             )}
 
-            {(officeUrl || viewerMode === 'office') && (
+            {(officeUrl || viewerMode === 'office' || officeUnavailable) && (
               <div className="flex items-center bg-slate-800 rounded-xl border border-slate-700 overflow-hidden text-[11px] font-bold">
                 <button
                   type="button"
-                  onClick={() => switchPptView('office')}
-                  className={`px-2.5 py-2 cursor-pointer ${pptView === 'office' ? 'bg-teal-600 text-white' : 'text-slate-300 hover:bg-slate-700'}`}
-                  title="PowerPoint view — animations, transitions and exact layout"
+                  onClick={() => (officeUrl ? switchPptView('office') : null)}
+                  disabled={!officeUrl}
+                  className={`px-2.5 py-2 ${officeUrl ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'} ${pptView === 'office' && officeUrl ? 'bg-teal-600 text-white' : 'text-slate-300 hover:bg-slate-700'}`}
+                  title={officeUrl ? 'PowerPoint view — animations, transitions and exact layout' : officeUnavailable}
                 >
                   Animated view
                 </button>
                 <button
                   type="button"
                   onClick={() => switchPptView('quick')}
-                  className={`px-2.5 py-2 cursor-pointer ${pptView === 'quick' ? 'bg-teal-600 text-white' : 'text-slate-300 hover:bg-slate-700'}`}
+                  className={`px-2.5 py-2 cursor-pointer ${pptView === 'quick' || !officeUrl ? 'bg-teal-600 text-white' : 'text-slate-300 hover:bg-slate-700'}`}
                   title="Built-in viewer — works offline after first open, no animations"
                 >
                   Quick view
                 </button>
               </div>
             )}
-            {!officeUrl && viewerMode === 'pptx' && Number(material?.fileSize) > OFFICE_VIEW_MAX_BYTES && (
+            {!officeUrl && officeUnavailable && (
               <span
-                className="px-2.5 py-1 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-200 text-[11px] font-semibold"
-                title="Compress pictures in PowerPoint (File → Compress Pictures) and re-upload under 100 MB to get animations"
+                className="px-2.5 py-1 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-200 text-[11px] font-semibold max-w-[260px] truncate"
+                title={officeUnavailable}
               >
-                No animations: file over 100 MB
+                No animations — hover for why
               </span>
             )}
 

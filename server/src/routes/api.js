@@ -11732,6 +11732,33 @@ router.post('/training/materials', async (req, res) => {
   }
 });
 
+// Short-lived direct storage link for in-dashboard viewing (e.g. the PowerPoint
+// web viewer, which must fetch the file itself and can't send our login token).
+// Same access rules as /file; never a download link.
+router.get('/training/materials/:id/view-url', async (req, res) => {
+  try {
+    const doc = await TrainingMaterial.findById(req.params.id);
+    if (!doc) return res.status(404).json({ error: 'Material not found' });
+    if (req.user?.department === 'student') {
+      const st = await findStudentByAnyId(req.user.studentId || '');
+      const batch = studentBatchOf(st);
+      if (!batch || !(doc.assignments || []).some((a) => a.batch === batch)) return res.status(403).json({ error: 'This material is not assigned to your batch' });
+    } else if (!(await canSeeAllTrainingMaterials(req)) && !isMaterialAllocatedToUser(doc, req.user)) {
+      return res.status(403).json({ error: 'This material has not been allocated to you. Please ask your Trainer Head or Manager.' });
+    }
+    if (!doc.storageUrl && !doc.storageKey) return res.status(404).json({ error: 'This file is not in cloud storage.' });
+    const url = signedUrlForStoredFile({
+      storageKey: doc.storageKey, storageUrl: doc.storageUrl, expiresIn: 3600,
+      download: false, fileName: doc.fileName
+    });
+    if (!url) return res.status(404).json({ error: 'Could not create a viewing link for this file.' });
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ url, fileSize: doc.fileSize || 0 });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 router.get('/training/materials/:id/file', async (req, res) => {
   try {
     const doc = await TrainingMaterial.findById(req.params.id).select('+data');
