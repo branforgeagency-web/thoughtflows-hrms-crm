@@ -6596,6 +6596,10 @@ router.put('/demos/:id', async (req, res) => {
     }
 
     const prevStatus = String(existing.status || '').toLowerCase();
+    // A real outcome (Attended, rescheduled, etc.) replaces the system's auto "missed" mark
+    if (req.body.status && req.body.status !== 'missed') {
+      Object.assign(req.body, { autoMissed: false, missedAt: null, missedReason: '', disabledForStart: false });
+    }
     const updated = await Demo.findByIdAndUpdate(
       req.params.id,
       { $set: req.body },
@@ -13310,10 +13314,16 @@ router.post('/demos/bulk-outcome', async (req, res) => {
     const updatedList = [];
     for (const id of ids) {
       if (!mongoose.isValidObjectId(id)) continue;
-      const before = await Demo.findById(id).select('status').lean();
+      const before = await Demo.findById(id).select('status autoMissed').lean();
       if (!before) continue;
       const changed = String(before.status || '').toLowerCase() !== s;
-      const updated = changed ? await Demo.findByIdAndUpdate(id, { $set: { status: s } }, { new: true }) : await Demo.findById(id);
+      const set = { status: s };
+      // A trainer-recorded outcome replaces the system's auto "missed" mark
+      if (s !== 'missed') Object.assign(set, { autoMissed: false, missedAt: null, missedReason: '', disabledForStart: false });
+      else if (before.autoMissed) set.autoMissed = false; // trainer confirmed a real no-show
+      const updated = (changed || before.autoMissed)
+        ? await Demo.findByIdAndUpdate(id, { $set: set }, { new: true })
+        : await Demo.findById(id);
       if (updated) {
         // Repeat End / Save clicks on an already-marked candidate do nothing
         if (changed && s === 'attended') {

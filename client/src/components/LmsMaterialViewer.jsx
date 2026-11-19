@@ -29,6 +29,13 @@ import { getStorageFileUrl, storedInActiveBucket } from '../services/amplifyStor
 // the S3 bucket instead, so a 200 MB deck or class video never has to be pulled
 // into a single ArrayBuffer in the browser.
 const STREAM_MIN_BYTES = 12 * 1024 * 1024;
+// Microsoft's PowerPoint web viewer renders decks exactly as PowerPoint does
+// (animations, transitions, fonts, layered images) but refuses files over ~100 MB.
+const OFFICE_VIEW_MAX_BYTES = 100 * 1024 * 1024;
+const PRESENTATION_EXTS = new Set(['pptx', 'ppt', 'ppsx', 'pps', 'potx']);
+const VIEW_PREF_KEY = 'tf_lms_ppt_view';
+const readViewPref = () => { try { return localStorage.getItem(VIEW_PREF_KEY) || 'office'; } catch (_) { return 'office'; } };
+const writeViewPref = (v) => { try { localStorage.setItem(VIEW_PREF_KEY, v); } catch (_) {} };
 const VIDEO_EXTS = new Set(['mp4', 'mov', 'webm', 'mkv', 'm4v']);
 const AUDIO_EXTS = new Set(['mp3', 'm4a', 'wav', 'aac', 'ogg', 'opus']);
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif']);
@@ -53,6 +60,138 @@ async function resolveDirectUrl(material) {
   if (material?._id) return trainingMaterialFileUrl(material._id);
   if (material?.storageUrl) return material.storageUrl;
   return '';
+}
+
+// ---------------------------------------------------------------------------
+// Presentation caching — so reopening a deck doesn't re-download 100+ MB.
+//  1. In-memory: the parsed deck for the last few opened materials (instant reopen).
+//  2. Cache Storage: the raw file bytes, survives page reloads / next login.
+//  3. In-flight sharing: closing the viewer mid-download doesn't abort it; reopening
+//     picks up the same download instead of starting over at 0%.
+// ---------------------------------------------------------------------------
+const DECK_MEM_MAX = 4;
+const BYTES_CACHE_NAME = 'tf-lms-decks-v1';
+const BYTES_CACHE_MAX = 8;
+const deckMemCache = new Map(); // key -> { viewerMode, deck?, legacyLines? }
+const inflightDownloads = new Map(); // key -> { promise, listeners:Set, last }
+
+const materialCacheKey = (m) => [
+  m?._id || '',
+  m?.fileSize || '',
+  m?.updatedAt || m?.uploadedAt || '',
+  m?.storageKey || m?.fileName || ''
+].join('|');
+const bytesCacheRequest = (key) => new Request(`https://lms-deck-cache.local/${encodeURIComponent(key)}`);
+
+function collectBlobUrls(value, out = new Set(), depth = 0) {
+  if (depth > 12 || value == null) return out;
+  if (typeof value === 'string') {
+    if (value.startsWith('blob:')) out.add(value);
+  } else if (Array.isArray(value)) {
+    value.forEach((v) => collectBlobUrls(v, out, depth + 1));
+  } else if (typeof value === 'object') {
+    Object.values(value).forEach((v) => collectBlobUrls(v, out, depth + 1));
+  }
+  return out;
+}
+
+function rememberDeck(key, entry) {
+  deckMemCache.delete(key);
+  deckMemCache.set(key, entry);
+  while (deckMemCache.size > DECK_MEM_MAX) {
+    const [oldKey, oldEntry] = deckMemCache.entries().next().value;
+    deckMemCache.delete(oldKey);
+    // Free the slide images of decks we no longer keep
+    collectBlobUrls(oldEntry?.deck).forEach((u) => { try { URL.revokeObjectURL(u); } catch (_) {} });
+  }
+}
+function recallDeck(key) {
+  const entry = deckMemCache.get(key);
+  if (entry) { deckMemCache.delete(key); deckMemCache.set(key, entry); } // mark recently used
+  return entry;
+}
+
+async function readCachedBytes(key) {
+  try {
+    if (typeof caches === 'undefined') return null;
+    const cache = await caches.open(BYTES_CACHE_NAME);
+    const hit = await cache.match(bytesCacheRequest(key));
+    return hit ? await hit.arrayBuffer() : null;
+  } catch (_) {
+    return null;
+  }
+}
+async function storeCachedBytes(key, buffer) {
+  try {
+    if (typeof caches === 'undefined') return;
+    const cache = await caches.open(BYTES_CACHE_NAME);
+    // Drop older versions of the same material, then keep only the newest few files
+    const id = key.split('|')[0];
+    const existing = await cache.keys();
+    for (const req of existing) {
+      const k = decodeURIComponent(req.url.split('/').pop() || '');
+      if (k.split('|')[0] === id && k !== key) await cache.delete(req);
+    }
+    await cache.put(bytesCacheRequest(key), new Response(buffer, {
+      headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(buffer.byteLength) }
+    }));
+    const keys = await cache.keys();
+    for (let i = 0; i < keys.length - BYTES_CACHE_MAX; i += 1) await cache.delete(keys[i]);
+  } catch (err) {
+    console.warn('Could not cache presentation locally (storage full?):', err?.message || err);
+  }
+}
+
+// One shared download per material; callers subscribe to progress.
+function sharedDownload(key, startFn, onProgress) {
+  let job = inflightDownloads.get(key);
+  if (!job) {
+    const listeners = new Set();
+    job = { listeners, last: null, promise: null };
+    const report = (info) => { job.last = info; listeners.forEach((fn) => { try { fn(info); } catch (_) {} }); };
+    job.promise = (async () => {
+      try {
+        const buffer = await startFn(report);
+        storeCachedBytes(key, buffer); // fire-and-forget
+        return buffer;
+      } finally {
+        inflightDownloads.delete(key);
+      }
+    })();
+    inflightDownloads.set(key, job);
+  }
+  if (onProgress) {
+    job.listeners.add(onProgress);
+    if (job.last) onProgress(job.last);
+  }
+  return {
+    promise: job.promise,
+    unsubscribe: () => { if (onProgress) job.listeners.delete(onProgress); }
+  };
+}
+
+async function streamToBuffer(url, sizeBytes, report) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Storage returned ${res.status}: ${res.statusText}`);
+  const total = Number(res.headers.get('content-length')) || sizeBytes;
+  const reader = res.body?.getReader();
+  if (!reader || !(total > 0)) return res.arrayBuffer();
+  const chunks = [];
+  let loaded = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    loaded += value.length;
+    report({ loaded, total });
+  }
+  const allBytes = new Uint8Array(loaded);
+  let pos = 0;
+  for (const chunk of chunks) {
+    allBytes.set(chunk, pos);
+    pos += chunk.length;
+  }
+  return allBytes.buffer;
 }
 
 // Convert pptxtojson Fill object into CSS background properties
@@ -425,6 +564,11 @@ export default function LmsMaterialViewer({ material, canDownload = false, onClo
   const [showNotes, setShowNotes] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [stageSize, setStageSize] = useState({ width: 800, height: 500 });
+  // 'office' = PowerPoint web viewer (animations), 'quick' = built-in slide renderer
+  const [pptView, setPptView] = useState(readViewPref);
+  const [officeUrl, setOfficeUrl] = useState('');
+  const [officeLoading, setOfficeLoading] = useState(false);
+  const switchPptView = (v) => { writeViewPref(v); setPptView(v); };
 
   const containerRef = useRef(null);
   const stageRef = useRef(null);
@@ -482,49 +626,68 @@ export default function LmsMaterialViewer({ material, canDownload = false, onClo
           return;
         }
 
+        // Presentations: PowerPoint web viewer (real animations) when the file is small enough
+        const isPresentation = PRESENTATION_EXTS.has(ext) || mime.includes('presentation') || mime.includes('powerpoint');
+        setOfficeUrl('');
+        if (isPresentation && (!sizeBytes || sizeBytes <= OFFICE_VIEW_MAX_BYTES)) {
+          setLoadingText('Opening presentation…');
+          const direct = await resolveDirectUrl(material);
+          if (cancelled) return;
+          // Microsoft fetches the file itself, so it needs a direct storage link (not our login-protected API)
+          if (direct && direct.startsWith('https://') && !direct.includes('/api/')) {
+            const url = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(direct)}`;
+            setOfficeUrl(url);
+            if (pptView === 'office') {
+              setOfficeLoading(true);
+              setViewerMode('office');
+              return;
+            }
+          }
+        }
+
         // Presentations (PPTX, PPT) & other inline materials: fetch bytes and parse
-        let buffer;
-        const direct = await resolveDirectUrl(material);
+        const cacheKey = materialCacheKey(material);
+
+        // 1. Already parsed in this session → show instantly
+        const remembered = recallDeck(cacheKey);
+        if (remembered) {
+          if (remembered.viewerMode === 'pptx') setDeck(remembered.deck);
+          else setLegacyLines(remembered.legacyLines || []);
+          setViewerMode(remembered.viewerMode);
+          return;
+        }
+
+        // 2. Downloaded before (this or an earlier visit) → read from the browser's cache
+        setLoadingText('Opening presentation…');
+        let buffer = await readCachedBytes(cacheKey);
         if (cancelled) return;
 
-        if (direct && (direct.startsWith('http://') || direct.startsWith('https://')) && !direct.includes('/api/')) {
-          setLoadingText(
-            sizeBytes > 10 * 1024 * 1024
-              ? `Downloading presentation (${(sizeBytes / (1024 * 1024)).toFixed(1)} MB)…`
-              : 'Loading presentation…'
-          );
-          const res = await fetch(direct);
-          if (!res.ok) throw new Error(`Storage returned ${res.status}: ${res.statusText}`);
-
-          const total = Number(res.headers.get('content-length')) || sizeBytes;
-          const reader = res.body?.getReader();
-          if (reader && total > 0) {
-            const chunks = [];
-            let loaded = 0;
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              if (cancelled) return;
-              chunks.push(value);
-              loaded += value.length;
-              const pct = Math.round((loaded / total) * 100);
-              const mbLoaded = (loaded / (1024 * 1024)).toFixed(1);
-              const mbTotal = (total / (1024 * 1024)).toFixed(1);
-              setLoadingText(`Downloading presentation: ${pct}% (${mbLoaded} of ${mbTotal} MB)…`);
+        // 3. Otherwise download once (shared with any download already running)
+        if (!buffer) {
+          const onProgress = ({ loaded, total }) => {
+            if (cancelled) return;
+            const pct = Math.round((loaded / total) * 100);
+            const mbLoaded = (loaded / (1024 * 1024)).toFixed(1);
+            const mbTotal = (total / (1024 * 1024)).toFixed(1);
+            setLoadingText(`Downloading presentation: ${pct}% (${mbLoaded} of ${mbTotal} MB)… — kept for next time`);
+          };
+          const dl = sharedDownload(cacheKey, async (report) => {
+            const direct = await resolveDirectUrl(material);
+            if (direct && (direct.startsWith('http://') || direct.startsWith('https://')) && !direct.includes('/api/')) {
+              return streamToBuffer(direct, sizeBytes, report);
             }
-            const allBytes = new Uint8Array(loaded);
-            let pos = 0;
-            for (const chunk of chunks) {
-              allBytes.set(chunk, pos);
-              pos += chunk.length;
-            }
-            buffer = allBytes.buffer;
+            return fetchTrainingMaterialBuffer(material._id);
+          }, onProgress);
+          if (sizeBytes > 10 * 1024 * 1024) {
+            setLoadingText(`Downloading presentation (${(sizeBytes / (1024 * 1024)).toFixed(1)} MB)… — kept for next time`);
           } else {
-            buffer = await res.arrayBuffer();
+            setLoadingText('Loading presentation…');
           }
-        } else {
-          setLoadingText('Loading file from server…');
-          buffer = await fetchTrainingMaterialBuffer(material._id);
+          try {
+            buffer = await dl.promise;
+          } finally {
+            dl.unsubscribe();
+          }
         }
 
         if (cancelled) return;
@@ -542,6 +705,8 @@ export default function LmsMaterialViewer({ material, canDownload = false, onClo
               videoMode: 'none',
               audioMode: 'none'
             });
+            // Keep the parsed deck even if the viewer was closed meanwhile
+            if (parsed?.slides?.length) rememberDeck(cacheKey, { viewerMode: 'pptx', deck: parsed });
             if (cancelled) return;
             if (!parsed?.slides?.length) {
               setError('This presentation has no readable slides.');
@@ -553,6 +718,7 @@ export default function LmsMaterialViewer({ material, canDownload = false, onClo
             console.warn('PPTX visual parse error, falling back to text outline:', parseErr);
             const lines = extractLegacyPptText(buffer);
             if (lines.length > 0) {
+              rememberDeck(cacheKey, { viewerMode: 'legacy_ppt', legacyLines: lines });
               setLegacyLines(lines);
               setViewerMode('legacy_ppt');
             } else {
@@ -589,7 +755,7 @@ export default function LmsMaterialViewer({ material, canDownload = false, onClo
       cancelled = true;
       if (createdUrl) URL.revokeObjectURL(createdUrl);
     };
-  }, [material?._id, ext, mime]);
+  }, [material?._id, ext, mime, pptView]);
 
   // Track stage container size for responsive PPTX scaling
   useEffect(() => {
@@ -732,6 +898,35 @@ export default function LmsMaterialViewer({ material, canDownload = false, onClo
                   </button>
                 )}
               </>
+            )}
+
+            {(officeUrl || viewerMode === 'office') && (
+              <div className="flex items-center bg-slate-800 rounded-xl border border-slate-700 overflow-hidden text-[11px] font-bold">
+                <button
+                  type="button"
+                  onClick={() => switchPptView('office')}
+                  className={`px-2.5 py-2 cursor-pointer ${pptView === 'office' ? 'bg-teal-600 text-white' : 'text-slate-300 hover:bg-slate-700'}`}
+                  title="PowerPoint view — animations, transitions and exact layout"
+                >
+                  Animated view
+                </button>
+                <button
+                  type="button"
+                  onClick={() => switchPptView('quick')}
+                  className={`px-2.5 py-2 cursor-pointer ${pptView === 'quick' ? 'bg-teal-600 text-white' : 'text-slate-300 hover:bg-slate-700'}`}
+                  title="Built-in viewer — works offline after first open, no animations"
+                >
+                  Quick view
+                </button>
+              </div>
+            )}
+            {!officeUrl && viewerMode === 'pptx' && Number(material?.fileSize) > OFFICE_VIEW_MAX_BYTES && (
+              <span
+                className="px-2.5 py-1 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-200 text-[11px] font-semibold"
+                title="Compress pictures in PowerPoint (File → Compress Pictures) and re-upload under 100 MB to get animations"
+              >
+                No animations: file over 100 MB
+              </span>
             )}
 
             <button
@@ -905,6 +1100,26 @@ export default function LmsMaterialViewer({ material, canDownload = false, onClo
                   </div>
                 )}
               </div>
+            </div>
+          )}
+
+          {!loading && !error && viewerMode === 'office' && officeUrl && (
+            <div className="w-full h-full bg-slate-900 relative">
+              {officeLoading && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-slate-300 pointer-events-none">
+                  <Loader2 className="w-8 h-8 animate-spin text-teal-400" />
+                  <p className="text-xs font-semibold">Preparing PowerPoint view with animations…</p>
+                  <p className="text-[11px] text-slate-500">Stuck? Switch to Quick view.</p>
+                </div>
+              )}
+              <iframe
+                key={officeUrl}
+                title={material?.title || 'Presentation'}
+                src={officeUrl}
+                onLoad={() => setOfficeLoading(false)}
+                className="w-full h-full border-0"
+                allowFullScreen
+              />
             </div>
           )}
 

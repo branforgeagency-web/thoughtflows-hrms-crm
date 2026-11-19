@@ -3498,7 +3498,7 @@ export default function TrainingDepartmentDashboard({
                                     </div>
                                   )}
 
-                                  {lead.autoMissed && (
+                                  {lead.autoMissed && lead.status?.toLowerCase() === 'missed' && (
                                     <div className="text-[9.5px] text-rose-700 font-bold bg-rose-50 px-1.5 py-1 rounded-lg border border-rose-200">
                                       ⏱ Auto-marked missed · scheduled time passed without being started. Ask Head of Trainer to reschedule.
                                     </div>
@@ -3510,8 +3510,8 @@ export default function TrainingDepartmentDashboard({
                                     {lead.bookedBy && <div>👤 Booked by: {lead.bookedBy}</div>}
                                   </div>
 
-                                  {/* Notification status */}
-                                  {lead.notificationSent === true ? (
+                                  {/* Notification status — only relevant before the demo has an outcome */}
+                                  {['attended', 'missed'].includes(lead.status?.toLowerCase()) ? null : lead.notificationSent === true ? (
                                     <div className="text-[9.5px] text-emerald-700 font-semibold bg-emerald-50 p-1.5 rounded-lg border border-emerald-200 flex items-center justify-between">
                                       <span>✓ Notification Delivered</span>
                                       <span className="text-[9px] bg-emerald-200/70 text-emerald-900 px-1 rounded">1st Priority</span>

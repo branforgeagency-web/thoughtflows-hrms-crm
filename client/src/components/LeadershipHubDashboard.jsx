@@ -3789,7 +3789,7 @@ function HeadOfTrainingDashboard({ department, onBack, currentUser, onChanged, o
                               <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-bold border ${statusCls}`}>
                                 {d.status || 'Booked'}
                               </span>
-                              {d.autoMissed && (
+                              {d.autoMissed && String(d.status || '').toLowerCase() === 'missed' && (
                                 <div className="text-[10px] text-rose-500 font-semibold mt-1">⏱ auto-missed · deadline passed</div>
                               )}
                             </td>
