@@ -3,6 +3,7 @@ import {
   Clock,
   Calendar,
   CheckCircle2,
+  CheckCheck,
   AlertTriangle,
   Users,
   Briefcase,
@@ -35,6 +36,7 @@ import {
   getTrainerUtilization,
   saveTrainerHourlyPlan,
   updateTrainerSlotActual,
+  bulkUpdateTrainerSlotActuals,
   bulkSaveTrainerHourlyPlans,
   setTrainerLeave,
   getTrainerUtilizationReport,
@@ -105,8 +107,8 @@ export default function UtilizationDashboard({
   const [selectedDate, setSelectedDate] = useState(() => localDateKey());
   const [activeSubTab, setActiveSubTab] = useState(() => {
     if (roleType === 'trainer') return 'my_tracker';
-    if (roleType === 'tl') return 'team_planner';
-    return 'monitoring';
+    // TL / Manager / Head all open on the Team Work Planner
+    return 'team_planner';
   });
 
   // Data states
@@ -140,6 +142,8 @@ export default function UtilizationDashboard({
   const [editingSlotModal, setEditingSlotModal] = useState(null); // { log, slot, isPlanMode }
   const [bulkPlanModalOpen, setBulkPlanModalOpen] = useState(false);
   const [leaveModalUser, setLeaveModalUser] = useState(null); // log or user to mark leave
+  // Team Hourly Update: unsaved status changes keyed `${userId}|${slotIndex}`
+  const [teamDraft, setTeamDraft] = useState({});
 
   // Fetch live utilization data
   const loadUtilizationData = useCallback(async () => {
@@ -182,6 +186,8 @@ export default function UtilizationDashboard({
     return () => unsub();
   }, [loadUtilizationData]);
 
+  useEffect(() => { setTeamDraft({}); }, [selectedDate]);
+
   // Flash message clear
   useEffect(() => {
     if (message.text) {
@@ -198,32 +204,20 @@ export default function UtilizationDashboard({
     );
   }, [workLogs, effectiveUserId, effectiveUserName]);
 
-  // Trainers available for planning / review
+  // Team members available for planning / review / progress updates.
+  // The server already limits workLogs to the caller's own team (TL: their squad;
+  // Manager: their TLs + trainers, by reporting line or assigned branch), so we
+  // only drop the caller's own row here.
   const subordinateTrainers = useMemo(() => {
     if (roleType === 'trainer') return [];
-    if (roleType === 'tl') {
-      const myTlId = effectiveUserId.toLowerCase();
-      return workLogs.filter(
-        (l) => l.userRole === 'trainer' &&
-               (l.teamLeadId.toLowerCase() === myTlId || l.teamLeadName.toLowerCase().includes(effectiveUserName.toLowerCase()))
-      );
-    }
-    if (roleType === 'manager') {
-      // Manager plans for their TLs and every trainer under them (directly or via a TL)
-      const myMgrId = effectiveUserId.toLowerCase();
-      const myName = effectiveUserName.toLowerCase();
-      const isMine = (l) => (l.managerId || '').toLowerCase() === myMgrId || (myName && (l.managerName || '').toLowerCase() === myName);
-      const myTls = workLogs.filter((l) => l.userRole === 'tl' && isMine(l));
-      const myTlIds = new Set(myTls.map((l) => l.userId.toLowerCase()));
-      const trainersUnderMe = workLogs.filter((l) => l.userRole === 'trainer' && (isMine(l) || myTlIds.has((l.teamLeadId || '').toLowerCase())));
-      return [...myTls, ...trainersUnderMe];
-    }
-    // Head plans for everyone: Managers, TLs and Trainers (not their own desk — that's "My work")
+    const me = String(effectiveUserId).toLowerCase();
+    const notMe = (l) => String(l.userId).toLowerCase() !== me;
     const order = { manager: 0, tl: 1, trainer: 2 };
+    const allowedRoles = roleType === 'tl' ? ['trainer'] : roleType === 'manager' ? ['tl', 'trainer'] : ['manager', 'tl', 'trainer'];
     return workLogs
-      .filter((l) => ['manager', 'tl', 'trainer'].includes(l.userRole) && l.userId.toLowerCase() !== effectiveUserId.toLowerCase())
+      .filter((l) => allowedRoles.includes(l.userRole) && notMe(l))
       .sort((a, b) => (order[a.userRole] ?? 3) - (order[b.userRole] ?? 3) || String(a.userName).localeCompare(String(b.userName)));
-  }, [workLogs, roleType, effectiveUserId, effectiveUserName]);
+  }, [workLogs, roleType, effectiveUserId]);
 
   // Currently inspected log in Team Planner
   const targetPlanningLog = useMemo(() => {
@@ -439,18 +433,82 @@ export default function UtilizationDashboard({
     }
   };
 
+  // Who may update this log: self, or a member of my team (TL / Manager), or anyone (Head)
+  const canUpdateFor = (log) => {
+    if (!log) return false;
+    if (String(log.userId).toLowerCase() === String(effectiveUserId).toLowerCase()) return true;
+    if (roleType === 'head') return true;
+    if (roleType === 'tl' || roleType === 'manager') return subordinateTrainers.some((st) => st.userId === log.userId);
+    return false;
+  };
+
+  // ---- Team Hourly Update (bulk progress for the whole team) ----
+  const teamWorkingSlots = DEFAULT_SLOT_TEMPLATES.filter((s) => s.slotType !== 'break');
+  const teamUpdateMembers = useMemo(
+    () => subordinateTrainers.filter((m) => canUpdateFor(m)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [subordinateTrainers, roleType, effectiveUserId]
+  );
+  const getMemberSlot = (log, slotIndex) => (log.slots || []).find((s) => s.slotIndex === slotIndex);
+  const getCellStatus = (log, slotIndex) => {
+    const key = `${log.userId}|${slotIndex}`;
+    if (teamDraft[key]) return teamDraft[key];
+    return getMemberSlot(log, slotIndex)?.status || 'Pending';
+  };
+  const setCellStatus = (log, slotIndex, status) => {
+    const key = `${log.userId}|${slotIndex}`;
+    const original = getMemberSlot(log, slotIndex)?.status || 'Pending';
+    setTeamDraft((prev) => {
+      const next = { ...prev };
+      if (status === original) delete next[key];
+      else next[key] = status;
+      return next;
+    });
+  };
+  const setColumnStatus = (slotIndex, status) => {
+    teamUpdateMembers.filter((m) => !m.isLeave).forEach((m) => setCellStatus(m, slotIndex, status));
+  };
+  const setRowStatus = (log, status) => {
+    if (log.isLeave) return;
+    teamWorkingSlots.forEach((s) => setCellStatus(log, s.slotIndex, status));
+  };
+  const teamDraftCount = Object.keys(teamDraft).length;
+
+  const handleSaveTeamUpdates = async () => {
+    if (teamDraftCount === 0) return;
+    const updates = Object.entries(teamDraft).map(([key, status]) => {
+      const [userId, idx] = key.split('|');
+      return { userId, slotIndex: Number(idx), status };
+    });
+    try {
+      setSaving(true);
+      const res = await bulkUpdateTrainerSlotActuals({
+        date: selectedDate,
+        updates,
+        callerId: effectiveUserId,
+        callerName: effectiveUserName,
+        callerRole: roleType
+      });
+      if (res && res.success) {
+        setTeamDraft({});
+        setMessage({ type: 'success', text: res.message || 'Team progress updated.' });
+        await loadUtilizationData();
+      } else {
+        setMessage({ type: 'error', text: res?.error || 'Failed to update team progress.' });
+      }
+    } catch (err) {
+      console.error(err);
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Failed to update team progress.' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
   // Quick 1-Click Status Toggle for a slot
   const handleQuickStatusChange = async (log, slot, newStatus) => {
     // Permission: Only self or TL planning for their assigned trainer
-    const isSelf = log.userId.toLowerCase() === effectiveUserId.toLowerCase();
-    const isMySubordinate = roleType === 'tl' && (
-      log.teamLeadId.toLowerCase() === effectiveUserId.toLowerCase() ||
-      ALL_HIERARCHY_TRAINERS.some((t) => t.trainerId === log.userId && t.teamLeadId === effectiveUserId)
-    );
-
-    const isManagersMember = roleType === 'manager' && subordinateTrainers.some((st) => st.userId === log.userId);
-    if (!isSelf && !isMySubordinate && !isManagersMember && roleType !== 'head') {
-      setMessage({ type: 'error', text: 'You can update only your own hourly work progress.' });
+    if (!canUpdateFor(log)) {
+      setMessage({ type: 'error', text: 'You can update only your own hourly work, or your own team members\' work.' });
       return;
     }
 
@@ -710,155 +768,60 @@ export default function UtilizationDashboard({
             </>
           )}
 
-          {/* For TL */}
-          {roleType === 'tl' && (
-            <>
+          {/* TL / Manager / Head — one identical tab layout, scoped to each leader's own team */}
+          {['tl', 'manager', 'head'].includes(roleType) && (() => {
+            const L = {
+              tl: {
+                planner: `Team Work Planner (${subordinateTrainers.length} Trainers)`,
+                command: 'Squad Hourly Command (My Trainers)',
+                mine: 'My Team Lead Hourly Work',
+                reportId: 'team_report',
+                report: 'Squad Utilization Rollup',
+                CommandIcon: Layers
+              },
+              manager: {
+                planner: `Team Work Planner (${subordinateTrainers.length} TLs & Trainers)`,
+                command: 'Team Hourly Command (TLs & Trainers)',
+                mine: 'My Manager Hourly Work',
+                reportId: 'manager_report',
+                report: 'Team Utilization Rollup',
+                CommandIcon: Layers
+              },
+              head: {
+                planner: `Team Work Planner (${subordinateTrainers.length} Managers, TLs & Trainers)`,
+                command: 'Department Hourly Command (All Roles)',
+                mine: 'My Department Head Hourly Work',
+                reportId: 'head_report',
+                report: 'Academy-Wide Utilization Rollup',
+                CommandIcon: Crown
+              }
+            }[roleType];
+            const tabs = [
+              { id: 'team_planner', label: L.planner, Icon: Users },
+              { id: 'monitoring', label: L.command, Icon: L.CommandIcon },
+              { id: 'my_work', label: L.mine, Icon: UserCheck },
+              { id: L.reportId, label: L.report, Icon: BarChart3 },
+              { id: 'team_update', label: `Team Hourly Update (${teamUpdateMembers.length})`, Icon: CheckSquare, badge: teamDraftCount }
+            ];
+            return tabs.map(({ id, label, Icon, badge }) => (
               <button
+                key={id}
                 type="button"
-                onClick={() => setActiveSubTab('team_planner')}
+                onClick={() => setActiveSubTab(id)}
                 className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
-                  activeSubTab === 'team_planner'
-                    ? 'bg-emerald-700 text-white shadow-sm'
-                    : 'bg-white text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <Users className="w-4 h-4" />
-                <span>Team Trainers Work Planner ({subordinateTrainers.length} Faculty)</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveSubTab('my_work')}
-                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
-                  activeSubTab === 'my_work'
-                    ? 'bg-emerald-700 text-white shadow-sm'
-                    : 'bg-white text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <UserCheck className="w-4 h-4" />
-                <span>My Own TL Work Updates</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveSubTab('team_report')}
-                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
-                  activeSubTab === 'team_report'
-                    ? 'bg-emerald-700 text-white shadow-sm'
-                    : 'bg-white text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <BarChart3 className="w-4 h-4" />
-                <span>Squad Utilization Report</span>
-              </button>
-            </>
-          )}
-
-          {/* For Manager */}
-          {roleType === 'manager' && (
-            <>
-              <button
-                type="button"
-                onClick={() => setActiveSubTab('team_planner')}
-                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
-                  activeSubTab === 'team_planner'
-                    ? 'bg-teal-700 text-white shadow-sm'
-                    : 'bg-white text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <Users className="w-4 h-4" />
-                <span>Team Work Planner ({subordinateTrainers.length} TLs & Trainers)</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveSubTab('monitoring')}
-                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
-                  activeSubTab === 'monitoring'
-                    ? 'bg-teal-700 text-white shadow-sm'
-                    : 'bg-white text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <Layers className="w-4 h-4" />
-                <span>TL & Faculty Team Monitoring Desk</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveSubTab('my_work')}
-                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
-                  activeSubTab === 'my_work'
-                    ? 'bg-teal-700 text-white shadow-sm'
-                    : 'bg-white text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <UserCheck className="w-4 h-4" />
-                <span>My Own Manager Work Updates</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveSubTab('manager_report')}
-                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
-                  activeSubTab === 'manager_report'
-                    ? 'bg-teal-700 text-white shadow-sm'
-                    : 'bg-white text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <BarChart3 className="w-4 h-4" />
-                <span>Regional Utilization Summary</span>
-              </button>
-            </>
-          )}
-
-          {/* For Trainer Head */}
-          {roleType === 'head' && (
-            <>
-              <button
-                type="button"
-                onClick={() => setActiveSubTab('team_planner')}
-                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
-                  activeSubTab === 'team_planner'
+                  activeSubTab === id
                     ? 'bg-blue-700 text-white shadow-sm'
                     : 'bg-white text-slate-600 hover:bg-slate-100'
                 }`}
               >
-                <Users className="w-4 h-4" />
-                <span>Team Work Planner ({subordinateTrainers.length} Managers, TLs & Trainers)</span>
+                <Icon className="w-4 h-4" />
+                <span>{label}</span>
+                {badge > 0 && (
+                  <span className="text-[10px] font-black px-1.5 rounded-full bg-amber-400 text-amber-950">{badge}</span>
+                )}
               </button>
-              <button
-                type="button"
-                onClick={() => setActiveSubTab('monitoring')}
-                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
-                  activeSubTab === 'monitoring'
-                    ? 'bg-blue-700 text-white shadow-sm'
-                    : 'bg-white text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <Crown className="w-4 h-4" />
-                <span>Department Hourly Command (All Roles)</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveSubTab('my_work')}
-                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
-                  activeSubTab === 'my_work'
-                    ? 'bg-blue-700 text-white shadow-sm'
-                    : 'bg-white text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <UserCheck className="w-4 h-4" />
-                <span>My Department Head Hourly Work</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveSubTab('head_report')}
-                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
-                  activeSubTab === 'head_report'
-                    ? 'bg-blue-700 text-white shadow-sm'
-                    : 'bg-white text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <BarChart3 className="w-4 h-4" />
-                <span>Academy-Wide Utilization Rollup</span>
-              </button>
-            </>
-          )}
+            ));
+          })()}
         </div>
 
         {/* Clear Rules Guidance Tooltip */}
@@ -1117,7 +1080,7 @@ export default function UtilizationDashboard({
                     )}
                   </div>
                   <p className="text-xs text-slate-500 mt-0.5">
-                    Date: <span className="font-bold text-slate-700">{selectedDate}</span> · Assigned TL: {effectiveUserName}
+                    Date: <span className="font-bold text-slate-700">{selectedDate}</span> · {targetPlanningLog.teamLeadName ? `TL: ${targetPlanningLog.teamLeadName} · ` : ''}Planned by: {effectiveUserName}
                   </p>
                 </div>
 
@@ -1187,6 +1150,28 @@ export default function UtilizationDashboard({
 
                       {!isBreak && (
                         <div className="flex items-center gap-2 shrink-0">
+                          {!targetPlanningLog.isLeave && slot.status !== 'Completed' && canUpdateFor(targetPlanningLog) && (
+                            <button
+                              type="button"
+                              disabled={saving}
+                              onClick={() => handleQuickStatusChange(targetPlanningLog, slot, 'Completed')}
+                              className="px-3 py-1.5 rounded-xl bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-200 text-xs font-bold transition-colors cursor-pointer flex items-center gap-1 disabled:opacity-50"
+                              title="Mark this slot completed for the team member"
+                            >
+                              <Check className="w-3.5 h-3.5" />
+                              <span>Done</span>
+                            </button>
+                          )}
+                          {!targetPlanningLog.isLeave && canUpdateFor(targetPlanningLog) && (
+                            <button
+                              type="button"
+                              onClick={() => setEditingSlotModal({ log: targetPlanningLog, slot, isPlanMode: false })}
+                              className="px-3 py-1.5 rounded-xl bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 text-xs font-bold transition-colors cursor-pointer flex items-center gap-1"
+                            >
+                              <RefreshCw className="w-3.5 h-3.5" />
+                              <span>Update Progress</span>
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={() => setEditingSlotModal({ log: targetPlanningLog, slot, isPlanMode: true })}
@@ -1208,6 +1193,134 @@ export default function UtilizationDashboard({
               <h3 className="text-base font-bold text-slate-700">No trainers assigned under your pod yet</h3>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* VIEW 2b: TEAM HOURLY UPDATE — TL / MANAGER / HEAD UPDATE THE WHOLE TEAM   */}
+      {/* ========================================================================= */}
+      {['tl', 'manager', 'head'].includes(roleType) && activeSubTab === 'team_update' && (
+        <div className="space-y-4">
+          <div className="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-xs flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-black text-slate-900">Team Hourly Update — {selectedDate}</h3>
+              <p className="text-xs text-slate-500 mt-0.5">
+                {roleType === 'tl'
+                  ? 'Update actual progress for every trainer in your squad.'
+                  : roleType === 'manager'
+                    ? 'Update actual progress for your Team Leads and every trainer under them.'
+                    : 'Update actual progress for any Manager, Team Lead or Trainer.'}
+                {' '}Change cells, use the column / row shortcuts, then save once.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              {teamDraftCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setTeamDraft({})}
+                  disabled={saving}
+                  className="px-3 py-2 rounded-xl bg-white border border-slate-200 text-slate-700 text-xs font-bold hover:bg-slate-50 cursor-pointer disabled:opacity-50"
+                >
+                  Discard
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleSaveTeamUpdates}
+                disabled={saving || teamDraftCount === 0}
+                className="px-4 py-2 rounded-xl bg-indigo-700 text-white text-xs font-extrabold shadow-sm hover:bg-indigo-800 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
+              >
+                <CheckCheck className="w-4 h-4" />
+                <span>{saving ? 'Saving…' : `Save ${teamDraftCount} change${teamDraftCount === 1 ? '' : 's'}`}</span>
+              </button>
+            </div>
+          </div>
+
+          {teamUpdateMembers.length === 0 ? (
+            <div className="bg-white rounded-3xl p-12 text-center border border-slate-200">
+              <Users className="w-12 h-12 text-slate-300 mx-auto mb-3" />
+              <h3 className="text-base font-bold text-slate-700">No team members found under you for this date</h3>
+            </div>
+          ) : (
+            <div className="bg-white rounded-3xl shadow-sm border border-slate-200/80 overflow-x-auto">
+              <table className="w-full text-left border-collapse text-[11px]">
+                <thead>
+                  <tr className="bg-slate-50 text-[10px] font-black uppercase tracking-wider text-slate-600 border-b border-slate-200">
+                    <th className="py-2.5 px-3 sticky left-0 bg-slate-50 z-10 min-w-[170px]">Member</th>
+                    {teamWorkingSlots.map((tc) => (
+                      <th key={tc.slotIndex} className="py-2 px-1.5 text-center whitespace-nowrap">
+                        <div>{tc.timeSlot.replace(/ - .*/, '')}</div>
+                        <button
+                          type="button"
+                          onClick={() => setColumnStatus(tc.slotIndex, 'Completed')}
+                          className="mt-1 text-[9px] font-black px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 cursor-pointer normal-case"
+                          title={`Mark ${tc.timeSlot} completed for the whole team`}
+                        >
+                          All done
+                        </button>
+                      </th>
+                    ))}
+                    <th className="py-2.5 px-2 text-center">Row</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {teamUpdateMembers.map((m) => (
+                    <tr key={m.userId} className={m.isLeave ? 'bg-amber-50/40' : 'hover:bg-slate-50/50'}>
+                      <td className="py-2 px-3 sticky left-0 bg-white z-10">
+                        <div className="font-extrabold text-slate-900 flex items-center gap-1.5">
+                          {m.userName}
+                          {m.userRole !== 'trainer' && (
+                            <span className="text-[9px] font-black uppercase px-1.5 rounded bg-slate-200 text-slate-700">{m.userRole === 'tl' ? 'TL' : m.userRole}</span>
+                          )}
+                        </div>
+                        <span className="text-[9px] text-slate-400">{m.teamLeadName ? `TL: ${m.teamLeadName}` : (m.branchName || '')}</span>
+                      </td>
+                      {m.isLeave ? (
+                        <td colSpan={teamWorkingSlots.length + 1} className="py-2 px-3 text-center text-[10px] font-black uppercase text-amber-700">
+                          On leave{m.leaveReason ? ` — ${m.leaveReason}` : ''}
+                        </td>
+                      ) : (
+                        <>
+                          {teamWorkingSlots.map((tc) => {
+                            const slot = getMemberSlot(m, tc.slotIndex);
+                            const value = getCellStatus(m, tc.slotIndex);
+                            const dirty = Boolean(teamDraft[`${m.userId}|${tc.slotIndex}`]);
+                            return (
+                              <td key={tc.slotIndex} className="py-1.5 px-1 text-center">
+                                <select
+                                  value={value}
+                                  onChange={(e) => setCellStatus(m, tc.slotIndex, e.target.value)}
+                                  title={slot?.plannedTask ? `Planned: ${slot.plannedTask}` : 'No task planned'}
+                                  className={`w-full min-w-[92px] rounded-lg border px-1 py-1 text-[10px] font-bold outline-none cursor-pointer ${getStatusBadge(value).bg} ${dirty ? 'ring-2 ring-amber-400' : ''}`}
+                                >
+                                  <option value="Pending">Pending</option>
+                                  <option value="In Progress">In Progress</option>
+                                  <option value="Completed">Completed</option>
+                                  <option value="Delayed">Delayed</option>
+                                </select>
+                              </td>
+                            );
+                          })}
+                          <td className="py-1.5 px-2 text-center">
+                            <button
+                              type="button"
+                              onClick={() => setRowStatus(m, 'Completed')}
+                              className="text-[9px] font-black px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 cursor-pointer whitespace-nowrap"
+                            >
+                              All done
+                            </button>
+                          </td>
+                        </>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <p className="text-[11px] text-slate-500">
+            Tip: to add actual-work notes or a delay remark, open the member in Team Planner and use <span className="font-bold">Update Progress</span> on that slot.
+          </p>
         </div>
       )}
 

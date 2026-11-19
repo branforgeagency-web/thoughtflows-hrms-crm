@@ -8689,6 +8689,18 @@ function getTodayIST() {
   return `${y}-${m}-${day}`;
 }
 
+// Branch scope: a Manager / TL also covers staff in their assigned branch(es) —
+// the same rule the Trainer Manager / TL dashboards use for their trainer lists.
+function utilCallerBranches(caller) {
+  return [...(Array.isArray(caller?.branches) ? caller.branches : []), caller?.branch]
+    .filter(Boolean).map((b) => String(b).trim().toLowerCase()).filter(Boolean);
+}
+function utilInMyBranches(caller, branchName) {
+  const mine = utilCallerBranches(caller);
+  const b = String(branchName || '').trim().toLowerCase();
+  return Boolean(b) && mine.some((m) => b.includes(m) || m.includes(b));
+}
+
 // Helper: Get user's effective role and identity for utilization
 // Manager may plan for: their TLs, trainers whose manager is them, and trainers
 // under any TL that reports to them (manager set on the TL only).
@@ -8697,13 +8709,30 @@ async function managerCanPlanFor(caller, { userId, managerId, managerName, teamL
   const myName = String(caller.name || '').trim().toLowerCase();
   const isMine = (mid, mname) => (mid && ids.includes(String(mid).toLowerCase())) || (myName && String(mname || '').trim().toLowerCase() === myName);
   if (isMine(managerId, managerName)) return true;
-  const tr = await Trainer.findOne({ trainerId: new RegExp(`^${escapeRegex(String(userId))}$`, 'i') }).lean();
+  const tr = await Trainer.findOne({
+    $or: [
+      { trainerId: new RegExp(`^${escapeRegex(String(userId))}$`, 'i') },
+      ...(mongoose.isValidObjectId(userId) ? [{ _id: userId }] : [])
+    ]
+  }).lean();
   if (tr && isMine(tr.managerId, tr.managerName)) return true;
   const tlId = tr?.teamLeadId || teamLeadId || (mongoose.isValidObjectId(userId) ? userId : '');
-  if (tlId && mongoose.isValidObjectId(tlId)) {
-    const tlUser = await User.findById(tlId).select('managerId managerName').lean();
-    if (tlUser && isMine(tlUser.managerId, tlUser.managerName)) return true;
+  if (tlId) {
+    if (mongoose.isValidObjectId(tlId)) {
+      const tlUser = await User.findById(tlId).select('managerId managerName').lean();
+      if (tlUser && isMine(tlUser.managerId, tlUser.managerName)) return true;
+    }
+    const tlTr = await Trainer.findOne({ trainerId: new RegExp(`^${escapeRegex(String(tlId))}$`, 'i') }).select('managerId managerName').lean();
+    if (tlTr && isMine(tlTr.managerId, tlTr.managerName)) return true;
   }
+  if (mongoose.isValidObjectId(userId)) {
+    const usr = await User.findById(userId).select('managerId managerName branch role').lean();
+    if (usr && isMine(usr.managerId, usr.managerName)) return true;
+    // TL in one of my branches
+    if (usr && /lead|\btl\b/i.test(usr.role || '') && utilInMyBranches(caller, usr.branch)) return true;
+  }
+  // Trainer in one of my branches
+  if (tr && utilInMyBranches(caller, tr.branchName || tr.branch)) return true;
   return false;
 }
 
@@ -8717,13 +8746,26 @@ function utilCallerIds(req, caller) {
 const utilIsSelf = (req, caller, userId) => utilCallerIds(req, caller).has(String(userId || '').trim().toLowerCase());
 
 // TL may manage trainers reporting to them (per the saved work plan or the roster)
-async function tlCanManage(req, caller, userId, teamLeadIdHint = '') {
+async function tlCanManage(req, caller, userId, teamLeadIdHint = '', teamLeadNameHint = '') {
   const mine = utilCallerIds(req, caller);
-  if (teamLeadIdHint && mine.has(String(teamLeadIdHint).toLowerCase())) return true;
-  const tr = await Trainer.findOne({ trainerId: new RegExp(`^${escapeRegex(String(userId))}$`, 'i') }).select('teamLeadId teamLeadName').lean();
-  if (tr?.teamLeadId && mine.has(String(tr.teamLeadId).toLowerCase())) return true;
   const myName = String(caller?.name || '').trim().toLowerCase();
-  return Boolean(myName && tr?.teamLeadName && String(tr.teamLeadName).trim().toLowerCase() === myName);
+  if (teamLeadIdHint && mine.has(String(teamLeadIdHint).toLowerCase())) return true;
+  if (teamLeadNameHint && myName && String(teamLeadNameHint).trim().toLowerCase() === myName) return true;
+  const tr = await Trainer.findOne({
+    $or: [
+      { trainerId: new RegExp(`^${escapeRegex(String(userId))}$`, 'i') },
+      ...(mongoose.isValidObjectId(userId) ? [{ _id: userId }] : [])
+    ]
+  }).select('teamLeadId teamLeadName branchName branch').lean();
+  if (tr?.teamLeadId && mine.has(String(tr.teamLeadId).toLowerCase())) return true;
+  if (tr && !tr.teamLeadId && !tr.teamLeadName && utilInMyBranches(caller, tr.branchName || tr.branch)) return true;
+  if (myName && tr?.teamLeadName && String(tr.teamLeadName).trim().toLowerCase() === myName) return true;
+  if (mongoose.isValidObjectId(userId)) {
+    const usr = await User.findById(userId).select('teamLeadId teamLeadName leaderId').lean();
+    if (usr?.teamLeadId && mine.has(String(usr.teamLeadId).toLowerCase())) return true;
+    if (myName && usr?.teamLeadName && String(usr.teamLeadName).trim().toLowerCase() === myName) return true;
+  }
+  return false;
 }
 
 function getUtilizationUserIdentity(req) {
@@ -8753,6 +8795,54 @@ function getUtilizationUserIdentity(req) {
     branch: u.branch || '',
     branches: u.branches || []
   };
+}
+
+// Single permission check for every utilization write:
+// self · Head/Admin/Leadership · the member's Team Lead · the member's Manager (directly or via their TL)
+async function canManageUtilFor(req, caller, userId, hints = {}) {
+  if (!userId) return false;
+  if (utilIsSelf(req, caller, userId)) return true;
+  if (['head', 'admin', 'leadership'].includes(caller.role)) return true;
+  if (caller.role !== 'tl' && caller.role !== 'manager') return false;
+  let { teamLeadId, teamLeadName, managerId, managerName, date } = hints;
+  if (date && (!teamLeadId || !managerId)) {
+    const plan = await TrainerHourlyWork.findOne({ userId, date }).select('teamLeadId teamLeadName managerId managerName').lean();
+    teamLeadId = teamLeadId || plan?.teamLeadId;
+    teamLeadName = teamLeadName || plan?.teamLeadName;
+    managerId = managerId || plan?.managerId;
+    managerName = managerName || plan?.managerName;
+  }
+  return caller.role === 'tl'
+    ? tlCanManage(req, caller, userId, teamLeadId, teamLeadName)
+    : managerCanPlanFor(caller, { userId, managerId, managerName, teamLeadId });
+}
+
+// Load (or create from the roster) a member's hourly-work doc for a date
+async function loadOrCreateUtilDoc(userId, date, hints = {}) {
+  let workDoc = await TrainerHourlyWork.findOne({ userId, date });
+  if (workDoc) return workDoc;
+  const dbTr = await Trainer.findOne({
+    $or: [
+      { trainerId: new RegExp(`^${escapeRegex(String(userId))}$`, 'i') },
+      ...(mongoose.isValidObjectId(userId) ? [{ _id: userId }] : [])
+    ]
+  }).lean();
+  const dbUsr = !dbTr && mongoose.isValidObjectId(userId) ? await User.findById(userId).select('-password').lean() : null;
+  return new TrainerHourlyWork({
+    userId,
+    userName: dbTr?.trainerName || dbTr?.name || dbUsr?.name || hints.userName || userId,
+    userRole: dbTr ? 'trainer' : (hints.userRole || (/manager/i.test(dbUsr?.role || '') ? 'manager' : /lead|\btl\b/i.test(dbUsr?.role || '') ? 'tl' : 'trainer')),
+    teamLeadId: dbTr?.teamLeadId || hints.teamLeadId || '',
+    teamLeadName: dbTr?.teamLeadName || hints.teamLeadName || '',
+    managerId: dbTr?.managerId || dbUsr?.managerId || hints.managerId || '',
+    managerName: dbTr?.managerName || dbUsr?.managerName || hints.managerName || '',
+    branchName: dbTr?.branchName || dbTr?.branch || dbUsr?.branch || hints.branchName || '',
+    zone: dbTr?.zone || dbUsr?.branch || hints.zone || '',
+    date,
+    isLeave: false,
+    leaveReason: '',
+    slots: DEFAULT_WORK_SLOTS.map((s) => ({ ...s }))
+  });
 }
 
 // 1. GET /trainer/utilization — Retrieve live hourly work records and metrics
@@ -8862,16 +8952,24 @@ router.get('/trainer/utilization', async (req, res) => {
     if (caller.role === 'trainer' && caller.id) {
       roster = roster.filter((r) => r.userId.toLowerCase() === caller.id.toLowerCase());
     } else if (caller.role === 'tl' && caller.id) {
-      const myTlId = caller.leaderId || caller.id;
-      roster = roster.filter(
-        (r) => r.userId.toLowerCase() === myTlId.toLowerCase() ||
-               (r.teamLeadId && r.teamLeadId.toLowerCase() === myTlId.toLowerCase())
-      );
+      // TL sees themself + every trainer reporting to them (by any of their ids, or by name)
+      const myIds = utilCallerIds(req, caller);
+      const myName = String(caller.name || '').trim().toLowerCase();
+      const linked = (r) => myIds.has(r.userId.toLowerCase()) ||
+               (r.teamLeadId && myIds.has(r.teamLeadId.toLowerCase())) ||
+               (myName && r.userRole === 'trainer' && String(r.teamLeadName || '').trim().toLowerCase() === myName);
+      // Unassigned trainers (no TL yet) in my branch are mine too
+      const unassignedInBranch = (r) => r.userRole === 'trainer' && !r.teamLeadId && !r.teamLeadName && utilInMyBranches(caller, r.branchName);
+      roster = roster.filter((r) => linked(r) || unassignedInBranch(r));
     } else if (caller.role === 'manager' && caller.id) {
       const myMgrId = caller.leaderId || caller.id;
-      const mine = (r) => r.userId.toLowerCase() === myMgrId.toLowerCase() ||
-        (r.managerId && r.managerId.toLowerCase() === myMgrId.toLowerCase()) ||
-        (caller.name && String(r.managerName || '').trim().toLowerCase() === caller.name.toLowerCase());
+      const myIds = utilCallerIds(req, caller);
+      myIds.add(myMgrId.toLowerCase());
+      const mine = (r) => myIds.has(r.userId.toLowerCase()) ||
+        (r.managerId && myIds.has(r.managerId.toLowerCase())) ||
+        (caller.name && String(r.managerName || '').trim().toLowerCase() === caller.name.toLowerCase()) ||
+        // TLs and trainers in my assigned branch(es), as on the rest of the Manager dashboard
+        (['tl', 'trainer'].includes(r.userRole) && utilInMyBranches(caller, r.branchName));
       // TLs reporting to me → their trainers are mine too (even if the trainer row has no manager set)
       const myTlIds = new Set(roster.filter((r) => r.userRole === 'tl' && mine(r)).map((r) => r.userId.toLowerCase()));
       roster = roster
@@ -9038,7 +9136,8 @@ router.get('/trainer/utilization', async (req, res) => {
       }
     });
 
-    const teamSummaries = Array.from(teamMap.values()).map((team) => ({
+    const scopedCaller = ['tl', 'manager', 'trainer'].includes(caller.role);
+    const teamSummaries = Array.from(teamMap.values()).filter((t) => !scopedCaller || t.memberCount > 0).map((team) => ({
       ...team,
       utilizationPercentage: team.totalPlannedHours > 0
         ? Math.round((team.totalActualHours / team.totalPlannedHours) * 1000) / 10
@@ -9079,7 +9178,7 @@ router.get('/trainer/utilization', async (req, res) => {
       }
     });
 
-    const managerSummaries = Array.from(managerMap.values()).map((mgr) => ({
+    const managerSummaries = Array.from(managerMap.values()).filter((m) => !scopedCaller || m.staffCount > 0).map((mgr) => ({
       ...mgr,
       utilizationPercentage: mgr.totalPlannedHours > 0
         ? Math.round((mgr.totalActualHours / mgr.totalPlannedHours) * 1000) / 10
@@ -9235,7 +9334,7 @@ router.post('/trainer/utilization/plan', async (req, res) => {
 });
 
 // 3. PUT /trainer/utilization/actual — Update actual work progress for a specific slot
-// Every user updates their own actual work; TL can also manage progress for their assigned trainers
+// Every user updates their own actual work; TL and Manager can manage progress for their respective teams
 router.put('/trainer/utilization/actual', async (req, res) => {
   try {
     const {
@@ -9246,7 +9345,15 @@ router.put('/trainer/utilization/actual', async (req, res) => {
       status,
       remarks,
       relatedEntity,
-      relatedEntityType
+      relatedEntityType,
+      userName,
+      userRole,
+      teamLeadId,
+      teamLeadName,
+      managerId,
+      managerName,
+      branchName,
+      zone
     } = req.body || {};
 
     if (!userId || !date || typeof slotIndex !== 'number') {
@@ -9256,42 +9363,50 @@ router.put('/trainer/utilization/actual', async (req, res) => {
     const caller = getUtilizationUserIdentity(req);
 
     // Permission Verification:
-    // Allow each user to update only their own work, except the TL, who can create and manage work plans for their assigned trainers.
-    // Self, Head, the member's Team Lead, or their Manager (TLs + trainers under them)
+    // Self, Head, Admin, Leadership, the member's Team Lead, or their Manager
     let isAuthorized = false;
     if (utilIsSelf(req, caller, userId)) {
       isAuthorized = true;
     } else if (caller.role === 'head' || caller.role === 'admin' || caller.role === 'leadership') {
       isAuthorized = true;
     } else if (caller.role === 'tl' || caller.role === 'manager') {
-      const plan = await TrainerHourlyWork.findOne({ userId, date }).select('teamLeadId managerId managerName').lean();
+      const plan = await TrainerHourlyWork.findOne({ userId, date }).select('teamLeadId teamLeadName managerId managerName').lean();
+      const effTlId = teamLeadId || plan?.teamLeadId;
+      const effTlName = teamLeadName || plan?.teamLeadName;
+      const effMgrId = managerId || plan?.managerId;
+      const effMgrName = managerName || plan?.managerName;
       isAuthorized = caller.role === 'tl'
-        ? await tlCanManage(req, caller, userId, plan?.teamLeadId)
-        : await managerCanPlanFor(caller, { userId, managerId: plan?.managerId, managerName: plan?.managerName, teamLeadId: plan?.teamLeadId });
+        ? await tlCanManage(req, caller, userId, effTlId, effTlName)
+        : await managerCanPlanFor(caller, { userId, managerId: effMgrId, managerName: effMgrName, teamLeadId: effTlId });
     }
 
     if (!isAuthorized) {
       return res.status(403).json({
         success: false,
-        error: 'Permission denied: you can update your own hourly work, and your Team Lead / Manager can update it for you.'
+        error: 'Permission denied: you can update your own hourly work, and your Team Lead / Manager can update it for your team.'
       });
     }
 
     let workDoc = await TrainerHourlyWork.findOne({ userId, date });
     if (!workDoc) {
-      const dbTr = await Trainer.findOne({ trainerId: new RegExp(`^${escapeRegex(String(userId))}$`, 'i') }).lean();
+      const dbTr = await Trainer.findOne({
+        $or: [
+          { trainerId: new RegExp(`^${escapeRegex(String(userId))}$`, 'i') },
+          ...(mongoose.isValidObjectId(userId) ? [{ _id: userId }] : [])
+        ]
+      }).lean();
       const dbUsr = !dbTr ? await User.findOne({ $or: [{ _id: mongoose.Types.ObjectId.isValid(userId) ? userId : undefined }, { email: String(userId).toLowerCase() }] }).lean() : null;
       const slots = DEFAULT_WORK_SLOTS.map((s) => ({ ...s }));
       workDoc = new TrainerHourlyWork({
         userId,
-        userName: dbTr?.trainerName || dbTr?.name || dbUsr?.name || userId,
-        userRole: dbTr ? 'trainer' : (dbUsr?.role || 'trainer'),
-        teamLeadId: dbTr?.teamLeadId || '',
-        teamLeadName: dbTr?.teamLeadName || '',
-        managerId: dbTr?.managerId || '',
-        managerName: dbTr?.managerName || '',
-        branchName: dbTr?.branchName || dbTr?.branch || dbUsr?.branch || '',
-        zone: dbTr?.zone || dbUsr?.branch || '',
+        userName: dbTr?.trainerName || dbTr?.name || dbUsr?.name || userName || userId,
+        userRole: dbTr ? 'trainer' : (dbUsr?.role || userRole || 'trainer'),
+        teamLeadId: dbTr?.teamLeadId || teamLeadId || '',
+        teamLeadName: dbTr?.teamLeadName || teamLeadName || '',
+        managerId: dbTr?.managerId || managerId || '',
+        managerName: dbTr?.managerName || managerName || '',
+        branchName: dbTr?.branchName || dbTr?.branch || dbUsr?.branch || branchName || '',
+        zone: dbTr?.zone || dbUsr?.branch || zone || '',
         date,
         isLeave: false,
         leaveReason: '',
@@ -9333,6 +9448,83 @@ router.put('/trainer/utilization/actual', async (req, res) => {
     });
   } catch (err) {
     console.error('Error in PUT /trainer/utilization/actual:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 3b. PUT /trainer/utilization/bulk-actual — TL / Manager / Head update progress for their whole team at once
+// body: { date, updates: [{ userId, slotIndex, status, actualWork?, remarks? }] }
+router.put('/trainer/utilization/bulk-actual', async (req, res) => {
+  try {
+    const { date, updates } = req.body || {};
+    if (!date || !Array.isArray(updates) || updates.length === 0) {
+      return res.status(400).json({ success: false, error: 'date and updates array are required.' });
+    }
+    if (updates.length > 2000) {
+      return res.status(400).json({ success: false, error: 'Too many updates in one request.' });
+    }
+    const VALID = ['Pending', 'In Progress', 'Completed', 'Delayed'];
+    const caller = getUtilizationUserIdentity(req);
+    const byUser = new Map();
+    updates.forEach((u) => {
+      if (!u || !u.userId || typeof u.slotIndex !== 'number') return;
+      const key = String(u.userId);
+      if (!byUser.has(key)) byUser.set(key, []);
+      byUser.get(key).push(u);
+    });
+
+    const saved = [];
+    const denied = [];
+    let slotsUpdated = 0;
+    for (const [userId, list] of byUser) {
+      const allowed = await canManageUtilFor(req, caller, userId, { date });
+      if (!allowed) { denied.push(userId); continue; }
+      const workDoc = await loadOrCreateUtilDoc(userId, date);
+      if (workDoc.isLeave) continue;
+      list.forEach((u) => {
+        const slot = workDoc.slots.find((s) => s.slotIndex === u.slotIndex);
+        if (!slot || slot.slotType === 'break') return;
+        if (u.status !== undefined) {
+          if (!VALID.includes(u.status)) return;
+          slot.status = u.status;
+        }
+        if (u.actualWork !== undefined) slot.actualWork = String(u.actualWork);
+        else if (slot.status === 'Completed' && !slot.actualWork) slot.actualWork = slot.plannedTask || '';
+        if (u.remarks !== undefined) slot.remarks = String(u.remarks);
+        slot.updatedBy = caller.name || caller.id;
+        if (slot.status === 'Completed') {
+          slot.completedAt = new Date();
+          slot.actualHours = slot.plannedHours || 1;
+        } else if (slot.status === 'In Progress') {
+          slot.actualHours = (slot.plannedHours || 1) * 0.5;
+        } else {
+          slot.actualHours = 0;
+        }
+        slotsUpdated += 1;
+      });
+      workDoc.recalculateMetrics();
+      await workDoc.save();
+      saved.push(workDoc);
+    }
+
+    if (saved.length === 0 && denied.length > 0) {
+      return res.status(403).json({
+        success: false,
+        error: 'Permission denied: you can update hourly work only for members of your own team.'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: `Updated ${slotsUpdated} slot(s) for ${saved.length} team member(s) on ${date}.`
+        + (denied.length ? ` Skipped ${denied.length} member(s) outside your team.` : ''),
+      count: saved.length,
+      slotsUpdated,
+      denied,
+      workLogs: saved
+    });
+  } catch (err) {
+    console.error('Error in PUT /trainer/utilization/bulk-actual:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -9437,6 +9629,14 @@ router.post('/trainer/utilization/leave', async (req, res) => {
     const { userId, date, leaveReason = 'Approved Leave', isLeave = true } = req.body || {};
     if (!userId || !date) {
       return res.status(400).json({ success: false, error: 'userId and date are required.' });
+    }
+
+    const caller = getUtilizationUserIdentity(req);
+    if (!(await canManageUtilFor(req, caller, userId, { date }))) {
+      return res.status(403).json({
+        success: false,
+        error: 'Permission denied: only the member, their Team Lead / Manager or the Head can mark leave.'
+      });
     }
 
     let workDoc = await TrainerHourlyWork.findOne({ userId, date });

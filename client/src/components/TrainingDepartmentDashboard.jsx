@@ -165,6 +165,18 @@ export default function TrainingDepartmentDashboard({
     (trainerCourseKey === 'ALL' && /head|chief|lead/i.test(trainerRole || currentUser?.role || ''))
   );
   const isChiefFaculty = isHeadOfTrainer;
+  // Leaders (Head / Trainer Manager / TL) who open this desk get their team-wide
+  // Utilization board — same detection the server uses for /trainer/utilization.
+  const utilizationRoleType = (() => {
+    const tr = String(currentUser?.trainerRole || '').toLowerCase();
+    if (['head', 'manager', 'tl'].includes(tr)) return tr;
+    if (tr === 'trainer' || tr === 'part_time') return 'trainer';
+    const raw = String(currentUser?.role || '').toLowerCase();
+    if (/department head of training|head of trainer|chief trainer|chief faculty|training head|head of training/.test(raw)) return 'head';
+    if (/manager/.test(raw)) return 'manager';
+    if (/training team lead|trainer team lead|team lead|\btl\b/.test(raw)) return 'tl';
+    return 'trainer';
+  })();
   const canManageMaterials = (() => {
     const tr = String(currentUser?.trainerRole || '').toLowerCase();
     const raw = String(trainerRole || currentUser?.role || '').toLowerCase();
@@ -2241,7 +2253,7 @@ export default function TrainingDepartmentDashboard({
           {activeNav === 'utilization' && (
             <div className="space-y-6">
               <UtilizationDashboard
-                roleType="trainer"
+                roleType={utilizationRoleType}
                 currentUser={currentUser}
                 trainerProfile={trainerProfile}
                 pickedIdentity={pickedIdentity}

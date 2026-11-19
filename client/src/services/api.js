@@ -2295,6 +2295,13 @@ export const updateTrainerSlotActual = async (data) => {
   return res.data;
 };
 
+// TL / Manager / Head: update actual progress for many team members & slots in one call
+export const bulkUpdateTrainerSlotActuals = async (data) => {
+  const res = await api.put('/trainer/utilization/bulk-actual', data);
+  notifyDataUpdate('trainer_utilization');
+  return res.data;
+};
+
 export const bulkSaveTrainerHourlyPlans = async (data) => {
   const res = await api.post('/trainer/utilization/bulk-plan', data);
   notifyDataUpdate('trainer_utilization');
