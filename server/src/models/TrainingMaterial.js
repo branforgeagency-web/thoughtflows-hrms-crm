@@ -30,6 +30,13 @@ const trainingMaterialSchema = new mongoose.Schema(
     assignments: {
       type: [{ batch: String, module: String, note: String, by: String, at: Date }],
       default: []
+    },
+    // Trainers this file is allocated to by the Trainer Head / Manager. Only
+    // Head, Manager, Admin and Leadership see every file; TLs and trainers see
+    // only the files whose list includes them.
+    allocatedTrainers: {
+      type: [{ trainerId: String, name: String, email: String, by: String, at: Date }],
+      default: []
     }
   },
   { timestamps: true }

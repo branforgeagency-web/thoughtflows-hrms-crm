@@ -22,7 +22,7 @@ import {
   Loader2
 } from 'lucide-react';
 import { fetchTrainingMaterialBuffer, trainingMaterialFileUrl } from '../services/api';
-import { getStorageFileUrl } from '../services/amplifyStorage';
+import { getStorageFileUrl, storedInActiveBucket } from '../services/amplifyStorage';
 
 // Files at or under this size are downloaded whole and rendered locally (PPTX
 // slide parsing needs the bytes in memory). Anything larger is streamed from
@@ -37,16 +37,21 @@ const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif']);
 // the material row has a fixed lifetime, so re-sign from the S3 key when we can
 // and only fall back to the saved URL / the API redirect.
 async function resolveDirectUrl(material) {
-  if (material?.storageKey) {
+  // A file uploaded from another environment sits in a different bucket that
+  // this browser build cannot sign for — let the API server sign it instead.
+  const otherBucket = material?.storageUrl && !storedInActiveBucket(material.storageUrl);
+  if (material?.storageKey && !otherBucket) {
     try {
       const fresh = await getStorageFileUrl(material.storageKey, { expiresIn: 3600 });
       if (fresh) return fresh;
     } catch (err) {
-      console.warn('Could not re-sign S3 URL, falling back to stored link:', err);
+      console.warn('Could not re-sign S3 URL, falling back to the API link:', err);
     }
   }
-  if (material?.storageUrl) return material.storageUrl;
+  // The bucket is private, so the saved plain link is refused (AccessDenied);
+  // the API route redirects to a freshly signed link instead.
   if (material?._id) return trainingMaterialFileUrl(material._id);
+  if (material?.storageUrl) return material.storageUrl;
   return '';
 }
 

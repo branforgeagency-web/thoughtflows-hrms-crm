@@ -61,7 +61,10 @@ import { BRANCH_MASTER, DEPARTMENT_MASTER, DEPT_CODE_BY_DASHBOARD } from '../con
 import TrainerHourlyWork from '../models/TrainerHourlyWork.js';
 import { DEFAULT_WORK_SLOTS } from '../constants/trainerHierarchy.js';
 import wiseappRouter from './wiseapp.js';
-import { isS3Configured, copyRemoteRecordingToS3, putRecordingBuffer, streamS3Object } from '../utils/s3Storage.js';
+import { registerSchedulingRoutes } from './scheduling.js';
+import { isS3Configured, copyRemoteRecordingToS3, putRecordingBuffer, streamS3Object, signedUrlForStoredFile } from '../utils/s3Storage.js';
+import { livekitConfigured, livekitUrl, livekitToken, classRoomName, endLivekitRoom, LIVEKIT_NOT_CONFIGURED } from '../utils/livekit.js';
+import { randomInt as cryptoRandomInt } from 'crypto';
 
 const router = express.Router();
 
@@ -3612,6 +3615,91 @@ const ownsDemo = canChangeRecord;
 
 const NOT_YOURS = { error: 'This record belongs to another counsellor.' };
 
+// ---- Student record guards -------------------------------------------------
+// A signed-in staff member. Public routes (self-registration) still decode a
+// token when one is sent, so req.user may be a student or absent.
+const isStaffCaller = (req) => {
+  const u = req.user;
+  if (!u || u.typ === 'file' || u.studentId) return false;
+  return normalizeDept(u.department, u.role) !== 'student';
+};
+
+// What an anonymous caller may learn about a duplicate: only that it exists.
+const publicDuplicateInfo = (dup) => ({
+  isDuplicate: true,
+  error: 'This mobile number / email ID is already registered with ThoughtFlows. Please contact your HR counsellor or the branch to continue.',
+  duplicateFields: dup?.duplicateFields || {}
+});
+
+// Fields the public self-registration form may set. Everything else (fees,
+// approvals, scores, IDs, ownership) is staff-only.
+const PUBLIC_STUDENT_FIELDS = [
+  'name', 'fatherName', 'address', 'dob', 'phone', 'whatsappNumber', 'alternatePhone', 'email',
+  'facebookId', 'qualification', 'qualTag', 'passoutYear', 'collegeCompany', 'college', 'company',
+  'course', 'mode', 'source', 'batchTiming', 'batchType', 'batchDate', 'branch', 'location', 'hrName'
+];
+
+// Set only by the server or by their own dedicated endpoints (trainer approval,
+// weekly rating, readiness, allocation, rewards …) — never by a create / edit body.
+const STUDENT_SYSTEM_FIELDS = [
+  '_id', 'id', '__v', 'createdAt', 'updatedAt',
+  'modeChangeUsed', 'modeChangedAt',
+  'courseCompletionApproved', 'courseCompletionApprovedAt', 'courseCompletionApprovedBy', 'courseCompletionStatus', 'courseCompletionTrainerNotes',
+  'examApprovedByTrainer', 'examApprovedAt', 'examApprovedBy', 'examApprovalStatus', 'examTrainerNotes',
+  'trainerApprovalVerification', 'seminarCompleted', 'seminarCompletedAt', 'seminarEvaluatedBy', 'seminarFeedback',
+  'rewardPoints', 'weeklyRating', 'mockInterviewAttempts', 'mockInterviewAttemptsCount',
+  'syllabusCompleted', 'syllabusCompletedAt', 'syllabusProgressPct', 'studentModuleProgress', 'completedModules',
+  'attendancePct', 'readinessScore', 'assessmentScore', 'mockScore', 'technicalScore', 'communicationScore', 'interviewPrepScore',
+  'jobReadyStatus', 'readinessFeedback', 'readinessEvaluatedBy', 'readinessEvaluatedAt', 'trainerRecommendation', 'trainerRecommendationAt',
+  'trainerId', 'trainerName', 'headOfTrainer', 'headOfTrainerId', 'allocatedByHead', 'allocatedByHeadAt', 'allocatedTrainerAt',
+  'handedOverBy', 'handedOverAt', 'breakApprovedBy', 'breakApprovedAt',
+  'batchConversionTicketRaised', 'batchConversionTicketAt', 'batchConversionTicketId', 'batchHistory',
+  'anatomyCompleted', 'anatomyCompletedAt', 'anatomyCompletedBy', 'codingBatchEnrolledAt',
+  'resumeStatus', 'resumeReviewedAt', 'videoIntroStatus', 'videoIntroReviewedAt', 'remedialActions'
+];
+const stripFields = (obj, keys) => { keys.forEach((k) => delete obj[k]); return obj; };
+
+// Indian mobile: accepts +91 / 0 prefixes, spaces and dashes; returns the 10
+// digits, or '' when it is not a valid mobile number.
+const normalizeMobile = (v) => {
+  let d = String(v || '').replace(/\D/g, '');
+  if (d.length === 12 && d.startsWith('91')) d = d.slice(2);
+  if (d.length === 11 && d.startsWith('0')) d = d.slice(1);
+  return /^[6-9]\d{9}$/.test(d) ? d : '';
+};
+const EMAIL_RX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// Phone / WhatsApp / alternate number + email: normalise and validate in place.
+// `requirePhone` is true on create. Returns an error message or ''.
+function validateStudentContact(payload, { requirePhone = false } = {}) {
+  if (requirePhone || 'phone' in payload) {
+    const m = normalizeMobile(payload.phone);
+    if (!m) return 'Enter a valid 10-digit mobile number.';
+    payload.phone = m;
+  }
+  for (const k of ['whatsappNumber', 'alternatePhone', 'additionalNumber']) {
+    if (!(k in payload)) continue;
+    if (!String(payload[k] || '').trim()) { payload[k] = ''; continue; }
+    const m = normalizeMobile(payload[k]);
+    if (!m) return `Enter a valid 10-digit ${k === 'whatsappNumber' ? 'WhatsApp' : 'alternate'} number.`;
+    payload[k] = m;
+  }
+  if ('email' in payload) {
+    const e = String(payload.email || '').trim().toLowerCase();
+    if (e && !EMAIL_RX.test(e)) return 'Enter a valid email address.';
+    payload.email = e;
+  }
+  return '';
+}
+
+// statusGroup 'all' is a list filter, not a status a student can be in
+const cleanStatusGroup = (payload) => {
+  if (!('statusGroup' in payload)) return;
+  if (!['in_course', 'placed', 'on_hold'].includes(payload.statusGroup)) {
+    payload.statusGroup = String(payload.placementStatus || '').toLowerCase().includes('place') ? 'placed' : 'in_course';
+  }
+};
+
 // The lead a new admission / demo belongs to: explicit leadId first, then
 // the same email or the same last-10-digit phone.
 const phoneDigits = (p) => String(p || '').replace(/\D/g, '').slice(-10);
@@ -3768,6 +3856,40 @@ router.get('/students', async (req, res) => {
       });
     }
     res.json(resultList);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// NOTE: these two static routes must stay ABOVE /students/:id — Express
+// matches in order, and '/students/:id' would otherwise swallow them as ids.
+router.get('/students/check-duplicate', async (req, res) => {
+  try {
+    const { phone, whatsappNumber, email, leadId, excludeStudentId } = req.query;
+    const dup = await checkDuplicateRegistration({ phone, whatsappNumber, email, leadId, excludeStudentId });
+    if (dup) {
+      // Public (self-registration) callers only learn that the contact is
+      // already registered — never whose record it is or which HR owns it.
+      if (!isStaffCaller(req)) return res.json(publicDuplicateInfo(dup));
+      return res.json(dup);
+    }
+    return res.json({ isDuplicate: false });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Public lightweight next student ID preview for registration form
+router.get('/students/next-id', async (req, res) => {
+  try {
+    const { branch, course, mode, date } = req.query;
+    const studentId = await generateStandardStudentId({
+      branch,
+      course,
+      mode,
+      date: date || new Date()
+    });
+    res.json({ studentId });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -4188,38 +4310,36 @@ async function checkDuplicateRegistration({ phone, whatsappNumber, email, leadId
   return buildDuplicateInfo({ matchedStudent, matchedLead, digits, mail });
 }
 
-router.get('/students/check-duplicate', async (req, res) => {
-  try {
-    const { phone, whatsappNumber, email, leadId, excludeStudentId } = req.query;
-    const dup = await checkDuplicateRegistration({ phone, whatsappNumber, email, leadId, excludeStudentId });
-    if (dup) {
-      return res.json(dup);
-    }
-    return res.json({ isDuplicate: false });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Public lightweight next student ID preview for registration form
-router.get('/students/next-id', async (req, res) => {
-  try {
-    const { branch, course, mode, date } = req.query;
-    const studentId = await generateStandardStudentId({
-      branch,
-      course,
-      mode,
-      date: date || new Date()
-    });
-    res.json({ studentId });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
 router.post('/students', async (req, res) => {
   try {
-    let payload = { ...req.body };
+    const staff = isStaffCaller(req);
+    const body = req.body || {};
+    let payload;
+    if (staff) {
+      payload = stripFields({ ...body }, STUDENT_SYSTEM_FIELDS);
+    } else {
+      // Public self-registration: only the form's own fields, nothing that
+      // touches money, approvals, IDs or which counsellor gets the credit.
+      payload = {};
+      PUBLIC_STUDENT_FIELDS.forEach((k) => { if (body[k] !== undefined) payload[k] = body[k]; });
+      payload.registeredAt = new Date();
+      payload.source = String(payload.source || 'Self Registration').slice(0, 80);
+      // ?hr= on a shared link may only name a real, active staff member
+      const hr = String(payload.hrName || '').trim();
+      payload.hrName = '';
+      if (hr) {
+        const hrUser = await User.findOne({ name: exactNameRx(hr), status: { $ne: 'Inactive' }, role: { $not: /student|scholar/i } }).select('name').lean();
+        if (hrUser) payload.hrName = hrUser.name;
+      }
+    }
+    if (!String(payload.name || '').trim()) return res.status(400).json({ error: 'Student name is required.' });
+    if (!String(payload.course || '').trim()) return res.status(400).json({ error: 'Course is required.' });
+    const contactErr = validateStudentContact(payload, { requirePhone: true });
+    if (contactErr) return res.status(400).json({ error: contactErr });
+    if (payload.registeredAt) {
+      const d = new Date(payload.registeredAt);
+      payload.registeredAt = isNaN(d.getTime()) ? new Date() : d;
+    }
 
     // Check for duplicate registration by mobile number and/or email ID
     const dup = await checkDuplicateRegistration({
@@ -4229,13 +4349,21 @@ router.post('/students', async (req, res) => {
       leadId: payload.leadId
     });
     if (dup) {
-      return res.status(409).json({
-        error: dup.error,
-        isDuplicate: true,
-        duplicate: dup
-      });
+      // A returning student (already admitted) joining a DIFFERENT course is a
+      // new admission, not a duplicate — staff only. Same course stays blocked.
+      const prev = dup.firstRegistrationMember || {};
+      const sameCourse = String(prev.course || '').trim().toLowerCase() === String(payload.course || '').trim().toLowerCase();
+      const returning = staff && prev.type === 'Admitted Student' && !sameCourse;
+      if (!returning) {
+        if (!staff) return res.status(409).json({ ...publicDuplicateInfo(dup), duplicate: publicDuplicateInfo(dup) });
+        return res.status(409).json({
+          error: dup.error,
+          isDuplicate: true,
+          duplicate: dup
+        });
+      }
     }
-    if (!payload.studentId || (await Student.exists({ studentId: payload.studentId }))) {
+    if (!staff || !payload.studentId || (await Student.exists({ studentId: payload.studentId }))) {
       payload.studentId = await generateStandardStudentId({
         branch: payload.branch || payload.leadBranch || payload.location,
         course: payload.course,
@@ -4246,13 +4374,13 @@ router.post('/students', async (req, res) => {
     if (payload.mode && !['Online', 'Classroom'].includes(payload.mode)) {
       payload.mode = (payload.mode.toLowerCase().includes('class') || payload.mode.toLowerCase().includes('off')) ? 'Classroom' : 'Online';
     }
-    if (!payload.onboardStatus) payload.onboardStatus = '7/7 ✓';
+    // WiseApp onboarding (intro session, group, class allocation …) starts at 0
+    if (!payload.onboardStatus || /^7\s*\/\s*7/.test(payload.onboardStatus)) payload.onboardStatus = '0/7';
     if (!payload.syllabusModule) payload.syllabusModule = 'Module 1';
-    if (!payload.statusGroup || !['all', 'in_course', 'placed', 'on_hold'].includes(payload.statusGroup)) {
-      payload.statusGroup = payload.placementStatus?.toLowerCase().includes('place') ? 'placed' : 'in_course';
-    }
+    payload.statusGroup = payload.statusGroup || 'in_course';
+    cleanStatusGroup(payload);
     // A counsellor always admits under their own name
-    if (isScopedHr(req) || !payload.hrName) payload.hrName = req.user?.name || payload.hrName || '';
+    if (staff && (isScopedHr(req) || !payload.hrName)) payload.hrName = req.user?.name || payload.hrName || '';
 
     // Link the admission to its lead (explicit leadId, else same phone / email)
     let lead = await findLeadForAdmission(payload);
@@ -4294,10 +4422,27 @@ router.post('/students', async (req, res) => {
       const rate = await CourseFeeRate.findOne({ $or: [{ code: exactNameRx(code) }, { name: exactNameRx(payload.course) }] });
       if (rate?.courseFee > 0) payload.courseFee = rate.courseFee;
     }
-    if (Number(payload.courseFee) > 0) applyFeeTotals(payload);
+    if (!staff) { delete payload.courseFee; delete payload.paidAmount; }
+    payload.courseFee = Math.max(0, Number(payload.courseFee) || 0);
+    payload.paidAmount = Math.max(0, Number(payload.paidAmount) || 0);
+    if (payload.courseFee > 0 && payload.paidAmount > payload.courseFee) {
+      return res.status(400).json({ error: `Amount paid (₹${payload.paidAmount.toLocaleString('en-IN')}) is more than the course fee (₹${payload.courseFee.toLocaleString('en-IN')}).` });
+    }
+    applyFeeTotals(payload);
 
-    // Handover readiness is earned through the checklist, never assumed
-    payload.checklist = { ...(payload.checklist || {}), paymentStatus: Number(payload.paidAmount) > 0 };
+    // Handover readiness is earned through the checklist, never assumed: only
+    // items the admission itself proves are pre-ticked; HR verifies the rest.
+    const given = (v) => Boolean(String(v || '').trim());
+    payload.checklist = {
+      language: false, careerGoal: false, trainerNote: false, documents: false,
+      ...(staff ? (payload.checklist || {}) : {}),
+      course: given(payload.course),
+      studentId: true,
+      branch: given(payload.branch),
+      batchMode: given(payload.mode) && given(payload.batchTiming),
+      education: (staff && payload.checklist?.education) || given(payload.qualification),
+      paymentStatus: payload.paidAmount > 0
+    };
     payload.handoverStatus = 'Pending Handover';
     // First payment taken at admission → opening receipt, so the ledger adds up
     if (Number(payload.paidAmount) > 0 && !(payload.receipts || []).length) {
@@ -4315,8 +4460,28 @@ router.post('/students', async (req, res) => {
       }];
     }
 
-    const newStudent = new Student(payload);
-    await newStudent.save();
+    // Two admissions at the same moment can compute the same next serial; the
+    // unique index rejects the second, so take the next free one and retry.
+    let newStudent;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        newStudent = new Student(payload);
+        await newStudent.save();
+        break;
+      } catch (e) {
+        if (e?.code !== 11000 || !/studentId/.test(e.message) || attempt >= 4) throw e;
+        payload.studentId = await generateStandardStudentId({
+          branch: payload.branch || payload.leadBranch || payload.location,
+          course: payload.course,
+          mode: payload.mode,
+          date: payload.batchDate || payload.registeredAt || new Date()
+        });
+        if (payload.receipts?.[0]?.receiptNo) {
+          const rn = `RC-${payload.studentId}-01`;
+          payload.receipts[0] = { ...payload.receipts[0], id: rn, receiptNo: rn };
+        }
+      }
+    }
 
     if (lead) {
       lead.stage = 'admitted';
@@ -4348,6 +4513,9 @@ router.post('/students', async (req, res) => {
         notes: `Admitted Student ID: ${newStudent.studentId}`
       });
       await lead.save();
+      // Link back so edits / deletes of this student find its lead
+      newStudent.leadId = String(lead._id);
+      await Student.updateOne({ _id: newStudent._id }, { $set: { leadId: newStudent.leadId } });
     }
 
     // Create student login user email + password in User collection upon student admission/registration
@@ -4356,6 +4524,11 @@ router.post('/students', async (req, res) => {
     if (email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       const existing = await User.findOne({ email });
       if (existing) {
+        // A returning student's old login was switched off when that record was removed
+        if (existing.createdFrom === 'admitted_student' && /inactive/i.test(existing.status || '')) {
+          existing.status = 'Active';
+          await existing.save();
+        }
         studentLogin = { email, existing: true };
       } else {
         const password = generateStudentPassword();
@@ -4366,7 +4539,7 @@ router.post('/students', async (req, res) => {
           password,
           role: 'Student Scholar',
           department: 'Student Scholar',
-          branch: payload.branch || 'Saravanampatti (CBE)',
+          branch: payload.branch || '',
           status: 'Active',
           lastLogin: 'Never',
           initials: name.split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase(),
@@ -4377,7 +4550,15 @@ router.post('/students', async (req, res) => {
       }
     }
 
-    res.status(201).json({ ...newStudent.toObject(), studentLogin });
+    if (staff) return res.status(201).json({ ...newStudent.toObject(), studentLogin });
+    // Self-registration: the login is created, but its password is handed over
+    // by the HR counsellor (Reset login) — never shown to whoever typed the email.
+    const o = newStudent.toObject();
+    return res.status(201).json({
+      _id: o._id, studentId: o.studentId, name: o.name, course: o.course, mode: o.mode,
+      branch: o.branch, batchTiming: o.batchTiming, hrName: o.hrName,
+      studentLogin: studentLogin ? { email: studentLogin.email, created: Boolean(studentLogin.created) } : null
+    });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -4480,16 +4661,48 @@ router.post('/students/:id/payments', async (req, res) => {
 
 router.put('/students/:id', async (req, res) => {
   try {
-    const payload = { ...req.body };
+    const payload = { ...(req.body || {}) };
+    const elevated = ['admin', 'leadership'].includes(req.user?.department);
+    // Never writable through a generic edit: ids, timestamps; and — except for
+    // Admin / Leadership corrections — approvals, scores, allocation, rewards,
+    // the one-time mode lock and the student ID itself (receipts, tests,
+    // requests and the portal login are all keyed on it).
+    stripFields(payload, ['_id', 'id', '__v', 'createdAt', 'updatedAt']);
+    if (!elevated) stripFields(payload, [...STUDENT_SYSTEM_FIELDS, 'studentId']);
     if (payload.mode && !['Online', 'Classroom'].includes(payload.mode)) {
       payload.mode = (payload.mode.toLowerCase().includes('class') || payload.mode.toLowerCase().includes('off')) ? 'Classroom' : 'Online';
     }
-    if (payload.statusGroup && !['all', 'in_course', 'placed', 'on_hold'].includes(payload.statusGroup)) {
-      payload.statusGroup = payload.placementStatus?.toLowerCase().includes('place') ? 'placed' : 'in_course';
-    }
+    cleanStatusGroup(payload);
+    if ('name' in payload && !String(payload.name || '').trim()) return res.status(400).json({ error: 'Student name cannot be empty.' });
+    // Blank / undefined contact fields in a partial update mean "unchanged"
+    if ('phone' in payload && !String(payload.phone ?? '').trim()) delete payload.phone;
+    if ('email' in payload && (payload.email === undefined || payload.email === null)) delete payload.email;
+    const contactErr = validateStudentContact(payload);
+    if (contactErr) return res.status(400).json({ error: contactErr });
     const existing = await findStudentByAnyId(req.params.id);
     if (!existing) return res.status(404).json({ error: 'Student not found' });
     if (!ownsStudent(req, existing)) return res.status(403).json(NOT_YOURS);
+    // A changed phone / WhatsApp / email must not collide with another student or lead
+    const phoneChanged = 'phone' in payload && phoneDigits(payload.phone) !== phoneDigits(existing.phone);
+    const waChanged = 'whatsappNumber' in payload && payload.whatsappNumber && phoneDigits(payload.whatsappNumber) !== phoneDigits(existing.whatsappNumber) && phoneDigits(payload.whatsappNumber) !== phoneDigits(existing.phone);
+    const emailChanged = 'email' in payload && payload.email && payload.email !== String(existing.email || '').toLowerCase();
+    if (phoneChanged || waChanged || emailChanged) {
+      const dup = await checkDuplicateRegistration({
+        phone: phoneChanged ? payload.phone : (waChanged ? payload.whatsappNumber : ''),
+        email: emailChanged ? payload.email : '',
+        leadId: existing.leadId,
+        excludeStudentId: existing.studentId
+      });
+      // The student's own lead(s) are not a clash
+      const own = dup && dup.firstRegistrationMember?.type !== 'Admitted Student'
+        && dup.firstRegistrationMember?.studentId === existing.studentId;
+      if (dup && !own) return res.status(409).json({ error: dup.error, isDuplicate: true, duplicate: dup });
+      if (emailChanged) {
+        const taken = await User.findOne({ email: exactNameRx(payload.email) }).select('email department role studentId').lean();
+        const takenByOther = taken && !(existing.email && String(taken.email).toLowerCase() === String(existing.email).toLowerCase());
+        if (takenByOther) return res.status(409).json({ error: `The email ${payload.email} is already used by another login.` });
+      }
+    }
     // Mode of training (Online/Classroom) can be switched only once per
     // student — most commonly offline -> online. Once that one switch has
     // been used, the mode is locked and the student completes the course
@@ -4508,7 +4721,13 @@ router.put('/students/:id', async (req, res) => {
     }
     // Money only moves through POST /students/:id/payments (receipt ledger);
     // Admin / Leadership may still correct the totals directly.
-    const elevated = ['admin', 'leadership'].includes(req.user?.department);
+    if ('courseFee' in payload) {
+      payload.courseFee = Math.max(0, Number(payload.courseFee) || 0);
+      const paid = 'paidAmount' in payload ? Number(payload.paidAmount) || 0 : Number(existing.paidAmount) || 0;
+      if (payload.courseFee > 0 && paid > payload.courseFee) {
+        return res.status(400).json({ error: `Course fee can't be less than the amount already paid (₹${paid.toLocaleString('en-IN')}).` });
+      }
+    }
     if (!elevated) {
       ['paidAmount', 'receipts', 'pendingBalance', 'feeStatus', 'feeAmount', 'leadId'].forEach((k) => delete payload[k]);
       if (isScopedHr(req)) delete payload.hrName;
@@ -4551,7 +4770,7 @@ router.put('/students/:id', async (req, res) => {
         }
       }
     }
-    const updated = await Student.findByIdAndUpdate(existing._id, { $set: payload }, { new: true });
+    const updated = await Student.findByIdAndUpdate(existing._id, { $set: payload }, { new: true, runValidators: true });
     // Fee edits keep balance / status in step with the ledger
     if ('courseFee' in payload || 'paidAmount' in payload) {
       applyFeeTotals(updated);
@@ -4560,11 +4779,11 @@ router.put('/students/:id', async (req, res) => {
 
     // Cascade student updates across linked collections (StudentLead, PlacementRecord, User, Portal activity)
     try {
+      // Only this admission's own lead — matching on phone / email would also
+      // overwrite unrelated leads that happen to share a number.
       const leadMatches = [];
       if (existing.leadId && mongoose.isValidObjectId(existing.leadId)) leadMatches.push({ _id: existing.leadId });
       if (existing.studentId) leadMatches.push({ admittedStudentId: existing.studentId });
-      if (existing.phone) leadMatches.push({ phone: existing.phone });
-      if (existing.email) leadMatches.push({ email: existing.email });
 
       if (leadMatches.length > 0) {
         const leadUpdates = {};
@@ -4575,11 +4794,9 @@ router.put('/students/:id', async (req, res) => {
         if (payload.course) leadUpdates.course = payload.course;
         if (payload.branch) leadUpdates.branch = payload.branch;
         if (payload.location || payload.branch) leadUpdates.location = payload.location || payload.branch;
-        if (payload.qualification) leadUpdates.qualification = payload.qualification;
-        if (payload.collegeCompany) leadUpdates.college = payload.collegeCompany;
+        if (payload.qualification) leadUpdates.education = payload.qualification;
+        if (payload.passoutYear) leadUpdates.passoutYear = payload.passoutYear;
         if (payload.batchTiming) leadUpdates.batchTiming = payload.batchTiming;
-        if (payload.batchType) leadUpdates.batchType = payload.batchType;
-        if (payload.address) leadUpdates.address = payload.address;
 
         if (Object.keys(leadUpdates).length > 0) {
           await StudentLead.updateMany({ $or: leadMatches }, { $set: leadUpdates });
@@ -4639,16 +4856,37 @@ router.delete('/students/:id', async (req, res) => {
     if (!existing) return res.status(404).json({ error: 'Student not found' });
     if (!ownsStudent(req, existing)) return res.status(403).json(NOT_YOURS);
     await Student.findByIdAndDelete(existing._id);
-    // Detach admittedStudentId from any linked lead so the lead is not orphaned
-    try {
-      await StudentLead.updateMany(
-        { $or: [{ admittedStudentId: existing.studentId }, { _id: existing.leadId }] },
-        { $unset: { admittedStudentId: 1 } }
-      );
-      if (existing.studentId) {
-        await PlacementRecord.deleteMany({ $or: [{ studentId: existing.studentId }, { tfId: existing.studentId }] });
-      }
-    } catch (_) {}
+    // Detach the linked lead (back to fee follow-up, so it is not left showing
+    // as admitted), remove placement records, and switch off the portal login.
+    const leadOr = [];
+    if (existing.studentId) leadOr.push({ admittedStudentId: existing.studentId });
+    if (existing.leadId && mongoose.isValidObjectId(existing.leadId)) leadOr.push({ _id: existing.leadId });
+    const cleanup = [];
+    if (leadOr.length) {
+      cleanup.push(StudentLead.updateMany(
+        { $or: leadOr, stage: 'admitted' },
+        { $set: { stage: 'fee_followup', status: 'in_progress' }, $unset: { admittedStudentId: 1 } }
+      ));
+      cleanup.push(StudentLead.updateMany({ $or: leadOr }, { $unset: { admittedStudentId: 1 } }));
+    }
+    if (existing.studentId) {
+      cleanup.push(PlacementRecord.deleteMany({ $or: [{ studentId: existing.studentId }, { tfId: existing.studentId }] }));
+    }
+    const email = String(existing.email || '').trim();
+    if (email) {
+      cleanup.push((async () => {
+        // Same email may still belong to another admission (returning student)
+        const stillStudent = await Student.exists({ email: exactNameRx(email) });
+        if (!stillStudent) {
+          await User.updateMany(
+            { email: exactNameRx(email), createdFrom: 'admitted_student' },
+            { $set: { status: 'Inactive' } }
+          );
+        }
+      })());
+    }
+    const results = await Promise.allSettled(cleanup);
+    results.filter((r) => r.status === 'rejected').forEach((r) => console.warn('Student delete cleanup:', r.reason?.message));
     res.json({ message: 'Student removed successfully' });
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -5568,7 +5806,8 @@ async function findEligibleTrainers({ language, location, preferredDate, timeSlo
   const courseNorm = norm(course);
   const specialty = isSpecialtyCourse(course);
 
-  const roster = await Trainer.find({ active: { $ne: false } });
+  // Leader roster records (Head / Manager / TL) only get demos when marked Demo Trainer
+  const roster = (await Trainer.find({ active: { $ne: false } })).filter((t) => !t.leaderAccount || t.demoTrainer);
 
   // 1. Language & Location matching
   const languageLocationMatched = roster.filter((t) => {
@@ -6140,9 +6379,9 @@ function notifyTrainer(trainer, demo) {
   );
 }
 
-router.post('/demos', async (req, res) => {
-  try {
-    const rawData = req.body || {};
+// Creates a demo booking with all the side effects (Head/Manager notified,
+// lead moved to Demo Booked). Used by POST /demos and by public booking links.
+async function createDemoRecord(rawData = {}, req = {}) {
     const course = rawData.course || rawData.subject || 'CPC';
     const language = rawData.language || 'Tamil';
     const location = rawData.location || rawData.branchName || '';
@@ -6197,7 +6436,7 @@ router.post('/demos', async (req, res) => {
       trainerMapping: explicitTrainer || 'Pending Trainer Head / Manager Assignment',
       status: String(rawData.status || 'booked').toLowerCase()
     };
-    if (!enrichedPayload.phone) return res.status(400).json({ error: 'Candidate phone number is required' });
+    if (!enrichedPayload.phone) { const err = new Error('Candidate phone number is required'); err.status = 400; throw err; }
 
     // Group demo session: if another student already has an active meeting in this trainer's slot, share it!
     if (explicitTrainerId && preferredDate && demoSlot) {
@@ -6269,12 +6508,18 @@ router.post('/demos', async (req, res) => {
       }
     } catch (e) { console.warn('demo → lead stage sync failed:', e.message); }
 
+    return newDemo;
+}
+
+router.post('/demos', async (req, res) => {
+  try {
+    const newDemo = await createDemoRecord(req.body || {}, req);
     res.status(201).json(newDemo);
   } catch (err) {
     if (err.code === 11000) {
       return res.status(409).json({ error: `That trainer has reached maximum group capacity (${DEMO_GROUP_CAPACITY} students) at this date and time slot.` });
     }
-    res.status(400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message });
   }
 });
 
@@ -7206,7 +7451,8 @@ router.post('/auth/login', async (req, res) => {
         const rosterFields = mapping.department === 'training' ? dropUndefined(await trainerRosterFields(dbUser.email || normalizedEmail, dbUser.name)) : {};
         let studentId;
         if (mapping.department === 'student') {
-          const st = await Student.findOne({ email: new RegExp(`^${escapeRegex(dbUser.email || normalizedEmail)}$`, 'i') }).select('studentId');
+          // Returning students have several admissions on one email — use the latest
+          const st = await Student.findOne({ email: new RegExp(`^${escapeRegex(dbUser.email || normalizedEmail)}$`, 'i') }).sort({ createdAt: -1 }).select('studentId');
           studentId = st?.studentId;
         }
 
@@ -9692,6 +9938,35 @@ router.get('/batches/:id', async (req, res) => {
 });
 
 // POST /batches — Create a new batch under a trainer, course, and scheduled time, and optionally group students
+// Batch trainer lookup. Heads of Trainer, Managers and Team Leads also take
+// batches: they are staff logins (User), not roster trainers, so the first time
+// one is picked their roster record is linked (same email) or created.
+const LEADER_ROLE_RX = /head|manager|team lead|\btl\b|chief|director/i;
+async function rosterTrainerFor(id) {
+  const key = String(id || '').trim();
+  if (!key) return null;
+  const found = await Trainer.findOne({ trainerId: key });
+  if (found) return found;
+  if (!mongoose.isValidObjectId(key)) return null;
+  const u = await User.findById(key).select('name email role department branch').lean();
+  if (!u || !/training|trainer|faculty/i.test(`${u.role || ''} ${u.department || ''}`)) return null;
+  const email = String(u.email || '').trim().toLowerCase();
+  if (email) {
+    const byEmail = await Trainer.findOne({ email });
+    if (byEmail) return byEmail;
+  }
+  return Trainer.create({
+    trainerId: key,
+    trainerName: u.name || 'Training Leader',
+    email,
+    branchName: u.branch || '',
+    role: u.role || '',
+    leaderAccount: LEADER_ROLE_RX.test(u.role || ''),
+    active: true,
+    isExperienced: true
+  });
+}
+
 router.post('/batches', async (req, res) => {
   try {
     const authorized = await isHeadOfTrainerUser(req);
@@ -9718,7 +9993,7 @@ router.post('/batches', async (req, res) => {
     if (!trainerId) return res.status(400).json({ error: 'Assigned trainer is required to create a batch' });
     if (!scheduledTime.trim()) return res.status(400).json({ error: 'Scheduled time (e.g. 11:00 AM – 1:00 PM) is required' });
 
-    const trainer = await Trainer.findOne({ trainerId });
+    const trainer = await rosterTrainerFor(trainerId);
     if (!trainer) return res.status(404).json({ error: 'Trainer not found in roster' });
 
     const cleanCourse = course.trim();
@@ -9865,7 +10140,7 @@ router.put('/batches/:id', async (req, res) => {
 
     let trainerDoc = null;
     if (trainerId) {
-      trainerDoc = await Trainer.findOne({ trainerId });
+      trainerDoc = await rosterTrainerFor(trainerId);
       if (!trainerDoc) return res.status(404).json({ error: 'Trainer not found in roster' });
       batchDoc.trainerId = trainerDoc.trainerId;
       batchDoc.trainerName = trainerDoc.trainerName;
@@ -9916,6 +10191,19 @@ router.put('/batches/:id', async (req, res) => {
         scheduledTime: batchDoc.scheduledTime,
         days: batchDoc.days
       });
+    }
+
+    // Keep every trainer's timetable in step with this batch, so a completed /
+    // archived / renamed / re-assigned batch stops showing in calendars,
+    // availability and demo matching.
+    const batchIsActive = ['Forming', 'Active'].includes(batchDoc.status);
+    const timetableNames = [...new Set([oldName, batchDoc.batchName].filter(Boolean))];
+    await Trainer.updateMany(
+      batchIsActive && batchDoc.trainerId ? { trainerId: { $ne: batchDoc.trainerId } } : {},
+      { $pull: { scheduledClasses: { batch: { $in: timetableNames } } } }
+    ).catch(() => {});
+    if (batchIsActive && batchDoc.trainerId && oldName && oldName !== batchDoc.batchName) {
+      await Trainer.updateOne({ trainerId: batchDoc.trainerId }, { $pull: { scheduledClasses: { batch: oldName } } }).catch(() => {});
     }
 
     res.json({ batch: batchDoc });
@@ -10085,7 +10373,7 @@ router.post('/batches/auto-group', async (req, res) => {
     if (!course.trim() || !trainerId || !scheduledTime.trim()) {
       return res.status(400).json({ error: 'Course, trainer, and scheduled time are required for batch grouping.' });
     }
-    const trainer = await Trainer.findOne({ trainerId });
+    const trainer = await rosterTrainerFor(trainerId);
     if (!trainer) return res.status(404).json({ error: 'Trainer not found' });
 
     const chunkSize = Math.min(15, Math.max(10, Number(targetBatchSize) || 12));
@@ -10406,7 +10694,7 @@ router.post('/students/:id/allocate-trainer', async (req, res) => {
 
     const resolvedTrainerId = trainerId || targetBatchDoc?.trainerId || '';
     if (!resolvedTrainerId) return res.status(400).json({ error: 'Select a trainer to allocate the student to' });
-    const trainer = await Trainer.findOne({ trainerId: resolvedTrainerId });
+    const trainer = await rosterTrainerFor(resolvedTrainerId);
     if (!trainer) return res.status(404).json({ error: 'Trainer not found in the roster' });
 
     const previousBatch = st.allocatedTrainerAt || st.handedOverAt ? studentBatchOf(st) : '';
@@ -11129,11 +11417,39 @@ function canManageTrainingMaterials(req) {
   return false;
 }
 
+// Head / Manager / Admin / Leadership see the whole library; everybody else in
+// Training (TLs, trainers, part-time) sees only files allocated to them.
+async function canSeeAllTrainingMaterials(req) {
+  if (canManageTrainingMaterials(req)) return true;
+  try {
+    return Boolean(await isHeadOfTrainerUser(req));
+  } catch (_) {
+    return false;
+  }
+}
+
+function isMaterialAllocatedToUser(doc, user = {}) {
+  const ids = new Set(
+    [user.trainerId, user.sub, user.id].map((v) => String(v || '').trim()).filter(Boolean)
+  );
+  const email = String(user.email || '').trim().toLowerCase();
+  const name = String(user.name || '').trim().toLowerCase();
+  return (doc?.allocatedTrainers || []).some((a) => {
+    if (a.trainerId && ids.has(String(a.trainerId))) return true;
+    if (email && String(a.email || '').toLowerCase() === email) return true;
+    if (name && String(a.name || '').trim().toLowerCase() === name) return true;
+    return false;
+  });
+}
+
 router.get('/training/materials', async (req, res) => {
   try {
     const { batch } = req.query;
     const query = batch ? { 'assignments.batch': batch } : {};
-    const list = await TrainingMaterial.find(query).sort({ createdAt: -1 }).lean();
+    let list = await TrainingMaterial.find(query).sort({ createdAt: -1 }).lean();
+    if (req.user?.department !== 'student' && !(await canSeeAllTrainingMaterials(req))) {
+      list = list.filter((m) => isMaterialAllocatedToUser(m, req.user));
+    }
     res.json(list);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -11215,20 +11531,30 @@ router.get('/training/materials/:id/file', async (req, res) => {
       const st = await findStudentByAnyId(req.user.studentId || '');
       const batch = studentBatchOf(st);
       if (!batch || !(doc.assignments || []).some((a) => a.batch === batch)) return res.status(403).json({ error: 'This material is not assigned to your batch' });
+    } else if (!(await canSeeAllTrainingMaterials(req)) && !isMaterialAllocatedToUser(doc, req.user)) {
+      return res.status(403).json({ error: 'This material has not been allocated to you. Please ask your Trainer Head or Manager.' });
     }
     const wantsDownload = Boolean(req.query.download);
     if (wantsDownload && !canManageTrainingMaterials(req)) {
       return res.status(403).json({ error: 'Download is disabled for TL and Trainers. Please open and view in the dashboard.' });
     }
-    if (doc.storageUrl) {
+    if (doc.storageUrl || doc.storageKey) {
+      // The bucket is private: a plain S3 link is always refused (AccessDenied),
+      // so hand out a short-lived signed link — for the bucket the file was
+      // actually uploaded to (taken from the saved URL).
+      const fileUrl = signedUrlForStoredFile({
+        storageKey: doc.storageKey, storageUrl: doc.storageUrl, expiresIn: 3600,
+        download: wantsDownload, fileName: doc.fileName
+      }) || doc.storageUrl;
+      if (!fileUrl) return res.status(404).json({ error: 'File not found' });
       // Large files are always handed off to S3 directly: proxying them would
       // pull the whole object into this process's memory and block the event
       // loop, and it would also lose byte-range support for video seeking.
       if (Number(doc.fileSize) > MAX_PROXY_STREAM_BYTES) {
-        return res.redirect(doc.storageUrl);
+        return res.redirect(fileUrl);
       }
       if (req.query.stream === '1' && !wantsDownload) {
-        const remote = await fetch(doc.storageUrl);
+        const remote = await fetch(fileUrl);
         if (!remote.ok) return res.status(502).json({ error: 'Failed to load material from storage' });
         const buf = Buffer.from(await remote.arrayBuffer());
         res.setHeader('Content-Type', doc.mimeType || 'application/octet-stream');
@@ -11237,7 +11563,7 @@ router.get('/training/materials/:id/file', async (req, res) => {
         res.setHeader('X-Content-Type-Options', 'nosniff');
         return res.send(buf);
       }
-      return res.redirect(doc.storageUrl);
+      return res.redirect(fileUrl);
     }
     // Legacy rows only: materials uploaded before the move to S3-only storage
     // still carry their bytes base64-inline in MongoDB. Nothing writes this any
@@ -11292,6 +11618,65 @@ router.post('/training/materials/:id/assign', async (req, res) => {
       });
     }
     res.json(doc);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Trainer Head / Manager decide which trainers can see a file. The body's
+// `trainers` list replaces the current allocation (send [] to un-allocate all).
+router.put('/training/materials/:id/allocate', async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+    if (!(await canSeeAllTrainingMaterials(req))) {
+      return res.status(403).json({ error: 'Only Trainer Head and Manager can allocate materials to trainers.' });
+    }
+    const input = Array.isArray(req.body?.trainers) ? req.body.trainers : [];
+    const by = req.body?.by || req.user?.name || '';
+    const doc = await TrainingMaterial.findById(req.params.id);
+    if (!doc) return res.status(404).json({ error: 'Material not found' });
+    const previous = new Map((doc.allocatedTrainers || []).map((a) => [String(a.trainerId || a.name), a]));
+    const seen = new Set();
+    const next = [];
+    input.forEach((t) => {
+      const trainerId = String(t?.trainerId || '').trim();
+      const name = String(t?.name || '').trim();
+      const key = trainerId || name;
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      const prev = previous.get(key);
+      next.push({
+        trainerId,
+        name,
+        email: String(t?.email || '').trim().toLowerCase(),
+        by: prev?.by || by,
+        at: prev?.at || new Date()
+      });
+    });
+    // Only notify trainers with an id: an empty recipientId would broadcast to every trainer.
+    const newlyAdded = next.filter((a) => a.trainerId && !previous.has(String(a.trainerId || a.name)));
+    doc.allocatedTrainers = next;
+    await doc.save();
+    if (newlyAdded.length) {
+      try {
+        await Notification.insertMany(
+          newlyAdded.map((a) => ({
+            audience: 'trainer',
+            recipientId: a.trainerId,
+            recipientName: a.name,
+            type: 'material',
+            title: `New LMS material: ${doc.title}`,
+            message: `${by || 'Your Trainer Head'} allocated this file to you. Open LMS · PPT & Course Library to view it.`,
+            createdBy: by
+          }))
+        );
+      } catch (_) {
+        // notifications are best-effort
+      }
+    }
+    const obj = doc.toObject();
+    delete obj.data;
+    res.json(obj);
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -12086,9 +12471,23 @@ router.get('/settings/:key', async (req, res) => {
   }
 });
 
+// Google Sheet links: Department Head, Branch Head or Admin only (others view)
+const canEditHrSheets = (req) => {
+  const role = String(req.user?.role || '');
+  const dept = String(req.user?.department || '').toLowerCase();
+  if (['admin', 'leadership'].includes(dept) || /admin/i.test(role)) return true;
+  if (isDeptHeadRole(role)) return true;
+  // HR Department Head (not an HR Team Lead)
+  if (/\bhead\b|\bhod\b/i.test(role) && !/team\s*lead|\btl\b/i.test(role)) return true;
+  return role === 'Branch Manager' || BRANCH_ROLE_RX.test(role) || Boolean(req.user?.isBranchManager);
+};
+
 router.put('/settings/:key', async (req, res) => {
   try {
     if (!SETTING_KEYS.includes(req.params.key)) return res.status(404).json({ error: 'Unknown setting' });
+    if (req.params.key === 'hr_google_sheets' && !canEditHrSheets(req)) {
+      return res.status(403).json({ error: 'Only the Department Head or Branch Head can change the Google Sheet.' });
+    }
     const doc = await AppSetting.findOneAndUpdate(
       { key: req.params.key },
       { $set: { value: req.body?.value ?? null, updatedBy: req.user?.name || '' } },
@@ -12372,6 +12771,80 @@ async function endZoomMeeting(meetingId) {
   try { await zoomApi(`/meetings/${meetingId}/status`, { method: 'PUT', body: { action: 'end' } }); } catch (_) {}
 }
 
+// ---- Concurrent classes: never let one trainer's start end another's call ----
+// Zoom limits LIVE meetings per Zoom USER (1, or 2 on Business+ plans), not
+// per account. So every trainer needs their own licensed Zoom user
+// (Trainer.zoomEmail); trainers without one are given a free host from
+// ZOOM_HOST_POOL (comma-separated licensed users), then ZOOM_HOST_EMAIL.
+const zoomHostPool = () => String(process.env.ZOOM_HOST_POOL || '')
+  .split(/[\s,;]+/).map((h) => h.trim().toLowerCase()).filter(Boolean);
+const zoomMeetingsPerHost = () => Math.max(1, Number(process.env.ZOOM_MEETINGS_PER_HOST) || 1);
+
+// Allocation runs one at a time on this server, so two trainers pressing
+// "Start" together can't both be handed the same free host.
+let zoomAllocChain = Promise.resolve();
+function withZoomAllocLock(fn) {
+  const run = zoomAllocChain.then(fn, fn);
+  zoomAllocChain = run.catch(() => {});
+  return run;
+}
+
+const sameTrainer = (rec, me) => {
+  if (!rec) return false;
+  const id = String(rec.trainerId || '').trim();
+  if (id && me.trainerId) return id === me.trainerId;
+  const name = String(rec.trainerName || rec.trainer || '').trim().toLowerCase();
+  return Boolean(name && me.trainerName && name === me.trainerName);
+};
+
+// Who is using a Zoom user right now.
+//   others    — meeting ids of OTHER trainers' live classes / demos (never end these)
+//   mineStale — this trainer's own left-over meetings (safe to end)
+//   unknown   — live on Zoom but not created by this app (someone started it by hand)
+async function zoomHostUsage(host, me, { exceptSessionId } = {}) {
+  const others = new Set();
+  const mineStale = [];
+  const unknown = [];
+  // Classes already given this host but not started in Zoom yet still count
+  const assigned = await LiveClassSession.find({ isLive: true, zoomHostEmail: host, meetingSource: 'zoom_api' })
+    .select('trainerId trainerName zoomMeetingId isLive startedAt').lean();
+  for (const c of assigned) {
+    if (exceptSessionId && String(c._id) === String(exceptSessionId)) continue;
+    if (isSessionLive(c) && !sameTrainer(c, me)) others.add(String(c.zoomMeetingId));
+  }
+  const live = await liveMeetings(host);
+  if (live.ids.length) {
+    const [classes, demos] = await Promise.all([
+      LiveClassSession.find({ zoomMeetingId: { $in: live.ids } }).select('trainerId trainerName zoomMeetingId isLive startedAt').lean(),
+      Demo.find({ zoomMeetingId: { $in: live.ids } }).select('trainerId trainer zoomMeetingId').lean()
+    ]);
+    for (const id of live.ids) {
+      const c = classes.find((x) => String(x.zoomMeetingId) === id);
+      const ds = demos.filter((x) => String(x.zoomMeetingId) === id);
+      if (exceptSessionId && c && String(c._id) === String(exceptSessionId)) continue;
+      if (c && isSessionLive(c) && !sameTrainer(c, me)) others.add(id);
+      else if (ds.some((d) => !sameTrainer(d, me))) others.add(id);
+      else if (c || ds.length) { if (!others.has(id)) mineStale.push(id); }
+      else unknown.push(id);
+    }
+  }
+  return { others, mineStale, unknown, listError: live.error };
+}
+
+// Meeting ids that must never be force-ended: every class that is live now,
+// plus other trainers' demos. Used before cleaning up a trainer's Zoom user.
+async function protectedZoomIds(ids, me) {
+  if (!ids.length) return new Set();
+  const [classes, demos] = await Promise.all([
+    LiveClassSession.find({ zoomMeetingId: { $in: ids } }).select('trainerId trainerName zoomMeetingId isLive startedAt').lean(),
+    Demo.find({ zoomMeetingId: { $in: ids } }).select('trainerId trainer zoomMeetingId').lean()
+  ]);
+  const out = new Set();
+  classes.forEach((c) => { if (isSessionLive(c)) out.add(String(c.zoomMeetingId)); });
+  demos.forEach((d) => { if (!sameTrainer(d, me)) out.add(String(d.zoomMeetingId)); });
+  return out;
+}
+
 // Parse "Today 17:00" / "4:00 PM" + preferredDate into a Zoom start_time (IST). Returns undefined if unclear/past.
 function demoStartTime(demo) {
   const m = String(demo.time || demo.timeSlot || '').match(/(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
@@ -12427,10 +12900,131 @@ router.put('/demos/:id/meeting-link', async (req, res) => {
   }
 });
 
+// ==========================================
+// DEMO CLASSROOM (LiveKit) — no-login join links for demo candidates
+//   Each candidate gets /join/demo/<joinCode>: opens on a phone or lab PC,
+//   waits until the trainer starts, then joins the shared group-session room.
+// ==========================================
+const DEMO_LIVE_HOURS = 4;
+const JOIN_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const demoClassroomLive = (d) => Boolean(d?.classroomLiveAt && (Date.now() - new Date(d.classroomLiveAt).getTime()) < DEMO_LIVE_HOURS * 36e5);
+
+async function uniqueDemoJoinCode() {
+  for (let i = 0; i < 8; i++) {
+    let code = '';
+    for (let k = 0; k < 10; k++) code += JOIN_CODE_CHARS[cryptoRandomInt(JOIN_CODE_CHARS.length)];
+    if (!(await Demo.exists({ joinCode: code }))) return code;
+  }
+  throw new Error('Could not generate a join link, please try again');
+}
+
+// Base URL of the web app for links sent to candidates
+function publicAppBase(req) {
+  const clean = (u) => String(u || '').trim().replace(/\/+$/, '');
+  if (process.env.PUBLIC_APP_URL) return clean(process.env.PUBLIC_APP_URL);
+  const origin = clean(req.get('origin'));
+  if (/^https?:\/\//i.test(origin)) return origin;
+  const first = String(process.env.CLIENT_URL || '').split(',').map(clean).find((u) => /^https?:\/\//i.test(u));
+  return first || '';
+}
+
+// Gives every candidate in the demo's group session (same trainer, date and
+// slot) the shared room and their own join code / link.
+async function ensureDemoClassroom(demo, base) {
+  const sibs = (demo.trainerId && demo.preferredDate && demo.timeSlot)
+    ? await Demo.find({ trainerId: demo.trainerId, preferredDate: demo.preferredDate, timeSlot: demo.timeSlot })
+    : [];
+  if (!sibs.some((d) => String(d._id) === String(demo._id))) sibs.push(demo);
+  const room = demo.demoRoom || (sibs.find((d) => d.demoRoom) || {}).demoRoom || `tf-demo-${demo._id}`;
+  for (const d of sibs) {
+    const set = {};
+    if (d.demoRoom !== room) set.demoRoom = room;
+    const joinCode = d.joinCode || await uniqueDemoJoinCode();
+    if (!d.joinCode) set.joinCode = joinCode;
+    const link = `${base}/join/demo/${joinCode}`;
+    if (d.meetingProvider !== 'livekit') Object.assign(set, { meetingProvider: 'livekit', zoomMeetingId: '', zoomHostEmail: '' });
+    if (d.link !== link && (base || d.meetingProvider !== 'livekit')) set.link = link;
+    if (Object.keys(set).length) {
+      await Demo.updateOne({ _id: d._id }, { $set: set });
+      Object.assign(d, set);
+    }
+  }
+  return sibs.find((d) => String(d._id) === String(demo._id)) || demo;
+}
+
+// Trainer joins (and opens) the demo classroom as host
+router.get('/demos/:id/classroom-join', async (req, res) => {
+  try {
+    if (!livekitConfigured()) return res.status(503).json({ error: LIVEKIT_NOT_CONFIGURED });
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid demo' });
+    let demo = await Demo.findById(req.params.id);
+    if (!demo) return res.status(404).json({ error: 'Demo not found' });
+    if (demo.meetingProvider !== 'livekit' || !demo.demoRoom || !demo.joinCode) demo = await ensureDemoClassroom(demo, publicAppBase(req));
+    await Demo.updateMany({ demoRoom: demo.demoRoom }, { $set: { classroomLiveAt: new Date() } });
+    const token = livekitToken({
+      room: demo.demoRoom,
+      identity: `trainer-${demo.trainerId || req.user?.id || 'demo'}`,
+      name: req.user?.name || demo.trainer || 'Trainer',
+      host: true,
+      metadata: { demoRoom: demo.demoRoom }
+    });
+    res.json({ provider: 'livekit', serverUrl: livekitUrl(), token, roomName: demo.demoRoom });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+// PUBLIC — what the candidate's join page shows (no login)
+router.get('/public/demo/:code', async (req, res) => {
+  try {
+    const demo = await Demo.findOne({ joinCode: String(req.params.code) })
+      .select('candidateName course trainer preferredDate timeSlot time language status classroomLiveAt demoRoom').lean();
+    if (!demo) return res.status(404).json({ error: 'This demo link is not valid. Please ask your counsellor for a new link.' });
+    res.json({
+      candidateName: demo.candidateName,
+      course: demo.course,
+      trainer: demo.trainer,
+      preferredDate: demo.preferredDate,
+      timeSlot: demo.timeSlot || demo.time || '',
+      language: demo.language || '',
+      isLive: Boolean(demo.demoRoom) && demoClassroomLive(demo)
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PUBLIC — candidate joins the live demo (only once the trainer has started it)
+router.post('/public/demo/:code/join', async (req, res) => {
+  try {
+    if (!livekitConfigured()) return res.status(503).json({ error: 'The classroom is temporarily unavailable. Please contact your counsellor.' });
+    const demo = await Demo.findOne({ joinCode: String(req.params.code) });
+    if (!demo) return res.status(404).json({ error: 'This demo link is not valid. Please ask your counsellor for a new link.' });
+    if (!demo.demoRoom || !demoClassroomLive(demo)) {
+      return res.status(409).json({ error: 'Your trainer has not started the demo yet. Keep this page open — it will let you in as soon as it starts.', waiting: true });
+    }
+    if (!demo.classroomJoinedAt) await Demo.updateOne({ _id: demo._id }, { $set: { classroomJoinedAt: new Date() } });
+    const token = livekitToken({
+      room: demo.demoRoom,
+      identity: `demo-${demo._id}`,
+      name: demo.candidateName || 'Candidate',
+      host: false,
+      metadata: { demoId: demo._id.toString() }
+    });
+    res.json({ provider: 'livekit', serverUrl: livekitUrl(), token, roomName: demo.demoRoom });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.post('/demos/:id/zoom-meeting', async (req, res) => {
   try {
     const demo = await Demo.findById(req.params.id);
     if (!demo) return res.status(404).json({ error: 'Demo not found' });
+    // Demos now run in the ThoughtFlows Live Classroom (unless the trainer chose Google Meet)
+    if (livekitConfigured() && demo.meetingProvider !== 'google_meet') {
+      return res.json(await ensureDemoClassroom(demo, publicAppBase(req)));
+    }
     if (demo.zoomMeetingId && demo.link) return res.json(demo);
 
     if (!zoomApiConfigured() && !demo.link) {
@@ -12490,6 +13084,10 @@ router.post('/demos/:id/zoom-end', async (req, res) => {
   try {
     const demo = await Demo.findById(req.params.id);
     if (!demo) return res.status(404).json({ error: 'Demo not found' });
+    if (demo.demoRoom) {
+      await endLivekitRoom(demo.demoRoom);
+      await Demo.updateMany({ demoRoom: demo.demoRoom }, { $set: { classroomLiveAt: null } });
+    }
     if (demo.zoomMeetingId) await endZoomMeeting(demo.zoomMeetingId);
     res.json({ ok: true });
   } catch (e) {
@@ -12542,7 +13140,8 @@ router.get('/demos/mine', async (req, res) => {
       timeSlot: d.timeSlot,
       mode: d.mode,
       status: d.status,
-      hasMeeting: !!d.zoomMeetingId,
+      hasMeeting: !!d.zoomMeetingId || (Boolean(d.demoRoom) && demoClassroomLive(d)),
+      joinLink: d.meetingProvider === 'livekit' ? d.link : '',
       createdAt: d.createdAt
     })));
   } catch (err) {
@@ -12553,10 +13152,13 @@ router.get('/demos/mine', async (req, res) => {
 // Email the demo's Zoom join link to the student (Brevo transactional email API)
 router.post('/demos/:id/send-link', async (req, res) => {
   try {
-    const demo = await Demo.findById(req.params.id);
+    let demo = await Demo.findById(req.params.id);
     if (!demo) return res.status(404).json({ error: 'Demo not found' });
     if (!demo.email) return res.status(400).json({ error: 'No student email on this demo' });
-    if (!demo.zoomMeetingId) return res.status(400).json({ error: 'Create the Zoom meeting first' });
+    if (livekitConfigured() && demo.meetingProvider !== 'google_meet' && (demo.meetingProvider !== 'livekit' || !demo.joinCode)) {
+      demo = await ensureDemoClassroom(demo, publicAppBase(req));
+    }
+    if (!demo.link) return res.status(400).json({ error: 'Create the meeting link first' });
 
     const { BREVO_API_KEY, BREVO_SENDER_EMAIL, BREVO_SENDER_NAME } = process.env;
     if (!BREVO_API_KEY || !BREVO_SENDER_EMAIL) {
@@ -12572,13 +13174,13 @@ router.post('/demos/:id/send-link', async (req, res) => {
         sender: { name: BREVO_SENDER_NAME || 'Thoughtflows Academy', email: BREVO_SENDER_EMAIL },
         to: [{ email: demo.email, name: demo.candidateName }],
         subject: `Your ${demo.course} demo class link – Thoughtflows Academy`,
-        textContent: `Hi ${demo.candidateName},\n\nYour ${demo.course} demo class with ${demo.trainer} is scheduled for ${when}.\n\nJoin on Zoom: ${demo.link}\n\nPlease join 5 minutes early.\n\nThoughtflows Medical Coding Academy`,
+        textContent: `Hi ${demo.candidateName},\n\nYour ${demo.course} demo class with ${demo.trainer} is scheduled for ${when}.\n\nJoin here (works on mobile or computer, no app or login needed): ${demo.link}\n\nPlease join 5 minutes early.\n\nThoughtflows Medical Coding Academy`,
         htmlContent: `<div style="font-family:Arial,sans-serif;max-width:520px;margin:auto;color:#0f172a">
           <h2 style="color:#00897b;margin-bottom:4px">Your demo class is booked</h2>
           <p>Hi ${esc(demo.candidateName)},</p>
           <p>Your <b>${esc(demo.course)}</b> demo class with <b>${esc(demo.trainer)}</b> is scheduled for <b>${esc(when)}</b>.</p>
-          <p style="margin:24px 0"><a href="${esc(demo.link)}" style="background:#009688;color:#fff;padding:12px 22px;border-radius:10px;text-decoration:none;font-weight:bold">Join Zoom Demo</a></p>
-          <p style="font-size:12px;color:#64748b">Or open: ${esc(demo.link)}<br>Please join 5 minutes early.</p>
+          <p style="margin:24px 0"><a href="${esc(demo.link)}" style="background:#009688;color:#fff;padding:12px 22px;border-radius:10px;text-decoration:none;font-weight:bold">Join Demo Class</a></p>
+          <p style="font-size:12px;color:#64748b">Or open: ${esc(demo.link)}<br>Works on mobile or computer — no app or login needed. Please join 5 minutes early.</p>
           <p style="font-size:12px;color:#64748b">Thoughtflows Medical Coding Academy</p></div>`
       })
     });
@@ -12634,7 +13236,11 @@ router.get('/demos/:id/zoom-join', async (req, res) => {
 
       // Close other stuck meetings on the trainer's own Zoom user (never on the shared account)
       const own = String(demo.zoomMeetingId || '');
-      const toEnd = dedicated ? live.ids.filter(id => id !== own) : [];
+      const candidates = dedicated ? live.ids.filter(id => id !== own) : [];
+      // Never end a batch class that is live right now, or another trainer's demo
+      const keep = await protectedZoomIds(candidates, { trainerId: String(demo.trainerId || ''), trainerName: String(demo.trainer || '').toLowerCase() });
+      const toEnd = candidates.filter(id => !keep.has(id));
+      if (keep.size) debug.keptLive = [...keep];
       if (toEnd.length) {
         await Promise.all(toEnd.map(endZoomMeeting));
         await new Promise(r => setTimeout(r, 2000));
@@ -12723,7 +13329,7 @@ const liveSessionView = (sess) => (isSessionLive(sess) ? {
   batch: sess.batch,
   topic: sess.topic,
   startedAt: sess.startedAt,
-  hasMeeting: Boolean(sess.zoomMeetingId)
+  hasMeeting: Boolean(sess.roomName || sess.zoomMeetingId)
 } : null);
 
 async function findPortalStudent({ studentId, email }) {
@@ -12733,7 +13339,7 @@ async function findPortalStudent({ studentId, email }) {
   }
   if (email) {
     const e = String(email).trim();
-    if (e) return Student.findOne({ email: new RegExp(`^${escapeRegex(e)}$`, 'i') });
+    if (e) return Student.findOne({ email: new RegExp(`^${escapeRegex(e)}$`, 'i') }).sort({ createdAt: -1 });
   }
   return null;
 }
@@ -13546,8 +14152,9 @@ router.get('/student-portal/submissions/:id/file', async (req, res) => {
     if (!doc) return res.status(404).json({ error: 'Submission not found' });
     // Students may only open their own submissions
     if (req.user?.department === 'student' && doc.studentId !== req.user.studentId) return res.status(403).json({ error: 'Not allowed' });
-    if (doc.storageUrl) {
-      return res.redirect(doc.storageUrl);
+    if (doc.storageUrl || doc.storageKey) {
+      const fileUrl = signedUrlForStoredFile({ storageKey: doc.storageKey, storageUrl: doc.storageUrl, expiresIn: 3600, download: Boolean(req.query.download), fileName: doc.fileName }) || doc.storageUrl;
+      if (fileUrl) return res.redirect(fileUrl);
     }
     if (!doc.data) return res.status(404).json({ error: 'File not found' });
     res.setHeader('Content-Type', doc.mimeType || 'application/octet-stream');
@@ -14019,7 +14626,10 @@ async function ensureLiveIndexes() {
 }
 
 const sessionTrainerId = (req) => {
-  const fromBodyOrQuery = String(req.body?.trainerId || req.query?.trainerId || '').trim();
+  // 'LEADER' was a client placeholder shared by every leader without a trainer
+  // id — one leader starting a class then closed another leader's live class.
+  const raw = String(req.body?.trainerId || req.query?.trainerId || '').trim();
+  const fromBodyOrQuery = raw === 'LEADER' ? '' : raw;
   if (fromBodyOrQuery) return fromBodyOrQuery;
 
   const fromUser = String(req.user?.trainerId || (isTrainerReq(req) ? myTrainerId(req) : '') || '').trim();
@@ -14046,6 +14656,7 @@ const trainerSessionView = (sess) => sess && ({
   endedAt: sess.endedAt,
   meetingSource: sess.meetingSource,
   zoomMeetingId: sess.zoomMeetingId,
+  roomName: sess.roomName || '',
   joins: (sess.joins || []).map((j) => {
     const dur = typeof j.durationMinutes === 'number' && j.durationMinutes > 0
       ? j.durationMinutes
@@ -14068,27 +14679,52 @@ const zoomApiConfigured = () => Boolean(process.env.ZOOM_ACCOUNT_ID && process.e
 
 async function classZoomHosts(trainer) {
   const hosts = [];
-  const primary = String(trainer?.zoomEmail || '').trim().toLowerCase();
-  if (primary) hosts.push(primary);
-  const shared = sharedZoomHost();
-  if (shared && !hosts.includes(shared)) hosts.push(shared);
-  if (!hosts.includes('me')) hosts.push('me');
+  const add = (h) => { h = String(h || '').trim().toLowerCase(); if (h && !hosts.includes(h)) hosts.push(h); };
+  add(trainer?.zoomEmail);
+  zoomHostPool().forEach(add);
+  add(sharedZoomHost());
+  add('me');
   return hosts;
 }
 
-// Create the Zoom meeting for one class session under the trainer's Zoom user (with automatic fallbacks)
+// Create the Zoom meeting for one class session. Picks the trainer's own Zoom
+// user, else a FREE host from the pool. A host that is running another
+// trainer's class or demo is skipped — it is never ended to make room.
 async function createClassZoomMeeting(sess, trainer) {
+  return withZoomAllocLock(() => allocateClassZoomMeeting(sess, trainer));
+}
+async function allocateClassZoomMeeting(sess, trainer) {
   const hosts = await classZoomHosts(trainer);
+  const me = {
+    trainerId: String(sess.trainerId || trainer?.trainerId || '').trim(),
+    trainerName: String(sess.trainerName || trainer?.trainerName || '').trim().toLowerCase()
+  };
+  const ownHost = String(trainer?.zoomEmail || '').trim().toLowerCase();
+  const limit = zoomMeetingsPerHost();
   let lastError = null;
+  const busy = [];
 
   for (const host of hosts) {
     try {
-      if (host !== sharedZoomHost() && host !== 'me') {
-        const live = await liveMeetings(host);
-        if (live.ids.length) {
-          await Promise.all(live.ids.map(endZoomMeeting));
-          await new Promise((r) => setTimeout(r, 1000));
-        }
+      const usage = await zoomHostUsage(host, me, { exceptSessionId: sess._id });
+      // The trainer's own Zoom user is "dedicated" only if no other trainer was given the same email
+      const sharedWithOthers = ownHost && host === ownHost
+        ? await Trainer.exists({ zoomEmail: exactNameRx(host), trainerId: { $ne: me.trainerId } })
+        : false;
+      const dedicated = host === ownHost && !sharedWithOthers;
+      // On someone else's / a shared user, a meeting we didn't create may be a
+      // real class started by hand — treat it as busy, never end it.
+      const inUse = usage.others.size + (dedicated ? 0 : usage.unknown.length);
+      if (inUse >= limit || (!dedicated && usage.listError)) {
+        busy.push(host);
+        continue;
+      }
+      // Clear only this trainer's own left-overs (and, on their own dedicated
+      // user, stray meetings) so Zoom lets the new one start.
+      const toEnd = dedicated ? [...usage.mineStale, ...usage.unknown] : usage.mineStale;
+      if (toEnd.length && inUse + toEnd.length >= limit) {
+        await Promise.all(toEnd.map(endZoomMeeting));
+        await new Promise((r) => setTimeout(r, 1000));
       }
       const r = await zoomApi(`/users/${encodeURIComponent(host)}/meetings`, {
         method: 'POST',
@@ -14112,6 +14748,9 @@ async function createClassZoomMeeting(sess, trainer) {
         sess.zoomJoinUrl = r.data.join_url || '';
         sess.zoomPassword = r.data.password || (r.data.join_url?.match(/[?&]pwd=([^&]+)/) || [])[1] || '';
         sess.meetingSource = 'zoom_api';
+        // Saved inside the allocation lock so the next trainer sees this host as taken
+        await sess.save();
+        if (busy.length) console.warn(`[zoom-class] ${sess.batch}: skipped busy host(s) ${busy.join(', ')} → using ${host}`);
         return;
       }
       const msg = r.data?.message || `Zoom HTTP ${r.status}`;
@@ -14124,6 +14763,10 @@ async function createClassZoomMeeting(sess, trainer) {
     } catch (err) {
       lastError = err;
     }
+  }
+  if (busy.length && !lastError) {
+    lastError = new Error(`Every Zoom host is busy with another trainer's class (${busy.join(', ')}). Give ${sess.trainerName || 'this trainer'} their own licensed Zoom user (Trainer → Zoom email), or add more licensed users to ZOOM_HOST_POOL.`);
+    lastError.status = 409;
   }
 
   // If Zoom API fails for all candidate hosts, check if trainer has fixed classZoomLink
@@ -14144,7 +14787,7 @@ async function createClassZoomMeeting(sess, trainer) {
     throw err;
   }
   const err = new Error(errMsg);
-  err.status = 502;
+  err.status = lastError?.status || 502;
   throw err;
 }
 
@@ -14172,17 +14815,27 @@ router.post('/trainer/live-class/start', async (req, res) => {
     const batch = String(req.body?.batch || req.body?.batchName || req.query?.batch || '').trim();
     const topic = String(req.body?.topic || '').trim();
     if (!trainerId || !batch) return res.status(400).json({ error: 'trainerId and batch are required' });
+    if (!livekitConfigured()) return res.status(503).json({ error: LIVEKIT_NOT_CONFIGURED });
     const trainer = await Trainer.findOne({ trainerId });
     const trainerName = trainer?.trainerName || req.user?.name || req.body?.trainerName || '';
 
-    // Already live for this batch → resume it (page reload / second device)
+    // A batch is run by its own trainer. Leaders watch other trainers' classes
+    // from Today's Classes (join as observer) instead of starting them.
+    const owner = await Batch.findOne({ batchName: batch }).select('trainerId trainerName').lean();
+    if (owner?.trainerId && owner.trainerId !== trainerId) {
+      return res.status(403).json({ error: `${batch} belongs to ${owner.trainerName || 'another trainer'}. Only they can start it — you can join it as an observer from Today's Classes once it is live.` });
+    }
+
+    // Already live for this batch → resume it (page reload / second device).
+    // Old Zoom sessions are not resumed — they are closed below and replaced.
     const existing = await LiveClassSession.findOne({ trainerId, batch, isLive: true }).sort({ startedAt: -1 });
-    if (existing && isSessionLive(existing)) return res.json(trainerSessionView(existing));
+    if (existing && isSessionLive(existing) && existing.meetingSource === 'livekit') return res.json(trainerSessionView(existing));
 
     // One live class per trainer: close anything else still open
     const stale = await LiveClassSession.find({ trainerId, isLive: true });
     for (const s of stale) {
       if (s.meetingSource === 'zoom_api' && s.zoomMeetingId) await endZoomMeeting(s.zoomMeetingId);
+      if (s.meetingSource === 'livekit') await endLivekitRoom(s.roomName);
       s.isLive = false;
       s.endedAt = new Date();
       await s.save();
@@ -14199,31 +14852,9 @@ router.post('/trainer/live-class/start', async (req, res) => {
       startedAt: new Date()
     });
 
-    if (zoomApiConfigured()) {
-      try {
-        await createClassZoomMeeting(sess, trainer);
-      } catch (zoomErr) {
-        if (trainer?.classZoomLink) {
-          const m = trainer.classZoomLink.match(/\/j\/(\d+)/);
-          sess.zoomMeetingId = m ? m[1] : '';
-          sess.zoomPassword = decodeURIComponent((trainer.classZoomLink.match(/[?&]pwd=([^&]+)/) || [])[1] || '');
-          sess.zoomJoinUrl = trainer.classZoomLink;
-          sess.meetingSource = 'class_link';
-        } else {
-          throw zoomErr;
-        }
-      }
-    } else if (trainer?.classZoomLink) {
-      const m = trainer.classZoomLink.match(/\/j\/(\d+)/);
-      sess.zoomMeetingId = m ? m[1] : '';
-      sess.zoomPassword = decodeURIComponent((trainer.classZoomLink.match(/[?&]pwd=([^&]+)/) || [])[1] || '');
-      sess.zoomJoinUrl = trainer.classZoomLink;
-      sess.meetingSource = 'class_link';
-    } else {
-      sess.zoomMeetingId = '';
-      sess.zoomJoinUrl = `/student/live-class?room=${encodeURIComponent(batch)}`;
-      sess.meetingSource = 'in_app';
-    }
+    // ThoughtFlows Live Classroom (LiveKit) — one private room per session
+    sess.meetingSource = 'livekit';
+    sess.roomName = classRoomName(sess);
     await sess.save();
     await notifyBatch(batch, {
       type: 'live', title: `${trainerName || 'Your trainer'} is live now`,
@@ -14242,47 +14873,65 @@ router.get('/trainer/live-class/:id/join', async (req, res) => {
     const sess = await LiveClassSession.findById(req.params.id);
     if (!sess || !isSessionLive(sess)) return res.status(404).json({ error: 'This class is not live any more' });
     if (!trainerOwnsRecord(req, sess)) return res.status(403).json(NOT_YOUR_RECORD);
-    if (!sess.zoomMeetingId) {
-      if (sess.zoomJoinUrl) return res.json({ joinUrl: sess.zoomJoinUrl, zoomMeetingId: '', inAppRoom: true });
-      return res.status(409).json({ error: 'No Zoom meeting for this class' });
+    if (sess.meetingSource !== 'livekit' || !sess.roomName) {
+      return res.status(409).json({ error: 'This class was started on Zoom. End it and click Start Class again to open it in the new classroom.' });
     }
-
-    // Class meetings are created with join_before_host:false, so when the
-    // trainer (sole participant) leaves, Zoom auto-ends the meeting entirely —
-    // a plain "Leave" then "Rejoin" would otherwise sign a join for an id
-    // Zoom no longer recognizes ("meeting not found"). Catch that here and
-    // transparently issue a fresh meeting under the same live session instead
-    // of making the trainer re-start the whole class.
-    if (sess.meetingSource === 'zoom_api') {
-      try {
-        const m = await zoomApi(`/meetings/${sess.zoomMeetingId}`);
-        if (m.status === 404 || m.data?.code === 3001) {
-          const trainer = await Trainer.findOne({ trainerId: sess.trainerId });
-          await createClassZoomMeeting(sess, trainer);
-          await sess.save();
-        }
-      } catch (_) { /* Zoom API hiccup — fall through with whatever's on the session */ }
-    }
-
-    let zak = '';
-    // After the SDK reports it can't START the meeting via a host token (the
-    // account/plan doesn't support it), the client asks us to skip the ZAK
-    // entirely and sign a regular participant join instead — the meeting
-    // still works since join_before_host is on for these.
-    const noHost = req.query.noHost === '1';
-    if (!noHost && sess.meetingSource === 'zoom_api' && sess.zoomHostEmail) {
-      try {
-        let z = await zoomApi(`/users/${encodeURIComponent(sess.zoomHostEmail)}/token?type=zak`);
-        if (!z.ok && sess.zoomHostEmail !== 'me') {
-          z = await zoomApi(`/users/me/token?type=zak`);
-        }
-        if (z.ok) zak = z.data.token;
-      } catch (_) {}
-    }
-    const { signature, sdkKey } = signZoom(sess.zoomMeetingId, zak ? 1 : 0);
-    res.json({ signature, sdkKey, meetingNumber: sess.zoomMeetingId, password: sess.zoomPassword, zak, host: Boolean(zak) });
+    if (!livekitConfigured()) return res.status(503).json({ error: LIVEKIT_NOT_CONFIGURED });
+    const token = livekitToken({
+      room: sess.roomName,
+      identity: `trainer-${sess.trainerId}`,
+      name: sess.trainerName || req.user?.name || 'Trainer',
+      host: true,
+      metadata: { sessionId: sess._id.toString(), batch: sess.batch }
+    });
+    res.json({ provider: 'livekit', serverUrl: livekitUrl(), token, roomName: sess.roomName, host: true });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+// Head / Manager / TL joins another trainer's LIVE class as an observer
+// (camera & mic off on join; moderator rights to mute / remove if needed)
+router.get('/trainer/live-class/:id/observe', async (req, res) => {
+  try {
+    if (!isTrainerLeader(req)) return res.status(403).json({ error: 'Only the Head of Trainer, Managers and Team Leads can observe classes.' });
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid session' });
+    const sess = await LiveClassSession.findById(req.params.id);
+    if (!sess || !isSessionLive(sess)) return res.status(404).json({ error: 'This class is not live any more' });
+    if (sess.meetingSource !== 'livekit' || !sess.roomName) return res.status(409).json({ error: 'This class is running on the old Zoom setup and cannot be observed here.' });
+    if (!livekitConfigured()) return res.status(503).json({ error: LIVEKIT_NOT_CONFIGURED });
+    const who = String(req.user?.name || req.user?.userName || 'Observer');
+    const token = livekitToken({
+      room: sess.roomName,
+      identity: `observer-${String(req.user?.id || req.user?._id || who).replace(/\s+/g, '_')}`,
+      name: `${who} (Observer)`,
+      host: true,
+      metadata: { sessionId: sess._id.toString(), observer: true }
+    });
+    res.json({ provider: 'livekit', serverUrl: livekitUrl(), token, roomName: sess.roomName, observer: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Leader nudges a trainer whose class has not started on time
+router.post('/trainer/live-class/remind', async (req, res) => {
+  try {
+    if (!isTrainerLeader(req)) return res.status(403).json({ error: 'Only leaders can send reminders.' });
+    const trainerId = String(req.body?.trainerId || '').trim();
+    const batch = String(req.body?.batch || '').trim();
+    if (!trainerId || !batch) return res.status(400).json({ error: 'trainerId and batch are required' });
+    const t = await Trainer.findOne({ trainerId }).select('trainerId trainerName').lean();
+    const by = String(req.user?.name || 'Your Head of Trainer');
+    await pushNotification({
+      audience: 'trainer', recipientId: trainerId, recipientName: t?.trainerName || '', type: 'live',
+      title: `⏰ ${batch} has not started`,
+      message: `${by}: your class ${batch}${req.body?.time ? ` (${req.body.time})` : ''} is due — please start it from Class Session Room.`,
+      createdBy: by
+    });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -14332,6 +14981,7 @@ router.post('/trainer/live-class/end', async (req, res) => {
     const endedAt = new Date();
     for (const s of list) {
       if (s.meetingSource === 'zoom_api' && s.zoomMeetingId && s.isLive) await endZoomMeeting(s.zoomMeetingId);
+      if (s.meetingSource === 'livekit' && s.isLive) await endLivekitRoom(s.roomName);
       s.isLive = false;
       s.endedAt = s.endedAt || endedAt;
       if (s.joins && s.joins.length > 0) {
@@ -14376,7 +15026,8 @@ router.post('/student-portal/live-class/join', async (req, res) => {
     const sessions = batch ? await LiveClassSession.find({ batch, isLive: true }).sort({ startedAt: -1 }) : [];
     const sess = sessions.find((s) => s.trainerId === st.trainerId && isSessionLive(s)) || sessions.find(isSessionLive);
     if (!sess) return res.status(409).json({ error: 'Your trainer has not started the class yet.' });
-    if (!sess.zoomMeetingId) return res.status(409).json({ error: 'The class has no meeting link yet. Please tell your trainer.' });
+    if (sess.meetingSource !== 'livekit' || !sess.roomName) return res.status(409).json({ error: 'Your trainer needs to restart the class in the new classroom. Please tell your trainer.' });
+    if (!livekitConfigured()) return res.status(503).json({ error: 'The live classroom is temporarily unavailable. Please tell your trainer.' });
 
     const now = new Date();
     const existing = (sess.joins || []).find((j) => j.studentId === st.studentId);
@@ -14386,8 +15037,14 @@ router.post('/student-portal/live-class/join', async (req, res) => {
       await LiveClassSession.updateOne({ _id: sess._id }, { $push: { joins: { studentId: st.studentId, name: st.name, joinedAt: now, lastJoinAt: now, durationMinutes: 0, count: 1 } } });
     }
 
-    const { signature, sdkKey } = signZoom(sess.zoomMeetingId, 0);
-    res.json({ signature, sdkKey, meetingNumber: sess.zoomMeetingId, password: sess.zoomPassword, zak: '', topic: sess.topic, trainerName: sess.trainerName, joinUrl: sess.zoomJoinUrl });
+    const token = livekitToken({
+      room: sess.roomName,
+      identity: `student-${st.studentId}`,
+      name: st.name || 'Student',
+      host: false,
+      metadata: { studentId: st.studentId, sessionId: sess._id.toString() }
+    });
+    res.json({ provider: 'livekit', serverUrl: livekitUrl(), token, roomName: sess.roomName, sessionId: sess._id.toString(), topic: sess.topic, trainerName: sess.trainerName });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
   }
@@ -15382,6 +16039,13 @@ router.post('/student-portal/doubts/:id/resolve', async (req, res) => {
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
+});
+
+// Head of Trainer scheduling: Calendar, Availability, Consultations (booking links), 1:1 Sessions
+registerSchedulingRoutes(router, {
+  createDemoRecord, ensureDemoClassroom, publicAppBase, pushNotification,
+  sessionTrainerId, trainerOwnsRecord, isTrainerLeader, NOT_YOUR_RECORD,
+  findPortalStudent, studentBatchOf
 });
 
 router.use('/wiseapp', wiseappRouter);

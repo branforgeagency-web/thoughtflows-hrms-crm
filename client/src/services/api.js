@@ -983,6 +983,57 @@ export const endDemoMeeting = async (id) => {
   return res.data;
 };
 
+// Trainer opens / joins the demo's Live Classroom as host
+export const getDemoClassroomJoin = async (id) => {
+  const res = await api.get(`/demos/${id}/classroom-join`);
+  return res.data;
+};
+
+// PUBLIC (no login) — candidate join page /join/demo/<code>
+export const getPublicDemo = async (code) => {
+  const res = await api.get(`/public/demo/${encodeURIComponent(code)}`, { skipCache: true });
+  return res.data;
+};
+
+export const joinPublicDemo = async (code) => {
+  const res = await api.post(`/public/demo/${encodeURIComponent(code)}/join`);
+  return res.data;
+};
+
+// ============================================
+// HEAD OF TRAINER — SCHEDULING (Calendar · Availability · Consultations · 1:1)
+// ============================================
+export const getSchedulingCalendar = async (params) => (await api.get('/scheduling/calendar', { params, skipCache: true })).data;
+export const getSchedulingTags = async () => (await api.get('/scheduling/tags')).data;
+// Student Portal → My Schedule (pinned to the signed-in student on the server)
+export const getMySchedule = async (params) => (await api.get('/student-portal/schedule', { params, skipCache: true })).data;
+export const findAvailableTrainers = async (body) => (await api.post('/scheduling/availability', body)).data;
+
+export const getBookingLinks = async () => (await api.get('/booking-links', { skipCache: true })).data;
+export const createBookingLink = async (body) => (await api.post('/booking-links', body)).data;
+export const updateBookingLink = async (id, body) => (await api.put(`/booking-links/${id}`, body)).data;
+export const deleteBookingLink = async (id) => (await api.delete(`/booking-links/${id}`)).data;
+export const getBookingLinkBookings = async (scope) => (await api.get('/booking-links/bookings', { params: { scope }, skipCache: true })).data;
+
+export const getOneOnOneEnrollments = async () => (await api.get('/one-on-one/enrollments', { skipCache: true })).data;
+export const createOneOnOneEnrollment = async (body) => (await api.post('/one-on-one/enrollments', body)).data;
+export const updateOneOnOneEnrollment = async (id, body) => (await api.put(`/one-on-one/enrollments/${id}`, body)).data;
+export const scheduleOneOnOneSessions = async (id, body) => (await api.post(`/one-on-one/enrollments/${id}/sessions`, body)).data;
+export const getOneOnOneSessions = async (params) => (await api.get('/one-on-one/sessions', { params, skipCache: true })).data;
+export const updateOneOnOneSession = async (id, body) => (await api.put(`/one-on-one/sessions/${id}`, body)).data;
+
+// Trainer side of 1:1 sessions
+export const getMyOneOnOneSessions = async (params) => (await api.get('/trainer/one-on-one', { params, skipCache: true })).data;
+export const getOneOnOneJoin = async (id) => (await api.get(`/trainer/one-on-one/${id}/join`, { skipCache: true })).data;
+export const endOneOnOneSession = async (id, outcome) => (await api.post(`/trainer/one-on-one/${id}/end`, { outcome })).data;
+
+// PUBLIC (no login): booking page /book/<slug> and 1:1 join page /join/session/<code>
+export const getPublicBooking = async (slug) => (await api.get(`/public/booking/${encodeURIComponent(slug)}`, { skipCache: true })).data;
+export const getPublicBookingSlots = async (slug, params) => (await api.get(`/public/booking/${encodeURIComponent(slug)}/slots`, { params, skipCache: true })).data;
+export const createPublicBooking = async (slug, body) => (await api.post(`/public/booking/${encodeURIComponent(slug)}`, body)).data;
+export const getPublicSession = async (code) => (await api.get(`/public/session/${encodeURIComponent(code)}`, { skipCache: true })).data;
+export const joinPublicSession = async (code) => (await api.post(`/public/session/${encodeURIComponent(code)}/join`)).data;
+
 export const sendDemoLinkEmail = async (id) => {
   const res = await api.post(`/demos/${id}/send-link`);
   return res.data;
@@ -1287,6 +1338,14 @@ export const pinTrainingMaterial = async (id, trainerId, pinned) => {
 
 export const assignTrainingMaterial = async (id, data) => {
   const res = await api.post(`/training/materials/${id}/assign`, data);
+  notifyDataUpdate('materials');
+  return res.data;
+};
+
+// Trainer Head / Manager: set which trainers can see a material.
+// trainers: [{ trainerId, name, email }] — replaces the current allocation.
+export const allocateTrainingMaterial = async (id, trainers, by = '') => {
+  const res = await api.put(`/training/materials/${id}/allocate`, { trainers, by });
   notifyDataUpdate('materials');
   return res.data;
 };
@@ -1887,6 +1946,10 @@ export const addLiveClassNote = async (sessionId, text) => {
   const res = await api.post(`/trainer/live-class/${sessionId}/notes`, { text });
   return res.data;
 };
+
+// Head / Manager / TL: watch another trainer's live class, or nudge a late trainer
+export const observeLiveClass = async (sessionId) => (await api.get(`/trainer/live-class/${sessionId}/observe`, { skipCache: true })).data;
+export const remindTrainerToStart = async (data) => (await api.post('/trainer/live-class/remind', data)).data;
 
 export const endLiveClass = async (data) => {
   const res = await api.post('/trainer/live-class/end', data);

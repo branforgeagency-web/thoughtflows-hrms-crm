@@ -49,6 +49,25 @@ const capBadge = (count, min = 10, max = 15) => {
   return { label: `Over Capacity (${count}/${max})`, cls: 'bg-rose-50 text-rose-800 border-rose-200' };
 };
 
+// Trainer picker grouped like the org: Trainers · Team Leads · Managers · Head of Trainer.
+// Each entry may carry `group`; anything without one is a regular trainer.
+const TRAINER_GROUP_ORDER = ['Trainers', 'Team Leads', 'Managers', 'Head of Trainer'];
+function TrainerOptions({ trainers = [], detail = 'full' }) {
+  const groups = {};
+  trainers.forEach((t) => { const g = t.group || 'Trainers'; (groups[g] ||= []).push(t); });
+  const order = [...TRAINER_GROUP_ORDER, ...Object.keys(groups).filter((g) => !TRAINER_GROUP_ORDER.includes(g))];
+  return order.filter((g) => groups[g]?.length).map((g) => (
+    <optgroup key={g} label={`${g} (${groups[g].length})`}>
+      {groups[g].map((tr) => (
+        <option key={tr.trainerId || tr.id} value={tr.trainerId || tr.id}>
+          {tr.trainerName || tr.name}
+          {detail === 'full' ? ` (${tr.courseKey || tr.specialization || 'Faculty'} · ${tr.branchName || 'Online'})` : detail === 'course' ? ` (${tr.courseKey || tr.specialization || 'Faculty'})` : ''}
+        </option>
+      ))}
+    </optgroup>
+  ));
+}
+
 export function CreateBatchModal({
   isOpen,
   onClose,
@@ -219,11 +238,7 @@ export function CreateBatchModal({
                 className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white font-semibold outline-none focus:border-teal-600"
               >
                 <option value="">Select trainer…</option>
-                {trainers.map((tr) => (
-                  <option key={tr.trainerId || tr.id} value={tr.trainerId || tr.id}>
-                    {tr.trainerName || tr.name} ({tr.courseKey || tr.specialization || 'Faculty'} · {tr.branchName || 'Online'})
-                  </option>
-                ))}
+                <TrainerOptions trainers={trainers} detail="full" />
               </select>
             </div>
 
@@ -470,11 +485,7 @@ export function AutoGroupBatchModal({
             <label className="block font-bold text-slate-700 mb-1">Assigned Trainer *</label>
             <select value={trainerId} onChange={(e) => setTrainerId(e.target.value)} className="w-full px-3 py-2 rounded-xl border border-slate-200 font-semibold">
               <option value="">Select trainer…</option>
-              {trainers.map((tr) => (
-                <option key={tr.trainerId || tr.id} value={tr.trainerId || tr.id}>
-                  {tr.trainerName || tr.name} ({tr.courseKey || tr.specialization || 'Faculty'})
-                </option>
-              ))}
+              <TrainerOptions trainers={trainers} detail="course" />
             </select>
           </div>
           <div className="grid grid-cols-2 gap-2">
@@ -722,7 +733,7 @@ export function BatchDetailModal({
                     <input value={editForm.scheduledTime} onChange={(e) => setEditForm((p) => ({ ...p, scheduledTime: e.target.value }))} placeholder="Scheduled Time" className="px-3 py-2 rounded-xl border border-slate-200 bg-white font-semibold" />
                     <select value={editForm.trainerId} onChange={(e) => setEditForm((p) => ({ ...p, trainerId: e.target.value }))} className="px-3 py-2 rounded-xl border border-slate-200 bg-white font-semibold">
                       <option value="">Select Trainer…</option>
-                      {trainers.map((t) => <option key={t.trainerId || t.id} value={t.trainerId || t.id}>{t.trainerName || t.name}</option>)}
+                      <TrainerOptions trainers={trainers} detail="name" />
                     </select>
                     <select value={editForm.mode} onChange={(e) => setEditForm((p) => ({ ...p, mode: e.target.value }))} className="px-3 py-2 rounded-xl border border-slate-200 bg-white font-semibold">
                       <option value="Online">Online</option>

@@ -1,8 +1,8 @@
 import mongoose from 'mongoose';
 
 // One document per class session a trainer runs for a batch. The trainer
-// starts it from the Class Session Room (a fresh Zoom meeting is created on
-// the trainer's own Zoom user), students join from their portal, and the
+// starts it from the Class Session Room (a private LiveKit room is opened
+// for the session; older sessions used Zoom), students join from their portal, and the
 // join log + session notes stay with the batch after the class ends.
 const liveClassSessionSchema = new mongoose.Schema(
   {
@@ -16,7 +16,9 @@ const liveClassSessionSchema = new mongoose.Schema(
     zoomHostEmail: { type: String, default: '' },
     zoomJoinUrl: { type: String, default: '' },
     zoomPassword: { type: String, default: '' },
-    meetingSource: { type: String, enum: ['zoom_api', 'class_link', ''], default: '' },
+    meetingSource: { type: String, enum: ['livekit', 'zoom_api', 'class_link', 'in_app', ''], default: '' },
+    // ThoughtFlows Live Classroom (LiveKit) room for this session
+    roomName: { type: String, default: '' },
     isLive: { type: Boolean, default: false },
     startedAt: { type: Date, default: null },
     endedAt: { type: Date, default: null },

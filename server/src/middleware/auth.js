@@ -80,7 +80,15 @@ const PUBLIC_ROUTES = [
   // Public student registration and pre-check duplicate queries
   ['POST', /^\/students$/],
   ['GET', /^\/students\/check-duplicate$/],
-  ['GET', /^\/students\/next-id$/]
+  ['GET', /^\/students\/next-id$/],
+  // Demo class join links (no login — candidates join from phone or lab PC)
+  ['GET', /^\/public\/demo\/[A-Za-z0-9]{6,32}$/],
+  ['POST', /^\/public\/demo\/[A-Za-z0-9]{6,32}\/join$/],
+  // Consultations booking page + 1:1 session join link (no login)
+  ['GET', /^\/public\/booking\/[A-Za-z0-9]{6,32}(\/slots)?$/],
+  ['POST', /^\/public\/booking\/[A-Za-z0-9]{6,32}$/],
+  ['GET', /^\/public\/session\/[A-Za-z0-9]{6,32}$/],
+  ['POST', /^\/public\/session\/[A-Za-z0-9]{6,32}\/join$/]
 ];
 
 // Staff routes limited to Admin / Leadership
@@ -133,6 +141,7 @@ const STAFF_RULES = [
   ['POST', /^\/trainer\/attendance$/, ['training']],
   ['POST', /^\/training\/materials(\/[^/]+\/assign)?$/, ['training']],
   ['PUT', /^\/training\/materials\/[^/]+\/pin$/, ['training']],
+  ['PUT', /^\/training\/materials\/[^/]+\/allocate$/, ['training']],
   ['DELETE', /^\/training\/materials\/[^/]+$/, ['training']],
   ['PUT', /^\/student-portal\/submissions\/[^/]+\/review$/, ['training']],
   // Syllabus tracker, batch announcements, online tests, class recordings
@@ -150,6 +159,11 @@ const STAFF_RULES = [
   ['PUT', /^\/student-portal\/requests\/[^/]+$/, ['training', 'hr']],
   // WiseApp Academy LMS, Tests, Questions, Schedules, Packages & Onboarding Sync
   ['*', /^\/wiseapp(\/|$)/, ['wiseapp', 'training', 'hr']],
+  // Head of Trainer scheduling (Head-only checks are in the routes)
+  ['*', /^\/(booking-links|one-on-one)(\/|$)/, ['training']],
+  ['POST', /^\/scheduling\/availability$/, ['training', 'hr']],
+  ['*', /^\/trainer\/one-on-one(\/|$)/, ['training']],
+  ['POST', /^\/trainer\/live-class\/remind$/, ['training']],
   // Placement & marketing
   ['*', /^\/cccp\//, ['cccp']],
   ['*', /^\/marketing\/(campaigns|creatives|content)/, ['marketing']],
@@ -231,6 +245,10 @@ const STUDENT_RULES = [
   ['GET', /^\/student-portal\/tests\/[^/]+$/],
   ['POST', /^\/student-portal\/tests\/[^/]+\/(start|save|submit)$/],
   ['POST', /^\/student-portal\/doubts\/[^/]+\/(followup|resolve)$/],
+  // Attendance minutes while in a live class (was missing: every heartbeat was refused)
+  ['POST', /^\/student-portal\/live-class\/heartbeat$/, (req, u) => { req.body = { ...(req.body || {}), studentId: u.studentId || req.body?.studentId, email: u.email || req.body?.email }; }],
+  // My Schedule (the route pins it to the signed-in student)
+  ['GET', /^\/student-portal\/schedule$/],
   ['POST', /^\/student-portal\/live-class\/join$/, (req, u) => { req.body = { ...(req.body || {}), studentId: u.studentId || req.body?.studentId, email: u.email || req.body?.email }; }],
   ['GET', /^\/wiseapp\/(questions|videos|packages|resources|feedback)$/],
   ['POST', /^\/wiseapp\/questions\/[^/]+\/report$/],

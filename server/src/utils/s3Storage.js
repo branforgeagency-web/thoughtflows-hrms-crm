@@ -71,3 +71,67 @@ export async function streamS3Object(key, req, res) {
   if (out.ContentRange) res.setHeader('Content-Range', out.ContentRange);
   out.Body.pipe(res);
 }
+
+// ---------------------------------------------------------------------------
+// Signed (presigned) GET links for private bucket objects — AWS SigV4 query
+// signing, done here so no extra package is needed. The bucket is private, so
+// a plain https://<bucket>.s3...amazonaws.com/<key> link is always refused
+// (AccessDenied); use these signed links instead.
+// ---------------------------------------------------------------------------
+const rfc3986 = (s) => encodeURIComponent(s).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+const hmac = (key, data) => crypto.createHmac('sha256', key).update(data, 'utf8').digest();
+const sha256hex = (data) => crypto.createHash('sha256').update(data, 'utf8').digest('hex');
+
+// { bucket, region, key } from "https://<bucket>.s3.<region>.amazonaws.com/<key>" (or path-style)
+export function parseS3Url(url = '') {
+  try {
+    const u = new URL(url);
+    let m = u.hostname.match(/^(.+)\.s3[.-]([a-z0-9-]+)\.amazonaws\.com$/);
+    if (m) return { bucket: m[1], region: m[2] === 'external-1' ? 'us-east-1' : m[2], key: decodeURIComponent(u.pathname.slice(1)) };
+    m = u.hostname.match(/^(.+)\.s3\.amazonaws\.com$/);
+    if (m) return { bucket: m[1], region: 'us-east-1', key: decodeURIComponent(u.pathname.slice(1)) };
+    m = u.hostname.match(/^s3[.-]([a-z0-9-]+)\.amazonaws\.com$/);
+    if (m) { const [b, ...rest] = u.pathname.slice(1).split('/'); return { bucket: b, region: m[1], key: decodeURIComponent(rest.join('/')) }; }
+  } catch (_) {}
+  return null;
+}
+
+export function presignGetUrl({ bucket = s3Bucket(), region = s3Region(), key, expiresIn = 3600, host, date = new Date(),
+  accessKeyId = process.env.AWS_ACCESS_KEY_ID, secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY, sessionToken = process.env.AWS_SESSION_TOKEN,
+  responseContentDisposition } = {}) {
+  if (!bucket || !key || !accessKeyId || !secretAccessKey) return '';
+  const amzDate = date.toISOString().replace(/[:-]|\.\d{3}/g, '');
+  const day = amzDate.slice(0, 8);
+  const scope = `${day}/${region}/s3/aws4_request`;
+  const h = host || `${bucket}.s3.${region}.amazonaws.com`;
+  const path = '/' + String(key).split('/').map(rfc3986).join('/');
+  const params = {
+    'X-Amz-Algorithm': 'AWS4-HMAC-SHA256',
+    'X-Amz-Credential': `${accessKeyId}/${scope}`,
+    'X-Amz-Date': amzDate,
+    'X-Amz-Expires': String(Math.min(604800, Math.max(1, Math.round(expiresIn)))),
+    'X-Amz-SignedHeaders': 'host'
+  };
+  if (sessionToken) params['X-Amz-Security-Token'] = sessionToken;
+  if (responseContentDisposition) params['response-content-disposition'] = responseContentDisposition;
+  const query = Object.keys(params).sort().map((k) => `${rfc3986(k)}=${rfc3986(params[k])}`).join('&');
+  const canonical = ['GET', path, query, `host:${h}\n`, 'host', 'UNSIGNED-PAYLOAD'].join('\n');
+  const toSign = ['AWS4-HMAC-SHA256', amzDate, scope, sha256hex(canonical)].join('\n');
+  const kSigning = hmac(hmac(hmac(hmac(`AWS4${secretAccessKey}`, day), region), 's3'), 'aws4_request');
+  const signature = crypto.createHmac('sha256', kSigning).update(toSign, 'utf8').digest('hex');
+  return `https://${h}${path}?${query}&X-Amz-Signature=${signature}`;
+}
+
+// Signed link for a stored file given its saved key and/or saved URL. The
+// bucket in the saved URL wins, so files uploaded from another environment
+// (e.g. the deployed app vs local sandbox) are signed for the right bucket.
+export function signedUrlForStoredFile({ storageKey = '', storageUrl = '', expiresIn = 3600, download = false, fileName = '' } = {}) {
+  if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) return '';
+  const fromUrl = storageUrl ? parseS3Url(storageUrl) : null;
+  const key = storageKey || fromUrl?.key || '';
+  if (!key) return '';
+  return presignGetUrl({
+    bucket: fromUrl?.bucket || s3Bucket(), region: fromUrl?.region || s3Region(), key, expiresIn,
+    responseContentDisposition: download ? `attachment; filename="${String(fileName || key.split('/').pop()).replace(/"/g, '')}"` : undefined
+  });
+}

@@ -1,6 +1,8 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App.jsx';
+import DemoJoinPage from './components/DemoJoinPage.jsx';
+import PublicBookingPage from './components/PublicBookingPage.jsx';
 import './services/amplifyStorage';
 import './index.css';
 
@@ -27,8 +29,17 @@ window.addEventListener('unhandledrejection', (event) => {
   }
 });
 
+// No-login demo class link: /join/demo/<code> (candidates on phone or lab PC)
+const demoJoinCode = (window.location.pathname.match(/^\/join\/demo\/([A-Za-z0-9]{6,32})\/?$/) || [])[1];
+// 1:1 session link /join/session/<code> and Consultations booking page /book/<code>
+const sessionJoinCode = (window.location.pathname.match(/^\/join\/session\/([A-Za-z0-9]{6,32})\/?$/) || [])[1];
+const bookingSlug = (window.location.pathname.match(/^\/book\/([A-Za-z0-9]{6,32})\/?$/) || [])[1];
+
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <App />
+    {demoJoinCode ? <DemoJoinPage code={demoJoinCode} />
+      : sessionJoinCode ? <DemoJoinPage code={sessionJoinCode} kind="session" />
+        : bookingSlug ? <PublicBookingPage slug={bookingSlug} />
+          : <App />}
   </React.StrictMode>,
 );

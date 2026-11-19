@@ -2009,7 +2009,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         ) : activeTab === 'Google Sheet' ? (
           <HrGoogleSheetTab
             currentUser={currentUser}
-            canEditTeamSheet={Boolean(scopeKind) || isElevatedUser}
+            canEdit={scopeKind === 'all' || scopeKind === 'branch' || isElevatedUser}
           />
         ) : activeTab === 'My Schedule' ? (
           <div className="space-y-6">

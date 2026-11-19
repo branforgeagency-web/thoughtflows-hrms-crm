@@ -46,7 +46,8 @@ export default function StudentRegistrationPage({ onBack }) {
   const [whatsappNumber, setWhatsappNumber] = useState(queryParams.get('whatsapp') || '');
   const [sameAsMobile, setSameAsMobile] = useState(false);
   const [consultHr, setConsultHr] = useState(queryParams.get('hr') || '');
-  const [branch, setBranch] = useState(queryParams.get('branch') || 'Saravanampatti (CBE)');
+  // No pre-selected branch: a student who skips this must not land in Saravanampatti by default
+  const [branch, setBranch] = useState(queryParams.get('branch') || '');
   const [email, setEmail] = useState(queryParams.get('email') || '');
   const [facebookId, setFacebookId] = useState('');
   const [education, setEducation] = useState('');
@@ -55,8 +56,10 @@ export default function StudentRegistrationPage({ onBack }) {
   const [company, setCompany] = useState('');
 
   // Course & Mode
-  const [courseType, setCourseType] = useState('Online'); // 'Online' | 'Offline'
-  const [course, setCourse] = useState(queryParams.get('course') || 'AMCT Beginner (Classroom)');
+  const initialCourse = queryParams.get('course') || 'AMCT Beginner (Classroom)';
+  // Start the mode in step with the course (a "(Classroom)" course is offline)
+  const [courseType, setCourseType] = useState(/classroom|offline/i.test(initialCourse) ? 'Offline' : 'Online'); // 'Online' | 'Offline'
+  const [course, setCourse] = useState(initialCourse);
   
   // Knowledge source
   const [source, setSource] = useState(queryParams.get('source') || 'Google Calls / GMB');
@@ -174,12 +177,26 @@ export default function StudentRegistrationPage({ onBack }) {
       setErrorMessage("Please enter father's name");
       return;
     }
-    if (!phone.trim()) {
-      setErrorMessage('Please enter your primary mobile number');
+    const mobileDigits = (v) => {
+      let d = String(v || '').replace(/\D/g, '');
+      if (d.length === 12 && d.startsWith('91')) d = d.slice(2);
+      if (d.length === 11 && d.startsWith('0')) d = d.slice(1);
+      return d;
+    };
+    if (!/^[6-9]\d{9}$/.test(mobileDigits(phone))) {
+      setErrorMessage('Please enter a valid 10-digit mobile number');
       return;
     }
-    if (!email.trim()) {
-      setErrorMessage('Please enter your email address');
+    if (!sameAsMobile && whatsappNumber.trim() && !/^[6-9]\d{9}$/.test(mobileDigits(whatsappNumber))) {
+      setErrorMessage('Please enter a valid 10-digit WhatsApp number');
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      setErrorMessage('Please enter a valid email address');
+      return;
+    }
+    if (!branch || branch === 'Not Mentioned') {
+      setErrorMessage('Please select your branch / center');
       return;
     }
     if (!education.trim()) {
@@ -197,7 +214,7 @@ export default function StudentRegistrationPage({ onBack }) {
       dob,
       phone: phone.trim(),
       whatsappNumber: finalWhatsApp,
-      alternatePhone: sameAsMobile ? '' : whatsappNumber.trim(),
+      alternatePhone: '',
       email: email.trim().toLowerCase(),
       facebookId: facebookId.trim(),
       qualification: education.trim(),
@@ -209,14 +226,14 @@ export default function StudentRegistrationPage({ onBack }) {
       course,
       mode: courseType,
       source,
-      batchTiming: preferredTimings || '8-10 PM Weekdays',
+      batchTiming: preferredTimings || '',
       batchType,
       batchDate: getCurrentMonthYear(),
       hrName: consultHr || '',
-      branch: branch || 'Saravanampatti',
-      location: address.split(',')[0]?.trim() || 'Coimbatore',
+      branch,
+      location: branch,
       enqDate: getCurrentMonthName(),
-      onboardStatus: '1/7 In Progress',
+      onboardStatus: '0/7',
       syllabusModule: 'Module 1',
       mockInterview: 'Pending',
       examStatus: 'Not Booked',
@@ -346,7 +363,7 @@ export default function StudentRegistrationPage({ onBack }) {
               <ul className="space-y-1.5 list-disc list-inside text-teal-800 text-[12px] leading-relaxed">
                 <li>Your dedicated academic counselor will reach out via WhatsApp / Call.</li>
                 <li>You will receive your batch onboarding schedule and orientation login credentials.</li>
-                <li>Class mode confirmed: <strong>{submittedData.mode}</strong> ({submittedData.batchTiming || '8-10 PM Weekdays'}).</li>
+                <li>Class mode confirmed: <strong>{submittedData.mode}</strong> ({submittedData.batchTiming || 'timing will be confirmed by your HR counsellor'}).</li>
               </ul>
             </div>
 

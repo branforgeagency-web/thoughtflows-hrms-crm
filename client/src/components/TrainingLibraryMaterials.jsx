@@ -18,7 +18,9 @@ import {
   FolderUp,
   FolderInput,
   ArrowLeft,
-  Pencil
+  Pencil,
+  Users,
+  UserCheck
 } from 'lucide-react';
 import {
   uploadTrainingMaterial,
@@ -30,7 +32,9 @@ import {
   getTrainingFolders,
   createTrainingFolder,
   renameTrainingFolder,
-  deleteTrainingFolder
+  deleteTrainingFolder,
+  allocateTrainingMaterial,
+  getTrainerSettings
 } from '../services/api';
 import { isAmplifyStorageConfigured, uploadTrainingMaterialFile } from '../services/amplifyStorage';
 import LmsMaterialViewer from './LmsMaterialViewer';
@@ -72,6 +76,9 @@ const formatBadgeStyle = (m) => {
   return 'bg-slate-100 text-slate-700 border-slate-200';
 };
 
+const trainerKey = (t = {}) => String(t.trainerId || t.name || '').trim();
+const allocationCount = (m) => (m?.allocatedTrainers || []).length;
+
 function inferCanManage(currentUser = {}) {
   const tr = String(currentUser.trainerRole || '').toLowerCase();
   const role = String(currentUser.role || '').toLowerCase();
@@ -84,12 +91,14 @@ function inferCanManage(currentUser = {}) {
   return false;
 }
 
-// LMS Teaching Library — Head of Department & Manager upload PPTs and course materials;
-// Team Leads and Trainers have view-only access directly inside their dashboard (no delete / no download).
+// LMS Teaching Library — Head of Department & Manager upload PPTs and course materials
+// and allocate each file to specific trainers. Team Leads and Trainers only see the
+// files allocated to them (filtered on the server), view-only (no delete / no download).
 export default function TrainingLibraryMaterials({
   currentUser = {},
   batches = [],
   materials = [],
+  trainers: trainersProp,
   canManage: canManageProp,
   onChanged
 }) {
@@ -123,6 +132,13 @@ export default function TrainingLibraryMaterials({
   const [assignModule, setAssignModule] = useState('');
   const [assignNote, setAssignNote] = useState('');
 
+  // Trainer allocation (Head / Manager only)
+  const [trainerList, setTrainerList] = useState([]);
+  const [allocateFor, setAllocateFor] = useState(null); // { materials: [...], label }
+  const [allocSelected, setAllocSelected] = useState([]); // trainer keys
+  const [allocSearch, setAllocSearch] = useState('');
+  const [allocSaving, setAllocSaving] = useState(false);
+
   const flash = (msg) => {
     setToast(msg);
     setTimeout(() => setToast(null), 3500);
@@ -141,6 +157,82 @@ export default function TrainingLibraryMaterials({
   useEffect(() => {
     loadFolders();
   }, []);
+
+  // Trainers the Head / Manager can allocate files to
+  useEffect(() => {
+    if (!canManage) return;
+    const normalise = (list) => {
+      const byKey = new Map();
+      (Array.isArray(list) ? list : []).forEach((t) => {
+        const trainerId = String(t.trainerId || t.id || '').trim();
+        const name = String(t.trainerName || t.name || '').trim();
+        if (!trainerId && !name) return;
+        if (t.active === false) return;
+        const entry = {
+          trainerId,
+          name: name || trainerId,
+          email: String(t.email || '').trim(),
+          role: t.role || t.trainerRole || '',
+          branch: t.branchName || t.branch || ''
+        };
+        const key = trainerKey(entry);
+        if (!byKey.has(key)) byKey.set(key, entry);
+      });
+      return Array.from(byKey.values()).sort((a, b) => a.name.localeCompare(b.name));
+    };
+    if (Array.isArray(trainersProp) && trainersProp.length) {
+      setTrainerList(normalise(trainersProp));
+      return;
+    }
+    getTrainerSettings()
+      .then((list) => setTrainerList(normalise(list)))
+      .catch(() => setTrainerList([]));
+  }, [canManage, trainersProp]);
+
+  const openAllocate = (targetMaterials, label) => {
+    if (!canManage || !targetMaterials.length) return;
+    // Pre-tick trainers who already have every one of these files
+    const counts = new Map();
+    targetMaterials.forEach((m) =>
+      (m.allocatedTrainers || []).forEach((a) => {
+        const k = trainerKey(a);
+        counts.set(k, (counts.get(k) || 0) + 1);
+      })
+    );
+    setAllocSelected(Array.from(counts.entries()).filter(([, c]) => c === targetMaterials.length).map(([k]) => k));
+    setAllocSearch('');
+    setAllocateFor({ materials: targetMaterials, label });
+  };
+
+  const handleSaveAllocation = async () => {
+    if (!allocateFor) return;
+    const chosen = trainerList.filter((t) => allocSelected.includes(trainerKey(t)));
+    // Keep allocations to trainers no longer in the list (e.g. inactive) only if still ticked
+    setAllocSaving(true);
+    try {
+      for (const m of allocateFor.materials) {
+        const keepUnknown = (m.allocatedTrainers || []).filter(
+          (a) => allocSelected.includes(trainerKey(a)) && !trainerList.some((t) => trainerKey(t) === trainerKey(a))
+        );
+        await allocateTrainingMaterial(
+          m._id,
+          [...chosen, ...keepUnknown].map((t) => ({ trainerId: t.trainerId, name: t.name, email: t.email })),
+          currentUser.name
+        );
+      }
+      const n = allocateFor.materials.length;
+      flash(
+        chosen.length
+          ? `${n === 1 ? `"${allocateFor.label}"` : `${n} files`} allocated to ${chosen.length} trainer${chosen.length === 1 ? '' : 's'}`
+          : `${n === 1 ? `"${allocateFor.label}"` : `${n} files`} is now hidden from all trainers`
+      );
+      setAllocateFor(null);
+      onChanged?.();
+    } catch (err) {
+      flash(err?.response?.data?.error || 'Could not save allocation');
+    }
+    setAllocSaving(false);
+  };
 
   // Merge DB folders with any folder names referenced on materials
   const allFolders = useMemo(() => {
@@ -433,7 +525,7 @@ export default function TrainingLibraryMaterials({
 
   const tabs = useMemo(() => {
     const base = ['All', 'PPT Decks', 'Pinned'];
-    if (canManage) base.push('My uploads');
+    if (canManage) base.push('My uploads', 'Not allocated');
     return [...base, ...Array.from(new Set(materials.map((m) => m.category).filter(Boolean)))];
   }, [materials, canManage]);
 
@@ -452,10 +544,11 @@ export default function TrainingLibraryMaterials({
     if (activeTab === 'PPT Decks' && !isPptMaterial(m)) return false;
     if (activeTab === 'Pinned' && !(m.pinnedBy || []).includes(myId)) return false;
     if (activeTab === 'My uploads' && m.uploaderId !== myId) return false;
-    if (!['All', 'PPT Decks', 'Pinned', 'My uploads'].includes(activeTab) && m.category !== activeTab) return false;
+    if (activeTab === 'Not allocated' && allocationCount(m) > 0) return false;
+    if (!['All', 'PPT Decks', 'Pinned', 'My uploads', 'Not allocated'].includes(activeTab) && m.category !== activeTab) return false;
     if (isSearching) {
       const q = searchQuery.toLowerCase();
-      return [m.title, m.description, m.category, m.folder, m.uploadedBy, m.fileName, m.fileFormat].some((v) =>
+      return [m.title, m.description, m.category, m.folder, m.uploadedBy, m.fileName, m.fileFormat, ...(m.allocatedTrainers || []).map((a) => a.name)].some((v) =>
         String(v || '').toLowerCase().includes(q)
       );
     }
@@ -467,11 +560,11 @@ export default function TrainingLibraryMaterials({
     ? [
         ['TOTAL MATERIALS', materials.length],
         ['PPT DECKS', pptCount],
-        ['MY UPLOADS', materials.filter((m) => m.uploaderId === myId).length],
-        ['PINNED', materials.filter((m) => (m.pinnedBy || []).includes(myId)).length]
+        ['ALLOCATED', materials.filter((m) => allocationCount(m) > 0).length],
+        ['NOT ALLOCATED', materials.filter((m) => allocationCount(m) === 0).length]
       ]
     : [
-        ['TOTAL MATERIALS', materials.length],
+        ['ALLOCATED TO ME', materials.length],
         ['PPT DECKS', pptCount],
         ['ASSIGNED TO BATCHES', materials.filter((m) => (m.assignments || []).some((a) => myBatchNames.has(a.batch))).length],
         ['PINNED', materials.filter((m) => (m.pinnedBy || []).includes(myId)).length]
@@ -500,11 +593,11 @@ export default function TrainingLibraryMaterials({
               </div>
             </div>
             <span className="px-3 py-1 rounded-full bg-[#e6f7f5] text-[#00897b] text-xs font-semibold">
-              Shared across all Trainer LMS Dashboards
+              Visible to trainers only after you allocate
             </span>
           </div>
           <div className="p-3.5 rounded-xl bg-slate-50/80 border border-slate-200 text-xs text-slate-600 leading-relaxed">
-            Upload <strong>PPT / PPTX</strong> presentations, PDFs, class recordings, or course materials — <strong>up to {MAX_MB} MB per file</strong>. Every file is stored in the academy&apos;s AWS S3 bucket and streams straight there from your browser — nothing is kept in the database. Team Leads and Trainers can open and view them inside their LMS dashboard — download and delete are restricted for TL &amp; Trainers.
+            Upload <strong>PPT / PPTX</strong> presentations, PDFs, class recordings, or course materials — <strong>up to {MAX_MB} MB per file</strong>. Every file is stored in the academy&apos;s AWS S3 bucket and streams straight there from your browser — nothing is kept in the database. New files are visible only to Trainer Head &amp; Manager. Use <strong>Allocate</strong> on a file (or on a folder) to choose which trainers can see it — Team Leads and Trainers only see files allocated to them, view-only (download and delete are restricted).
           </div>
           <div className="border border-dashed border-[#009688]/60 bg-[#f9fdfd] rounded-2xl p-4 sm:p-5 space-y-3">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -652,7 +745,7 @@ export default function TrainingLibraryMaterials({
             <div>
               <h2 className="text-sm sm:text-base font-extrabold tracking-tight">LMS Presentation &amp; Study Library</h2>
               <p className="text-xs text-slate-300 mt-0.5">
-                PPT decks and course materials uploaded by your Head of Department &amp; Manager. Click <strong>Open &amp; View</strong> to present inside the dashboard.
+PPT decks and course materials allocated to you by your Trainer Head &amp; Manager. Click <strong>Open &amp; View</strong> to present inside the dashboard.
               </p>
             </div>
           </div>
@@ -805,6 +898,20 @@ export default function TrainingLibraryMaterials({
                               <div className="flex items-center justify-end gap-1 mt-2 pt-1.5 border-t border-slate-100 opacity-70 group-hover:opacity-100">
                                 <button
                                   type="button"
+                                  onClick={() =>
+                                    openAllocate(
+                                      materials.filter((m) => String(m.folder || '').trim() === folder.name),
+                                      folder.name
+                                    )
+                                  }
+                                  disabled={count === 0}
+                                  title={count === 0 ? 'Folder is empty' : 'Allocate all files in this folder to trainers'}
+                                  className="p-1 rounded hover:bg-slate-100 text-slate-400 hover:text-teal-700 disabled:opacity-30 cursor-pointer"
+                                >
+                                  <Users className="w-3 h-3" />
+                                </button>
+                                <button
+                                  type="button"
                                   onClick={() => {
                                     setRenamingFolder(folder.name);
                                     setRenameFolderValue(folder.name);
@@ -840,7 +947,7 @@ export default function TrainingLibraryMaterials({
             {materials.length === 0
               ? canManage
                 ? 'No PPTs or materials uploaded yet. Upload one above to share across all trainer dashboards.'
-                : 'No PPTs or materials uploaded yet by Head of Department or Manager.'
+                : 'No PPTs or materials have been allocated to you yet. Your Trainer Head or Manager will allocate files to you.'
               : activeFolder !== null
               ? `No materials in folder "${activeFolder}" yet. Use the upload box above to add files here.`
               : allFolders.length > 0 && activeTab === 'All' && !isSearching
@@ -889,6 +996,27 @@ export default function TrainingLibraryMaterials({
                       {[m.uploadedBy, m.branch].filter(Boolean).join(' · ')} · {new Date(m.createdAt).toLocaleDateString('en-IN')}
                     </p>
                     {m.description && <p className="text-[11px] text-slate-600 mt-2 leading-relaxed">{m.description}</p>}
+                    {canManage && (
+                      <button
+                        type="button"
+                        onClick={() => openAllocate([m], m.title)}
+                        title={(m.allocatedTrainers || []).map((a) => a.name).join(', ') || 'Not allocated to any trainer'}
+                        className={`mt-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold border cursor-pointer ${
+                          allocationCount(m) > 0
+                            ? 'bg-teal-50 text-teal-800 border-teal-200 hover:bg-teal-100'
+                            : 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100'
+                        }`}
+                      >
+                        <UserCheck className="w-3 h-3" />
+                        <span>
+                          {allocationCount(m) === 0
+                            ? 'Not allocated · Head & Manager only'
+                            : allocationCount(m) <= 2
+                            ? (m.allocatedTrainers || []).map((a) => a.name).join(', ')
+                            : `${allocationCount(m)} trainers`}
+                        </span>
+                      </button>
+                    )}
                     {myAssignments.length > 0 && (
                       <p className="text-[10px] text-teal-700 font-semibold mt-2">
                         Assigned: {myAssignments.map((a) => a.batch).join(', ')}
@@ -939,14 +1067,23 @@ export default function TrainingLibraryMaterials({
                     </div>
 
                     {canManage ? (
-                      <div className="grid grid-cols-2 gap-2">
+                      <div className="grid grid-cols-3 gap-2">
                         <button
                           type="button"
                           onClick={() => setViewer(m)}
                           className="py-2 px-3 rounded-xl bg-[#0f242d] hover:bg-[#1a3847] text-white text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
                         >
                           <Eye className="w-3.5 h-3.5" />
-                          <span>{isPpt ? 'View PPT' : 'Open'}</span>
+                          <span>{isPpt ? 'View' : 'Open'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openAllocate([m], m.title)}
+                          title="Allocate to trainers"
+                          className="py-2 px-2 rounded-xl bg-teal-50 hover:bg-teal-100 border border-teal-200 text-teal-800 text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
+                        >
+                          <Users className="w-3.5 h-3.5" />
+                          <span>Allocate</span>
                         </button>
                         <button
                           type="button"
@@ -1072,6 +1209,113 @@ export default function TrainingLibraryMaterials({
           </div>
         </div>
       )}
+      {canManage && allocateFor && (() => {
+        const q = allocSearch.trim().toLowerCase();
+        const visible = trainerList.filter(
+          (t) => !q || [t.name, t.trainerId, t.email, t.branch, t.role].some((v) => String(v || '').toLowerCase().includes(q))
+        );
+        const allVisibleTicked = visible.length > 0 && visible.every((t) => allocSelected.includes(trainerKey(t)));
+        const toggle = (k) =>
+          setAllocSelected((prev) => (prev.includes(k) ? prev.filter((x) => x !== k) : [...prev, k]));
+        return (
+          <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
+            <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-100 space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <Users className="w-4 h-4 text-teal-600" />
+                  Allocate to Trainers
+                </h3>
+                <button type="button" onClick={() => setAllocateFor(null)} className="text-slate-400 hover:text-slate-600 cursor-pointer">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs">
+                <div className="font-bold text-slate-900 truncate">
+                  {allocateFor.materials.length > 1 ? `📁 ${allocateFor.label}` : allocateFor.label}
+                </div>
+                <div className="text-[10px] text-slate-500 mt-0.5">
+                  {allocateFor.materials.length > 1
+                    ? `${allocateFor.materials.length} files — the selection below replaces the allocation of every file in this folder`
+                    : 'Only the ticked trainers will see this file. Untick everyone to keep it Head & Manager only.'}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    value={allocSearch}
+                    onChange={(e) => setAllocSearch(e.target.value)}
+                    placeholder="Search trainer, branch…"
+                    className="w-full pl-8 pr-3 py-2 rounded-xl border border-slate-200 text-xs focus:outline-none focus:border-teal-500"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setAllocSelected((prev) => {
+                      const keys = visible.map(trainerKey);
+                      return allVisibleTicked ? prev.filter((k) => !keys.includes(k)) : Array.from(new Set([...prev, ...keys]));
+                    })
+                  }
+                  disabled={visible.length === 0}
+                  className="px-3 py-2 rounded-xl border border-slate-200 text-[11px] font-bold text-slate-600 hover:border-teal-400 disabled:opacity-40 cursor-pointer whitespace-nowrap"
+                >
+                  {allVisibleTicked ? 'Clear all' : 'Select all'}
+                </button>
+              </div>
+              <div className="space-y-2 max-h-64 overflow-y-auto">
+                {trainerList.length === 0 ? (
+                  <div className="py-6 text-center text-xs text-slate-400">No trainers found.</div>
+                ) : visible.length === 0 ? (
+                  <div className="py-6 text-center text-xs text-slate-400">No trainers match "{allocSearch}".</div>
+                ) : (
+                  visible.map((t) => {
+                    const k = trainerKey(t);
+                    const checked = allocSelected.includes(k);
+                    return (
+                      <label
+                        key={k}
+                        className={`flex items-center justify-between p-2.5 rounded-xl border cursor-pointer text-xs ${
+                          checked ? 'bg-teal-50/70 border-teal-300 text-teal-900 font-semibold' : 'bg-white border-slate-200 text-slate-600'
+                        }`}
+                      >
+                        <span className="flex items-center gap-2.5 min-w-0">
+                          <input type="checkbox" checked={checked} onChange={() => toggle(k)} className="w-4 h-4 shrink-0" />
+                          <span className="truncate">{t.name}</span>
+                        </span>
+                        <span className="text-[10px] text-slate-400 font-normal truncate ml-2">
+                          {[t.role, t.branch].filter(Boolean).join(' · ')}
+                        </span>
+                      </label>
+                    );
+                  })
+                )}
+              </div>
+              <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100">
+                <span className="text-[11px] text-slate-500 font-medium">{allocSelected.length} selected</span>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setAllocateFor(null)}
+                    className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveAllocation}
+                    disabled={allocSaving}
+                    className="px-4 py-2 rounded-xl bg-[#00897b] hover:bg-[#007a6d] disabled:opacity-50 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <UserCheck className="w-3.5 h-3.5" />
+                    <span>{allocSaving ? 'Saving…' : 'Save Allocation'}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
       {canManage && moveFor && (
         <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
           <div className="bg-white rounded-2xl max-w-sm w-full p-5 shadow-2xl border border-slate-100 space-y-4">

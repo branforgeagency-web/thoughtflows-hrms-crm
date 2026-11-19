@@ -18,6 +18,15 @@ export function toEmbedUrl(raw) {
   return `https://docs.google.com/spreadsheets/d/${m[1]}/edit?usp=sharing${gid ? `#gid=${gid}` : ''}`;
 }
 
+// Read-only view of the same sheet (no editing toolbar or cell editing)
+export function toPreviewUrl(raw) {
+  const url = String(raw || '').trim();
+  const m = url.match(/docs\.google\.com\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  if (!m) return '';
+  const gid = (url.match(/[#&?]gid=(\d+)/) || [])[1];
+  return `https://docs.google.com/spreadsheets/d/${m[1]}/preview${gid ? `#gid=${gid}` : ''}`;
+}
+
 // ---------------------------------------------------------------------------
 // Sheet → CRM import (same parser + bulk endpoint as "Bulk Upload").
 // Rows already in the CRM (same mobile / email) are skipped by the server, so
@@ -127,7 +136,9 @@ export function useGoogleSheetAutoImport(currentUser, onImported) {
   }, [me]); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
-export default function HrGoogleSheetTab({ currentUser, canEditTeamSheet = false }) {
+// canEdit: only the Department Head and Branch Head (and Admin) may change
+// sheet links or edit the sheet here — everyone else gets a view-only sheet.
+export default function HrGoogleSheetTab({ currentUser, canEdit = false }) {
   const me = normName(currentUser?.name);
   const [config, setConfig] = useState({ team: '', users: {}, auto: {} });
   const [importing, setImporting] = useState(false);
@@ -164,7 +175,7 @@ export default function HrGoogleSheetTab({ currentUser, canEditTeamSheet = false
   }, [loading]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const activeUrl = source === 'mine' ? myUrl : teamUrl;
-  const embedUrl = useMemo(() => toEmbedUrl(activeUrl), [activeUrl]);
+  const embedUrl = useMemo(() => (canEdit ? toEmbedUrl(activeUrl) : toPreviewUrl(activeUrl)), [activeUrl, canEdit]);
 
   const startEdit = (which) => {
     setError('');
@@ -173,6 +184,7 @@ export default function HrGoogleSheetTab({ currentUser, canEditTeamSheet = false
   };
 
   const handleSave = async () => {
+    if (!canEdit) { setEditing(null); return; }
     const link = draft.trim();
     if (link && !toEmbedUrl(link)) {
       setError('Paste a Google Sheets link, e.g. https://docs.google.com/spreadsheets/d/…/edit');
@@ -257,13 +269,17 @@ export default function HrGoogleSheetTab({ currentUser, canEditTeamSheet = false
           </div>
           <div>
             <h2 className="text-base font-extrabold text-slate-800 leading-tight">Google Sheet</h2>
-            <p className="text-[11px] text-slate-500">Edit your tracking sheet right here — changes save to Google automatically.</p>
+            <p className="text-[11px] text-slate-500">
+              {canEdit
+                ? 'Edit your tracking sheet right here — changes save to Google automatically.'
+                : 'View only — the Department Head or Branch Head updates this sheet.'}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          {tabBtn('mine', 'My Sheet', Boolean(myUrl))}
+          {(canEdit || myUrl) && tabBtn('mine', 'My Sheet', Boolean(myUrl))}
           {tabBtn('team', 'Team Sheet', Boolean(teamUrl))}
-          {(source === 'mine' || canEditTeamSheet) && (
+          {canEdit && (
             <button type="button" onClick={() => startEdit(source)} title="Change sheet link"
               className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 inline-flex items-center gap-1 cursor-pointer">
               <Pencil className="w-3.5 h-3.5" /> Link
@@ -289,7 +305,7 @@ export default function HrGoogleSheetTab({ currentUser, canEditTeamSheet = false
       </div>
 
       {/* Link editor */}
-      {editing && (
+      {editing && canEdit && (
         <div className="rounded-xl border border-teal-200 bg-teal-50/60 p-3 space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-teal-900 flex items-center gap-1.5">
@@ -341,11 +357,13 @@ export default function HrGoogleSheetTab({ currentUser, canEditTeamSheet = false
           <p className="text-sm text-slate-500">
             {source === 'team' ? 'No team sheet has been linked yet.' : "You haven't linked your sheet yet."}
           </p>
-          {(source === 'mine' || canEditTeamSheet) && (
+          {canEdit ? (
             <button type="button" onClick={() => startEdit(source)}
               className="px-4 py-2 rounded-lg bg-[#0e6977] text-white text-sm font-bold cursor-pointer">
               Add Google Sheet link
             </button>
+          ) : (
+            <p className="text-xs text-slate-400">Ask your Department Head or Branch Head to link it.</p>
           )}
         </div>
       )}

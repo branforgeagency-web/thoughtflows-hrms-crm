@@ -44,6 +44,12 @@ const trainerSchema = new mongoose.Schema(
     },
     // "Experienced in Demo" / "Demo Trainer" flag - must be explicitly enabled
     // by an admin before this trainer can receive demo booking notifications
+    // Roster record created automatically for a Head / Manager / Team Lead who
+    // takes a batch. Kept out of automatic demo matching unless demoTrainer is on.
+    leaderAccount: {
+      type: Boolean,
+      default: false
+    },
     demoTrainer: {
       type: Boolean,
       default: false

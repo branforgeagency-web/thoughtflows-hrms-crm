@@ -1,0 +1,6018 @@
+import React, { useState, useEffect } from 'react';
+import { localDateKey } from '../utils/dateUtils';
+import LiveClassroom from './LiveClassroom';
+import { 
+  Home, 
+  PlayCircle, 
+  CheckSquare, 
+  AtSign, 
+  MessageSquare, 
+  Star, 
+  List, 
+  LayoutGrid, 
+  Users, 
+  AlertTriangle, 
+  FileCheck, 
+  BookOpen, 
+  Send, 
+  User, 
+  Layers, 
+  Clock, 
+  ChevronRight, 
+  Play, 
+  Target, 
+  CheckCircle2, 
+  X, 
+  Search, 
+  Video, 
+  Mic, 
+  MicOff, 
+  VideoOff, 
+  MonitorUp, 
+  Share2, 
+  Sparkles, 
+  HelpCircle, 
+  Award, 
+  TrendingUp, 
+  Download, 
+  Calendar, 
+  DollarSign, 
+  PhoneCall, 
+  GraduationCap,
+  Bell,
+  ExternalLink,
+  ChevronDown,
+  LogOut,
+  ListChecks,
+  Menu,
+  UserPlus,
+  Check,
+  Building2,
+  ArrowLeft
+} from 'lucide-react';
+import TrainerBatchDesk from './TrainerBatchDesk';
+import OnlineTestBuilder from './OnlineTestBuilder';
+import TrainingLibraryMaterials from './TrainingLibraryMaterials';
+import TrainingPlacementPrep from './TrainingPlacementPrep';
+import TrainingMyProfile from './TrainingMyProfile';
+import TrainingSkillsCourses from './TrainingSkillsCourses';
+import TrainingShiftAvailability from './TrainingShiftAvailability';
+import TrainerQualityBoard from './TrainerQualityBoard';
+import TrainerStudentDesk from './TrainerStudentDesk';
+import ClassSessionRoom from './ClassSessionRoom';
+import UtilizationDashboard from './UtilizationDashboard';
+import {
+  getStudents,
+  updateStudent,
+  getDemos,
+  updateDemo,
+  acknowledgeDemo,
+  updateDemosBulkOutcome,
+  createDemoMeeting,
+  endDemoMeeting,
+  setDemoMeetingLink,
+  sendDemoLinkEmail,
+  getDemoClassroomJoin,
+  getTrainerDoubts,
+  replyTrainerDoubt,
+  createTrainerDoubt,
+  getTrainerAssessments,
+  createTrainerAssessment,
+  updateAssessmentScores,
+  updateAssessmentRationale,
+  recordTrainerAttendance,
+  getTrainerAttendance,
+  getTrainerProfile,
+  getTrainerSettings,
+  getTrainingMaterials,
+  trainingMaterialFileUrl,
+  markSyllabusComplete,
+  logRemedialAction,
+  getNotifications,
+  getFeedbackSummary,
+  markNotificationRead,
+  onDataUpdate,
+  notifyDataUpdate,
+  allocateTrainerToStudent,
+  getBatches,
+  updateStudentReadiness,
+  updateTrainerApproval,
+  getLiveClassHistory,
+  getBatchSyllabus
+} from '../services/api';
+import { TRAINER_COURSES } from '../constants/courses';
+import { redirectToWhatsAppWeb } from '../utils/whatsapp';
+import StaffLoginAttendance from './StaffLoginAttendance';
+import { BatchDetailModal } from './BatchManagementModals';
+
+export default function TrainingDepartmentDashboard({
+  onClose,
+  currentUser,
+  onLogout,
+  onSwitchDepartment,
+  theme = 'classic',
+  onBackToRoles
+}) {
+
+  // ---- Trainer identity: the Trainer roster record (admin-managed) is the source of truth ----
+  const [trainerProfile, setTrainerProfile] = useState(null);
+  const [profileError, setProfileError] = useState('');
+  const [trainerRoster, setTrainerRoster] = useState([]);
+  // No login required to open the Training department — if nobody signed in
+  // (currentUser is empty), the trainer just picks their name from the roster
+  // below instead of typing a password.
+  const [pickedIdentity, setPickedIdentity] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem('tf_picked_trainer_identity');
+      return saved ? JSON.parse(saved) : null;
+    } catch (_) {
+      return null;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      if (pickedIdentity) {
+        sessionStorage.setItem('tf_picked_trainer_identity', JSON.stringify(pickedIdentity));
+      } else {
+        sessionStorage.removeItem('tf_picked_trainer_identity');
+      }
+    } catch (_) {}
+  }, [pickedIdentity]);
+  const hasSignedInUser = Boolean(currentUser?.trainerId || currentUser?.name || currentUser?.userName || currentUser?.email);
+  const trainerName = trainerProfile?.trainerName || currentUser?.userName || currentUser?.name || pickedIdentity?.trainerName || '';
+  const trainerRole = trainerProfile?.role || trainerProfile?.specialization || currentUser?.role || pickedIdentity?.role || '';
+  const trainerBranch = trainerProfile?.branchName || currentUser?.branch || pickedIdentity?.branchName || '';
+  const trainerId = trainerProfile?.trainerId || currentUser?.trainerId || currentUser?.id || pickedIdentity?.trainerId || '';
+  const trainerShift = trainerProfile?.shift || currentUser?.shift || pickedIdentity?.shift || '';
+  const trainerCourseKey = String(trainerProfile?.courseKey || currentUser?.courseKey || pickedIdentity?.courseKey || '').toUpperCase();
+  // Head of Trainer (or Academic Leadership, Admin, or Branch Trainer/Faculty) has the authority to allocate/reassign students to trainers
+  const isHeadOfTrainer = Boolean(
+    currentUser?.role === 'Department Head of Training' ||
+    currentUser?.role === 'Head of Trainer' ||
+    currentUser?.role === 'Faculty Lead & Chief Trainer' ||
+    currentUser?.role === 'Admin' ||
+    currentUser?.role === 'Super Admin' ||
+    currentUser?.department === 'leadership' ||
+    currentUser?.role === 'Branch Head' ||
+    currentUser?.role === 'Centre Manager' ||
+    /department head of training|head of trainer|training head|head of training|chief trainer|chief faculty|faculty lead|branch head/i.test(trainerRole || '') ||
+    /department head of training|head of trainer|training head|head of training|chief trainer|chief faculty|faculty lead|branch head/i.test(currentUser?.role || '') ||
+    (trainerCourseKey === 'ALL' && /head|chief|lead/i.test(trainerRole || currentUser?.role || ''))
+  );
+  const isChiefFaculty = isHeadOfTrainer;
+  const canManageMaterials = (() => {
+    const tr = String(currentUser?.trainerRole || '').toLowerCase();
+    const raw = String(trainerRole || currentUser?.role || '').toLowerCase();
+    if (tr === 'tl' || tr === 'trainer' || tr === 'part_time' || /\bteam lead\b|\btl\b/.test(raw)) return false;
+    return Boolean(isHeadOfTrainer || tr === 'head' || tr === 'manager' || /trainer manager|training manager/i.test(raw));
+  })();
+
+  const courseMatches = React.useCallback((text) => {
+    if (!trainerCourseKey || trainerCourseKey === 'ALL') return false;
+    const c = String(text || '').toUpperCase();
+    if (trainerCourseKey === 'CIC') return c.includes('CIC') || c.includes('INPATIENT');
+    if (trainerCourseKey === 'CPB') return c.includes('CPB') || c.includes('BILLING');
+    if (trainerCourseKey === 'CPMA') return c.includes('CPMA') || c.includes('AUDIT');
+    if (trainerCourseKey === 'CRC') return c.includes('CRC') || c.includes('RISK');
+    return c.includes(trainerCourseKey);
+  }, [trainerCourseKey]);
+
+  const todayKey = localDateKey();
+  const monthKey = todayKey.slice(0, 7);
+  const monthStartKey = `${monthKey}-01`;
+  const monthLabel = new Date().toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+  const studentKeyOf = (s) => String(s?.studentId || s?._id || '');
+  const lc = (v) => String(v || '').toLowerCase();
+
+  const [activeNav, setActiveNav] = useState(() => {
+    try {
+      return sessionStorage.getItem('thoughtflows_trainer_faculty_nav') || 'home';
+    } catch (_) {
+      return 'home';
+    }
+  });
+
+  useEffect(() => {
+    try {
+      if (activeNav) {
+        sessionStorage.setItem('thoughtflows_trainer_faculty_nav', activeNav);
+      }
+    } catch (_) {}
+  }, [activeNav]);
+  const [navOpen, setNavOpen] = useState(false); // mobile sidebar
+  const [onlineTestFor, setOnlineTestFor] = useState(null); // test opened in the online-test builder
+  useEffect(() => { setNavOpen(false); }, [activeNav]);
+  // Restored after a page refresh so the trainer is put straight back into the demo (a refresh always drops the Zoom connection)
+  const [demoRoom, setDemoRoom] = useState(() => {
+    try { return JSON.parse(sessionStorage.getItem('tf_demo_room') || 'null'); } catch (_) { return null; }
+  });
+  const [demoMin, setDemoMin] = useState(false);
+
+  useEffect(() => {
+    try {
+      if (demoRoom) sessionStorage.setItem('tf_demo_room', JSON.stringify(demoRoom));
+      else sessionStorage.removeItem('tf_demo_room');
+    } catch (_) {}
+    if (!demoRoom) return undefined;
+    // Ask before refresh/close while a demo is live
+    const warn = (e) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [demoRoom]);
+
+  // A Google Meet demo runs in its own tab (Google blocks embedding it), so
+  // there's nothing to "minimize" in the Zoom sense — but switching sections
+  // here used to make the session disappear from view entirely, which read as
+  // the meeting itself getting cancelled. This just keeps a small persistent
+  // marker of "a Meet session is running" that survives navigating around the
+  // dashboard (and a refresh), with a one-click way back to it.
+  const [activeMeetSession, setActiveMeetSession] = useState(() => {
+    try { return JSON.parse(sessionStorage.getItem('tf_active_meet') || 'null'); } catch (_) { return null; }
+  });
+  useEffect(() => {
+    try {
+      if (activeMeetSession) sessionStorage.setItem('tf_active_meet', JSON.stringify(activeMeetSession));
+      else sessionStorage.removeItem('tf_active_meet');
+    } catch (_) {}
+  }, [activeMeetSession]);
+
+  // Live Database States
+  const [loading, setLoading] = useState(true);
+  const [students, setStudents] = useState([]);
+  const [demos, setDemos] = useState([]);
+  const [leads, setLeads] = useState([]);
+  const [doubts, setDoubts] = useState([]);
+  const [assessmentTests, setAssessmentTests] = useState([]);
+  const [assessmentScores, setAssessmentScores] = useState({});
+  const [rationaleTexts, setRationaleTexts] = useState({});
+  const [attendanceSessions, setAttendanceSessions] = useState([]);
+  const [materials, setMaterials] = useState([]);
+  const [trainerNotifications, setTrainerNotifications] = useState([]);
+  const [myFeedback, setMyFeedback] = useState(null); // { avg, classAvg, trainerAvg, count } from student ratings
+  const [showNotifPanel, setShowNotifPanel] = useState(false);
+  const [inspectBatchTarget, setInspectBatchTarget] = useState(null);
+  const [attendanceBatchId, setAttendanceBatchId] = useState('');
+  const [attendanceSavedToast, setAttendanceSavedToast] = useState(null);
+  const [attendanceTopic, setAttendanceTopic] = useState('');
+  const [batchSyllabusDoc, setBatchSyllabusDoc] = useState(null);
+  const [todayLiveJoins, setTodayLiveJoins] = useState({});
+  const [showDemoBucket, setShowDemoBucket] = useState(true);
+  const [showConversionModal, setShowConversionModal] = useState(false);
+  const [selectedBatchDrilldown, setSelectedBatchDrilldown] = useState(null);
+  const [cccpToast, setCccpToast] = useState(null);
+  const [activeWeakStudentModal, setActiveWeakStudentModal] = useState(null);
+  const [remedialNote, setRemedialNote] = useState('');
+  const [weakStudentToast, setWeakStudentToast] = useState(null);
+  const [activeAssessmentTab, setActiveAssessmentTab] = useState('active');
+  const [showCreateTestModal, setShowCreateTestModal] = useState(false);
+  const [activeScoreModalTest, setActiveScoreModalTest] = useState(null);
+  const [activeRationaleModalTest, setActiveRationaleModalTest] = useState(null);
+  const [assessmentToast, setAssessmentToast] = useState(null);
+  const [growthTab, setGrowthTab] = useState('all'); // 'all' | 'scorecard' | 'incentives'
+
+  const [activeDoubtFilter, setActiveDoubtFilter] = useState('All');
+  const [activeDoubtModal, setActiveDoubtModal] = useState(null);
+  const [doubtReplyText, setDoubtReplyText] = useState('');
+
+  const emptyTestForm = () => ({
+    name: '',
+    type: 'Weekly Test',
+    course: '',
+    batch: '',
+    topic: '',
+    date: localDateKey(),
+    timeLimit: '45 min',
+    totalMarks: 50,
+    passMark: 35
+  });
+  const [newTestForm, setNewTestForm] = useState(emptyTestForm);
+
+  // Allocation Desk states (Head of Trainer)
+  const [allocationStudent, setAllocationStudent] = useState(null);
+  const [allocationForm, setAllocationForm] = useState({ trainerId: '', batchName: '', trainerNote: '' });
+  const [allocationTabFilter, setAllocationTabFilter] = useState('pending'); // 'pending', 'all', 'allocated'
+  const [allocationBranchFilter, setAllocationBranchFilter] = useState(() => trainerBranch || 'ALL');
+  const [allocationSearch, setAllocationSearch] = useState('');
+  const [allocationBatches, setAllocationBatches] = useState([]);
+  const [allocationToast, setAllocationToast] = useState(null);
+
+  useEffect(() => {
+    if (trainerBranch && (!allocationBranchFilter || allocationBranchFilter === 'ALL')) {
+      setAllocationBranchFilter(trainerBranch);
+    }
+  }, [trainerBranch]);
+
+  // Resolve the trainer's roster record once per login — or once a name is picked, for a no-login session
+  useEffect(() => {
+    let alive = true;
+    const email = currentUser?.email;
+    const tid = currentUser?.trainerId || pickedIdentity?.trainerId || '';
+    const name = currentUser?.userName || currentUser?.name || pickedIdentity?.trainerName;
+    if (!email && !tid && !name) { setProfileError('No signed-in trainer'); return undefined; }
+    getTrainerProfile({ trainerId: tid || undefined, email, name })
+      .then(p => { if (alive) { setTrainerProfile(p); setProfileError(''); } })
+      .catch(err => {
+        if (alive) {
+          const matched = pickedIdentity;
+          if (matched) {
+            setTrainerProfile({
+              trainerId: matched.id || matched.trainerId || tid,
+              trainerName: matched.name || matched.trainerName || name,
+              role: matched.role || 'Faculty',
+              branchName: matched.branch || matched.branchName || 'Coimbatore',
+              shift: matched.shift || 'General',
+              courseKey: matched.course || matched.courseKey || 'CPC'
+            });
+            setProfileError('');
+          } else {
+            setProfileError(err?.response?.data?.error || 'Trainer roster record not found');
+          }
+        }
+      });
+    return () => { alive = false; };
+  }, [currentUser?.email, currentUser?.trainerId, currentUser?.name, currentUser?.userName, pickedIdentity?.trainerId]);
+
+  // Fetch all real data from backend API
+  const loadRealData = async () => {
+    try {
+      setLoading(true);
+      // This month's student ratings feed the quality score
+      if (trainerId) {
+        getFeedbackSummary({ trainerId, days: new Date().getDate() })
+          .then(rows => setMyFeedback((Array.isArray(rows) ? rows : []).find(r => r.trainerId === trainerId) || null))
+          .catch(() => setMyFeedback(null));
+      }
+      // Secondary panels are applied the moment each one lands, so the
+      // dashboard is not held behind the slowest of eight requests.
+      getDemos()
+        .then((dmRes) => setDemos(Array.isArray(dmRes) ? dmRes : []))
+        .catch(() => {});
+      getTrainerDoubts()
+        .then((dbtRes) => setDoubts(Array.isArray(dbtRes) ? dbtRes : []))
+        .catch(() => {});
+      getTrainingMaterials()
+        .then((matRes) => setMaterials(Array.isArray(matRes) ? matRes : []))
+        .catch(() => {});
+      (trainerId ? getTrainerAttendance({ trainerId, from: monthStartKey }) : Promise.resolve([]))
+        .then((attRes) => setAttendanceSessions(Array.isArray(attRes) ? attRes : []))
+        .catch(() => {});
+      getTrainerAssessments()
+        .then((asmRes) => {
+          // Only this trainer's tests (plus legacy tests saved before trainer ownership existed)
+          const asmList = (Array.isArray(asmRes) ? asmRes : []).filter(t => !t.trainerId || t.trainerId === trainerId);
+          setAssessmentTests(asmList);
+          const initialScores = {};
+          const initialRationales = {};
+          asmList.forEach(t => {
+            if (t.scores) initialScores[t.id] = t.scores;
+            if (t.rationale) initialRationales[t.id] = t.rationale;
+          });
+          setAssessmentScores(initialScores);
+          setRationaleTexts(initialRationales);
+        })
+        .catch(() => {});
+
+      // leads belong to HR — not loaded for trainers
+      setLeads([]);
+
+      // First paint needs the roster (it may decide the active identity) and
+      // the student list; everything above streams in behind them.
+      const [rosterRes, stRes] = await Promise.all([
+        getTrainerSettings().catch(() => []),
+        getStudents().catch(() => [])
+      ]);
+
+      const mergedRoster = [...(Array.isArray(rosterRes) ? rosterRes : [])];
+      setTrainerRoster(mergedRoster);
+      if (!hasSignedInUser && !pickedIdentity && mergedRoster.length > 0) {
+        const first = mergedRoster[0];
+        setPickedIdentity({
+          trainerId: first.trainerId || first.id,
+          trainerName: first.trainerName || first.name,
+          role: first.role || 'Faculty',
+          branchName: first.branchName || first.branch || 'Coimbatore',
+          shift: first.shift || 'General',
+          courseKey: first.courseKey || first.course || 'CPC'
+        });
+      }
+      setStudents(Array.isArray(stRes) ? stRes : []);
+    } catch (err) {
+      console.error('Error fetching real trainer data:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Notifications are the cross-device signal: a new one (student doubt,
+  // submission, HR handover…) means the data behind it changed, so reload it.
+  const seenNotifIds = React.useRef(null);
+  const loadNotifications = async () => {
+    if (!trainerId) return;
+    try {
+      const list = await getNotifications({ audience: 'trainer', recipientId: trainerId, recipientName: trainerName });
+      const arr = Array.isArray(list) ? list : [];
+      setTrainerNotifications(arr);
+      const ids = arr.map(n => n._id);
+      const hasNew = seenNotifIds.current && ids.some(id => !seenNotifIds.current.has(id));
+      seenNotifIds.current = new Set(ids);
+      if (hasNew) loadRealData();
+    } catch (_) {}
+  };
+
+  useEffect(() => {
+    loadRealData();
+    loadNotifications();
+    const unsub = onDataUpdate((entity) => {
+      if (['students', 'doubts', 'assessments', 'leads', 'demos', 'trainer_attendance', 'materials', 'trainer_settings'].includes(entity)) {
+        loadRealData();
+      }
+      if (entity === 'notifications' || entity === 'students' || entity === 'demos') loadNotifications();
+    });
+    // Poll so HR handovers / new demos made on other machines reach the trainer
+    const poll = setInterval(() => { loadNotifications(); }, 60000);
+    return () => { unsub(); clearInterval(poll); };
+  }, [trainerId]);
+
+  // Students allocated to this trainer by HR at handover. Legacy students that
+  // were "Sent to Training" before trainer allocation existed fall back to course match.
+  const myStudents = React.useMemo(() => {
+    if (!students || students.length === 0 || !trainerId) return [];
+    const tIdNorm = String(trainerId).trim().toLowerCase();
+    const tNameNorm = String(trainerName || '').trim().toLowerCase();
+    return students.filter(st => {
+      if (st.trainerId) {
+        return String(st.trainerId).trim().toLowerCase() === tIdNorm;
+      }
+      const stTrName = String(st.trainerName || st.trainer || '').trim().toLowerCase();
+      if (stTrName && tNameNorm && (stTrName === tNameNorm || stTrName.includes(tNameNorm) || tNameNorm.includes(stTrName))) {
+        return true;
+      }
+      if (st.handoverStatus !== 'Sent to Training') return false;
+      return isChiefFaculty || courseMatches(st.course);
+    });
+  }, [students, trainerId, trainerName, isChiefFaculty, courseMatches]);
+
+  // Match student against branch filter
+  const studentMatchesBranch = React.useCallback((st, filter) => {
+    if (!filter || filter === 'ALL') return true;
+    const stBranch = (st.branch || st.location || st.leadBranch || '').toLowerCase();
+    const filt = filter.toLowerCase();
+    return stBranch === filt || stBranch.includes(filt) || filt.includes(stBranch);
+  }, []);
+
+  // Compute unique branches from students, roster, and logged in trainer
+  const branchList = React.useMemo(() => {
+    const set = new Set();
+    (students || []).forEach(st => {
+      const b = st.branch || st.location || st.leadBranch;
+      if (b && typeof b === 'string' && b.trim()) set.add(b.trim());
+    });
+    (trainerRoster || []).forEach(tr => {
+      const b = tr.branchName || tr.branch;
+      if (b && typeof b === 'string' && b.trim()) set.add(b.trim());
+    });
+    if (trainerBranch) set.add(trainerBranch);
+    return Array.from(set).sort();
+  }, [students, trainerRoster, trainerBranch]);
+
+  // Count pending allocations per branch for the switcher badge
+  const branchPendingCounts = React.useMemo(() => {
+    const counts = { ALL: 0 };
+    (students || []).forEach(st => {
+      const isHandedOver = st.handoverStatus === 'Handed Over to Department Head of Training' || st.handoverStatus === 'Handed Over to Head of Trainer' || (st.handoverStatus === 'Sent to Training' && !st.trainerId) || Boolean(st.headOfTrainer && !st.trainerId);
+      if (isHandedOver && !st.trainerId) {
+        counts.ALL = (counts.ALL || 0) + 1;
+        const b = (st.branch || st.location || st.leadBranch || '').trim();
+        if (b) {
+          counts[b] = (counts[b] || 0) + 1;
+        }
+      }
+    });
+    return counts;
+  }, [students]);
+
+  // Department Head of Training allocation datasets (filtered by selected branch)
+  const pendingAllocationStudents = React.useMemo(() => {
+    return (students || []).filter(st => {
+      const isHandedOver = st.handoverStatus === 'Handed Over to Department Head of Training' || st.handoverStatus === 'Handed Over to Head of Trainer' || (st.handoverStatus === 'Sent to Training' && !st.trainerId) || Boolean(st.headOfTrainer && !st.trainerId);
+      return isHandedOver && !st.trainerId && studentMatchesBranch(st, allocationBranchFilter);
+    });
+  }, [students, allocationBranchFilter, studentMatchesBranch]);
+
+  const allocatedStudents = React.useMemo(() => {
+    return (students || []).filter(st => Boolean(st.trainerId) && studentMatchesBranch(st, allocationBranchFilter));
+  }, [students, allocationBranchFilter, studentMatchesBranch]);
+
+  const allHandedOverStudents = React.useMemo(() => {
+    return (students || []).filter(st => 
+      (st.handoverStatus === 'Handed Over to Department Head of Training' || st.handoverStatus === 'Handed Over to Head of Trainer' || st.handoverStatus === 'Sent to Training' || Boolean(st.headOfTrainer)) &&
+      studentMatchesBranch(st, allocationBranchFilter)
+    );
+  }, [students, allocationBranchFilter, studentMatchesBranch]);
+
+  // Students eligible / ready for Anatomy to Medical Coding batch conversion
+  const anatomyReadyStudents = React.useMemo(() => {
+    return (students || []).filter(st => {
+      const isAnatomy = /anatomy/i.test(st.batchName || '') || /anatomy/i.test(st.course || '') || /anatomy/i.test(st.trainerName || '');
+      const isProgressionEligible = st.syllabusModule === 'Module 2' || st.syllabusModule === 'Module 3' || st.anatomyCompleted || st.batchConversionTicketRaised;
+      return (isAnatomy || (st.anatomyCompleted && !st.codingBatchEnrolledAt)) && studentMatchesBranch(st, allocationBranchFilter);
+    });
+  }, [students, allocationBranchFilter, studentMatchesBranch]);
+
+  const trainerStudentCounts = React.useMemo(() => {
+    const map = {};
+    (students || []).forEach(st => {
+      if (st.trainerId) {
+        map[st.trainerId] = (map[st.trainerId] || 0) + 1;
+      }
+    });
+    return map;
+  }, [students]);
+
+  const filteredAllocationList = React.useMemo(() => {
+    let list = [];
+    if (allocationTabFilter === 'pending') list = pendingAllocationStudents;
+    else if (allocationTabFilter === 'allocated') list = allocatedStudents;
+    else if (allocationTabFilter === 'anatomy') list = anatomyReadyStudents;
+    else list = allHandedOverStudents;
+
+    if (!allocationSearch.trim()) return list;
+    const q = allocationSearch.toLowerCase();
+    return list.filter(st =>
+      (st.name || '').toLowerCase().includes(q) ||
+      (st.studentId || '').toLowerCase().includes(q) ||
+      (st.course || '').toLowerCase().includes(q) ||
+      (st.branch || '').toLowerCase().includes(q) ||
+      (st.hrName || '').toLowerCase().includes(q) ||
+      (st.trainerName || '').toLowerCase().includes(q) ||
+      (st.batchName || '').toLowerCase().includes(q)
+    );
+  }, [allocationTabFilter, pendingAllocationStudents, allocatedStudents, anatomyReadyStudents, allHandedOverStudents, allocationSearch]);
+
+  // Load existing batches for chosen trainer in allocation modal
+  useEffect(() => {
+    if (!allocationStudent || !allocationForm.trainerId) { setAllocationBatches([]); return undefined; }
+    let alive = true;
+    getBatches({ trainerId: allocationForm.trainerId })
+      .then(rows => { if (alive) setAllocationBatches(Array.isArray(rows) ? rows : []); })
+      .catch(() => { if (alive) setAllocationBatches([]); });
+    return () => { alive = false; };
+  }, [allocationStudent, allocationForm.trainerId]);
+
+  // ---- Job-Ready Status Modal State ----
+  const [readinessModalStudent, setReadinessModalStudent] = useState(null);
+  const [readinessForm, setReadinessForm] = useState({
+    technicalScore: '',
+    assessmentScore: '',
+    communicationScore: '',
+    interviewPrepScore: '',
+    status: 'Job Ready',
+    feedback: ''
+  });
+  const [savingReadiness, setSavingReadiness] = useState(false);
+  const [readinessToast, setReadinessToast] = useState(null);
+
+  const openReadinessModal = (student) => {
+    const rawStatus = student.jobReadyStatus || (student.trainerRecommendation === 'Ready' ? 'Job Ready' : student.trainerRecommendation) || 'Job Ready';
+    setReadinessForm({
+      technicalScore: student.technicalScore != null ? String(student.technicalScore) : '',
+      assessmentScore: student.assessmentScore != null ? String(student.assessmentScore) : '',
+      communicationScore: student.communicationScore != null ? String(student.communicationScore) : '',
+      interviewPrepScore: (student.interviewPrepScore != null ? student.interviewPrepScore : student.mockScore) != null
+        ? String(student.interviewPrepScore != null ? student.interviewPrepScore : student.mockScore)
+        : '',
+      status: rawStatus,
+      feedback: student.readinessFeedback || ''
+    });
+    setReadinessModalStudent(student);
+  };
+
+  const handleSaveReadinessModal = async () => {
+    if (!readinessModalStudent) return;
+    const sId = readinessModalStudent._id || readinessModalStudent.studentId;
+    setSavingReadiness(true);
+    try {
+      const payload = {
+        status: readinessForm.status,
+        jobReadyStatus: readinessForm.status,
+        trainerName,
+        technicalScore: readinessForm.technicalScore !== '' ? Number(readinessForm.technicalScore) : null,
+        assessmentScore: readinessForm.assessmentScore !== '' ? Number(readinessForm.assessmentScore) : null,
+        communicationScore: readinessForm.communicationScore !== '' ? Number(readinessForm.communicationScore) : null,
+        interviewPrepScore: readinessForm.interviewPrepScore !== '' ? Number(readinessForm.interviewPrepScore) : null,
+        feedback: readinessForm.feedback
+      };
+      const updated = await updateStudentReadiness(sId, payload);
+      setStudents(prev => prev.map(x => (x._id === updated._id || x.studentId === updated.studentId) ? { ...x, ...updated } : x));
+      setReadinessToast(`${readinessModalStudent.name} readiness saved as "${readinessForm.status}"${readinessForm.status === 'Job Ready' ? ' · Referred to CCCP' : ''}`);
+      setTimeout(() => setReadinessToast(null), 4000);
+      setReadinessModalStudent(null);
+    } catch (e) {
+      setReadinessToast(`Could not update readiness: ${e?.response?.data?.error || e.message}`);
+      setTimeout(() => setReadinessToast(null), 4000);
+    }
+    setSavingReadiness(false);
+  };
+
+  // Trainer Course Completion & Exam Approval workflow state
+  const [trainerApprovalStudent, setTrainerApprovalStudent] = useState(null);
+  const [trainerApprovalForm, setTrainerApprovalForm] = useState({
+    approveCourseCompletion: true,
+    approveExam: true,
+    syllabusVerified: true,
+    assessmentsVerified: true,
+    readinessVerified: true,
+    seminarVerified: true,
+    notes: ''
+  });
+  const [savingTrainerApproval, setSavingTrainerApproval] = useState(false);
+  const [trainerApprovalToast, setTrainerApprovalToast] = useState(null);
+
+  const openTrainerApprovalModal = (student) => {
+    const isSyllabusDone = student.syllabusStatus === 'Completed' || (student.modulesCompleted && student.modulesCompleted.length > 0);
+    const assessScore = student.assessmentScore != null ? Number(student.assessmentScore) : (student.technicalScore != null ? Number(student.technicalScore) : 0);
+    const isAssessDone = assessScore >= 70;
+    const isReady = (student.jobReadyStatus === 'Job Ready' || student.trainerRecommendation === 'Ready') && (student.attendancePct ?? student.attendance ?? 80) >= 75;
+
+    setTrainerApprovalForm({
+      approveCourseCompletion: student.courseCompletionApproved !== true,
+      approveExam: student.examApprovedByTrainer !== true,
+      syllabusVerified: Boolean(isSyllabusDone || student.trainerApprovalVerification?.syllabusVerified),
+      assessmentsVerified: Boolean(isAssessDone || student.trainerApprovalVerification?.assessmentsVerified),
+      readinessVerified: Boolean(isReady || student.trainerApprovalVerification?.readinessVerified),
+      seminarVerified: Boolean(student.seminarCompleted || student.trainerApprovalVerification?.seminarVerified),
+      notes: student.courseCompletionTrainerNotes || student.examTrainerNotes || ''
+    });
+    setTrainerApprovalStudent(student);
+  };
+
+  const handleSaveTrainerApproval = async (decision = 'Approved') => {
+    if (!trainerApprovalStudent) return;
+    const sId = trainerApprovalStudent._id || trainerApprovalStudent.studentId;
+    setSavingTrainerApproval(true);
+    try {
+      const payload = {
+        decision,
+        approveCourseCompletion: trainerApprovalForm.approveCourseCompletion,
+        approveExam: trainerApprovalForm.approveExam,
+        trainerNotes: trainerApprovalForm.notes,
+        // Flattened to match what the server route reads (verifySyllabus/verifyAssessments/
+        // verifyReadiness/verifySeminar at the top level — a nested `verification` object
+        // was silently ignored server-side, so none of these checkboxes previously took effect).
+        verifySyllabus: trainerApprovalForm.syllabusVerified,
+        verifyAssessments: trainerApprovalForm.assessmentsVerified,
+        verifyReadiness: trainerApprovalForm.readinessVerified,
+        verifySeminar: trainerApprovalForm.seminarVerified
+      };
+      const updated = await updateTrainerApproval(sId, payload);
+      setStudents(prev => prev.map(x => (x._id === updated._id || x.studentId === updated.studentId) ? { ...x, ...updated } : x));
+      setTrainerApprovalToast(
+        decision === 'Approved'
+          ? `✓ Trainer approval saved for ${trainerApprovalStudent.name} (${[
+              trainerApprovalForm.approveCourseCompletion ? 'Course Certificate' : null,
+              trainerApprovalForm.approveExam ? 'Exam Slot' : null
+            ].filter(Boolean).join(' & ')}).`
+          : `Trainer declined approval for ${trainerApprovalStudent.name}. Returned for further training.`
+      );
+      setTimeout(() => setTrainerApprovalToast(null), 4500);
+      setTrainerApprovalStudent(null);
+    } catch (e) {
+      setTrainerApprovalToast(`Approval update failed: ${e?.response?.data?.error || e.message}`);
+      setTimeout(() => setTrainerApprovalToast(null), 4500);
+    }
+    setSavingTrainerApproval(false);
+  };
+
+  const openAllocationModal = (stu, options = {}) => {
+    if (!isHeadOfTrainer) {
+      setAllocationToast('Access denied: Only the Head of Trainer can assign students to trainers.');
+      setTimeout(() => setAllocationToast(null), 4000);
+      return;
+    }
+    const isAnatomy = Boolean(
+      options.isAnatomyToCoding ||
+      /anatomy/i.test(stu.batchName || '') ||
+      /anatomy/i.test(stu.course || '') ||
+      /anatomy/i.test(stu.trainerName || '')
+    );
+    const code = String(stu.course || '').toUpperCase();
+
+    // For Anatomy to Coding transition, prefer coding trainers rather than anatomy faculty
+    const match = isAnatomy
+      ? (trainerRoster.find(t => t.active !== false && !/anatomy/i.test(t.trainerName || '') && !/anatomy/i.test(t.role || '') && (!stu.branch || !t.branchName || t.branchName === stu.branch))
+         || trainerRoster.find(t => t.active !== false && !/anatomy/i.test(t.trainerName || '')))
+      : (trainerRoster.find(t => t.active !== false && t.courseKey && code.includes(t.courseKey.toUpperCase()) && (!stu.branch || !t.branchName || t.branchName === stu.branch))
+         || trainerRoster.find(t => t.active !== false && t.courseKey && code.includes(t.courseKey.toUpperCase()))
+         || trainerRoster.find(t => t.active !== false));
+
+    setAllocationForm({
+      trainerId: (isAnatomy && /anatomy/i.test(stu.trainerName || '')) ? (match?.trainerId || '') : (stu.trainerId || match?.trainerId || ''),
+      batchName: isAnatomy && /anatomy/i.test(stu.batchName || '')
+        ? `Medical Coding - ${stu.batchTiming || 'Regular Batch'}`
+        : (stu.batchName || [stu.course, stu.batchTiming].filter(Boolean).join(' · ')),
+      batchTiming: stu.batchTiming || '',
+      trainerNote: stu.trainerNote || (isAnatomy ? 'Anatomy completed with verified score. Transitioned to Medical Coding batch.' : ''),
+      isAnatomyToCoding: isAnatomy,
+      syllabusModule: isAnatomy ? 'Module 3' : (stu.syllabusModule || 'Module 1')
+    });
+    setAllocationStudent(stu);
+  };
+
+  const handleConfirmAllocation = async () => {
+    if (!allocationStudent) return;
+    if (!isHeadOfTrainer) {
+      setAllocationToast('Access denied: Only the Head of Trainer can assign students to trainers.');
+      setTimeout(() => setAllocationToast(null), 4000);
+      return;
+    }
+    if (!allocationForm.trainerId) {
+      setAllocationToast('Please select a trainer to allocate');
+      setTimeout(() => setAllocationToast(null), 3000);
+      return;
+    }
+    try {
+      const updated = await allocateTrainerToStudent(studentKeyOf(allocationStudent), {
+        ...allocationForm,
+        allocatedBy: trainerName || 'Head of Trainer'
+      });
+      setStudents(prev => prev.map(s => (studentKeyOf(s) === studentKeyOf(allocationStudent) ? { ...s, ...updated } : s)));
+      const targetTrainer = trainerRoster.find(t => t.trainerId === allocationForm.trainerId);
+      const isConv = allocationForm.isAnatomyToCoding;
+      setAllocationToast(
+        isConv
+          ? `✓ ${allocationStudent.name} successfully transitioned from Anatomy to Medical Coding (${targetTrainer?.trainerName || updated.trainerName} · ${updated.batchName}). Syllabus preserved at Module 3.`
+          : `✓ ${allocationStudent.name} allocated to ${targetTrainer?.trainerName || updated.trainerName} · batch ${updated.batchName}`
+      );
+      setTimeout(() => setAllocationToast(null), 5000);
+      setAllocationStudent(null);
+    } catch (err) {
+      setAllocationToast(`Error: ${err?.response?.data?.error || err.message}`);
+      setTimeout(() => setAllocationToast(null), 4000);
+    }
+  };
+
+  // Batches = HR-assigned batch names of the trainer's students
+  const batches = React.useMemo(() => {
+    const map = {};
+    myStudents.forEach(st => {
+      const key = st.batchName || st.course || 'Unassigned batch';
+      if (!map[key]) {
+        map[key] = {
+          id: key.toLowerCase().replace(/[^a-z0-9]/g, '-'),
+          batchId: st.batchId || '',
+          name: key,
+          course: st.course || '',
+          timing: st.batchTiming || '',
+          mode: st.mode || '',
+          minStudents: 10,
+          maxStudents: 15,
+          modules: {},
+          zoomLink: trainerProfile?.classZoomLink || '',
+          students: []
+        };
+      }
+      if (!map[key].batchId && st.batchId) map[key].batchId = st.batchId;
+      map[key].students.push(st);
+      if (st.syllabusModule) map[key].modules[st.syllabusModule] = (map[key].modules[st.syllabusModule] || 0) + 1;
+    });
+    return Object.values(map).map(b => ({
+      ...b,
+      module: Object.entries(b.modules).sort((a, c) => c[1] - a[1])[0]?.[0] || ''
+    }));
+  }, [myStudents, trainerProfile?.classZoomLink]);
+
+  useEffect(() => {
+    if (!attendanceBatchId && batches[0]) setAttendanceBatchId(batches[0].id);
+  }, [batches, attendanceBatchId]);
+  const attendanceBatch = batches.find(b => b.id === attendanceBatchId) || batches[0] || null;
+
+  // Fetch syllabus and today's live session joins for the selected batch
+  useEffect(() => {
+    if (!attendanceBatch?.name) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const [syl, hist] = await Promise.all([
+          getBatchSyllabus(attendanceBatch.name).catch(() => null),
+          getLiveClassHistory({ batch: attendanceBatch.name }).catch(() => [])
+        ]);
+        if (cancelled) return;
+        setBatchSyllabusDoc(syl);
+        const todayHist = (Array.isArray(hist) ? hist : []).find((h) => {
+          const d = h.startedAt ? new Date(h.startedAt).toISOString().slice(0, 10) : '';
+          return d === todayKey;
+        });
+        if (todayHist?.joins) {
+          const map = {};
+          todayHist.joins.forEach((j) => {
+            if (j.studentId) map[j.studentId] = j;
+            if (j.name) map[j.name] = j;
+          });
+          setTodayLiveJoins(map);
+        } else {
+          setTodayLiveJoins({});
+        }
+      } catch (_) {}
+    })();
+    return () => { cancelled = true; };
+  }, [attendanceBatch?.name, todayKey]);
+
+  // Today's saved marks for the selected batch (from the server)
+  const todaysSession = React.useMemo(() => (
+    attendanceBatch ? attendanceSessions.find(a => a.batch === attendanceBatch.name && a.date === todayKey) : null
+  ), [attendanceSessions, attendanceBatch, todayKey]);
+
+  const isOnlineBatch = attendanceBatch?.mode === 'Online';
+  const attendanceList = React.useMemo(() => (
+    (attendanceBatch?.students || []).map(s => {
+      const roll = studentKeyOf(s);
+      const isOnline = isOnlineBatch || s.mode === 'Online';
+      const j = todayLiveJoins[roll] || todayLiveJoins[s.name];
+      const attendedMins = typeof j?.durationMinutes === 'number' && j.durationMinutes > 0
+        ? j.durationMinutes
+        : (j?.joinedAt ? Math.max(0, Math.round(((j.lastJoinAt ? new Date(j.lastJoinAt) : new Date()) - new Date(j.joinedAt)) / 60000)) : 0);
+      const canMarkPresent = !isOnline || attendedMins >= 105;
+      return {
+        id: s._id || roll,
+        roll,
+        name: s.name,
+        course: s.course,
+        mode: s.mode || (isOnlineBatch ? 'Online' : 'Classroom'),
+        isOnline,
+        attendedMins,
+        canMarkPresent,
+        joinedOnline: Boolean(j),
+        status: todaysSession?.records?.[roll] || 'Unmarked',
+        attendancePct: typeof s.attendancePct === 'number' ? s.attendancePct : null,
+        syllabusProgressPct: typeof s.syllabusProgressPct === 'number' ? s.syllabusProgressPct : null
+      };
+    })
+  ), [attendanceBatch, todaysSession, isOnlineBatch, todayLiveJoins]);
+
+  const myStudentKeys = React.useMemo(() => new Set(myStudents.map(studentKeyOf)), [myStudents]);
+
+  // Derived Weak Students — only from real signals (attendance, test average, hold)
+  const weakStudents = React.useMemo(() => {
+    return myStudents
+      .map((s) => {
+        const reasons = [];
+        if (s.statusGroup === 'on_hold') reasons.push(`Enrollment on hold${s.pendingBalance ? ` · balance ₹${Number(s.pendingBalance).toLocaleString('en-IN')}` : ''}`);
+        if (typeof s.attendancePct === 'number' && s.attendancePct < 80) reasons.push(`Attendance ${s.attendancePct}%`);
+        if (typeof s.assessmentScore === 'number' && s.assessmentScore < 60) reasons.push(`Test average ${s.assessmentScore}%`);
+        if (!reasons.length) return null;
+        const actions = Array.isArray(s.remedialActions) ? s.remedialActions : [];
+        const lastAction = actions[actions.length - 1];
+        const severe = s.statusGroup === 'on_hold' || reasons.length > 1;
+        return {
+          id: s._id || studentKeyOf(s),
+          realId: s._id || s.studentId,
+          name: s.name,
+          studentId: s.studentId,
+          course: s.course,
+          issue: reasons.join(' · '),
+          batch: `${s.batchName || s.course}${s.mode ? ` (${s.mode})` : ''}`,
+          dotColor: severe ? 'bg-rose-500' : 'bg-amber-500',
+          dotGradient: severe ? 'from-rose-400 to-rose-600' : 'from-amber-300 to-amber-500',
+          bgTone: severe ? 'bg-[#fee2e2]/70' : 'bg-[#fef3c7]/70',
+          lastAction,
+          reviewed: Boolean(lastAction)
+        };
+      })
+      .filter(Boolean);
+  }, [myStudents]);
+
+  // Doubts routed to this trainer (legacy unrouted doubts: my students or my course)
+  const myDoubts = React.useMemo(() => (
+    doubts.filter(d => {
+      if (d.trainerId) return d.trainerId === trainerId;
+      if (d.studentId && myStudentKeys.has(String(d.studentId))) return true;
+      return isChiefFaculty || courseMatches(`${d.course || ''} ${d.batch || ''}`);
+    })
+  ), [doubts, trainerId, myStudentKeys, isChiefFaculty, courseMatches]);
+
+  // Demos routed to this trainer: ONLY those the server notified them about
+  // (language + location + free time match) or that are assigned to them.
+  const myExpertDemos = React.useMemo(() => {
+    if (!trainerId) return [];
+    return demos.filter(d => (
+      (Array.isArray(d.notifiedTrainerIds) && d.notifiedTrainerIds.includes(trainerId)) ||
+      d.notificationSentTo === trainerId ||
+      (d.trainerId && d.trainerId === trainerId)
+    ));
+  }, [demos, trainerId]);
+
+  // Demos that were originally booked for ME but the Head of Trainer has since
+  // moved to someone else (e.g. I was on leave) — shown so I know not to
+  // expect/prepare for these, and who is covering them now.
+  const reassignedAwayDemos = React.useMemo(() => {
+    if (!trainerId) return [];
+    return demos.filter(d => d.reassigned && d.originalTrainerId === trainerId && d.trainerId !== trainerId);
+  }, [demos, trainerId]);
+
+  // Group Demos into shared sessions (per date + timeSlot).
+  // A trainer takes the demo for all students in that session together (up to 6 students at a time).
+  const myDemoSessions = React.useMemo(() => {
+    const map = new Map();
+    for (const d of myExpertDemos) {
+      const date = d.preferredDate || 'TBD';
+      const slot = d.timeSlot || d.time || '10:00–11:30 AM';
+      const key = `${date}__${slot}`;
+      if (!map.has(key)) {
+        map.set(key, {
+          key,
+          preferredDate: date,
+          timeSlot: slot,
+          course: d.course,
+          mode: d.mode || 'Online (Zoom Live)',
+          language: d.language,
+          location: d.location,
+          zoomMeetingId: d.zoomMeetingId,
+          link: d.link,
+          trainerId: d.trainerId,
+          trainer: d.trainer,
+          students: []
+        });
+      }
+      const sess = map.get(key);
+      sess.students.push(d);
+      if (!sess.zoomMeetingId && d.zoomMeetingId) sess.zoomMeetingId = d.zoomMeetingId;
+      if (!sess.link && d.link) sess.link = d.link;
+    }
+    return Array.from(map.values()).sort((a, b) => {
+      const cmp = String(b.preferredDate).localeCompare(String(a.preferredDate));
+      if (cmp !== 0) return cmp;
+      return String(a.timeSlot).localeCompare(String(b.timeSlot));
+    });
+  }, [myExpertDemos]);
+
+  // New demo alerts — notified to me, not yet accepted by anyone
+  const newDemoAlerts = React.useMemo(() => (
+    myExpertDemos.filter(d => lc(d.status) === 'booked' && !d.notificationRead && d.notificationSent === true)
+  ), [myExpertDemos]);
+
+  const inThisMonth = (d) => String(d?.preferredDate || d?.createdAt || '').slice(0, 7) === monthKey;
+  const myMonthDemos = React.useMemo(() => myExpertDemos.filter(inThisMonth), [myExpertDemos, monthKey]);
+  const isAttended = (d) => lc(d.status) === 'attended';
+
+  // Admissions that came from demos I delivered (matched on phone / email)
+  const convertedStudents = React.useMemo(() => {
+    const digits = (p) => String(p || '').replace(/\D/g, '').slice(-10);
+    const attended = myExpertDemos.filter(isAttended);
+    const phones = new Set(attended.map(d => digits(d.phone)).filter(p => p.length === 10));
+    const emails = new Set(attended.map(d => lc(d.email)).filter(Boolean));
+    return students.filter(s => phones.has(digits(s.phone)) || (s.email && emails.has(lc(s.email))));
+  }, [myExpertDemos, students]);
+
+  // Scorecard — every factor is computed from recorded data; factors with no
+  // data yet are shown as N/A and excluded (score is normalised over the rest)
+  const scorecardMetrics = React.useMemo(() => {
+    const today = new Date();
+    let workingDays = 0;
+    for (let d = 1; d <= today.getDate(); d++) {
+      const day = new Date(today.getFullYear(), today.getMonth(), d).getDay();
+      if (day !== 0) workingDays += 1;
+    }
+    const weeksElapsed = Math.max(1, Math.ceil(today.getDate() / 7));
+    const pct = (a, b) => (b > 0 ? Math.min(100, Math.round((a / b) * 100)) : 0);
+    const factor = (name, weight, achieved, inputs, applicable = true) => ({
+      factor: name,
+      weight: String(weight),
+      inputs: applicable ? inputs : 'no data yet',
+      achievement: applicable ? `${achieved}%` : '—',
+      earned: applicable ? ((achieved * weight) / 100).toFixed(2) : '0.00',
+      applicable,
+      isNa: !applicable,
+      tag: applicable ? undefined : 'N/A'
+    });
+
+    const monthSessions = attendanceSessions.filter(a => String(a.date || '') >= monthStartKey);
+    const sessionsTarget = batches.length * workingDays;
+    const sessionsDone = monthSessions.length;
+
+    const attValues = myStudents.map(s => s.attendancePct).filter(v => typeof v === 'number');
+    const avgAtt = attValues.length ? Math.round(attValues.reduce((a, b) => a + b, 0) / attValues.length) : 0;
+
+    const monthTests = assessmentTests.filter(t => String(t.date || t.createdAt || '').slice(0, 7) === monthKey);
+    const testsTarget = batches.length * weeksElapsed;
+
+    const weakReviewed = weakStudents.filter(w => w.reviewed).length;
+
+    const repliedInSla = myDoubts.filter(d => d.status === 'Replied' && d.repliedAt && d.createdAt && (new Date(d.repliedAt) - new Date(d.createdAt)) <= 24 * 36e5).length;
+
+    const demosClosed = myMonthDemos.filter(d => ['attended', 'missed'].includes(lc(d.status)));
+    const demosDone = demosClosed.filter(isAttended).length;
+
+    const interviewed = myStudents.filter(s => typeof s.mockScore === 'number').length;
+
+    const sameDay = monthSessions.filter(a => a.createdAt && String(a.createdAt).slice(0, 10) === a.date).length;
+
+    const factors = [
+      factor('Classes / Sessions', 20, pct(sessionsDone, sessionsTarget), `${sessionsDone} / ${sessionsTarget}`, sessionsTarget > 0),
+      factor('Attendance', 10, avgAtt, `${avgAtt}% avg`, attValues.length > 0),
+      factor('Syllabus completed', 10, pct(myStudents.filter(s => s.syllabusCompleted).length, myStudents.length), `${myStudents.filter(s => s.syllabusCompleted).length} / ${myStudents.length}`, myStudents.some(s => s.syllabusCompleted)),
+      factor('Assessments Conducted', 20, pct(monthTests.length, testsTarget), `${monthTests.length} / ${testsTarget}`, batches.length > 0),
+      factor('Weak reviewed', 10, weakStudents.length ? pct(weakReviewed, weakStudents.length) : 100, `${weakReviewed} / ${weakStudents.length}`, myStudents.length > 0),
+      factor('Doubts resolved in SLA', 10, pct(repliedInSla, myDoubts.length), `${repliedInSla} / ${myDoubts.length}`, myDoubts.length > 0),
+      factor('Demos done', 10, pct(demosDone, demosClosed.length), `${demosDone} / ${demosClosed.length}`, demosClosed.length > 0),
+      factor('Mock interviews done', 10, pct(interviewed, myStudents.length), `${interviewed} / ${myStudents.length}`, interviewed > 0),
+      factor('Cert counselling', 5, 0, '', false),
+      factor('Same-day updates', 5, pct(sameDay, monthSessions.length), `${sameDay} / ${monthSessions.length}`, monthSessions.length > 0)
+    ];
+    const applicableWeight = factors.filter(f => f.applicable).reduce((a, f) => a + Number(f.weight), 0);
+    const earnedTotal = factors.reduce((a, f) => a + parseFloat(f.earned), 0);
+    const actionScore = applicableWeight > 0 ? parseFloat(((earnedTotal / applicableWeight) * 100).toFixed(1)) : 0;
+
+    let zone = applicableWeight > 0 ? 'Needs Improvement' : 'No data yet';
+    if (actionScore >= 90) zone = 'Platinum Zone';
+    else if (actionScore >= 80) zone = 'Gold Zone';
+    else if (actionScore >= 70) zone = 'Silver Zone';
+    else if (actionScore >= 60) zone = 'Bronze Zone';
+
+    const bucket = (name, weight, achieved, applicable) => ({
+      bucket: name,
+      weight: String(weight),
+      achieved: applicable ? `${achieved}%` : 'N/A',
+      earned: applicable ? ((achieved * weight) / 100).toFixed(2) : '—',
+      applicable,
+      raw: applicable ? (achieved * weight) / 100 : 0
+    });
+    const assessmentAch = testsTarget > 0 ? pct(monthTests.length, testsTarget) : 0;
+    // Student Portal ratings this month (1–5★ → %). Trainer ratings drive
+    // "Student feedback" (doubt SLA only until the first rating arrives);
+    // class ratings drive "Quality rating".
+    const starPct = (v) => (typeof v === 'number' ? Math.round((v / 5) * 100) : null);
+    const trainerRatingPct = starPct(myFeedback?.trainerAvg) ?? starPct(myFeedback?.avg);
+    const classRatingPct = starPct(myFeedback?.classAvg);
+    const qualityBuckets = [
+      bucket('Attendance', 30, avgAtt, attValues.length > 0),
+      bucket('Assessments conducted', 25, assessmentAch, batches.length > 0),
+      trainerRatingPct !== null
+        ? bucket(`Student feedback (${myFeedback.count} rating${myFeedback.count === 1 ? '' : 's'})`, 20, trainerRatingPct, true)
+        : bucket('Student feedback (doubt SLA — no ratings yet)', 20, pct(repliedInSla, myDoubts.length), myDoubts.length > 0),
+      bucket('Employee feedback', 15, 0, false),
+      bucket('Quality rating (class ratings)', 10, classRatingPct ?? 0, classRatingPct !== null)
+    ];
+    const qWeight = qualityBuckets.filter(b => b.applicable).reduce((a, b) => a + Number(b.weight), 0);
+    const qualityScore = qWeight > 0 ? parseFloat(((qualityBuckets.reduce((a, b) => a + b.raw, 0) / qWeight) * 100).toFixed(1)) : 0;
+
+    const gatesPass = attValues.length === 0 || avgAtt >= 75;
+    const payBase = Number(trainerProfile?.variablePayBase) || 0;
+    const variablePay = gatesPass && payBase > 0 ? Math.round((qualityScore / 100) * payBase) : 0;
+
+    return { actionScore, zone, variablePay, payBase, qualityScore, gatesPass, factors, qualityBuckets };
+  }, [batches, attendanceSessions, assessmentTests, weakStudents, myDoubts, myMonthDemos, myStudents, trainerProfile, monthKey, monthStartKey, myFeedback]);
+
+  // Incentive events — demos I delivered this month + admissions converted from my demos
+  const incentiveEvents = React.useMemo(() => {
+    const demoRate = Number(trainerProfile?.demoIncentive) || 0;
+    const admRate = Number(trainerProfile?.admissionIncentive) || 0;
+    const events = [];
+    myMonthDemos.forEach((d, idx) => {
+      const verified = isAttended(d);
+      events.push({
+        id: d._id || `DEMO-${idx + 1}`,
+        code: `DEMO-${String(idx + 1).padStart(3, '0')}`,
+        type: 'Course Demo Session',
+        candidate: d.candidateName,
+        role: 'Demo Trainer',
+        baseAmt: demoRate,
+        share: '100%',
+        isVerified: verified,
+        payable: verified ? demoRate : 0
+      });
+    });
+    convertedStudents.filter(s => String(s.createdAt || '').slice(0, 7) === monthKey).forEach((s, idx) => {
+      const verified = s.statusGroup !== 'on_hold';
+      events.push({
+        id: s._id || `ADM-${idx + 1}`,
+        code: `ADM-${String(idx + 1).padStart(3, '0')}`,
+        type: 'Admission from my demo',
+        candidate: s.name,
+        role: 'Demo Trainer',
+        baseAmt: admRate,
+        share: '100%',
+        isVerified: verified,
+        payable: verified ? admRate : 0
+      });
+    });
+    return events;
+  }, [myMonthDemos, convertedStudents, trainerProfile, monthKey]);
+
+  const incentivesConfigured = Number(trainerProfile?.demoIncentive) > 0 || Number(trainerProfile?.admissionIncentive) > 0;
+
+  const totalEventCash = React.useMemo(() => {
+    return incentiveEvents.reduce((acc, ev) => acc + (ev.isVerified ? ev.payable : 0), 0);
+  }, [incentiveEvents]);
+
+  const monthlyTake = (scorecardMetrics.variablePay || 0) + totalEventCash;
+
+  // Materials the trainer has pushed to a batch (shown in the session room)
+  const materialsForBatch = (batchName) => materials.filter(m => (m.assignments || []).some(a => a.batch === batchName));
+
+  const [demoToast, setDemoToast] = useState(null);
+  const flashDemoToast = (msg, ms = 3500) => { setDemoToast(msg); setTimeout(() => setDemoToast(null), ms); };
+
+  // ---- Google Meet link (manual) for a group demo session — one link for every
+  // student in that trainer + date + time slot, shown & managed right here. ----
+  const [meetLinkDrafts, setMeetLinkDrafts] = useState({});
+  const [savingMeetLinkKey, setSavingMeetLinkKey] = useState('');
+
+  const handleSaveMeetLink = async (session) => {
+    const draft = (meetLinkDrafts[session.key] ?? session.link ?? '').trim();
+    if (!draft) { flashDemoToast('Paste a Google Meet link first'); return; }
+    const primary = session.students[0];
+    if (!primary?._id) return;
+    setSavingMeetLinkKey(session.key);
+    try {
+      const updated = await setDemoMeetingLink(primary._id, draft);
+      setDemos(prev => prev.map(d => {
+        const sameSession = d.trainerId === updated.trainerId
+          && d.preferredDate === updated.preferredDate
+          && (d.timeSlot || d.time) === updated.timeSlot;
+        return sameSession ? { ...d, link: updated.link, meetingProvider: updated.meetingProvider, zoomMeetingId: '', zoomHostEmail: '' } : d;
+      }));
+      flashDemoToast('✓ Google Meet link saved — shared with every student in this session', 4000);
+    } catch (e) {
+      flashDemoToast(e?.response?.data?.error || 'Could not save the link', 5000);
+    } finally {
+      setSavingMeetLinkKey('');
+    }
+  };
+
+  const handleCopyMeetLink = async (session) => {
+    if (!session.link) return;
+    try {
+      await navigator.clipboard.writeText(session.link);
+      flashDemoToast('✓ Meeting link copied', 2500);
+    } catch (_) {
+      flashDemoToast('Could not copy automatically — select and copy the link manually', 3500);
+    }
+  };
+
+  // Zoom reported this trainer's host account already has another live
+  // meeting in progress (two overlapping group demos). Rather than forcing
+  // the trainer to end that session first, let them run THIS one on Google
+  // Meet instead — it just opens a new tab, no Zoom account concurrency
+  // limit applies, and the other meeting keeps running undisturbed.
+  const handleZoomBusyFallback = () => {
+    const current = demoRoom;
+    if (!current?._id) return;
+    const link = window.prompt(
+      "This trainer's Zoom account is already running another meeting.\n\nPaste a Google Meet link to run THIS session instead (opens in a new tab; attendance is still tracked here) — the other Zoom meeting won't be interrupted:"
+    );
+    const draft = (link || '').trim();
+    if (!draft) return;
+    (async () => {
+      try {
+        const updated = await setDemoMeetingLink(current._id, draft);
+        setDemos(prev => prev.map(d => {
+          const sameSession = d.trainerId === updated.trainerId
+            && d.preferredDate === updated.preferredDate
+            && (d.timeSlot || d.time) === updated.timeSlot;
+          return sameSession ? { ...d, link: updated.link, meetingProvider: updated.meetingProvider, zoomMeetingId: '', zoomHostEmail: '' } : d;
+        }));
+        setDemoRoom(null);
+        setDemoMin(false);
+        window.open(updated.link, '_blank', 'noopener,noreferrer');
+        flashDemoToast('✓ This session now runs on Google Meet — your other Zoom meeting keeps running', 5000);
+      } catch (e) {
+        flashDemoToast(e?.response?.data?.error || 'Could not save the Google Meet link', 5000);
+      }
+    })();
+  };
+
+  const handleAcknowledgeDemo = async (demoId) => {
+    try {
+      const updated = await acknowledgeDemo(demoId, { trainerId, trainerName });
+      setDemos(prev => prev.map(d => (d._id === demoId || d.id === demoId) ? { ...d, ...updated } : d));
+      flashDemoToast('✓ Demo slot accepted — the HR who booked it has been notified.');
+    } catch (e) {
+      flashDemoToast(e?.response?.data?.error || 'Could not accept this demo slot', 5000);
+    }
+  };
+
+  const setDemoOutcome = async (lead, status) => {
+    try {
+      if (!lead._id) throw new Error('Demo is not saved');
+      const updated = await updateDemo(lead._id, { status, updatedBy: 'trainer' });
+      setDemos(prev => prev.map(l => l._id === lead._id ? { ...l, ...updated } : l));
+      flashDemoToast(status === 'attended'
+        ? `✓ ${lead.candidateName} marked Attended · lead moved to Demo Attended · HR notified`
+        : `${lead.candidateName} marked No-show`);
+    } catch (e) {
+      flashDemoToast(e?.response?.data?.error || e.message || 'Could not update demo', 5000);
+    }
+  };
+
+  // ---- Demo Zoom: create a unique meeting per booked demo, send link to student, join embedded ----
+  const handleCreateDemoMeeting = async (lead) => {
+    if (!lead._id) { flashDemoToast('This demo is not saved in the database yet'); return null; }
+    try {
+      setDemoToast('Preparing join links…');
+      const updated = await createDemoMeeting(lead._id);
+      setDemos(prev => prev.map(l => l._id === lead._id ? { ...l, ...updated } : l));
+      flashDemoToast('✓ Join links ready', 3000);
+      return { ...lead, ...updated };
+    } catch (e) {
+      flashDemoToast(e?.response?.data?.error || 'Could not prepare the join link', 5000);
+      return null;
+    }
+  };
+
+  // Each candidate has their own no-login link (/join/demo/<code>) into the
+  // ThoughtFlows Live Classroom. Old Zoom links are swapped for one on first use.
+  const needsClassroomLink = (d) => !d.link || (d.meetingProvider !== 'livekit' && d.meetingProvider !== 'google_meet');
+
+  const handleSendDemoLink = async (lead) => {
+    let d = lead;
+    if (needsClassroomLink(d)) { d = await handleCreateDemoMeeting(lead); if (!d) return; }
+    let phone = String(lead.phone || '').replace(/\D/g, '');
+    if (phone.length === 10) phone = '91' + phone;
+    const when = [lead.preferredDate, lead.timeSlot || lead.time].filter(Boolean).join(' ');
+    const text = `Hi ${lead.candidateName}, your ${lead.course} demo class with ${trainerName} is scheduled for ${when}.\n\nJoin from your phone or computer (no app or login needed): ${d.link}\n\nThe Join button appears when your trainer starts the class.`;
+    try { await navigator.clipboard.writeText(d.link); } catch (_) {}
+    redirectToWhatsAppWeb(phone, text);
+    flashDemoToast('Link copied · WhatsApp Web opened with the message', 3000);
+  };
+
+  const handleEmailDemoLink = async (lead) => {
+    if (!lead.email) { flashDemoToast('No student email on this demo'); return; }
+    let d = lead;
+    if (needsClassroomLink(d)) { d = await handleCreateDemoMeeting(lead); if (!d) return; }
+    try {
+      setDemoToast('Sending email…');
+      await sendDemoLinkEmail(d._id);
+      flashDemoToast(`✓ Join link emailed to ${lead.email}`, 5000);
+    } catch (e) {
+      // Email service not set up (or failed): open the trainer's own mail app with the message ready
+      const when = [lead.preferredDate, lead.timeSlot || lead.time].filter(Boolean).join(' ');
+      const subject = `Your ${lead.course} demo class link – Thoughtflows Academy`;
+      const body = `Hi ${lead.candidateName},\n\nYour ${lead.course} demo class with ${trainerName} is scheduled for ${when}.\n\nJoin here: ${d.link}\n\nPlease join 5 minutes early.`;
+      window.open(`mailto:${lead.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`, '_self');
+      flashDemoToast((e?.response?.data?.error || 'Email failed') + ' — opened your mail app instead', 5000);
+    }
+  };
+
+  // End the live demo: close the classroom, then the trainer marks attendance per
+  // candidate. Only candidates marked Present become 'attended'; Absent →
+  // 'missed'; anyone left unmarked stays as is (mark later from the Demos tab).
+  const [demoAttendanceSheet, setDemoAttendanceSheet] = useState(null); // { students: [...], marks: { id: 'present'|'absent' } }
+  const [demoAttendanceSaving, setDemoAttendanceSaving] = useState(false);
+  const endingDemoRef = React.useRef(false);
+  const endDemo = async (room) => {
+    // Ignore repeat clicks on End while the meeting is closing / the sheet is open
+    if (endingDemoRef.current || demoAttendanceSheet) return;
+    endingDemoRef.current = true;
+    try { if (room?._id) await endDemoMeeting(room._id); } catch (e) { console.warn(e); }
+    endingDemoRef.current = false;
+    const students = (room?.sessionStudents && room.sessionStudents.length) ? room.sessionStudents : (room?._id ? [room] : []);
+    const marks = {};
+    students.forEach((st) => {
+      if (lc(st.status) === 'attended') marks[st._id] = 'present';
+      else if (lc(st.status) === 'missed') marks[st._id] = 'absent';
+    });
+    setDemoRoom(null);
+    setDemoMin(false);
+    if (students.length) setDemoAttendanceSheet({ students, marks, course: room?.course, preferredDate: room?.preferredDate, timeSlot: room?.timeSlot || room?.time });
+  };
+  const saveDemoAttendance = async () => {
+    const sheet = demoAttendanceSheet;
+    if (!sheet) return;
+    const present = sheet.students.filter((st) => sheet.marks[st._id] === 'present' && lc(st.status) !== 'attended');
+    const absent = sheet.students.filter((st) => sheet.marks[st._id] === 'absent' && lc(st.status) !== 'missed');
+    const unmarked = sheet.students.filter((st) => !sheet.marks[st._id]).length;
+    if (unmarked && !window.confirm(`${unmarked} candidate(s) not marked yet. They stay pending — you can mark them later from the Demos tab. Save the rest?`)) return;
+    setDemoAttendanceSaving(true);
+    try {
+      if (present.length) await updateDemosBulkOutcome(present.map((st) => st._id), 'attended');
+      if (absent.length) await updateDemosBulkOutcome(absent.map((st) => st._id), 'missed');
+      setDemos((prev) => prev.map((d) => {
+        if (present.some((u) => u._id === d._id)) return { ...d, status: 'attended' };
+        if (absent.some((u) => u._id === d._id)) return { ...d, status: 'missed' };
+        return d;
+      }));
+      setDemoAttendanceSheet(null);
+      flashDemoToast(`✓ Attendance saved · ${present.length} Attended${present.length ? ' (HR notified)' : ''} · ${absent.length} No-show${unmarked ? ` · ${unmarked} pending` : ''}`, 5000);
+    } catch (e) {
+      flashDemoToast(e?.response?.data?.error || 'Could not save attendance', 5000);
+    } finally {
+      setDemoAttendanceSaving(false);
+    }
+  };
+
+  // Once every candidate in the active Google Meet session has a final
+  // outcome (attended / missed), the session marker clears itself — no need
+  // for the trainer to remember to dismiss it.
+  useEffect(() => {
+    if (!activeMeetSession) return;
+    const siblings = demos.filter(d =>
+      `${d.trainerId}__${d.preferredDate}__${d.timeSlot || d.time}` === activeMeetSession.key
+    );
+    if (siblings.length && siblings.every(d => ['attended', 'missed'].includes(lc(d.status)))) {
+      setActiveMeetSession(null);
+    }
+  }, [demos, activeMeetSession]);
+
+  const handleJoinDemo = async (lead, customSiblings = null) => {
+    if (lead.disabledForStart) {
+      flashDemoToast('This demo\'s scheduled time has passed and it was auto-marked missed — ask the Head of Trainer to reschedule it.', 5000);
+      return;
+    }
+    let d = lead;
+    if (needsClassroomLink(d)) { d = await handleCreateDemoMeeting(lead); if (!d) return; }
+    const siblings = customSiblings || myExpertDemos.filter(s =>
+      s.preferredDate === d.preferredDate && (s.timeSlot || s.time) === (d.timeSlot || d.time)
+    );
+    // A Google Meet link can't be embedded in-page (Google blocks iframing it),
+    // so it opens in its own tab for the actual call; attendance/outcomes for
+    // the session are still managed from this dashboard either way. Keep a
+    // small marker of the session so it doesn't vanish — and look cancelled —
+    // the moment the trainer switches to another section like Library.
+    if (d.meetingProvider === 'google_meet') {
+      window.open(d.link, '_blank', 'noopener,noreferrer');
+      setActiveMeetSession({
+        key: `${d.trainerId}__${d.preferredDate}__${d.timeSlot || d.time}`,
+        course: d.course,
+        preferredDate: d.preferredDate,
+        timeSlot: d.timeSlot || d.time,
+        link: d.link,
+        count: (siblings.length ? siblings : [d]).length,
+        startedAt: Date.now()
+      });
+      return;
+    }
+    setDemoMin(false);
+    setDemoRoom({
+      ...d,
+      sessionStudents: siblings.length ? siblings : [d]
+    });
+  };
+
+  const handleJoinDemoSession = async (session) => {
+    const primary = session.students.find(s => s.zoomMeetingId) || session.students[0];
+    if (!primary) return;
+    await handleJoinDemo(primary, session.students);
+  };
+
+  const handleBatchAcknowledge = async (session) => {
+    const unacknowledged = session.students.filter(s => lc(s.status) === 'booked');
+    if (!unacknowledged.length) return;
+    try {
+      await Promise.all(unacknowledged.map(s => acknowledgeDemo(s._id, { trainerId, trainerName })));
+      setDemos(prev => prev.map(d => {
+        if (unacknowledged.some(u => u._id === d._id)) {
+          return { ...d, status: 'confirmed', notificationRead: true, trainerId, trainer: trainerName };
+        }
+        return d;
+      }));
+      flashDemoToast(`✓ Accepted group demo slot for ${unacknowledged.length} candidate${unacknowledged.length > 1 ? 's' : ''}`, 4000);
+    } catch (e) {
+      flashDemoToast(e?.response?.data?.error || 'Could not accept all demo slots', 5000);
+    }
+  };
+
+  const handleMarkAllAttended = async (session) => {
+    const eligible = session.students.filter(s => lc(s.status) !== 'attended');
+    if (!eligible.length) return;
+    try {
+      await updateDemosBulkOutcome(eligible.map(s => s._id), 'attended');
+      setDemos(prev => prev.map(d => {
+        if (eligible.some(u => u._id === d._id)) {
+          return { ...d, status: 'attended' };
+        }
+        return d;
+      }));
+      flashDemoToast(`✓ All ${eligible.length} students marked Attended`, 4000);
+    } catch (e) {
+      flashDemoToast(e?.response?.data?.error || 'Could not mark all attended', 5000);
+    }
+  };
+
+  const handleEmailAllSession = async (session) => {
+    const withEmail = session.students.filter(s => s.email);
+    if (!withEmail.length) {
+      flashDemoToast('No email addresses recorded for candidates in this session', 4000);
+      return;
+    }
+    let sample = session.students.find(s => s.link) || session.students[0];
+    if (!sample.link) {
+      sample = await handleCreateDemoMeeting(sample);
+      if (!sample) return;
+    }
+    let sentCount = 0;
+    for (const student of withEmail) {
+      try {
+        await sendDemoLinkEmail(student._id);
+        sentCount++;
+      } catch (_) {}
+    }
+    flashDemoToast(`✓ Meeting link emailed to ${sentCount} candidate${sentCount > 1 ? 's' : ''}`, 4000);
+  };
+
+  // Save attendance marks to the server — updates each student's attendance %,
+  // Save attendance marks to the server — updates each student's attendance %,
+  // their own dashboard, the Leadership risk view and alerts HR below 75%
+  const saveAttendanceMarks = async (records) => {
+    if (!attendanceBatch) return;
+
+    // Online Attendance Rule: For online sessions, student must attend >= 105 mins to be marked Present
+    for (const [roll, mark] of Object.entries(records || {})) {
+      if (mark === 'Present') {
+        const studentItem = attendanceList.find(s => s.roll === roll);
+        if (studentItem?.isOnline && !studentItem.canMarkPresent) {
+          setAttendanceSavedToast(`⚠ Present is locked for ${studentItem.name}: Online sessions require at least 1 hr 45 min attendance (Attended: ${studentItem.attendedMins}m / 105m).`);
+          setTimeout(() => setAttendanceSavedToast(null), 4000);
+          return;
+        }
+      }
+    }
+
+    const optimistic = { ...(todaysSession?.records || {}), ...records };
+    setAttendanceSessions(prev => {
+      const others = prev.filter(a => !(a.batch === attendanceBatch.name && a.date === todayKey));
+      return [{ ...(todaysSession || { batch: attendanceBatch.name, date: todayKey, createdAt: new Date().toISOString() }), records: optimistic }, ...others];
+    });
+    try {
+      const res = await recordTrainerAttendance({
+        trainerId,
+        trainerName,
+        batch: attendanceBatch.name,
+        date: todayKey,
+        topic: attendanceTopic.trim() || undefined,
+        records,
+        isOnline: isOnlineBatch
+      });
+      if (res?.data) {
+        setAttendanceSessions(prev => [res.data, ...prev.filter(a => !(a.batch === res.data.batch && a.date === res.data.date))]);
+      }
+      if (res?.syllabus) {
+        setBatchSyllabusDoc(res.syllabus);
+      }
+      const sylNotice = attendanceTopic.trim() ? ` · Syllabus tracker marked & updated for "${attendanceTopic.trim()}"` : '';
+      setAttendanceSavedToast(`✓ Attendance saved${sylNotice} · student, HR & Leadership dashboards updated`);
+    } catch (e) {
+      setAttendanceSavedToast(`⚠ Could not save attendance: ${e?.response?.data?.error || e.message}`);
+    }
+    setTimeout(() => setAttendanceSavedToast(null), 3500);
+  };
+
+  const handleResolveDoubt = async () => {
+    if (!activeDoubtModal || !doubtReplyText.trim()) return;
+    try {
+      const updated = await replyTrainerDoubt(activeDoubtModal.id, doubtReplyText);
+      setDoubts(prev => prev.map(d => d.id === activeDoubtModal.id ? { ...d, ...updated } : d));
+      setActiveDoubtModal(null);
+      setDoubtReplyText('');
+    } catch (e) {
+      flashDemoToast(e?.response?.data?.error || 'Could not send the reply', 5000);
+    }
+  };
+
+  const unreadNotifs = trainerNotifications.filter(n => !n.read);
+  const handleOpenNotification = async (n) => {
+    if (!n.read) {
+      try { await markNotificationRead(n._id); } catch (_) {}
+      setTrainerNotifications(prev => prev.map(x => x._id === n._id ? { ...x, read: true } : x));
+    }
+    if (n.type === 'demo') setActiveNav('demos');
+    else if (n.type === 'doubt') setActiveNav('doubts');
+    else if (n.type === 'handover') setActiveNav(isChiefFaculty ? 'allocation' : 'students');
+    else if (n.type === 'submission' || String(n.type || '').startsWith('request_')) setActiveNav('student_desk');
+    setShowNotifPanel(false);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex bg-[#0c1921] text-slate-800 antialiased font-sans select-none overflow-hidden animate-fadeIn">
+      
+      {/* ================= LEFT SIDEBAR ================= */}
+      {navOpen && <div className="fixed inset-0 z-[45] bg-slate-900/60 lg:hidden" onClick={() => setNavOpen(false)} />}
+      <aside className={`fixed lg:static inset-y-0 left-0 z-[46] w-72 bg-[#0c1921] border-r border-[#172d3b] flex flex-col justify-between shrink-0 overflow-y-auto transition-transform duration-200 ${navOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0`}>
+        <div>
+          {/* Top Logo Card */}
+          <div className="p-4 pb-2">
+            <div className="bg-white rounded-2xl p-3 shadow-sm flex items-center justify-center border border-slate-100">
+              <img
+                src="/thoughtflows-logo.png"
+                alt="Thoughtflows"
+                className="h-7 w-auto object-contain"
+              />
+            </div>
+          </div>
+
+          {onBackToRoles && (
+            <div className="px-4 pb-1">
+              <button
+                type="button"
+                onClick={onBackToRoles}
+                className="w-full flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white border border-white/10 text-xs font-semibold transition-all cursor-pointer"
+                title="Back to all Trainer Department roles"
+              >
+                <ArrowLeft className="w-3.5 h-3.5 text-sky-400" />
+                <span>All Trainer Roles</span>
+              </button>
+            </div>
+          )}
+
+          {/* User Profile Badge — or, with no login, a quick "who's this" picker */}
+          <div className="px-4 py-2">
+            {!hasSignedInUser && !trainerId ? (
+              <div className="bg-[#162734] border border-[#213a4d] rounded-2xl p-3">
+                <div className="text-white text-[11.5px] font-bold mb-1.5">Who's this?</div>
+                <div className="text-[#649297] text-[10.5px] font-medium mb-2 leading-snug">No login needed — just pick your name to see your students, doubts & schedule.</div>
+                <select
+                  defaultValue=""
+                  onChange={(e) => {
+                    const t = trainerRoster.find((r) => r.trainerId === e.target.value);
+                    if (t) setPickedIdentity({ trainerId: t.trainerId, trainerName: t.trainerName, role: t.role, branchName: t.branchName, shift: t.shift, courseKey: t.courseKey });
+                  }}
+                  className="w-full bg-[#0c1921] border border-[#213a4d] text-white text-xs font-semibold rounded-xl px-3 py-2 outline-none focus:border-[#00897b] cursor-pointer"
+                >
+                  <option value="" disabled>{trainerRoster.length ? 'Select your name…' : 'Loading trainers…'}</option>
+                  {trainerRoster.filter((t) => t.active !== false).map((t) => (
+                    <option key={t.trainerId} value={t.trainerId}>{t.trainerName}{t.branchName ? ` · ${t.branchName}` : ''}</option>
+                  ))}
+                </select>
+              </div>
+            ) : (
+              <div className="bg-[#162734] border border-[#213a4d] rounded-2xl p-3 flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-[#0284c7] text-white flex items-center justify-center font-bold text-base shadow-sm">
+                  {trainerName.charAt(0)}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-white text-sm font-bold truncate">{trainerName}</div>
+                  <div className="text-[#649297] text-[11px] font-medium truncate">{trainerId} · {trainerBranch}</div>
+                </div>
+                {!hasSignedInUser && pickedIdentity && (
+                  <button
+                    type="button"
+                    onClick={() => setPickedIdentity(null)}
+                    title="Not you? Pick a different name"
+                    className="text-[#649297] hover:text-white text-[10px] font-bold shrink-0 cursor-pointer"
+                  >
+                    Switch
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Navigation Items */}
+          <nav className="px-3 py-2 space-y-4 text-xs">
+            
+            {/* DAILY SECTION */}
+            <div>
+              <div className="px-3 pb-1 text-[10px] font-bold tracking-wider uppercase text-[#476b74]">
+                DAILY
+              </div>
+              <div className="space-y-1">
+                <button
+                  onClick={() => setActiveNav('home')}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold transition-all ${
+                    activeNav === 'home'
+                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                  }`}
+                >
+                  <Home className="w-4 h-4 shrink-0" />
+                  <span>Home</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveNav('utilization')}
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all ${
+                    activeNav === 'utilization'
+                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <Clock className="w-4 h-4 shrink-0 text-teal-400" />
+                    <span>Hourly Utilization</span>
+                  </div>
+                  <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-teal-500/20 text-teal-300">
+                    8h
+                  </span>
+                </button>
+
+                <button
+                  onClick={() => setActiveNav('session_room')}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold transition-all ${
+                    activeNav === 'session_room'
+                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                  }`}
+                >
+                  <PlayCircle className="w-4 h-4 shrink-0" />
+                  <span>Class Session Room</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveNav('batch_desk')}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold transition-all ${
+                    activeNav === 'batch_desk'
+                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                  }`}
+                >
+                  <ListChecks className="w-4 h-4 shrink-0" />
+                  <span>Syllabus & Announcements</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveNav('attendance')}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold transition-all ${
+                    activeNav === 'attendance'
+                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                  }`}
+                >
+                  <CheckSquare className="w-4 h-4 shrink-0" />
+                  <span>Attendance</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveNav('demos')}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold transition-all ${
+                    activeNav === 'demos'
+                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                  }`}
+                >
+                  <AtSign className="w-4 h-4 shrink-0" />
+                  <span>Demos</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveNav('doubts')}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold transition-all ${
+                    activeNav === 'doubts'
+                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                  }`}
+                >
+                  <MessageSquare className="w-4 h-4 shrink-0" />
+                  <span>Doubt Box</span>
+                </button>
+              </div>
+            </div>
+
+            {/* GROWTH SECTION */}
+            <div>
+              <div className="px-3 pb-1 text-[10px] font-bold tracking-wider uppercase text-[#476b74]">
+                GROWTH
+              </div>
+              <div className="space-y-1">
+                <button
+                  onClick={() => { setActiveNav('scorecard'); setGrowthTab('all'); }}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold transition-all ${
+                    activeNav === 'scorecard' || activeNav === 'incentives'
+                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                  }`}
+                >
+                  <Award className="w-4 h-4 shrink-0" />
+                  <span>My Scorecard & Incentive Ledger</span>
+                </button>
+              </div>
+            </div>
+
+            {/* ACADEMIC SECTION */}
+            <div>
+              <div className="px-3 pb-1 text-[10px] font-bold tracking-wider uppercase text-[#476b74]">
+                ACADEMIC
+              </div>
+              <div className="space-y-1">
+                {isChiefFaculty && (
+                  <button
+                    onClick={() => setActiveNav('allocation')}
+                    className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all ${
+                      activeNav === 'allocation'
+                        ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                        : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <UserPlus className="w-4 h-4 shrink-0" />
+                      <span>Student Allocation</span>
+                    </div>
+                    {pendingAllocationStudents.length > 0 && (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-500 text-slate-900">
+                        {pendingAllocationStudents.length}
+                      </span>
+                    )}
+                  </button>
+                )}
+
+                <button
+                  onClick={() => setActiveNav('batches')}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold transition-all ${
+                    activeNav === 'batches'
+                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                  }`}
+                >
+                  <LayoutGrid className="w-4 h-4 shrink-0" />
+                  <span>My Batches</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveNav('students')}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold transition-all ${
+                    activeNav === 'students'
+                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                  }`}
+                >
+                  <Users className="w-4 h-4 shrink-0" />
+                  <span>My Students</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveNav('weak_students')}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold transition-all ${
+                    activeNav === 'weak_students'
+                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                  }`}
+                >
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span>Weak Students</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveNav('assessments')}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold transition-all ${
+                    activeNav === 'assessments'
+                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                  }`}
+                >
+                  <FileCheck className="w-4 h-4 shrink-0" />
+                  <span>Assessments</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveNav('library')}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold transition-all ${
+                    activeNav === 'library'
+                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                  }`}
+                >
+                  <BookOpen className="w-4 h-4 shrink-0" />
+                  <span>LMS · PPT &amp; Materials</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveNav('student_desk')}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold transition-all ${
+                    activeNav === 'student_desk'
+                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                  }`}
+                >
+                  <FileCheck className="w-4 h-4 shrink-0" />
+                  <span>Submissions & Requests</span>
+                </button>
+              </div>
+            </div>
+
+            {/* PLACEMENT SECTION */}
+            <div>
+              <div className="px-3 pb-1 text-[10px] font-bold tracking-wider uppercase text-[#476b74]">
+                PLACEMENT
+              </div>
+              <div className="space-y-1">
+                <button
+                  onClick={() => setActiveNav('placement')}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold transition-all ${
+                    activeNav === 'placement'
+                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                  }`}
+                >
+                  <Target className="w-4 h-4 shrink-0" />
+                  <span>Job-Ready Status</span>
+                </button>
+              </div>
+            </div>
+
+            {/* ME SECTION */}
+            <div>
+              <div className="px-3 pb-1 text-[10px] font-bold tracking-wider uppercase text-[#476b74]">
+                ME
+              </div>
+              <div className="space-y-1">
+                <button
+                  onClick={() => setActiveNav('profile')}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold transition-all ${
+                    activeNav === 'profile'
+                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                  }`}
+                >
+                  <User className="w-4 h-4 shrink-0" />
+                  <span>My Profile</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveNav('skills')}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold transition-all ${
+                    activeNav === 'skills'
+                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                  }`}
+                >
+                  <Layers className="w-4 h-4 shrink-0" />
+                  <span>Skills & Courses</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveNav('shift')}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold transition-all ${
+                    activeNav === 'shift'
+                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                  }`}
+                >
+                  <Clock className="w-4 h-4 shrink-0" />
+                  <span>Shift & Availability</span>
+                </button>
+              </div>
+            </div>
+
+          </nav>
+        </div>
+
+        {/* Logout Bottom Action */}
+        <div className="p-4 border-t border-[#172d3b]">
+          <button
+            onClick={() => (onLogout ? onLogout() : onClose ? onClose() : null)}
+            className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-2xl bg-rose-950/40 border border-rose-800/50 text-rose-300 hover:text-white hover:bg-rose-900/60 transition-all text-xs font-semibold cursor-pointer shadow-xs"
+            title="Sign Out of Trainer Portal"
+          >
+            <LogOut className="w-4 h-4 text-rose-400" />
+            <span>Logout</span>
+          </button>
+        </div>
+      </aside>
+
+      {/* ================= MAIN CONTENT AREA ================= */}
+      <main className="flex-1 min-w-0 bg-[#f4f7f8] overflow-y-auto flex flex-col">
+        
+        {/* TOP HEADER */}
+        <header className="px-3 sm:px-6 py-4 border-b border-slate-200/80 bg-white/70 backdrop-blur-sm sticky top-0 z-20 flex items-center justify-between gap-2">
+          <button onClick={() => setNavOpen(true)} className="lg:hidden p-2 rounded-xl text-slate-600 hover:bg-slate-100 shrink-0" aria-label="Open menu"><Menu className="w-5 h-5" /></button>
+          <div className="min-w-0 flex-1">
+            <h1 className="text-xl font-extrabold text-[#0f242d] tracking-tight">
+              {activeNav === 'home' && 'Home'}
+              {activeNav === 'utilization' && 'Hourly Utilization Dashboard & Work Tracker'}
+              {activeNav === 'allocation' && 'Student Handover & Trainer Allocation Desk'}
+              {activeNav === 'session_room' && 'Class Session Room'}
+              {activeNav === 'batch_desk' && 'Syllabus & Announcements'}
+              {activeNav === 'attendance' && 'Daily Student Attendance'}
+              {activeNav === 'demos' && 'Demos'}
+              {activeNav === 'doubts' && 'Student Doubt Box'}
+              {(activeNav === 'scorecard' || activeNav === 'incentives') && 'My Scorecard & Incentive Ledger'}
+              {activeNav === 'batches' && 'My Batches'}
+              {activeNav === 'students' && 'My Students'}
+              {activeNav === 'weak_students' && 'Weak Students'}
+              {activeNav === 'assessments' && 'Assessment Desk'}
+              {activeNav === 'library' && 'LMS · PPT & Materials'}
+              {activeNav === 'student_desk' && 'Student Submissions & Requests'}
+              {activeNav === 'placement' && 'Student Job-Ready Status & Placement Desk'}
+              {activeNav === 'profile' && 'My Profile'}
+              {activeNav === 'skills' && 'Skill & Course Mapping'}
+              {activeNav === 'shift' && "Today's Load & Shift Availability"}
+            </h1>
+            <p className="text-xs text-slate-500 font-medium">
+              {activeNav === 'home' && 'Your day at a glance'}
+              {activeNav === 'allocation' && `${pendingAllocationStudents.length} student(s) awaiting allocation · ${allocatedStudents.length} allocated`}
+              {activeNav === 'session_room' && 'Run a live session'}
+              {activeNav === 'batch_desk' && 'Syllabus tracker · batch announcements · class recordings'}
+              {activeNav === 'demos' && 'HR–allocated demos'}
+              {activeNav === 'doubts' && 'SLA–tracked'}
+              {(activeNav === 'scorecard' || activeNav === 'incentives') && 'Action score · variable pay · cash events · monthly take'}
+              {activeNav === 'batches' && `${batches.length} active batches · ${myStudents.length} students`}
+              {activeNav === 'students' && 'Allocated students · module-wise'}
+              {activeNav === 'weak_students' && 'Auto-flagged drop-out risk · remediation'}
+              {activeNav === 'assessments' && 'Weekly tests · mock exams · rationale'}
+              {activeNav === 'library' && 'Coding books · PPTs · LMS'}
+              {activeNav === 'student_desk' && 'Assignments, resumes, video intros · mock interview & 1-on-1 requests'}
+              {activeNav === 'placement' && "Evaluate 4-pillar readiness: Technical, Assessments, Communication, and Interview Prep · CCCP sync"}
+              {activeNav === 'profile' && `${trainerName} · ${trainerId} · ${trainerRole} · ${trainerBranch}`}
+              {activeNav === 'skills' && 'L1 Assistant · L2 Regular · L3 Senior · L4 Lead. You can be allocated to a subject only at L2 or above.'}
+              {activeNav === 'shift' && `${trainerShift} · Max load protection`}
+              {activeNav !== 'home' && activeNav !== 'allocation' && activeNav !== 'session_room' && activeNav !== 'batch_desk' && activeNav !== 'demos' && activeNav !== 'doubts' && activeNav !== 'scorecard' && activeNav !== 'incentives' && activeNav !== 'batches' && activeNav !== 'students' && activeNav !== 'weak_students' && activeNav !== 'assessments' && activeNav !== 'library' && activeNav !== 'placement' && activeNav !== 'profile' && activeNav !== 'skills' && activeNav !== 'shift' && `Thoughtflows Medical Coding Academy · ${trainerBranch}`}
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <div className="relative">
+              <button
+                onClick={() => setShowNotifPanel(v => !v)}
+                className="relative p-2 rounded-xl bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-600 cursor-pointer"
+                title="Notifications from HR & students"
+              >
+                <Bell className="w-4 h-4" />
+                {unreadNotifs.length > 0 && (
+                  <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-rose-600 text-white text-[9px] font-black flex items-center justify-center">{unreadNotifs.length}</span>
+                )}
+              </button>
+              {showNotifPanel && (
+                <div className="absolute right-0 mt-2 w-80 max-h-[420px] overflow-y-auto bg-white rounded-2xl border border-slate-200 shadow-2xl z-40">
+                  <div className="px-4 py-3 border-b border-slate-100 text-xs font-bold text-slate-900">Notifications</div>
+                  {trainerNotifications.length === 0 ? (
+                    <div className="px-4 py-8 text-center text-xs text-slate-400">No notifications yet.</div>
+                  ) : trainerNotifications.map(n => (
+                    <button
+                      key={n._id}
+                      onClick={() => handleOpenNotification(n)}
+                      className={`w-full text-left px-4 py-3 border-b border-slate-50 hover:bg-slate-50 ${n.read ? '' : 'bg-teal-50/60'}`}
+                    >
+                      <div className="text-xs font-bold text-slate-900">{n.title}</div>
+                      <div className="text-[11px] text-slate-600 mt-0.5 line-clamp-2">{n.message}</div>
+                      <div className="text-[10px] text-slate-400 mt-1">{new Date(n.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {onBackToRoles && (
+              <button
+                type="button"
+                onClick={onBackToRoles}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 border border-slate-200 shadow-xs transition-all active:scale-95 cursor-pointer"
+                title="Back to all Trainer Department roles"
+              >
+                <ArrowLeft className="w-3.5 h-3.5 text-blue-600" />
+                <span className="hidden sm:inline">Trainer Roles</span>
+              </button>
+            )}
+
+            <button
+              onClick={() => (onLogout ? onLogout() : onClose ? onClose() : null)}
+              className="flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 shadow-xs transition-all active:scale-95 cursor-pointer"
+              title="Logout"
+            >
+              <LogOut className="w-4 h-4" />
+              <span>Logout</span>
+            </button>
+          </div>
+        </header>
+
+        {profileError && (
+          <div className="mx-6 mt-4 p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs font-medium">
+            {profileError}. Your shift, course, pay and class link come from the trainer roster — ask the admin to link your login email to your trainer record in Trainer Settings.
+          </div>
+        )}
+
+        {/* Active Google Meet demo marker – lives at page level (not inside any
+            activeNav tab) so it survives the trainer switching to Library or
+            any other section instead of looking like the meeting was cancelled. */}
+        {activeMeetSession && !demoRoom && (
+          <div className="fixed bottom-4 right-4 z-[80] bg-[#0f212d] text-white rounded-2xl border border-blue-500/60 shadow-2xl px-4 py-3 flex items-center gap-3">
+            <span className="relative flex h-2.5 w-2.5"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span><span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-400"></span></span>
+            <div className="leading-tight">
+              <div className="text-xs font-bold">Google Meet running · {activeMeetSession.course}</div>
+              <div className="text-[10.5px] text-slate-400">{activeMeetSession.count} candidate(s) · still minimized here — not cancelled</div>
+            </div>
+            <button
+              onClick={() => window.open(activeMeetSession.link, '_blank', 'noopener,noreferrer')}
+              className="ml-1 px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-[11px] font-bold cursor-pointer"
+            >
+              Reopen tab
+            </button>
+            {activeNav !== 'demos' && (
+              <button
+                onClick={() => setActiveNav('demos')}
+                className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-[11px] font-bold cursor-pointer"
+              >
+                Manage attendance
+              </button>
+            )}
+            <button
+              onClick={() => setActiveMeetSession(null)}
+              className="px-2 py-1.5 rounded-xl hover:bg-slate-800 text-slate-400 hover:text-white text-[11px] font-bold cursor-pointer"
+              title="Dismiss this marker (does not end the Google Meet call itself)"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
+        {/* Demo classroom – lives at page level so it stays connected while the trainer browses other sections */}
+        {demoRoom && (
+          <>
+            {demoMin && (
+              <div className="fixed bottom-4 right-4 z-[80] bg-[#0f212d] text-white rounded-2xl border border-teal-500/60 shadow-2xl px-4 py-3 flex items-center gap-3">
+                <span className="relative flex h-2.5 w-2.5"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span><span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-400"></span></span>
+                <div className="leading-tight">
+                  <div className="text-xs font-bold">
+                    {demoRoom.sessionStudents?.length > 1
+                      ? `Group Demo Live · ${demoRoom.sessionStudents.length} Students`
+                      : `Demo live · ${demoRoom.candidateName}`}
+                  </div>
+                  <div className="text-[10px] text-slate-300">Classroom connected</div>
+                </div>
+                <button onClick={() => setDemoMin(false)} className="px-3 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-700 text-[11px] font-bold">Expand</button>
+                <button onClick={() => endDemo(demoRoom)} className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-[11px] font-bold">End</button>
+              </div>
+            )}
+            <div className={demoMin ? 'fixed top-0 -left-[4000px] w-[1100px] pointer-events-none' : 'fixed inset-0 z-[80] bg-[#030b0f] flex flex-col w-screen h-screen overflow-hidden'}>
+              <div className="flex flex-col w-full h-full">
+                <div className="px-4 sm:px-6 py-2.5 bg-[#07151c] border-b border-[#1b3446] flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-white flex-shrink-0 z-20 shadow-md">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                        Live Demo
+                      </span>
+                      <span className="text-sm sm:text-base font-extrabold">
+                        {demoRoom.sessionStudents?.length > 1
+                          ? `Group Demo Session · ${demoRoom.course}`
+                          : `Demo · ${demoRoom.candidateName}`}
+                      </span>
+                      {demoRoom.sessionStudents?.length > 1 && (
+                        <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                          {demoRoom.sessionStudents.length} Students
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs text-slate-300 mt-0.5">
+                      {[demoRoom.preferredDate, demoRoom.time || demoRoom.timeSlot].filter(Boolean).join(' · ')}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {demoRoom.sessionStudents?.length > 1 ? (
+                      <button
+                        onClick={() => handleEmailAllSession({ students: demoRoom.sessionStudents })}
+                        className="px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold transition-all cursor-pointer shadow-sm"
+                      >
+                        ✉️ Email Link to All
+                      </button>
+                    ) : (
+                      <button onClick={() => handleEmailDemoLink(demoRoom)} className="px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold transition-all cursor-pointer shadow-sm">Email link to student</button>
+                    )}
+                    <button onClick={() => setDemoMin(true)} className="px-3 py-1.5 rounded-xl bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold transition-all cursor-pointer shadow-sm">Minimize</button>
+                    <button onClick={() => endDemo(demoRoom)} className="px-3.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-all cursor-pointer shadow-sm">
+                      {demoRoom.sessionStudents?.length > 1 ? 'End Session & Mark Attendance' : 'End Demo & Mark Attendance'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Candidate Roster Strip when multiple students are in the demo */}
+                {demoRoom.sessionStudents?.length > 1 && (
+                  <div className="bg-[#0b1b24] px-4 py-2 border-b border-slate-700/60 flex-shrink-0">
+                    <div className="text-[11px] font-bold text-slate-300 mb-1.5 flex items-center justify-between">
+                      <span>👥 Group Demo Attendees ({demoRoom.sessionStudents.length} candidates):</span>
+                      <span className="text-[10px] text-emerald-400 font-medium">Each candidate joins from their own link · tap 📲 to resend</span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 max-h-32 overflow-y-auto">
+                      {demoRoom.sessionStudents.map((st) => (
+                        <div key={st._id} className="p-2 rounded-lg bg-[#07131a] border border-slate-700/50 flex items-center justify-between gap-2 text-xs">
+                          <div className="min-w-0">
+                            <div className="font-bold text-white truncate">{st.candidateName}</div>
+                            <div className="text-[10px] text-slate-400 truncate">{st.phone || st.email || '—'}</div>
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              onClick={() => handleSendDemoLink(st)}
+                              title="Send this candidate's join link on WhatsApp"
+                              className="px-2 py-1 rounded text-[10px] font-bold bg-slate-800 text-slate-200 hover:bg-slate-700 cursor-pointer"
+                            >
+                              📲
+                            </button>
+                            <button
+                              onClick={async () => {
+                                await setDemoOutcome(st, 'attended');
+                                setDemoRoom(prev => prev ? {
+                                  ...prev,
+                                  sessionStudents: (prev.sessionStudents || []).map(s => s._id === st._id ? { ...s, status: 'attended' } : s)
+                                } : prev);
+                              }}
+                              className={`px-2 py-1 rounded text-[10px] font-bold transition-all cursor-pointer ${
+                                lc(st.status) === 'attended'
+                                  ? 'bg-emerald-600 text-white'
+                                  : 'bg-emerald-950 text-emerald-300 hover:bg-emerald-800'
+                              }`}
+                            >
+                              ✓ Attended
+                            </button>
+                            <button
+                              onClick={async () => {
+                                await setDemoOutcome(st, 'missed');
+                                setDemoRoom(prev => prev ? {
+                                  ...prev,
+                                  sessionStudents: (prev.sessionStudents || []).map(s => s._id === st._id ? { ...s, status: 'missed' } : s)
+                                } : prev);
+                              }}
+                              className={`px-2 py-1 rounded text-[10px] font-bold transition-all cursor-pointer ${
+                                lc(st.status) === 'missed'
+                                  ? 'bg-rose-600 text-white'
+                                  : 'bg-rose-950 text-rose-300 hover:bg-rose-800'
+                              }`}
+                            >
+                              ✕ No-show
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex-1 w-full h-full relative bg-[#030b0f] overflow-hidden flex flex-col">
+                  <LiveClassroom
+                    key={demoRoom._id}
+                    getJoinDetails={() => getDemoClassroomJoin(demoRoom._id)}
+                    height="100%"
+                    isHost
+                    onLeft={() => flashDemoToast('You left the classroom. Candidates stay connected — rejoin, or click End to close it and mark attendance.', 5500)}
+                  />
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* Post-demo attendance: only candidates marked Present become Attended */}
+        {demoAttendanceSheet && (
+          <div className="fixed inset-0 z-[90] bg-slate-950/70 flex items-center justify-center p-4">
+            <div className="w-full max-w-lg bg-white rounded-3xl shadow-2xl border border-slate-200 p-6 space-y-4 text-slate-800">
+              <div>
+                <h3 className="text-base font-black text-slate-900">Mark demo attendance</h3>
+                <p className="text-xs text-slate-500">
+                  {[demoAttendanceSheet.course, demoAttendanceSheet.preferredDate, demoAttendanceSheet.timeSlot].filter(Boolean).join(' · ')}
+                  {' — '}only candidates marked <b>Present</b> are set to Attended.
+                </p>
+              </div>
+              <div className="flex gap-2 text-xs">
+                <button type="button" onClick={() => setDemoAttendanceSheet((sh) => ({ ...sh, marks: Object.fromEntries(sh.students.map((st) => [st._id, 'present'])) }))} className="px-3 py-1.5 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-800 font-bold">All present</button>
+                <button type="button" onClick={() => setDemoAttendanceSheet((sh) => ({ ...sh, marks: Object.fromEntries(sh.students.map((st) => [st._id, 'absent'])) }))} className="px-3 py-1.5 rounded-lg border border-rose-200 bg-rose-50 text-rose-800 font-bold">All absent</button>
+              </div>
+              <div className="max-h-[50vh] overflow-y-auto divide-y divide-slate-100 border border-slate-100 rounded-2xl">
+                {demoAttendanceSheet.students.map((st) => {
+                  const mark = demoAttendanceSheet.marks[st._id];
+                  const setMark = (m) => setDemoAttendanceSheet((sh) => ({ ...sh, marks: { ...sh.marks, [st._id]: m } }));
+                  return (
+                    <div key={st._id} className="px-3 py-2.5 flex items-center justify-between gap-3 text-xs">
+                      <div className="min-w-0">
+                        <div className="font-bold text-slate-900 truncate">{st.candidateName}</div>
+                        <div className="text-[10px] text-slate-500 truncate">{st.phone || st.email || '—'}</div>
+                      </div>
+                      <div className="flex gap-1.5 shrink-0">
+                        <button type="button" onClick={() => setMark('present')} className={`px-3 py-1 rounded-lg font-bold border ${mark === 'present' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-emerald-700 border-emerald-200'}`}>Present</button>
+                        <button type="button" onClick={() => setMark('absent')} className={`px-3 py-1 rounded-lg font-bold border ${mark === 'absent' ? 'bg-rose-600 text-white border-rose-600' : 'bg-white text-rose-700 border-rose-200'}`}>Absent</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="flex justify-end gap-2">
+                <button type="button" disabled={demoAttendanceSaving} onClick={() => { setDemoAttendanceSheet(null); flashDemoToast('Attendance not saved — mark each candidate from the Demos tab.', 4500); }} className="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 text-xs font-bold">Later</button>
+                <button type="button" disabled={demoAttendanceSaving} onClick={saveDemoAttendance} className="px-4 py-2 rounded-xl bg-[#0f212d] text-white text-xs font-bold disabled:opacity-50">{demoAttendanceSaving ? 'Saving…' : 'Save attendance'}</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Toast for Demo Actions */}
+        {demoToast && (
+          <div className="fixed top-5 right-5 z-50 bg-slate-900 text-white px-4 py-2.5 rounded-xl shadow-2xl border border-teal-400 text-xs font-semibold flex items-center gap-2 animate-bounce">
+            <Sparkles className="w-4 h-4 text-teal-400" />
+            <span>{demoToast}</span>
+          </div>
+        )}
+
+        {/* VIEW CONTAINER */}
+        <div className="p-6 max-w-[1400px] w-full mx-auto space-y-6 flex-1">
+
+          {/* Class Session Room — kept mounted here regardless of which tab
+              is active, so the live Zoom connection survives the trainer
+              switching to Library or any other section instead of getting
+              disconnected and failing to rejoin on the way back. Only
+              visually hidden (off-screen), not unmounted, on other tabs. */}
+          <div className={activeNav === 'session_room' ? '' : 'fixed top-0 -left-[4000px] w-[1100px] pointer-events-none'} aria-hidden={activeNav !== 'session_room'}>
+            <ClassSessionRoom
+              trainerId={trainerId}
+              trainerName={trainerName}
+              batches={batches}
+              materials={materials}
+              canDownload={canManageMaterials}
+              onAttendanceSaved={loadRealData}
+            />
+          </div>
+
+          {/* ================= HOURLY UTILIZATION DASHBOARD & WORK TRACKER ================= */}
+          {activeNav === 'utilization' && (
+            <div className="space-y-6">
+              <UtilizationDashboard
+                roleType="trainer"
+                currentUser={currentUser}
+                trainerProfile={trainerProfile}
+                pickedIdentity={pickedIdentity}
+                batches={batches}
+                students={students}
+              />
+            </div>
+          )}
+
+          {/* ================= TAB 1: HOME (EXACT MATCH TO REFERENCE SCREENSHOT) ================= */}
+          {activeNav === 'home' && (
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+              
+              {/* LEFT & CENTER COLUMN (8 COLS) */}
+              <div className="lg:col-span-8 space-y-5">
+                
+                {/* 1. Welcome Card with 5 Metrics */}
+                <div className="bg-white rounded-2xl p-5 border border-slate-200/90 shadow-sm relative overflow-hidden">
+                  <div className="absolute top-0 left-0 bottom-0 w-1.5 bg-[#009688]"></div>
+                  
+                  <div className="pl-2">
+                    <h2 className="text-lg font-bold text-slate-900 flex items-center gap-1.5">
+                      Welcome back, {trainerName} <span className="text-lg">👋</span>
+                    </h2>
+                    <p className="text-[11px] font-medium text-slate-500 tracking-wide mt-0.5">
+                      {[trainerId, trainerRole, trainerBranch, trainerShift && `Shift ${trainerShift}`].filter(Boolean).join(' · ')}
+                    </p>
+
+                    {/* 5 Stats row */}
+                    <div className="grid grid-cols-5 gap-2 mt-5 pt-4 border-t border-slate-100">
+                      <div>
+                        <div className="text-2xl font-black text-slate-900">{batches.length}</div>
+                        <div className="text-[10px] font-bold text-slate-400 tracking-wider uppercase">SESSIONS</div>
+                      </div>
+                      <div>
+                        <div className="text-2xl font-black text-slate-900">
+                          {myExpertDemos.filter(d => ['booked', 'confirmed'].includes(lc(d.status))).length}
+                        </div>
+                        <div className="text-[10px] font-bold text-slate-400 tracking-wider uppercase">DEMO</div>
+                      </div>
+                      <div>
+                        <div className="text-2xl font-black text-slate-900">{batches.length}</div>
+                        <div className="text-[10px] font-bold text-slate-400 tracking-wider uppercase">BATCHES</div>
+                      </div>
+                      <div>
+                        <div className="text-2xl font-black text-slate-900">{myStudents.length}</div>
+                        <div className="text-[10px] font-bold text-slate-400 tracking-wider uppercase">STUDENTS</div>
+                      </div>
+                      <div>
+                        <div className="text-2xl font-black text-slate-900">{myDoubts.filter(d => d.status !== 'Replied').length}</div>
+                        <div className="text-[10px] font-bold text-slate-400 tracking-wider uppercase">DOUBTS</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 2. Next Session Dark Card */}
+                <div className="bg-[#0b242c] rounded-2xl p-6 text-white border border-[#16414e] shadow-md relative overflow-hidden">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div className="space-y-1.5">
+                      <span className="text-[10px] font-black tracking-widest uppercase text-[#00c9b7] bg-[#00c9b7]/10 px-2.5 py-1 rounded-md border border-[#00c9b7]/20">
+                        NEXT SESSION
+                      </span>
+                      <h3 className="text-xl font-bold text-white pt-1">
+                        {batches[0]?.name || 'No batch allocated yet'}
+                      </h3>
+                      <p className="text-xs text-slate-300 font-medium">
+                        {batches[0]
+                          ? [batches[0].timing, batches[0].mode, `${batches[0].students.length} students enrolled`].filter(Boolean).join(' · ')
+                          : 'Head of Trainer allocates students to you from the Allocation Desk.'}
+                      </p>
+                    </div>
+
+                    <button
+                      onClick={() => setActiveNav('session_room')}
+                      className="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-[#009688] hover:bg-[#00897b] text-white text-sm font-bold shadow-lg shadow-[#009688]/30 transition-all hover:scale-[1.02] active:scale-[0.98] shrink-0"
+                    >
+                      <Play className="w-3.5 h-3.5 fill-current" />
+                      Enter Session Room
+                    </button>
+                  </div>
+                </div>
+
+                {/* 3. Demo Alert Banner - Prioritized for Course Subject Matter Expert */}
+                {newDemoAlerts.length > 0 ? (
+                  <div className="bg-gradient-to-r from-amber-50 via-teal-50/70 to-emerald-50 border-2 border-teal-500 rounded-2xl p-5 shadow-md relative overflow-hidden animate-fadeIn">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                      <div className="flex items-start gap-3.5">
+                        <div className="relative shrink-0 mt-0.5">
+                          <div className="w-12 h-12 rounded-2xl bg-[#00897b] text-white flex items-center justify-center text-xl shadow-sm">
+                            🎯
+                          </div>
+                          <span className="absolute -top-1 -right-1 flex h-4 w-4">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-4 w-4 bg-rose-600 text-[9px] font-black text-white items-center justify-center">
+                              {newDemoAlerts.length}
+                            </span>
+                          </span>
+                        </div>
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="px-2.5 py-0.5 rounded-md text-[10px] font-black tracking-wider uppercase bg-teal-800 text-white shadow-xs">
+                              ⚡ NOTIFICATION SENT TO YOU FIRST
+                            </span>
+                            <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                              ★ Course Subject Matter Expert: {newDemoAlerts[0].course}
+                            </span>
+                          </div>
+                          <h3 className="text-sm sm:text-base font-extrabold text-slate-900 leading-tight">
+                            New Demo Booked: <span className="text-[#00897b]">{newDemoAlerts[0].candidateName}</span> <span className="font-mono text-xs font-semibold text-slate-500">({newDemoAlerts[0].phone})</span>
+                          </h3>
+                          <p className="text-xs text-slate-600 font-medium">
+                            Slot: <strong className="text-slate-900">{[newDemoAlerts[0].preferredDate, newDemoAlerts[0].timeSlot || newDemoAlerts[0].time].filter(Boolean).join(' ') || '—'}</strong> · Mode: <strong className="text-slate-800">{newDemoAlerts[0].mode || '—'}</strong> · Language: <strong className="text-slate-800">{newDemoAlerts[0].language || '—'}</strong>
+                          </p>
+                          <div className="text-[11px] text-teal-900 font-semibold pt-0.5 flex items-center gap-1.5">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                            <span>You are designated expert faculty for this course. Please accept the slot to confirm your session.</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex sm:flex-col gap-2 shrink-0 justify-end">
+                        <button
+                          onClick={() => handleAcknowledgeDemo(newDemoAlerts[0]._id || newDemoAlerts[0].id)}
+                          className="px-4 py-2.5 rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white text-xs font-bold transition-all shadow-md active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer"
+                        >
+                          <CheckCircle2 className="w-4 h-4" />
+                          <span>Accept Demo Slot</span>
+                        </button>
+                        <button
+                          onClick={() => setActiveNav('demos')}
+                          className="px-4 py-2 rounded-xl bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 text-xs font-bold transition-all shadow-xs flex items-center justify-center gap-1 cursor-pointer"
+                        >
+                          <span>Open Demos Desk ({myExpertDemos.length})</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="bg-[#fffbeb] border border-[#fde68a] rounded-2xl p-4 flex items-center justify-between gap-4 shadow-sm">
+                    <div className="flex items-center gap-3.5">
+                      <div className="w-10 h-10 rounded-full bg-[#fef3c7] border border-[#fde68a] flex items-center justify-center text-lg shrink-0">
+                        🎯
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold text-slate-900">
+                          {myExpertDemos[0] 
+                            ? `DEMO DESK · ${myExpertDemos[0].course} · ${[myExpertDemos[0].preferredDate, myExpertDemos[0].timeSlot].filter(Boolean).join(' ') || myExpertDemos[0].status}` 
+                            : 'DEMO DESK · All Course Expert Demos Handled'}
+                        </div>
+                        <div className="text-[11px] text-slate-600 font-medium">
+                          {myExpertDemos[0] 
+                            ? `${myExpertDemos[0].candidateName}${myExpertDemos[0].mode ? ` · ${myExpertDemos[0].mode}` : ''} · Routed to you by the demo engine.`
+                            : 'All demo webinars up to date. Newly booked demos in your course expertise will alert you first.'}
+                        </div>
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={() => setActiveNav('demos')}
+                      className="px-5 py-2 rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white text-xs font-bold transition-all shadow-sm shrink-0 cursor-pointer"
+                    >
+                      Open Desk
+                    </button>
+                  </div>
+                )}
+
+                {/* Hourly Utilization Banner */}
+                <div
+                  onClick={() => setActiveNav('utilization')}
+                  className="bg-gradient-to-r from-teal-700 to-sky-700 text-white rounded-2xl p-4 flex items-center justify-between gap-4 shadow-sm hover:shadow-md transition-all cursor-pointer"
+                >
+                  <div className="flex items-center gap-3.5">
+                    <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center text-white shrink-0">
+                      <Clock className="w-5 h-5 stroke-[2.2]" />
+                    </div>
+                    <div>
+                      <div className="text-xs font-black uppercase tracking-wider text-teal-200">
+                        Today&apos;s 8-Hour Work Plan &amp; Utilization Tracker
+                      </div>
+                      <div className="text-xs text-white/90 font-medium">
+                        View the hour-by-hour tasks assigned by your Team Lead and update your actual work progress.
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); setActiveNav('utilization'); }}
+                    className="px-4 py-2 rounded-xl bg-white text-teal-900 text-xs font-black shadow-xs shrink-0 hover:bg-teal-50 transition-colors cursor-pointer"
+                  >
+                    Open Tracker →
+                  </button>
+                </div>
+
+                {/* 4. Quick Metric Tiles */}
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+                  
+                  {/* Metric 1 */}
+                  <div 
+                    onClick={() => setActiveNav('doubts')}
+                    className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-sm cursor-pointer hover:border-teal-400 transition-all"
+                  >
+                    <div className="text-2xl font-black text-[#f59e0b]">{myDoubts.filter(d => d.status !== 'Replied').length}</div>
+                    <div className="text-xs text-slate-600 font-medium mt-1">Pending doubts</div>
+                  </div>
+
+                  {/* Metric 2 */}
+                  <div 
+                    onClick={() => setActiveNav('attendance')}
+                    className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-sm cursor-pointer hover:border-teal-400 transition-all"
+                  >
+                    <div className="text-2xl font-black text-[#f59e0b]">{myStudents.filter(s => typeof s.attendancePct === 'number' && s.attendancePct < 75).length}</div>
+                    <div className="text-xs text-slate-600 font-medium mt-1">Attendance alert</div>
+                  </div>
+
+                  {/* Metric 3 */}
+                  <div 
+                    onClick={() => setActiveNav('weak_students')}
+                    className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-sm cursor-pointer hover:border-teal-400 transition-all"
+                  >
+                    <div className="text-2xl font-black text-[#ef4444]">{weakStudents.length}</div>
+                    <div className="text-xs text-slate-600 font-medium mt-1">Weak students</div>
+                  </div>
+
+                  {/* Metric 4: Job Ready Students */}
+                  <div 
+                    onClick={() => setActiveNav('placement')}
+                    className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-sm cursor-pointer hover:border-teal-400 transition-all"
+                  >
+                    <div className="text-2xl font-black text-emerald-600">
+                      {myStudents.filter(s => s.jobReadyStatus === 'Job Ready' || s.trainerRecommendation === 'Ready').length}
+                      <span className="text-xs font-bold text-slate-400 ml-1">/ {myStudents.length}</span>
+                    </div>
+                    <div className="text-xs text-slate-600 font-medium mt-1">Job ready</div>
+                  </div>
+
+                  {/* Metric 5 */}
+                  <div 
+                    onClick={() => setActiveNav('demos')}
+                    className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-sm cursor-pointer hover:border-teal-400 transition-all col-span-2 sm:col-span-1"
+                  >
+                    <div className="text-2xl font-black text-slate-800">{myExpertDemos.filter(isAttended).length}</div>
+                    <div className="text-xs text-slate-600 font-medium mt-1">Demos done</div>
+                  </div>
+
+                </div>
+
+                {/* 5. Today's Sessions Card */}
+                <div className="bg-white rounded-2xl p-5 border border-slate-200/90 shadow-sm space-y-3">
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                    <div className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                      <span>📅</span> Today's Sessions
+                    </div>
+                    <span className="text-xs text-slate-500 font-medium">{batches.length} batches active</span>
+                  </div>
+
+                  <div className="space-y-2.5">
+                    {batches.length > 0 ? (
+                      batches.map((batch, idx) => (
+                        <div key={batch.id} className="p-3.5 rounded-xl border border-slate-200/90 hover:border-teal-400/80 transition-all flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-3.5">
+                            <div className="w-9 h-9 rounded-full bg-slate-100 flex items-center justify-center text-slate-600">
+                              {idx === 0 ? <Play className="w-4 h-4 fill-slate-700 text-slate-700" /> : <Clock className="w-4 h-4 text-slate-600" />}
+                            </div>
+                            <div>
+                              <div className="text-xs font-bold text-slate-900">{batch.name}</div>
+                              <div className="text-[11px] text-slate-500">{[batch.timing, batch.mode, `${batch.students.length} students`].filter(Boolean).join(' · ')}</div>
+                            </div>
+                          </div>
+                          <span className={`px-2.5 py-1 rounded-md text-[10px] font-bold ${
+                            idx === 0 ? 'bg-[#e6f4ea] text-[#137333]' : 'bg-slate-100 text-slate-600'
+                          }`}>
+                            {idx === 0 ? 'Next' : 'Upcoming'}
+                          </span>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="py-4 text-center text-xs text-slate-500">No active batches assigned.</div>
+                    )}
+                  </div>
+                </div>
+
+              </div>
+
+              {/* RIGHT COLUMN (4 COLS) */}
+              <div className="lg:col-span-4 space-y-5">
+                
+                {/* 1. Pending Doubts Card */}
+                <div className="bg-white rounded-2xl p-5 border border-slate-200/90 shadow-sm space-y-3">
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                    <div className="text-xs font-bold text-slate-900 flex items-center gap-2">
+                      <span className="text-sm">💬</span> Pending Doubts
+                    </div>
+                    <button
+                      onClick={() => setActiveNav('doubts')}
+                      className="text-xs font-bold text-[#00897b] hover:underline"
+                    >
+                      All ({myDoubts.filter(d => d.status !== 'Replied').length})
+                    </button>
+                  </div>
+
+                  <div className="space-y-3">
+                    {myDoubts.filter(d => d.status !== 'Replied').slice(0, 2).map(item => (
+                      <div 
+                        key={item.id}
+                        onClick={() => {
+                          setActiveDoubtModal(item);
+                          setActiveNav('doubts');
+                        }}
+                        className="p-3 rounded-xl border border-slate-100 hover:border-teal-300 transition-all flex items-center gap-3 cursor-pointer"
+                      >
+                        <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 shrink-0 text-xs font-bold">
+                          💬
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-bold text-slate-900 truncate">{item.student} · {item.topic}</div>
+                          <div className="text-[11px] text-slate-500">{item.timeText} · {item.slaBadge}</div>
+                        </div>
+                      </div>
+                    ))}
+                    {myDoubts.filter(d => d.status !== 'Replied').length === 0 && (
+                      <div className="py-3 text-center text-xs text-slate-500">All doubts resolved ✓</div>
+                    )}
+                  </div>
+                </div>
+
+                {/* 2. Weak Students Card */}
+                <div className="bg-white rounded-2xl p-5 border border-slate-200/90 shadow-sm space-y-3">
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                    <div className="text-xs font-bold text-slate-900 flex items-center gap-2">
+                      <span className="text-sm">⚠️</span> Weak Students
+                    </div>
+                    <button
+                      onClick={() => setActiveNav('weak_students')}
+                      className="text-xs font-bold text-[#00897b] hover:underline"
+                    >
+                      All ({weakStudents.length})
+                    </button>
+                  </div>
+
+                  <div className="space-y-3">
+                    {weakStudents.slice(0, 2).map(st => (
+                      <div 
+                        key={st.id}
+                        onClick={() => setActiveNav('weak_students')}
+                        className="p-3 rounded-xl border border-slate-100 hover:border-teal-300 transition-all flex items-start gap-3 cursor-pointer"
+                      >
+                        <span className={`w-3.5 h-3.5 rounded-full ${st.dotColor} shrink-0 mt-0.5`}></span>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-bold text-slate-900">{st.name}</div>
+                          <div className="text-[11px] text-slate-600 leading-tight mt-0.5 truncate">
+                            {st.issue}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                    {weakStudents.length === 0 && (
+                      <div className="py-3 text-center text-xs text-slate-500">No students flagged as drop-out risk.</div>
+                    )}
+                  </div>
+                </div>
+
+                {/* 3. Performance Card */}
+                <div className="bg-white rounded-2xl p-6 border border-slate-200/90 shadow-sm text-center space-y-2">
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-100 text-left">
+                    <div className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                      <span className="text-sm">⭐</span> Performance
+                    </div>
+                    <button
+                      onClick={() => { setActiveNav('scorecard'); setGrowthTab('all'); }}
+                      className="text-xs font-bold text-[#00897b] hover:underline"
+                    >
+                      View
+                    </button>
+                  </div>
+
+                  <div className="py-5">
+                    <div className="text-5xl font-black text-slate-900 tracking-tight">
+                      {scorecardMetrics.actionScore}
+                    </div>
+                    <div className="text-xs text-slate-500 font-medium mt-1">/ 100 · {scorecardMetrics.zone}</div>
+                  </div>
+                </div>
+
+              </div>
+
+            </div>
+          )}
+
+          {/* ================= TAB: STUDENT ALLOCATION (HEAD OF TRAINER) ================= */}
+          {activeNav === 'allocation' && (
+            !isChiefFaculty ? (
+              <div className="bg-white rounded-3xl border border-slate-200/90 p-10 text-center max-w-lg mx-auto shadow-sm my-12 animate-fadeIn">
+                <div className="w-14 h-14 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center text-2xl mx-auto mb-4 border border-amber-200/60 shadow-sm">
+                  🔒
+                </div>
+                <h3 className="text-base font-extrabold text-slate-900 mb-1.5">Restricted to Head of Trainer</h3>
+                <p className="text-xs text-slate-500 leading-relaxed mb-6">
+                  Student-to-trainer allocation is the exclusive authority of the <strong>Head of Trainer</strong>. Admitted students will appear in your <em>My Students</em> and <em>Batches</em> sections once allocated to you.
+                </p>
+                <button
+                  onClick={() => setActiveNav('home')}
+                  className="px-5 py-2.5 rounded-xl bg-[#00897b] hover:bg-[#00897b]/90 text-white text-xs font-bold shadow-md transition-all inline-flex items-center gap-2"
+                >
+                  Return to My Dashboard
+                </button>
+              </div>
+            ) : (
+            <div className="space-y-5 max-w-[1280px] animate-fadeIn">
+              {/* Toast notification */}
+              {allocationToast && (
+                <div className="p-3.5 rounded-2xl bg-slate-900 text-white text-xs font-semibold flex items-center justify-between shadow-lg animate-fadeIn border border-slate-700">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-teal-400 animate-ping"></span>
+                    <span>{allocationToast}</span>
+                  </div>
+                  <button onClick={() => setAllocationToast(null)} className="text-slate-400 hover:text-white">✕</button>
+                </div>
+              )}
+
+              {/* Metric Overview Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+                <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-amber-700">Awaiting Allocation</span>
+                    <span className="w-8 h-8 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center font-bold text-sm">⏳</span>
+                  </div>
+                  <div className="text-3xl font-black text-slate-900 mt-2">{pendingAllocationStudents.length}</div>
+                  <div className="text-xs text-slate-500 font-medium mt-1">Handed over by HR counsellors</div>
+                </div>
+
+                <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-700">Allocated to Trainers</span>
+                    <span className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold text-sm">✓</span>
+                  </div>
+                  <div className="text-3xl font-black text-slate-900 mt-2">{allocatedStudents.length}</div>
+                  <div className="text-xs text-slate-500 font-medium mt-1">Active in trainer batches</div>
+                </div>
+
+                <div className="bg-white rounded-2xl border border-indigo-200 p-5 shadow-sm bg-gradient-to-br from-white to-indigo-50/30">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-indigo-700">Anatomy → Coding Ready</span>
+                    <span className="w-8 h-8 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold text-sm">🔄</span>
+                  </div>
+                  <div className="text-3xl font-black text-indigo-950 mt-2">{anatomyReadyStudents.length}</div>
+                  <div className="text-xs text-indigo-700 font-medium mt-1">Ready for Medical Coding transition</div>
+                </div>
+
+                <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-slate-700">Active Trainers</span>
+                    <span className="w-8 h-8 rounded-xl bg-slate-100 text-slate-700 flex items-center justify-center font-bold text-sm">👥</span>
+                  </div>
+                  <div className="text-3xl font-black text-slate-900 mt-2">{trainerRoster.filter(t => t.active !== false).length}</div>
+                  <div className="text-xs text-slate-500 font-medium mt-1">Available for student batch allocation</div>
+                </div>
+              </div>
+
+              {/* Main Container Card */}
+              <div className="bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-7 shadow-sm space-y-4">
+                {/* Title & Toolbar */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-slate-100">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <UserPlus className="w-5 h-5 text-teal-700" />
+                      <h2 className="text-base font-bold text-slate-900">Student Handover & Trainer Allocation Desk</h2>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Sole authority of Head of Trainer to assign students to specific faculty members and batches.
+                    </p>
+                  </div>
+
+                  {/* Filter Tabs */}
+                  <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl flex-wrap">
+                    <button
+                      onClick={() => setAllocationTabFilter('pending')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                        allocationTabFilter === 'pending'
+                          ? 'bg-white text-slate-900 shadow-sm'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Awaiting Allocation ({pendingAllocationStudents.length})
+                    </button>
+                    <button
+                      onClick={() => setAllocationTabFilter('allocated')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                        allocationTabFilter === 'allocated'
+                          ? 'bg-white text-slate-900 shadow-sm'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Allocated ({allocatedStudents.length})
+                    </button>
+                    <button
+                      onClick={() => setAllocationTabFilter('anatomy')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                        allocationTabFilter === 'anatomy'
+                          ? 'bg-white text-indigo-950 shadow-sm'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      <span>🔄 Anatomy → Coding</span>
+                      <span className="px-1.5 py-0.2 rounded-full text-[10px] font-extrabold bg-indigo-100 text-indigo-700">
+                        {anatomyReadyStudents.length}
+                      </span>
+                    </button>
+                    <button
+                      onClick={() => setAllocationTabFilter('all')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                        allocationTabFilter === 'all'
+                          ? 'bg-white text-slate-900 shadow-sm'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      All Handed Over ({allHandedOverStudents.length})
+                    </button>
+                  </div>
+                </div>
+
+                {/* Branch Switcher Pill Bar */}
+                <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs">
+                  <div className="flex items-center gap-1.5 text-slate-500 font-bold shrink-0">
+                    <Building2 className="w-3.5 h-3.5 text-teal-600" />
+                    <span>Branch:</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setAllocationBranchFilter('ALL')}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer ${
+                      allocationBranchFilter === 'ALL'
+                        ? 'bg-[#00897b] text-white shadow-xs'
+                        : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                    }`}
+                  >
+                    All Branches ({branchPendingCounts.ALL || 0})
+                  </button>
+                  {branchList.map(b => {
+                    const count = branchPendingCounts[b] || 0;
+                    const isMyBranch = trainerBranch && b.toLowerCase() === trainerBranch.toLowerCase();
+                    const isActive = allocationBranchFilter.toLowerCase() === b.toLowerCase();
+                    return (
+                      <button
+                        type="button"
+                        key={b}
+                        onClick={() => setAllocationBranchFilter(b)}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-1.5 cursor-pointer ${
+                          isActive
+                            ? 'bg-[#00897b] text-white shadow-xs'
+                            : isMyBranch
+                            ? 'bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200'
+                            : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                        }`}
+                      >
+                        <span>{b}</span>
+                        {isMyBranch && (
+                          <span className="text-[10px] text-teal-700 bg-white/90 px-1 py-0.2 rounded font-semibold">
+                            My Branch
+                          </span>
+                        )}
+                        {count > 0 && (
+                          <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-extrabold ${
+                            isActive ? 'bg-white text-teal-800' : 'bg-amber-100 text-amber-800'
+                          }`}>
+                            {count}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Search Input */}
+                <div className="relative">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={allocationSearch}
+                    onChange={(e) => setAllocationSearch(e.target.value)}
+                    placeholder="Search by student name, roll ID, course, branch, HR counsellor, or allocated trainer..."
+                    className="w-full pl-10 pr-4 py-2.5 text-xs rounded-xl border border-slate-200 focus:outline-none focus:border-teal-500 bg-slate-50/50"
+                  />
+                  {allocationSearch && (
+                    <button
+                      onClick={() => setAllocationSearch('')}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-slate-600 font-bold"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+
+                {/* Student List */}
+                {filteredAllocationList.length === 0 ? (
+                  <div className="py-12 text-center text-xs text-slate-500 space-y-1">
+                    <div className="text-2xl">📋</div>
+                    <div className="font-bold text-slate-700">No students found</div>
+                    <p>
+                      {allocationTabFilter === 'pending'
+                        ? 'Great job! There are no students currently awaiting trainer allocation.'
+                        : 'No student records match the search filter.'}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {filteredAllocationList.map((st) => {
+                      const sKey = studentKeyOf(st);
+                      const isAllocated = Boolean(st.trainerId);
+                      const isAnatomyStudent = Boolean(
+                        /anatomy/i.test(st.batchName || '') ||
+                        /anatomy/i.test(st.course || '') ||
+                        /anatomy/i.test(st.trainerName || '') ||
+                        st.anatomyCompleted
+                      );
+                      return (
+                        <div
+                          key={st._id || sKey}
+                          className="rounded-2xl border border-slate-200/90 p-4 sm:p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 hover:border-slate-300 transition-all bg-white group"
+                        >
+                          {/* Student Info */}
+                          <div className="flex items-start sm:items-center gap-3.5 min-w-0">
+                            <div className={`w-11 h-11 rounded-xl flex items-center justify-center text-base shrink-0 ${
+                              isAnatomyStudent
+                                ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
+                                : isAllocated
+                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-100'
+                                : 'bg-amber-50 text-amber-700 border border-amber-200'
+                            }`}>
+                              {isAnatomyStudent ? '🔄' : isAllocated ? '🎓' : '⏳'}
+                            </div>
+
+                            <div className="min-w-0 space-y-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-sm font-bold text-slate-900 group-hover:text-teal-700 transition-colors">
+                                  {st.name}
+                                </span>
+                                <span className="text-xs font-mono text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">
+                                  {st.studentId || 'ID Pending'}
+                                </span>
+                                {isAnatomyStudent && (
+                                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200 flex items-center gap-1">
+                                    <span>🔄</span> Anatomy Batch {st.anatomyCompleted ? '· Foundation Verified' : `· ${st.syllabusModule || 'Module 2'}`}
+                                  </span>
+                                )}
+                                {isAllocated ? (
+                                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                    ✓ Allocated to {st.trainerName}
+                                  </span>
+                                ) : (
+                                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200 animate-pulse">
+                                    ⏳ Awaiting Trainer Allocation
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="text-xs text-slate-600 font-medium flex flex-wrap items-center gap-x-2 gap-y-1">
+                                <span className="font-semibold text-slate-800">{st.course}</span>
+                                {(st.branch || st.location || st.leadBranch) && (
+                                  <span className="inline-flex items-center gap-1 font-semibold text-teal-800 bg-teal-50 px-2 py-0.5 rounded border border-teal-200">
+                                    <Building2 className="w-3 h-3 text-teal-600" />
+                                    {st.branch || st.location || st.leadBranch}
+                                  </span>
+                                )}
+                                {st.mode && <span>· {st.mode}</span>}
+                                {st.batchTiming && <span>· Timing: {st.batchTiming}</span>}
+                              </div>
+
+                              <div className="text-[11px] text-slate-500 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                                {st.headOfTrainer && (
+                                  <span className="text-[10px] text-teal-900 bg-teal-50/70 px-2 py-0.5 rounded border border-teal-100">
+                                    Head of Trainer: <strong className="text-teal-800">{st.headOfTrainer}</strong>
+                                  </span>
+                                )}
+                                {st.hrName && <span>HR: <strong className="text-slate-700">{st.hrName}</strong></span>}
+                                {st.handedOverAt && (
+                                  <span>· Handed over: {new Date(st.handedOverAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
+                                )}
+                                {st.batchName && isAllocated && (
+                                  <span>· Batch: <strong className="text-slate-700">{st.batchName}</strong></span>
+                                )}
+                                {st.allocatedByHead && isAllocated && (
+                                  <span>· Assigned by: <strong className="text-slate-700">{st.allocatedByHead}</strong></span>
+                                )}
+                              </div>
+
+                              {/* HR Handover Note */}
+                              {(st.trainerNote || st.handoverNote) && (
+                                <div className="text-[11px] text-amber-900 bg-amber-50/80 border border-amber-200/80 rounded-xl px-2.5 py-1.5 mt-1">
+                                  <span className="font-bold text-amber-800">HR Handover Note: </span>
+                                  {st.trainerNote || st.handoverNote}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Action Button */}
+                          <div className="shrink-0 flex items-center gap-2 self-end md:self-center">
+                            {isAnatomyStudent ? (
+                              <button
+                                onClick={() => openAllocationModal(st, { isAnatomyToCoding: true })}
+                                className="px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm active:scale-[0.98] bg-[#483ec7] hover:bg-[#3b32a3] text-white cursor-pointer"
+                              >
+                                <span>🔄 Convert to Coding Batch →</span>
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => openAllocationModal(st)}
+                                className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm active:scale-[0.98] cursor-pointer ${
+                                  isAllocated
+                                    ? 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200'
+                                    : 'bg-[#009688] hover:bg-[#00897b] text-white'
+                                }`}
+                              >
+                                <UserPlus className="w-3.5 h-3.5" />
+                                <span>{isAllocated ? 'Reassign Trainer & Batch' : 'Assign Trainer & Batch →'}</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Footer Notes */}
+                <div className="pt-3 border-t border-slate-100 text-xs text-slate-500 space-y-1">
+                  <p>
+                    💡 <strong>Head of Trainer Governance:</strong> HR counsellors hand over students with verified admission checklists. Trainers receive students and batch materials only after you assign them here.
+                  </p>
+                </div>
+              </div>
+            </div>
+            )
+          )}
+
+          {/* ================= TAB 2: CLASS SESSION ROOM — moved to page level below, stays mounted across tabs ================= */}
+
+          {/* ================= TAB 3: ATTENDANCE ================= */}
+          {activeNav === 'attendance' && (
+            <div className="space-y-6 max-w-[1280px]">
+              <StaffLoginAttendance title="My Login Attendance" selfOnly />
+              {attendanceSavedToast && (
+                <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold animate-fadeIn">
+                  {attendanceSavedToast}
+                </div>
+              )}
+
+              <div className="bg-white rounded-3xl p-7 border border-slate-200/90 shadow-sm space-y-4">
+                <div className="flex items-center justify-between flex-wrap gap-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-5 h-5 rounded-md bg-[#22c55e] text-white flex items-center justify-center text-xs font-black shadow-sm">✓</div>
+                    <h2 className="text-base font-bold text-slate-900 tracking-tight">Live Attendance · {new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</h2>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {batches.length > 1 && (
+                      <select
+                        value={attendanceBatch?.id || ''}
+                        onChange={(e) => { setAttendanceBatchId(e.target.value); setAttendanceTopic(''); }}
+                        className="px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-semibold bg-white"
+                      >
+                        {batches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                      </select>
+                    )}
+                    {attendanceList.length > 0 && (
+                      <button
+                        onClick={() => {
+                          const marks = {};
+                          let blockedCount = 0;
+                          attendanceList.forEach(s => {
+                            if (s.canMarkPresent) {
+                              marks[s.roll] = 'Present';
+                            } else {
+                              blockedCount++;
+                              marks[s.roll] = s.joinedOnline ? 'Late' : 'Absent';
+                            }
+                          });
+                          if (blockedCount > 0) {
+                            setAttendanceSavedToast(`ℹ ${blockedCount} student(s) attended < 1h 45m online and were marked Late/Absent.`);
+                          }
+                          saveAttendanceMarks(marks);
+                        }}
+                        className="px-3.5 py-1.5 rounded-xl bg-[#009688] hover:bg-[#00897b] text-white text-xs font-bold shadow-sm transition-all active:scale-[0.98]"
+                      >
+                        Mark Eligible Present
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Online Attendance & Syllabus Policy Banner */}
+                <div className="bg-teal-50/80 border border-teal-200 rounded-2xl p-4 text-xs text-teal-950 space-y-1.5">
+                  <div className="font-bold flex items-center gap-1.5 text-teal-900">
+                    <span>🛡</span> Online Attendance & Syllabus Policy
+                  </div>
+                  <div className="text-[11px] text-teal-800 space-y-1">
+                    <div>• <strong>Online Attendance Rule:</strong> For online sessions, the option to mark attendance as Present becomes available <strong>only after the student attends at least 1 hour and 45 minutes</strong> (105 mins).</div>
+                    <div>• <strong>Syllabus Tracker:</strong> Saving attendance with a session topic automatically marks and updates that module in the batch syllabus tracker.</div>
+                  </div>
+                </div>
+
+                <label className="block">
+                  <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Today's session topic / module</span>
+                  <input
+                    list="syllabus-modules-list"
+                    value={attendanceTopic}
+                    onChange={(e) => setAttendanceTopic(e.target.value)}
+                    placeholder={todaysSession?.topic ? `Saved: ${todaysSession.topic}` : 'Select from syllabus or type e.g. CPT Surgery — Integumentary system'}
+                    className="mt-1 w-full px-3 py-2 rounded-xl border border-slate-200 text-xs focus:outline-none focus:border-teal-500"
+                  />
+                  <datalist id="syllabus-modules-list">
+                    {(batchSyllabusDoc?.modules || []).map((m) => (
+                      <option key={m.name} value={m.name}>{m.done ? '(Done) ' : ''}{m.name}</option>
+                    ))}
+                  </datalist>
+                  <span className="text-[10px] text-slate-400">Saving attendance will automatically tick this module in the batch syllabus tracker for this corresponding session.</span>
+                </label>
+
+                {batchSyllabusDoc && (batchSyllabusDoc.modules || []).length > 0 && (
+                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-slate-700">📖 Batch Syllabus Tracker:</span>
+                      <span className="text-slate-600 font-semibold">
+                        {(batchSyllabusDoc.modules || []).filter(m => m.done).length} of {(batchSyllabusDoc.modules || []).length} modules covered ({Math.round(((batchSyllabusDoc.modules || []).filter(m => m.done).length / (batchSyllabusDoc.modules || []).length) * 100)}%)
+                      </span>
+                    </div>
+                    <span className="text-[11px] text-teal-700 font-semibold">
+                      ✓ Synchronized with Student Portal & Trainer Batch Desk
+                    </span>
+                  </div>
+                )}
+
+                <p className="text-xs text-slate-600 font-medium leading-relaxed">
+                  Mark today's class. Each mark is saved to the student record and recalculates attendance % on the student's dashboard, the HR's student CRM and the Leadership dropout-risk view. HR is alerted automatically when a student drops below 75%.
+                </p>
+
+                {attendanceList.length === 0 ? (
+                  <div className="py-12 text-center text-xs text-slate-500 font-medium">
+                    No students allocated to you yet.
+                  </div>
+                ) : (
+                  <div className="pt-2 space-y-4 animate-fadeIn">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 pb-2 border-b border-slate-100">
+                      <span className="font-bold text-slate-800">{attendanceBatch?.name} · {attendanceList.length} Students</span>
+                      <div className="flex items-center gap-3">
+                        <span>{[attendanceBatch?.module, attendanceBatch?.timing, attendanceBatch?.mode].filter(Boolean).join(' · ')}</span>
+                        <button
+                          type="button"
+                          onClick={() => setInspectBatchTarget(attendanceBatch?.batchId || attendanceBatch?.name)}
+                          className="px-2.5 py-1 rounded-lg bg-teal-50 hover:bg-teal-100 text-teal-700 border border-teal-200 font-bold text-[11px] cursor-pointer"
+                        >
+                          Individual Batch Progress
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="overflow-x-auto rounded-xl border border-slate-100">
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead>
+                          <tr className="bg-slate-50 text-slate-500 border-b border-slate-200 uppercase tracking-wider text-[10px]">
+                            <th className="py-3 px-4 font-bold">Student ID</th>
+                            <th className="py-3 px-4 font-bold">Student Name</th>
+                            <th className="py-3 px-4 font-bold">Cumulative Attendance</th>
+                            <th className="py-3 px-4 font-bold">Ind. Progress</th>
+                            <th className="py-3 px-4 font-bold">Today</th>
+                            <th className="py-3 px-4 font-bold text-right">Quick Mark</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 text-slate-700">
+                          {attendanceList.map(s => (
+                            <tr key={s.id} className="hover:bg-slate-50/70 transition-all">
+                              <td className="py-3 px-4 font-mono font-bold text-slate-900">{s.roll}</td>
+                              <td className="py-3 px-4 font-bold text-slate-900">
+                                {s.name}
+                                {s.isOnline && (
+                                  <span className="ml-2 text-[10px] font-semibold text-teal-700 bg-teal-50 px-1.5 py-0.5 rounded border border-teal-200">Online</span>
+                                )}
+                              </td>
+                              <td className="py-3 px-4">
+                                {s.attendancePct === null ? (
+                                  <span className="text-slate-400">—</span>
+                                ) : (
+                                  <span className={`font-bold ${s.attendancePct < 75 ? 'text-rose-600' : 'text-emerald-600'}`}>{s.attendancePct}%</span>
+                                )}
+                              </td>
+                              <td className="py-3 px-4">
+                                {s.syllabusProgressPct === null ? (
+                                  <span className="text-slate-400">—</span>
+                                ) : (
+                                  <span className="font-bold text-indigo-600">{s.syllabusProgressPct}%</span>
+                                )}
+                              </td>
+                              <td className="py-3 px-4">
+                                <span className={`inline-flex px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
+                                  s.status === 'Present' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' :
+                                  s.status === 'Late' ? 'bg-amber-50 text-amber-700 border border-amber-200' :
+                                  s.status === 'Absent' ? 'bg-rose-50 text-rose-700 border border-rose-200' :
+                                  'bg-slate-50 text-slate-500 border border-slate-200'
+                                }`}>
+                                  {s.status}
+                                </span>
+                                {s.isOnline && (
+                                  <div className="mt-1">
+                                    {s.attendedMins >= 105 ? (
+                                      <span className="text-[10px] text-emerald-700 font-bold bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded inline-block">
+                                        ✓ {Math.floor(s.attendedMins / 60)}h {s.attendedMins % 60}m (Eligible)
+                                      </span>
+                                    ) : s.joinedOnline ? (
+                                      <span className="text-[10px] text-amber-700 font-medium bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded inline-block">
+                                        ⏱ {s.attendedMins}m / 105m (Under 1h 45m)
+                                      </span>
+                                    ) : (
+                                      <span className="text-[10px] text-slate-400 block">No online join</span>
+                                    )}
+                                  </div>
+                                )}
+                              </td>
+                              <td className="py-3 px-4 text-right space-x-1.5">
+                                {[['Present', 'P', 'hover:bg-emerald-100 hover:text-emerald-800'], ['Late', 'L', 'hover:bg-amber-100 hover:text-amber-800'], ['Absent', 'A', 'hover:bg-rose-100 hover:text-rose-800']].map(([status, label, cls]) => {
+                                  const isPresentDisabled = status === 'Present' && s.isOnline && !s.canMarkPresent;
+                                  return (
+                                    <button
+                                      key={status}
+                                      disabled={isPresentDisabled}
+                                      title={isPresentDisabled ? `Present locked: attended ${s.attendedMins}m online (requires at least 1 hr 45 min)` : `Mark ${status}`}
+                                      onClick={() => {
+                                        if (isPresentDisabled) return;
+                                        saveAttendanceMarks({ [s.roll]: status });
+                                      }}
+                                      className={`px-2.5 py-1 rounded-md text-[10px] font-bold transition-all ${
+                                        isPresentDisabled
+                                          ? 'opacity-40 cursor-not-allowed bg-slate-100 text-slate-400 border border-slate-200'
+                                          : s.status === status
+                                            ? 'bg-slate-800 text-white'
+                                            : `bg-slate-100 ${cls}`
+                                      }`}
+                                    >
+                                      {isPresentDisabled ? '🔒 ' : ''}{label}
+                                    </button>
+                                  );
+                                })}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ================= TAB 4: DEMOS (SUBJECT MATTER EXPERT AUTO-ROUTING) ================= */}
+          {activeNav === 'demos' && (
+            <div className="space-y-6 max-w-[1280px]">
+              
+              {/* Top Banner: Demo Sessions & Expert Routing Policy */}
+              <div className="bg-[#0f212d] rounded-2xl p-6 sm:p-7 text-white border border-[#1b3446] shadow-sm flex flex-col md:flex-row md:items-start justify-between gap-4">
+                <div className="space-y-2 max-w-3xl">
+                  <div className="flex items-center gap-2">
+                    <span className="text-base">🎯</span>
+                    <h2 className="text-lg font-bold text-white">Demo Sessions · Course Expert Auto-Routing</h2>
+                  </div>
+                  <p className="text-xs text-slate-300 font-medium leading-relaxed">
+                    When a student books a demo, our system matches the chosen course to that subject's <strong className="text-white font-bold">Designated Faculty Expert</strong>. The demo notification is <strong className="text-emerald-400 font-bold">dispatched directly to that trainer first</strong>. Run the demo session, then mark <strong className="text-white font-bold">Attended</strong> or <strong className="text-white font-bold">Missed</strong> to sync live with HR.
+                  </p>
+                </div>
+
+                <div className="flex flex-col sm:flex-row gap-2 shrink-0">
+                  <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold bg-emerald-950/80 text-emerald-300 border border-emerald-700/60 shadow-sm">
+                    <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                    <span>1st Priority Routing Active</span>
+                  </span>
+                </div>
+              </div>
+
+              {/* Priority Notifications Alert Section (if pending urgent demo alerts) */}
+              {newDemoAlerts.length > 0 && (
+                <div className="bg-gradient-to-r from-amber-50 via-teal-50 to-emerald-50 border-2 border-teal-500 rounded-2xl p-5 sm:p-6 shadow-md space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="text-lg">🔔</span>
+                      <h3 className="text-sm sm:text-base font-extrabold text-slate-900">
+                        Urgent Demo Booking Notifications — Sent to You First ({newDemoAlerts.length})
+                      </h3>
+                    </div>
+                    <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-amber-200 text-amber-900 border border-amber-300 uppercase tracking-wide">
+                      Awaiting Acknowledgment
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                    {newDemoAlerts.map(alert => (
+                      <div key={alert._id || alert.id} className="bg-white rounded-xl p-4 border border-teal-300 shadow-xs flex flex-col justify-between space-y-3">
+                        <div className="space-y-1.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-extrabold text-slate-900 text-sm">{alert.candidateName}</span>
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-teal-100 text-teal-800 border border-teal-200">
+                              ★ Course SME Matched
+                            </span>
+                          </div>
+                          <div className="text-xs font-semibold text-[#00897b]">
+                            {alert.course}
+                          </div>
+                          <div className="text-[11px] text-slate-600 font-medium">
+                            Phone: <span className="font-mono font-bold text-slate-800">{alert.phone}</span> · Slot: <span className="font-bold text-slate-800">{[alert.preferredDate, alert.timeSlot || alert.time].filter(Boolean).join(' ') || '—'}</span>
+                          </div>
+                          <div className="text-[11px] text-slate-500">
+                            Mode: {alert.mode || '—'} · Language: {alert.language || '—'}{alert.bookedBy ? ` · Booked by ${alert.bookedBy}` : ''}
+                          </div>
+                          {alert.trainerMapping && (
+                            <div className="text-[10.5px] text-slate-500 italic bg-slate-50 p-2 rounded-lg border border-slate-100">
+                              {alert.trainerMapping}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-2 pt-1 border-t border-slate-100">
+                          <button
+                            onClick={() => handleAcknowledgeDemo(alert._id || alert.id)}
+                            className="flex-1 py-2 rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white text-xs font-bold transition-all shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                          >
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <span>Accept Demo Slot</span>
+                          </button>
+                          <button
+                            onClick={() => setActiveNav('session_room')}
+                            className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer"
+                          >
+                            <Play className="w-3 h-3 fill-current" />
+                            <span>Room</span>
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Demos reassigned AWAY from me (e.g. I was on leave) */}
+              {reassignedAwayDemos.length > 0 && (
+                <div className="bg-amber-50 rounded-2xl p-5 border border-amber-200/90 shadow-sm space-y-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm">↪️</span>
+                    <h3 className="text-sm font-bold text-amber-900">
+                      {reassignedAwayDemos.length} demo{reassignedAwayDemos.length === 1 ? '' : 's'} reassigned away from you
+                    </h3>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                    {reassignedAwayDemos.map((d) => (
+                      <div key={d._id} className="p-3 rounded-xl bg-white border border-amber-200/80 text-xs space-y-1">
+                        <div className="font-bold text-slate-900 truncate">{d.candidateName}</div>
+                        <div className="text-[11px] text-slate-500">{d.course} · {d.preferredDate} {d.timeSlot || d.time || ''}</div>
+                        <div className="text-[11px] text-amber-700 font-semibold">
+                          Now with {d.trainer || 'another trainer'}{d.reassignmentReason ? ` · ${d.reassignmentReason}` : ''}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Card 2: HR–Booked Demos · Your Course Expert Bucket */}
+              <div className="bg-white rounded-2xl p-6 sm:p-7 border border-slate-200/90 shadow-sm space-y-4">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm">🎴</span>
+                    <h3 className="text-base font-bold text-slate-900">
+                      Your Course Expert Demo Bucket
+                    </h3>
+                    <span className="text-xs text-slate-500 font-medium">
+                      ({trainerName} · {trainerRole})
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setShowDemoBucket(!showDemoBucket)}
+                      className="text-[11px] text-[#00897b] font-semibold hover:underline cursor-pointer"
+                    >
+                      {showDemoBucket ? 'Toggle View' : 'Show All'}
+                    </button>
+                    <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-teal-50 text-teal-800 border border-teal-200 font-mono">
+                      {`${myExpertDemos.length} assigned to you`}
+                    </span>
+                  </div>
+                </div>
+
+                {!showDemoBucket || myExpertDemos.length === 0 ? (
+                  <div className="py-8 text-center text-xs text-slate-500 font-medium">
+                    No upcoming demos booked for your course expertise right now.
+                  </div>
+                ) : (
+                  <div className="pt-2 space-y-4 animate-fadeIn">
+                    {(() => {
+                      const upcomingSession = myDemoSessions
+                        .filter(s => s.students.some(d => lc(d.status) === 'confirmed' && (!d.trainerId || d.trainerId === trainerId)))
+                        .sort((x, y) => String(x.preferredDate).localeCompare(String(y.preferredDate)))[0];
+                      if (!upcomingSession) return null;
+                      return (
+                        <div className="p-4 rounded-xl bg-teal-50/70 border border-teal-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+                          <div>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-xs font-black text-slate-900">Next Group Demo Session · {upcomingSession.course}</span>
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-teal-100 text-teal-800 border border-teal-200 font-mono">
+                                {[upcomingSession.preferredDate, upcomingSession.timeSlot].filter(Boolean).join(' ')}
+                              </span>
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 font-mono">
+                                {upcomingSession.students.length} Student{upcomingSession.students.length > 1 ? 's' : ''} at once
+                              </span>
+                            </div>
+                            <div className="text-xs text-slate-600 mt-1">
+                              All {upcomingSession.students.length} candidates ({upcomingSession.students.map(s => s.candidateName).join(', ')}) will join this single live classroom together, each from their own link.
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <button
+                              onClick={() => handleJoinDemoSession(upcomingSession)}
+                              className="px-4 py-2 rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white text-xs font-bold shadow-sm shrink-0 flex items-center gap-1.5 cursor-pointer transition-all active:scale-95"
+                            >
+                              <Play className="w-3.5 h-3.5 fill-current" />
+                              <span>Start Group Demo</span>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    <div className="space-y-4 pt-1">
+                      {myDemoSessions.map((session) => {
+                        const hasBooked = session.students.some(s => lc(s.status) === 'booked');
+                        const allAttended = session.students.length > 0 && session.students.every(s => lc(s.status) === 'attended');
+                        return (
+                          <div key={session.key} className="rounded-2xl border border-slate-200 bg-white hover:border-teal-400 transition-all p-5 space-y-4 shadow-xs">
+                            {/* Session Header Bar */}
+                            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+                              <div className="space-y-1">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="text-sm font-extrabold text-slate-900">
+                                    Demo Session · {session.course}
+                                  </span>
+                                  <span className="px-2.5 py-0.5 rounded-md text-[11px] font-mono font-bold bg-slate-100 text-slate-700 border border-slate-200">
+                                    🕒 {[session.preferredDate, session.timeSlot].filter(Boolean).join(' · ')}
+                                  </span>
+                                  <span className="px-2.5 py-0.5 rounded-md text-[11px] font-bold bg-teal-50 text-teal-800 border border-teal-200 flex items-center gap-1">
+                                    <span>👥</span>
+                                    <span>{session.students.length} Candidates Booked (Capacity: 6 · All Taken at Once)</span>
+                                  </span>
+                                  {allAttended && (
+                                    <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                      ✓ All Attended
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-xs text-slate-500 font-medium">
+                                  {session.mode || 'Online (Zoom Live)'}{session.language ? ` · Language: ${session.language}` : ''}{session.location ? ` · Branch: ${session.location}` : ''}
+                                </div>
+                              </div>
+
+                              {/* Unified Session Action Buttons */}
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <button
+                                  onClick={() => handleJoinDemoSession(session)}
+                                  className="px-3.5 py-2 rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white text-xs font-bold shadow-sm flex items-center gap-1.5 cursor-pointer transition-all active:scale-95"
+                                >
+                                  <Play className="w-3.5 h-3.5 fill-current" />
+                                  <span>{session.link && session.meetingProvider === 'google_meet' ? 'Open Google Meet' : 'Start Group Demo'}</span>
+                                </button>
+                                <button
+                                  onClick={() => handleEmailAllSession(session)}
+                                  className="px-3 py-2 rounded-xl bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-200 text-xs font-bold transition-all cursor-pointer"
+                                  title="Email the meeting link to all candidates who provided an email"
+                                >
+                                  ✉️ Email All ({session.students.filter(s => s.email).length})
+                                </button>
+                                {hasBooked && (
+                                  <button
+                                    onClick={() => handleBatchAcknowledge(session)}
+                                    className="px-3 py-2 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 text-xs font-bold transition-all cursor-pointer"
+                                    title="Accept all pending bookings for this session"
+                                  >
+                                    Accept Slot for All
+                                  </button>
+                                )}
+                                {!allAttended && (
+                                  <button
+                                    onClick={() => handleMarkAllAttended(session)}
+                                    className="px-3 py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold transition-all cursor-pointer"
+                                    title="Mark all candidates in this session as Attended and sync with HR"
+                                  >
+                                    ✓ Mark All Attended
+                                  </button>
+                                )}
+                              </div>
+
+                              {/* Google Meet link — one link for the whole group session;
+                                  paste it once, it's shared with every candidate below. */}
+                              <div className="flex items-center gap-2 flex-wrap w-full pt-1">
+                                <input
+                                  value={meetLinkDrafts[session.key] ?? session.link ?? ''}
+                                  onChange={(e) => setMeetLinkDrafts((d) => ({ ...d, [session.key]: e.target.value }))}
+                                  placeholder="Paste your Google Meet link for this session…"
+                                  className="flex-1 min-w-[220px] px-3 py-1.5 rounded-lg border border-slate-200 text-[11px] focus:outline-none focus:border-teal-500 bg-white"
+                                />
+                                <button
+                                  onClick={() => handleSaveMeetLink(session)}
+                                  disabled={savingMeetLinkKey === session.key}
+                                  className="px-2.5 py-1.5 rounded-lg bg-slate-900 text-white text-[11px] font-bold disabled:opacity-40 cursor-pointer"
+                                >
+                                  {savingMeetLinkKey === session.key ? 'Saving…' : session.link ? 'Update' : 'Save & Share'}
+                                </button>
+                                {session.link && (
+                                  <button
+                                    onClick={() => handleCopyMeetLink(session)}
+                                    className="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-bold cursor-pointer"
+                                    title="Copy meeting link"
+                                  >
+                                    📋 Copy
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Candidate Attendees Grid */}
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                              {session.students.map((lead, idx) => (
+                                <div key={lead._id || lead.id || idx} className="p-3.5 rounded-xl border border-slate-200/90 bg-slate-50/50 hover:bg-white hover:border-teal-300 transition-all text-xs space-y-2.5">
+                                  <div className="flex items-center justify-between gap-1">
+                                    <span className="font-extrabold text-slate-900 text-[12.5px] truncate">{lead.candidateName}</span>
+                                    <span className={`text-[9.5px] font-mono font-bold px-2 py-0.5 rounded shrink-0 ${
+                                      lead.status?.toLowerCase() === 'attended' ? 'bg-emerald-100 text-emerald-800' :
+                                      lead.status?.toLowerCase() === 'missed' ? 'bg-rose-100 text-rose-800' :
+                                      lead.status?.toLowerCase() === 'confirmed' ? 'bg-teal-100 text-teal-800' :
+                                      'bg-amber-100 text-amber-800'
+                                    }`}>{lead.status?.toUpperCase() || 'BOOKED'}</span>
+                                  </div>
+
+                                  {lead.reassigned && lead.originalTrainerId && lead.originalTrainerId !== trainerId && (
+                                    <div className="text-[9.5px] text-blue-700 font-bold bg-blue-50 px-1.5 py-1 rounded-lg border border-blue-200">
+                                      ↪ Reassigned to you from {lead.originalTrainerName || 'another trainer'}{lead.reassignmentReason ? ` · ${lead.reassignmentReason}` : ''}
+                                    </div>
+                                  )}
+
+                                  {lead.autoMissed && (
+                                    <div className="text-[9.5px] text-rose-700 font-bold bg-rose-50 px-1.5 py-1 rounded-lg border border-rose-200">
+                                      ⏱ Auto-marked missed · scheduled time passed without being started. Ask Head of Trainer to reschedule.
+                                    </div>
+                                  )}
+
+                                  <div className="text-[11px] text-slate-500 font-medium space-y-0.5">
+                                    <div>📞 <span className="font-mono text-slate-700">{lead.phone}</span></div>
+                                    {lead.email && <div className="truncate">✉️ <span className="text-slate-700">{lead.email}</span></div>}
+                                    {lead.bookedBy && <div>👤 Booked by: {lead.bookedBy}</div>}
+                                  </div>
+
+                                  {/* Notification status */}
+                                  {lead.notificationSent === true ? (
+                                    <div className="text-[9.5px] text-emerald-700 font-semibold bg-emerald-50 p-1.5 rounded-lg border border-emerald-200 flex items-center justify-between">
+                                      <span>✓ Notification Delivered</span>
+                                      <span className="text-[9px] bg-emerald-200/70 text-emerald-900 px-1 rounded">1st Priority</span>
+                                    </div>
+                                  ) : (
+                                    <div className="text-[9.5px] text-rose-700 font-medium bg-rose-50 p-1.5 rounded-lg border border-rose-200">
+                                      {lead.notificationBlockReason || lead.conflictReason || 'Condition not met'}
+                                    </div>
+                                  )}
+
+                                  {/* Per-candidate Actions */}
+                                  <div className="pt-1.5 border-t border-slate-200/70 flex flex-col gap-1.5">
+                                    <div className="flex gap-1.5">
+                                      <button
+                                        onClick={() => handleSendDemoLink(lead)}
+                                        title="Send this candidate's join link via WhatsApp"
+                                        className="flex-1 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-[10px] font-bold transition-colors cursor-pointer text-center"
+                                      >
+                                        WhatsApp
+                                      </button>
+                                      {lead.email && (
+                                        <button
+                                          onClick={() => handleEmailDemoLink(lead)}
+                                          title="Email this candidate's join link"
+                                          className="flex-1 py-1 rounded-lg bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-200 text-[10px] font-bold transition-colors cursor-pointer text-center"
+                                        >
+                                          Email
+                                        </button>
+                                      )}
+                                    </div>
+
+                                    <div className="flex gap-1.5">
+                                      <button
+                                        onClick={() => setDemoOutcome(lead, 'attended')}
+                                        className={`flex-1 py-1 rounded-lg border text-[10.5px] font-bold transition-colors cursor-pointer text-center ${
+                                          lc(lead.status) === 'attended'
+                                            ? 'bg-emerald-600 text-white border-emerald-600'
+                                            : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-200'
+                                        }`}
+                                      >
+                                        ✓ Attended
+                                      </button>
+                                      <button
+                                        onClick={() => setDemoOutcome(lead, 'missed')}
+                                        className={`flex-1 py-1 rounded-lg border text-[10.5px] font-bold transition-colors cursor-pointer text-center ${
+                                          lc(lead.status) === 'missed'
+                                            ? 'bg-rose-600 text-white border-rose-600'
+                                            : 'bg-rose-50 hover:bg-rose-100 text-rose-800 border-rose-200'
+                                        }`}
+                                      >
+                                        ✕ No-show
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Card 3: Trainer roster (live from Trainer Settings) */}
+              <div className="bg-white rounded-2xl p-6 sm:p-7 border border-slate-200/90 shadow-sm space-y-4">
+                <div className="flex items-center justify-between pb-1">
+                  <div>
+                    <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                      <span>🎓</span> Demo Routing Roster
+                    </h3>
+                    <p className="text-xs text-slate-500 font-medium mt-0.5">
+                      Live trainer roster. A demo is routed to trainers matching the student's language and branch who are in shift and free at the slot.
+                    </p>
+                  </div>
+                  <span className="text-xs font-bold px-3 py-1 rounded-full bg-slate-100 text-slate-700">
+                    {trainerRoster.filter(t => t.active !== false).length} active trainers
+                  </span>
+                </div>
+
+                {trainerRoster.length === 0 ? (
+                  <div className="py-6 text-center text-xs text-slate-400">No trainers configured in Trainer Settings yet.</div>
+                ) : (
+                  <div className="overflow-x-auto rounded-xl border border-slate-100">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead>
+                        <tr className="bg-slate-50 text-slate-500 border-b border-slate-200 uppercase tracking-wider text-[10px]">
+                          <th className="py-3 px-4 font-bold">Trainer</th>
+                          <th className="py-3 px-4 font-bold">Course</th>
+                          <th className="py-3 px-4 font-bold">Branch & Shift</th>
+                          <th className="py-3 px-4 font-bold">Languages</th>
+                          <th className="py-3 px-4 font-bold text-right">Demo status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 text-slate-700 font-medium">
+                        {trainerRoster.map(t => (
+                          <tr key={t.trainerId} className={`hover:bg-teal-50/40 transition-colors ${t.trainerId === trainerId ? 'bg-teal-50/50' : ''}`}>
+                            <td className="py-3 px-4 font-bold text-[#00897b]">{t.trainerName}{t.trainerId === trainerId ? ' (You)' : ''}<div className="font-mono text-[10px] text-slate-400">{t.trainerId}</div></td>
+                            <td className="py-3 px-4">{t.expertCourse || t.courseKey || '—'}</td>
+                            <td className="py-3 px-4">{[t.branchName, t.shift].filter(Boolean).join(' · ') || '—'}</td>
+                            <td className="py-3 px-4">{(t.languages || []).join(', ') || '—'}</td>
+                            <td className="py-3 px-4 text-right">
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${t.active === false ? 'bg-slate-100 text-slate-500' : 'bg-emerald-100 text-emerald-800'}`}>
+                                {t.active === false ? 'Inactive' : 'Receives demos'}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              {/* Card 3: This Month (Metrics Table) */}
+              <div className="bg-white rounded-2xl p-6 sm:p-7 border border-slate-200/90 shadow-sm space-y-4">
+                <div className="flex items-center justify-between pb-1">
+                  <h3 className="text-base font-bold text-slate-900">
+                    This Month · {monthLabel}
+                  </h3>
+                  <button
+                    onClick={() => setShowConversionModal(true)}
+                    className="text-xs font-bold text-[#00897b] hover:underline flex items-center gap-1"
+                  >
+                    <span>Conversion</span>
+                    <span>→</span>
+                  </button>
+                </div>
+
+                <div className="divide-y divide-slate-100 text-xs">
+                  {[
+                    ['Demos routed to you', myMonthDemos.length],
+                    ['Accepted', myMonthDemos.filter(d => ['confirmed', 'attended', 'missed'].includes(lc(d.status)) && d.trainerId === trainerId).length],
+                    ['Completed (attended)', myMonthDemos.filter(isAttended).length],
+                    ['No-shows', myMonthDemos.filter(d => lc(d.status) === 'missed').length],
+                    ['Admissions from your demos', convertedStudents.filter(st => String(st.createdAt || '').slice(0, 7) === monthKey).length]
+                  ].map(([label, value]) => (
+                    <div key={label} className="py-3.5 flex items-center justify-between">
+                      <span className="text-slate-500 font-medium">{label}</span>
+                      <span className="font-bold text-slate-900 text-sm">{value}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+            </div>
+          )}
+
+          {/* ================= TAB 5: DOUBT BOX ================= */}
+          {activeNav === 'doubts' && (
+            <div className="space-y-4 max-w-[1280px]">
+              
+              {/* Main White Card Container */}
+              <div className="bg-white rounded-3xl p-7 border border-slate-200/90 shadow-sm space-y-5">
+                
+                {/* Header with Bubble Icon */}
+                <div className="flex items-center gap-2">
+                  <span className="text-base text-slate-700">💬</span>
+                  <h2 className="text-base font-bold text-slate-900 tracking-tight">
+                    Doubt Box
+                  </h2>
+                </div>
+
+                {/* Filter Pills Row */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    onClick={() => setActiveDoubtFilter('New')}
+                    className={`px-3.5 py-1 rounded-full text-xs font-semibold transition-all ${
+                      activeDoubtFilter === 'New'
+                        ? 'bg-blue-600 text-white shadow-sm'
+                        : 'bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-100'
+                    }`}
+                  >
+                    {myDoubts.filter(d => d.status === 'New').length} New
+                  </button>
+
+                  <button
+                    onClick={() => setActiveDoubtFilter('Pending')}
+                    className={`px-3.5 py-1 rounded-full text-xs font-semibold transition-all ${
+                      activeDoubtFilter === 'Pending'
+                        ? 'bg-amber-600 text-white shadow-sm'
+                        : 'bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-100'
+                    }`}
+                  >
+                    {myDoubts.filter(d => d.status === 'Pending').length} Pending
+                  </button>
+
+                  <button
+                    onClick={() => setActiveDoubtFilter('Replied')}
+                    className={`px-3.5 py-1 rounded-full text-xs font-semibold transition-all ${
+                      activeDoubtFilter === 'Replied'
+                        ? 'bg-emerald-600 text-white shadow-sm'
+                        : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-100'
+                    }`}
+                  >
+                    {myDoubts.filter(d => d.status === 'Replied' || d.reply).length} Replied
+                  </button>
+
+                  <button
+                    onClick={() => setActiveDoubtFilter('Overdue')}
+                    className={`px-3.5 py-1 rounded-full text-xs font-semibold transition-all ${
+                      activeDoubtFilter === 'Overdue'
+                        ? 'bg-slate-700 text-white shadow-sm'
+                        : 'bg-slate-50 text-slate-500 hover:bg-slate-100 border border-slate-100'
+                    }`}
+                  >
+                    {myDoubts.filter(d => d.status === 'Overdue').length} Overdue
+                  </button>
+
+                  {activeDoubtFilter !== 'All' && (
+                    <button
+                      onClick={() => setActiveDoubtFilter('All')}
+                      className="text-xs text-slate-400 hover:text-slate-700 underline ml-1"
+                    >
+                      Show all
+                    </button>
+                  )}
+                </div>
+
+                {/* Doubt Cards List */}
+                <div className="space-y-4">
+                  {myDoubts
+                    .filter(d => {
+                      if (activeDoubtFilter === 'All') return true;
+                      if (activeDoubtFilter === 'New') return d.status === 'New';
+                      if (activeDoubtFilter === 'Pending') return d.status === 'Pending';
+                      if (activeDoubtFilter === 'Replied') return d.status === 'Replied' || d.reply;
+                      if (activeDoubtFilter === 'Overdue') return d.status === 'Overdue';
+                      return true;
+                    })
+                    .map(item => (
+                      <div
+                        key={item.id}
+                        className="rounded-2xl border border-slate-200/90 p-5 space-y-3 hover:border-slate-300 transition-all bg-white shadow-none"
+                      >
+                        {/* Question Title in quotes */}
+                        <div className="text-sm font-bold text-slate-900 tracking-tight">
+                          "{item.question}"
+                        </div>
+
+                        {/* Metadata line with badges */}
+                        <div className="flex items-center gap-2 flex-wrap text-xs">
+                          <span className="text-slate-500 font-medium">
+                            {item.student} · {item.topic} · {item.timeText}
+                          </span>
+
+                          <span className={`px-2.5 py-0.5 rounded-md text-[11px] font-bold ${
+                            item.status === 'New' ? 'bg-[#dbeafe] text-[#1e40af]' :
+                            item.status === 'Replied' ? 'bg-[#dcfce7] text-[#166534]' :
+                            'bg-[#fed7aa] text-[#9a3412]'
+                          }`}>
+                            {item.status}
+                          </span>
+
+                          <span className="px-2.5 py-0.5 rounded-md text-[11px] font-medium bg-[#f1f5f9] text-[#475569]">
+                            {item.slaBadge}
+                          </span>
+                        </div>
+
+                        {/* Existing Reply if any */}
+                        {item.reply && (
+                          <div className="p-3 rounded-xl bg-slate-50 border border-slate-100 text-xs text-slate-700">
+                            <span className="font-bold text-emerald-800 block text-[10px] uppercase mb-0.5">Faculty Reply:</span>
+                            {item.reply}
+                          </div>
+                        )}
+
+                        {/* Reply Action Button */}
+                        <div>
+                          <button
+                            onClick={() => {
+                              setActiveDoubtModal(item);
+                              setDoubtReplyText(item.reply || '');
+                            }}
+                            className="px-5 py-1.5 rounded-lg bg-[#0e1f2b] hover:bg-[#162d3e] text-white text-xs font-bold transition-all shadow-sm active:scale-[0.98]"
+                          >
+                            Reply
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+
+              </div>
+
+              {/* Bottom SLA Footnote Box */}
+              <div className="p-4 rounded-2xl bg-white border border-slate-200/80 text-xs text-slate-500 font-medium shadow-sm leading-relaxed">
+                SLA: normal 24h · assessment 12h · exam/mock 6h. Miss the SLA and it <strong className="font-bold text-slate-900">auto–escalates</strong> to the Training Head. Your doubt–resolution rate feeds your performance score.
+              </div>
+
+            </div>
+          )}
+
+          {/* ================= COMBINED TAB: SCORECARD & INCENTIVE LEDGER ================= */}
+          {(activeNav === 'scorecard' || activeNav === 'incentives') && (
+            <div className="space-y-6 max-w-[1280px] animate-fadeIn">
+              
+              {/* 1. Unified Hero Dark Indigo & Slate Card */}
+              <div className="bg-gradient-to-br from-[#1e1e3f] via-[#24234b] to-[#1a1936] rounded-3xl p-6 sm:p-7 text-white shadow-lg border border-[#37356c] space-y-6">
+                
+                {/* Header Row: Title & View Pills */}
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-2 border-b border-[#37356c]/70">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2.5">
+                      <span className="w-2.5 h-2.5 bg-amber-400 rounded-sm inline-block shrink-0"></span>
+                      <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight flex items-center gap-2">
+                        <span>My Scorecard & Incentive Ledger</span>
+                      </h2>
+                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-[#353366] text-slate-200 border border-[#484687]">
+                        {monthLabel}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-300 font-normal">
+                      Unified performance metrics, dynamic quality variable pay, and demo/admission incentive earnings in one place.
+                    </p>
+                  </div>
+
+                  {/* Filter Sub-Tabs */}
+                  <div className="flex items-center gap-1.5 p-1 bg-[#16152e] rounded-2xl border border-[#37356c] self-start md:self-auto shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setGrowthTab('all')}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                        growthTab === 'all'
+                          ? 'bg-[#00897b] text-white shadow-sm'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      All Combined
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setGrowthTab('scorecard')}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                        growthTab === 'scorecard'
+                          ? 'bg-[#00897b] text-white shadow-sm'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      ⭐ Scorecard & Quality
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setGrowthTab('incentives')}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                        growthTab === 'incentives'
+                          ? 'bg-[#00897b] text-white shadow-sm'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      💰 Incentive Ledger ({incentiveEvents.length})
+                    </button>
+                  </div>
+                </div>
+
+                {/* 4 Summary Stat Tiles */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  {/* Metric 1: Action Score */}
+                  <div className="bg-[#2a2955]/80 rounded-2xl p-4 border border-[#3e3d79]">
+                    <div className="text-[10px] font-bold tracking-[0.18em] text-slate-400 uppercase">
+                      ACTION SCORE
+                    </div>
+                    <div className="flex items-baseline gap-2 mt-1">
+                      <span className="text-3xl font-black text-white">{scorecardMetrics.actionScore}</span>
+                      <span className="text-xs text-slate-400 font-bold">/ 100</span>
+                    </div>
+                    <div className="text-xs font-semibold text-emerald-400 mt-1 truncate">
+                      {scorecardMetrics.zone}
+                    </div>
+                  </div>
+
+                  {/* Metric 2: Quality Score */}
+                  <div className="bg-[#2a2955]/80 rounded-2xl p-4 border border-[#3e3d79]">
+                    <div className="text-[10px] font-bold tracking-[0.18em] text-slate-400 uppercase">
+                      QUALITY SCORE
+                    </div>
+                    <div className="flex items-baseline gap-2 mt-1">
+                      <span className="text-3xl font-black text-white">{scorecardMetrics.qualityScore}</span>
+                      <span className="text-xs text-slate-400 font-bold">/ 100</span>
+                    </div>
+                    <div className={`text-xs font-semibold mt-1 ${scorecardMetrics.gatesPass ? 'text-emerald-400' : 'text-amber-300'}`}>
+                      {scorecardMetrics.gatesPass ? '✓ Gates pass (≥75% att.)' : '⏳ Gates pending'}
+                    </div>
+                  </div>
+
+                  {/* Metric 3: Variable Pay (Quality) */}
+                  <div className="bg-[#2a2955]/80 rounded-2xl p-4 border border-[#3e3d79]">
+                    <div className="text-[10px] font-bold tracking-[0.18em] text-slate-400 uppercase">
+                      VARIABLE PAY
+                    </div>
+                    <div className="text-3xl font-black text-white mt-1">
+                      {scorecardMetrics.payBase > 0 ? `₹${scorecardMetrics.variablePay.toLocaleString()}` : '—'}
+                    </div>
+                    <div className="text-xs text-slate-400 font-medium mt-1 truncate">
+                      {scorecardMetrics.payBase > 0 ? `Base: ₹${scorecardMetrics.payBase.toLocaleString()}` : 'Base not configured'}
+                    </div>
+                  </div>
+
+                  {/* Metric 4: Event Cash */}
+                  <div className="bg-[#2a2955]/80 rounded-2xl p-4 border border-[#3e3d79]">
+                    <div className="text-[10px] font-bold tracking-[0.18em] text-slate-400 uppercase">
+                      EVENT CASH (VERIFIED)
+                    </div>
+                    <div className="text-3xl font-black text-emerald-400 mt-1">
+                      ₹{totalEventCash.toLocaleString()}
+                    </div>
+                    <div className="text-xs text-slate-400 font-medium mt-1 truncate">
+                      {incentiveEvents.filter(e => e.isVerified).length} verified of {incentiveEvents.length} events
+                    </div>
+                  </div>
+                </div>
+
+                {/* Total Monthly Take Highlight Banner */}
+                <div className="bg-gradient-to-r from-emerald-950/60 via-[#1e3a2b] to-emerald-950/60 border border-emerald-500/40 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-emerald-500/20 border border-emerald-400/30 flex items-center justify-center shrink-0">
+                      <TrendingUp className="w-5 h-5 text-emerald-400" />
+                    </div>
+                    <div>
+                      <div className="text-xs font-bold text-emerald-300 tracking-wider uppercase">
+                        TOTAL ESTIMATED MONTHLY TAKE
+                      </div>
+                      <div className="text-xs text-slate-300 font-normal mt-0.5">
+                        Variable pay (₹{scorecardMetrics.variablePay.toLocaleString()}) + Verified event cash (₹{totalEventCash.toLocaleString()})
+                      </div>
+                    </div>
+                  </div>
+                  <div className="text-left sm:text-right">
+                    <div className="text-3xl sm:text-4xl font-black text-emerald-400 tracking-tight">
+                      ₹{monthlyTake.toLocaleString()}
+                    </div>
+                    <div className="text-[10px] font-bold tracking-widest text-emerald-300/80 uppercase mt-0.5">
+                      Earned This Month
+                    </div>
+                  </div>
+                </div>
+
+              </div>
+
+              {/* ================= SECTION A: SCORECARD & QUALITY ================= */}
+              {(growthTab === 'all' || growthTab === 'scorecard') && (
+                <div className="space-y-6 animate-fadeIn">
+                  
+                  {/* Layer 1 — Action Score Breakdown Card */}
+                  <div className="bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-7 shadow-sm space-y-4">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div className="flex items-center gap-2 text-sm font-bold text-slate-900">
+                        <span className="text-base">📊</span>
+                        <span>Layer 1 — Action Score Breakdown</span>
+                      </div>
+                      <span className="px-3 py-0.5 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-500 border border-slate-200/80">
+                        Dynamic Weights
+                      </span>
+                    </div>
+
+                    <p className="text-xs text-slate-500 font-normal leading-relaxed">
+                      Each factor is computed as achievement × weight, normalised over all active performance indicators. <span className="text-slate-600 font-bold">Total applicable score earned: {scorecardMetrics.actionScore} / 100.</span>
+                    </p>
+
+                    {/* Action Score Table */}
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead>
+                          <tr className="border-b border-slate-100 text-[10px] font-bold text-slate-400 tracking-wider uppercase">
+                            <th className="py-3 px-3 font-semibold">FACTOR</th>
+                            <th className="py-3 px-3 font-semibold">INPUTS</th>
+                            <th className="py-3 px-3 font-semibold text-center sm:text-left">ACHIEVEMENT</th>
+                            <th className="py-3 px-3 font-semibold text-center sm:text-left">WEIGHT</th>
+                            <th className="py-3 px-3 font-semibold text-right">EARNED</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {scorecardMetrics.factors.map((item, idx) => (
+                            <tr key={idx} className="hover:bg-slate-50/60 transition-colors">
+                              <td className="py-3 px-3">
+                                <span className={`font-bold ${item.isNa ? 'text-slate-400 font-semibold' : 'text-slate-900'}`}>
+                                  {item.factor}
+                                </span>
+                                {item.tag && (
+                                  <span className="ml-1.5 text-[9px] font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200/60">
+                                    {item.tag}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-3 px-3">
+                                <span className={`font-mono ${item.isNa ? 'text-slate-400 italic text-[11px]' : 'text-slate-500 font-medium'}`}>
+                                  {item.inputs}
+                                </span>
+                              </td>
+                              <td className="py-3 px-3 text-center sm:text-left">
+                                <span className={`font-bold ${item.isNa ? 'text-rose-400' : 'text-emerald-600'}`}>
+                                  {item.achievement}
+                                </span>
+                              </td>
+                              <td className="py-3 px-3 text-center sm:text-left">
+                                <span className={`font-medium ${item.isNa ? 'text-slate-400' : 'text-slate-500'}`}>
+                                  {item.weight}
+                                </span>
+                              </td>
+                              <td className="py-3 px-3 text-right">
+                                <span className={`font-bold font-mono ${item.isNa ? 'text-slate-400 font-normal' : 'text-slate-900'}`}>
+                                  {item.earned}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {/* Variable Pay · Quality Buckets Card */}
+                  <div className="bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-7 shadow-sm space-y-4">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div className="flex items-center gap-2 text-sm font-bold text-slate-900">
+                        <span className="text-base">💰</span>
+                        <span>Variable Pay · Quality Buckets</span>
+                      </div>
+                      <span className={`px-3 py-0.5 rounded-full text-xs font-bold ${
+                        scorecardMetrics.gatesPass 
+                          ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' 
+                          : 'bg-amber-50 text-amber-700 border border-amber-200'
+                      }`}>
+                        {scorecardMetrics.gatesPass ? 'Gates pass' : 'Gates pending'}
+                      </span>
+                    </div>
+
+                    <p className="text-xs text-slate-500 font-normal leading-relaxed">
+                      {scorecardMetrics.payBase > 0
+                        ? `Quality score × ₹${scorecardMetrics.payBase.toLocaleString()} = your variable pay. Gate: batch attendance ≥75%.`
+                        : 'Variable pay base is not configured on your trainer profile yet (admin → Trainer Settings).'} Buckets marked N/A have no data source yet and are excluded from the score.
+                    </p>
+
+                    {/* Quality Buckets Table */}
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead>
+                          <tr className="border-b border-slate-100 text-[10px] font-bold text-slate-400 tracking-wider uppercase">
+                            <th className="py-3 px-3 font-semibold">BUCKET</th>
+                            <th className="py-3 px-3 font-semibold text-center sm:text-left">WEIGHT</th>
+                            <th className="py-3 px-3 font-semibold text-center sm:text-left">ACHIEVED</th>
+                            <th className="py-3 px-3 font-semibold text-right">EARNED</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {scorecardMetrics.qualityBuckets.map((row, idx) => (
+                            <tr key={idx} className="hover:bg-slate-50/60 transition-colors">
+                              <td className="py-3.5 px-3 font-bold text-slate-900">{row.bucket}</td>
+                              <td className="py-3.5 px-3 text-slate-500 font-medium text-center sm:text-left">{row.weight}</td>
+                              <td className="py-3.5 px-3 font-bold text-slate-800 text-center sm:text-left">{row.achieved}</td>
+                              <td className="py-3.5 px-3 font-bold font-mono text-slate-900 text-right">{row.earned}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Summary Rows */}
+                    <div className="pt-2 space-y-3">
+                      {/* QUALITY SCORE Row */}
+                      <div className="bg-[#f0fdf4] border border-[#bbf7d0] rounded-xl px-4 py-3 flex items-center justify-between">
+                        <div className="text-xs font-black text-[#15803d] tracking-wider uppercase">
+                          QUALITY SCORE
+                        </div>
+                        <div className="text-base sm:text-lg font-black text-[#15803d]">
+                          {scorecardMetrics.qualityScore} / 100
+                        </div>
+                      </div>
+
+                      {/* VARIABLE PAY (rounded) Row */}
+                      <div className="px-4 py-2 flex items-center justify-between">
+                        <div className="text-xs font-black text-slate-900 tracking-wider uppercase">
+                          VARIABLE PAY (rounded)
+                        </div>
+                        <div className="text-2xl sm:text-3xl font-black text-slate-900">
+                          {scorecardMetrics.payBase > 0 ? `₹${scorecardMetrics.variablePay.toLocaleString()}` : '—'}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                </div>
+              )}
+
+              {/* ================= SECTION B: INCENTIVE LEDGER ================= */}
+              {(growthTab === 'all' || growthTab === 'incentives') && (
+                <div className="space-y-6 animate-fadeIn">
+                  
+                  {/* Top Note / Context Header Card */}
+                  <div className="bg-[#121c2b] border border-[#1f2e42] rounded-3xl p-6 sm:p-7 text-white shadow-sm space-y-3">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div className="flex items-center gap-2.5 font-bold text-white text-base">
+                        <span className="w-2.5 h-2.5 bg-amber-400 rounded-sm inline-block shrink-0"></span>
+                        <span>Incentive Ledger · Demos & Admissions</span>
+                      </div>
+                      <span className="px-3 py-0.5 rounded-full text-[11px] font-bold bg-[#fef3c7] text-[#92400e] border border-[#fde68a]">
+                        Verified Ledger
+                      </span>
+                    </div>
+
+                    <p className="text-xs text-slate-300 font-normal leading-relaxed">
+                      Demos you delivered this month and admissions that came from your demos (matched on the candidate's phone / email).{!incentivesConfigured && ' Incentive rates are not configured on your trainer profile yet — amounts show ₹0 until admin sets them.'}
+                    </p>
+                  </div>
+
+                  {/* Events Table Card */}
+                  <div className="bg-white rounded-3xl border border-slate-200/90 shadow-sm overflow-hidden">
+                    <div className="p-6 pb-4 flex items-center justify-between border-b border-slate-100">
+                      <h2 className="text-sm font-bold text-slate-900">Events</h2>
+                      <span className="px-3 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-500 border border-slate-200/80">
+                        {incentiveEvents.length} {incentiveEvents.length === 1 ? 'row' : 'rows'}
+                      </span>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead>
+                          <tr className="border-b border-slate-100 text-[10px] font-bold text-slate-400 tracking-wider uppercase">
+                            <th className="py-3 px-4 font-semibold">EVENT</th>
+                            <th className="py-3 px-4 font-semibold">TYPE</th>
+                            <th className="py-3 px-4 font-semibold">STUDENT / CANDIDATE</th>
+                            <th className="py-3 px-4 font-semibold">ROLE</th>
+                            <th className="py-3 px-4 font-semibold text-center sm:text-left">BASE ₹</th>
+                            <th className="py-3 px-4 font-semibold text-center sm:text-left">SHARE</th>
+                            <th className="py-3 px-4 text-center">VERIFIED</th>
+                            <th className="py-3 px-4 font-semibold text-right">PAYABLE ₹</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {incentiveEvents.length === 0 ? (
+                            <tr>
+                              <td colSpan={8} className="py-8 text-center text-xs text-slate-400 font-medium">
+                                No cash-earning events recorded yet for this month.
+                              </td>
+                            </tr>
+                          ) : (
+                            incentiveEvents.map((ev) => (
+                              <tr key={ev.id} className="hover:bg-slate-50/60 transition-colors">
+                                <td className="py-3 px-4 font-mono text-slate-400 font-medium">{ev.code}</td>
+                                <td className="py-3 px-4 font-bold text-slate-900">{ev.type}</td>
+                                <td className="py-3 px-4 text-slate-600 font-medium">{ev.candidate}</td>
+                                <td className="py-3 px-4 text-slate-500 font-medium">{ev.role}</td>
+                                <td className="py-3 px-4 text-slate-800 font-medium text-center sm:text-left">₹{ev.baseAmt}</td>
+                                <td className="py-3 px-4 text-slate-500 font-medium text-center sm:text-left">{ev.share}</td>
+                                <td className="py-3 px-4 text-center">
+                                  {ev.isVerified ? (
+                                    <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-emerald-100 text-emerald-600 text-xs font-bold">
+                                      ✓
+                                    </span>
+                                  ) : (
+                                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-500 border border-slate-200/80">
+                                      Pending
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="py-3 px-4 text-right">
+                                  <span className={`font-bold font-mono ${ev.isVerified ? 'text-emerald-600' : 'text-slate-400'}`}>
+                                    ₹{ev.payable}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Dark Footer Bar inside Events Card */}
+                    <div className="bg-[#111927] px-6 py-4 flex items-center justify-between text-white border-t border-slate-800">
+                      <span className="text-xs font-bold tracking-wider uppercase text-slate-200">
+                        EVENT CASH THIS MONTH
+                      </span>
+                      <span className="text-xl sm:text-2xl font-black text-white">
+                        ₹{totalEventCash.toLocaleString()}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Monthly Take · Summary Card */}
+                  <div className="bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-7 shadow-sm space-y-3">
+                    <h2 className="text-sm font-bold text-slate-900">Monthly Take · Summary</h2>
+                    
+                    <div className="space-y-2 pt-1">
+                      <div className="flex items-center justify-between text-xs py-1.5 border-b border-slate-100">
+                        <span className="text-slate-600 font-medium">Variable pay (quality)</span>
+                        <span className="font-bold font-mono text-slate-900">₹{scorecardMetrics.variablePay.toLocaleString()}</span>
+                      </div>
+
+                      <div className="flex items-center justify-between text-xs py-1.5">
+                        <span className="text-slate-600 font-medium">Event cash (verified)</span>
+                        <span className="font-bold font-mono text-slate-900">₹{totalEventCash.toLocaleString()}</span>
+                      </div>
+
+                      {/* Highlighted MONTHLY TAKE Row */}
+                      <div className="bg-[#f0fdf4] border border-[#bbf7d0] rounded-xl px-4 py-3.5 flex items-center justify-between mt-3">
+                        <span className="text-xs font-black text-[#15803d] tracking-wider uppercase">
+                          MONTHLY TAKE
+                        </span>
+                        <span className="text-xl sm:text-2xl font-black text-[#15803d]">
+                          ₹{monthlyTake.toLocaleString()}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                </div>
+              )}
+
+            </div>
+          )}
+
+
+          {/* ================= TAB 8: MY BATCHES ================= */}
+          {activeNav === 'batches' && (
+            <div className="space-y-4 max-w-[1280px] animate-fadeIn">
+
+              {/* Active Batches White Card */}
+              <div className="bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-7 shadow-sm space-y-4">
+                <div className="flex items-center justify-between pb-1">
+                  <div className="flex items-center gap-2.5">
+                    {/* Layered Colored Cards Icon */}
+                    <div className="relative w-5 h-5 flex items-center justify-center">
+                      <span className="absolute w-3 h-3 rounded-sm bg-emerald-500 -top-0.5 -left-0.5 opacity-90"></span>
+                      <span className="absolute w-3 h-3 rounded-sm bg-sky-500 top-0.5 left-0.5 opacity-90"></span>
+                      <span className="absolute w-3 h-3 rounded-sm bg-rose-500 bottom-0 right-0 opacity-90"></span>
+                    </div>
+                    <h2 className="text-sm sm:text-base font-bold text-slate-900">Active Batches</h2>
+                  </div>
+                  <span className="text-xs text-slate-500 font-medium">
+                    {batches.length} {batches.length === 1 ? 'batch' : 'batches'} · {myStudents.length} students
+                  </span>
+                </div>
+
+                {batches.length === 0 ? (
+                  <div className="py-8 text-center text-xs text-slate-500 font-medium">
+                    No active student batches currently assigned to you.
+                  </div>
+                ) : (
+                  batches.map((batch, bIdx) => (
+                    <div key={batch.id || bIdx} className="space-y-3">
+                      <div
+                        onClick={() => setSelectedBatchDrilldown(selectedBatchDrilldown === batch.id ? null : batch.id)}
+                        className={`rounded-2xl border ${selectedBatchDrilldown === batch.id ? 'border-teal-500 ring-2 ring-teal-500/10' : 'border-slate-200/90 hover:border-slate-300'} p-4 sm:p-5 flex items-center justify-between transition-all bg-white cursor-pointer group shadow-none`}
+                      >
+                        <div className="flex items-center gap-3 sm:gap-4 min-w-0">
+                          <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg shrink-0 group-hover:scale-105 transition-transform ${
+                            bIdx % 2 === 0 ? 'bg-[#e0f2fe] text-[#0284c7]' : 'bg-[#fef3c7] text-[#d97706]'
+                          }`}>
+                            {batch.mode?.toLowerCase().includes('offline') ? '🏫' : '💻'}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-sm font-bold text-slate-900 group-hover:text-teal-700 transition-colors truncate">
+                              {batch.name}
+                            </div>
+                            <div className="text-xs text-slate-500 font-medium mt-0.5 truncate">
+                              {[batch.course, batch.module, batch.timing, batch.mode].filter(Boolean).join(' · ')}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="shrink-0 ml-3 flex items-center gap-2">
+                          <span className={`px-3 py-1 rounded-full text-xs font-bold border ${
+                            batch.students.length > (batch.maxStudents || 15)
+                              ? 'bg-rose-50 text-rose-700 border-rose-200'
+                              : batch.students.length >= (batch.minStudents || 10)
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                              : 'bg-[#eff6ff] text-[#3b82f6] border-blue-100'
+                          }`}>
+                            {batch.students.length}/{batch.maxStudents || 15} students
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Batch Expanded Students Drawer (if tapped) */}
+                      {selectedBatchDrilldown === batch.id && (
+                        <div className="p-4 rounded-2xl bg-slate-50/80 border border-slate-200/80 space-y-3 animate-fadeIn">
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                            <span className="font-bold text-slate-800">
+                              Students in Batch ({batch.name}) · {[batch.course, batch.timing].filter(Boolean).join(' · ')}
+                            </span>
+                            <div className="flex items-center gap-2">
+                              <span className="text-slate-500 font-mono text-[11px]">{batch.students.length} Enrolled</span>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setInspectBatchTarget(batch.batchId || batch.name);
+                                }}
+                                className="px-3 py-1 rounded-lg bg-teal-600 hover:bg-teal-700 text-white text-[11px] font-bold cursor-pointer"
+                              >
+                                Track Individual Progress
+                              </button>
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 text-xs">
+                            {batch.students.map((s, idx) => (
+                              <div key={s._id || s.studentId || idx} className="p-2.5 rounded-xl bg-white border border-slate-200/70 flex items-center justify-between gap-2 shadow-none">
+                                <div className="min-w-0">
+                                  <div className="font-bold text-slate-900 truncate">{s.name}</div>
+                                  <div className="text-[11px] text-slate-400 font-mono truncate">{studentKeyOf(s)}{s.syllabusModule ? ` · ${s.syllabusModule}` : ''}</div>
+                                </div>
+                                <div className="text-right shrink-0 space-y-1">
+                                  <span className={`block px-2 py-0.5 rounded text-[10px] font-bold ${
+                                    typeof s.attendancePct !== 'number' ? 'bg-slate-50 text-slate-500 border border-slate-200' : s.attendancePct < 75 ? 'bg-rose-50 text-rose-700 border border-rose-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                  }`}>
+                                    Att: {typeof s.attendancePct === 'number' ? `${s.attendancePct}%` : '—'}
+                                  </span>
+                                  <span className="block px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                                    Prog: {typeof s.syllabusProgressPct === 'number' ? `${s.syllabusProgressPct}%` : '0%'}
+                                  </span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+
+              {/* Bottom Footnote Line */}
+              <div className="text-xs text-slate-500 font-medium px-1 leading-relaxed">
+                Tap a batch to see its students. You only see students allocated to <strong className="font-bold text-slate-800">you</strong>, for <strong className="font-bold text-slate-800">your</strong> module — cross-module data is hidden by design.
+              </div>
+
+            </div>
+          )}
+
+          {/* ================= TAB: MY STUDENTS ================= */}
+          {activeNav === 'students' && (
+            <div className="space-y-4 max-w-[1280px] animate-fadeIn">
+
+              {/* Toast Notification for CCCP Marking */}
+              {cccpToast && (
+                <div className="p-3.5 rounded-2xl bg-emerald-900 text-white text-xs font-semibold flex items-center justify-between shadow-lg animate-fadeIn border border-emerald-700">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+                    <span>{cccpToast}</span>
+                  </div>
+                  <button onClick={() => setCccpToast(null)} className="text-emerald-300 hover:text-white">✕</button>
+                </div>
+              )}
+
+              {/* Head of Trainer Banner if pending allocations */}
+              {isChiefFaculty && pendingAllocationStudents.length > 0 && (
+                <div className="p-4 rounded-2xl bg-teal-50 border border-teal-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm">
+                  <div className="flex items-center gap-3">
+                    <span className="w-8 h-8 rounded-xl bg-[#00897b] text-white flex items-center justify-center font-bold text-sm">
+                      {pendingAllocationStudents.length}
+                    </span>
+                    <div>
+                      <div className="text-xs font-bold text-teal-900">Students awaiting trainer allocation</div>
+                      <div className="text-[11px] text-teal-700">Handed over by HR counsellors — assign them to respective trainers and batches.</div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setActiveNav('allocation')}
+                    className="px-4 py-2 rounded-xl bg-[#00897b] hover:bg-[#00897b]/90 text-white text-xs font-bold shadow-sm transition-all shrink-0"
+                  >
+                    Open Allocation Desk →
+                  </button>
+                </div>
+              )}
+
+              {/* Toast Notification for Readiness Marking */}
+              {readinessToast && (
+                <div className="p-3.5 rounded-2xl bg-teal-900 text-white text-xs font-semibold flex items-center justify-between shadow-lg animate-fadeIn border border-teal-700">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-teal-300" />
+                    <span>{readinessToast}</span>
+                  </div>
+                  <button onClick={() => setReadinessToast(null)} className="text-teal-300 hover:text-white">✕</button>
+                </div>
+              )}
+
+              {/* Toast Notification for Trainer Course Completion & Exam Approval */}
+              {trainerApprovalToast && (
+                <div className="p-3.5 rounded-2xl bg-indigo-950 text-white text-xs font-semibold flex items-center justify-between shadow-lg animate-fadeIn border border-indigo-700">
+                  <div className="flex items-center gap-2">
+                    <Award className="w-4 h-4 text-indigo-300" />
+                    <span>{trainerApprovalToast}</span>
+                  </div>
+                  <button onClick={() => setTrainerApprovalToast(null)} className="text-indigo-300 hover:text-white">✕</button>
+                </div>
+              )}
+
+              {/* Main White Card: My Students */}
+              <div className="bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-7 shadow-sm space-y-3.5">
+                <div className="flex items-center justify-between pb-1">
+                  <div className="flex items-center gap-2.5">
+                    <Users className="w-5 h-5 text-slate-800" />
+                    <h2 className="text-sm sm:text-base font-bold text-slate-900">My Students</h2>
+                  </div>
+                  <span className="text-xs text-slate-400 font-medium">
+                    module-wise
+                  </span>
+                </div>
+
+                {/* Real Students Rows */}
+                <div className="space-y-3">
+                  {myStudents.length === 0 && (
+                    <div className="py-8 text-center text-xs text-slate-500">No students allocated to you yet. Head of Trainer allocates students from the Allocation Desk.</div>
+                  )}
+                  {myStudents.map((student) => {
+                    const weakInfo = weakStudents.find(w => w.id === (student._id || studentKeyOf(student)));
+                    const isWeak = Boolean(weakInfo);
+                    const sId = student._id || student.studentId;
+                    const isSent = student.syllabusCompleted;
+                    const rollText = [student.studentId, student.course, student.batchName, student.syllabusModule].filter(Boolean).join(' · ');
+                    return (
+                      <div
+                        key={sId}
+                        className="rounded-2xl border border-slate-200/90 p-4 sm:p-4.5 flex items-center justify-between hover:border-slate-300 transition-all bg-white shadow-none group"
+                      >
+                        <div className="flex items-center gap-3 sm:gap-4 min-w-0">
+                          <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-sm shrink-0 ${
+                            isWeak ? 'bg-[#f8fafc] text-slate-500 border border-slate-200/70' : 'bg-[#f1f5f9] text-slate-700'
+                          }`}>
+                            {isWeak ? <span className="text-sm font-bold text-slate-500">⚠</span> : <span className="text-base">🎓</span>}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-sm font-bold text-slate-900 group-hover:text-teal-700 transition-colors truncate">{student.name}</span>
+                              {isWeak && <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#fee2e2] text-[#dc2626]">weak</span>}
+                              {(() => {
+                                const rawSt = student.jobReadyStatus || (student.trainerRecommendation === 'Ready' ? 'Job Ready' : student.trainerRecommendation);
+                                if (rawSt === 'Job Ready' || rawSt === 'Ready') {
+                                  return (
+                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1 shadow-2xs">
+                                      <Check className="w-2.5 h-2.5 stroke-[3]" />
+                                      Job Ready
+                                    </span>
+                                  );
+                                }
+                                if (rawSt === 'Needs Revision') {
+                                  return (
+                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300 flex items-center gap-1 shadow-2xs">
+                                      <AlertTriangle className="w-2.5 h-2.5" />
+                                      Needs Revision
+                                    </span>
+                                  );
+                                }
+                                if (rawSt === 'Not Ready') {
+                                  return (
+                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-300 flex items-center gap-1 shadow-2xs">
+                                      <X className="w-2.5 h-2.5 stroke-[2.5]" />
+                                      Not Ready
+                                    </span>
+                                  );
+                                }
+                                return (
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-500 border border-slate-200">
+                                    Readiness Pending
+                                  </span>
+                                );
+                              })()}
+
+                              {/* Trainer Approvals Badges */}
+                              {student.courseCompletionApproved && (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200 flex items-center gap-1 shadow-2xs">
+                                  <Award className="w-2.5 h-2.5" />
+                                  Cert Approved
+                                </span>
+                              )}
+                              {student.examApprovedByTrainer && (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200 flex items-center gap-1 shadow-2xs">
+                                  <FileCheck className="w-2.5 h-2.5" />
+                                  Exam Approved
+                                </span>
+                              )}
+                              {(student.courseCompletionStatus === 'Declined' || student.examApprovalStatus === 'Declined') && !student.courseCompletionApproved && !student.examApprovedByTrainer && (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200 flex items-center gap-1 shadow-2xs">
+                                  <X className="w-2.5 h-2.5 stroke-[2.5]" />
+                                  Approval Declined
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-xs text-slate-400 font-mono mt-0.5 truncate">{rollText}</div>
+                            <div className="text-[11px] text-slate-500 mt-0.5 truncate flex items-center gap-1.5 flex-wrap">
+                              {[
+                                typeof student.attendancePct === 'number' ? `Attendance ${student.attendancePct}%` : null,
+                                typeof student.assessmentScore === 'number' ? `Tests ${student.assessmentScore}%` : null,
+                                typeof student.readinessScore === 'number' ? `Readiness: ${student.readinessScore}%` : null,
+                                student.hrName ? `HR: ${student.hrName}` : null
+                              ].filter(Boolean).join(' · ')}
+                            </div>
+                            {(student.technicalScore != null || student.communicationScore != null || student.interviewPrepScore != null || student.mockScore != null) && (
+                              <div className="flex items-center gap-1.5 mt-1 text-[10px] text-slate-500 font-mono flex-wrap">
+                                {student.technicalScore != null && <span className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-700">Tech: {student.technicalScore}%</span>}
+                                {student.assessmentScore != null && <span className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-700">Assess: {student.assessmentScore}%</span>}
+                                {student.communicationScore != null && <span className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-700">Comm: {student.communicationScore}%</span>}
+                                {(student.interviewPrepScore != null || student.mockScore != null) && <span className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-700">Interview: {student.interviewPrepScore ?? student.mockScore}%</span>}
+                              </div>
+                            )}
+                            {student.trainerNote && (
+                              <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1 mt-1.5">HR note: {student.trainerNote}</div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="shrink-0 ml-3 flex items-center gap-2 flex-wrap justify-end">
+                          <button
+                            onClick={() => openTrainerApprovalModal(student)}
+                            className={`px-3.5 py-2 rounded-full text-xs font-bold border transition-all flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95 ${
+                              student.courseCompletionApproved && student.examApprovedByTrainer
+                                ? 'bg-purple-50 hover:bg-purple-100 text-purple-700 border-purple-200'
+                                : student.courseCompletionStatus === 'Declined' || student.examApprovalStatus === 'Declined'
+                                ? 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-200'
+                                : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border-indigo-200'
+                            }`}
+                            title="Verify syllabus completion, assessments, and overall readiness before approving course completion certificate and exam booking"
+                          >
+                            <Award className="w-3.5 h-3.5" />
+                            <span>
+                              {student.courseCompletionApproved && student.examApprovedByTrainer
+                                ? 'Cert & Exam Approved'
+                                : (student.courseCompletionApproved || student.examApprovedByTrainer)
+                                ? 'Review Approvals'
+                                : 'Approve Cert & Exam'}
+                            </span>
+                          </button>
+                          <button
+                            onClick={() => openReadinessModal(student)}
+                            className="px-3.5 py-2 rounded-full text-xs font-bold bg-teal-50 hover:bg-teal-100 text-[#00897b] border border-teal-200 transition-all flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95"
+                            title="Evaluate job readiness across Technical Knowledge, Assessments, Communication, and Interview Prep"
+                          >
+                            <Target className="w-3.5 h-3.5" />
+                            <span>Update Readiness</span>
+                          </button>
+                          {isChiefFaculty && (
+                            <button
+                              onClick={() => openAllocationModal(student)}
+                              className="px-3 py-2 rounded-full text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 transition-all flex items-center gap-1 shadow-sm"
+                            >
+                              <UserPlus className="w-3 h-3" />
+                              <span>Reassign</span>
+                            </button>
+                          )}
+                          <button
+                            disabled={isSent}
+                            onClick={async () => {
+                              try {
+                                const updated = await markSyllabusComplete(sId, { trainerId, trainerName });
+                                setStudents(prev => prev.map(x => x._id === updated._id ? { ...x, ...updated } : x));
+                                setCccpToast(`${student.name} marked syllabus complete → sent to CCCP · ${student.hrName || 'HR'} notified.`);
+                              } catch (e) {
+                                setCccpToast(`Could not update ${student.name}: ${e?.response?.data?.error || e.message}`);
+                              }
+                              setTimeout(() => setCccpToast(null), 4000);
+                            }}
+                            className={`px-4 py-2 rounded-full text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm active:scale-[0.98] ${
+                              isSent
+                                ? 'bg-emerald-100 text-emerald-800 border border-emerald-300 cursor-default'
+                                : 'bg-[#064e3b] hover:bg-[#065f46] text-[#34d399]'
+                            }`}
+                          >
+                            <span className="text-xs">🎓</span>
+                            <span>{isSent ? '✓ Sent to CCCP' : 'Syllabus done → CCCP'}</span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Bottom Footnotes */}
+              <div className="px-1 space-y-2 text-xs text-slate-500 font-medium leading-relaxed">
+                <div>
+                  ⚠️ Privacy rule: a trainer sees <strong className="font-bold text-slate-800">only</strong> their allocated students for their specific module. The ICD trainer cannot see a student's CPT session details.
+                </div>
+                <div>
+                  When the full syllabus is complete, marking it here sends the student to <strong className="font-bold text-slate-800">CCCP for placement</strong> and notifies their <strong className="font-bold text-slate-800">HR</strong>.
+                </div>
+              </div>
+
+            </div>
+          )}
+
+          {/* ================= TAB 9: WEAK STUDENTS ================= */}
+          {/* ================= TAB 9: WEAK STUDENTS ================= */}
+          {activeNav === 'weak_students' && (
+            <div className="space-y-4 max-w-[1280px] animate-fadeIn">
+
+              {/* Toast for action taken */}
+              {weakStudentToast && (
+                <div className="p-3.5 rounded-2xl bg-slate-900 text-white text-xs font-semibold flex items-center justify-between shadow-lg animate-fadeIn border border-slate-700">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-teal-400 animate-ping"></span>
+                    <span>{weakStudentToast}</span>
+                  </div>
+                  <button onClick={() => setWeakStudentToast(null)} className="text-slate-400 hover:text-white">✕</button>
+                </div>
+              )}
+
+              {/* Main White Card: Weak Student Tracker */}
+              <div className="bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-7 shadow-sm space-y-4">
+                <div className="flex items-center justify-between pb-1">
+                  <div className="flex items-center gap-2.5">
+                    <AlertTriangle className="w-4 h-4 text-slate-900" />
+                    <h2 className="text-sm sm:text-base font-bold text-slate-900">Weak Student Tracker</h2>
+                  </div>
+                  <span className="px-3 py-0.5 rounded-full text-xs font-bold bg-[#fee2e2] text-[#dc2626] border border-red-200/80">
+                    {weakStudents.length} flagged
+                  </span>
+                </div>
+
+                {weakStudents.length === 0 ? (
+                  <div className="py-8 text-center text-xs text-slate-500 font-medium">
+                    ✓ All students currently meeting attendance and academic benchmarks. No weak students flagged!
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {weakStudents.map((student) => (
+                      <div
+                        key={student.id}
+                        className="rounded-2xl border border-slate-200/90 p-4 sm:p-5 flex items-center justify-between hover:border-slate-300 transition-all bg-white shadow-none group"
+                      >
+                        <div className="flex items-center gap-3 sm:gap-4 min-w-0">
+                          {/* 3D Sphere Container */}
+                          <div className={`w-10 h-10 rounded-xl ${student.bgTone} flex items-center justify-center shrink-0`}>
+                            <span className={`w-4 h-4 rounded-full bg-gradient-to-br ${student.dotGradient} shadow-sm inline-block`}></span>
+                          </div>
+
+                          {/* Student Name and Issue */}
+                          <div className="min-w-0">
+                            <div className="text-sm font-bold text-slate-900 group-hover:text-teal-700 transition-colors truncate">
+                              {student.name}
+                            </div>
+                            <div className="text-xs text-slate-500 font-medium mt-0.5 truncate">
+                              {student.issue}
+                            </div>
+                            {student.lastAction && (
+                              <div className="text-[11px] text-teal-700 mt-0.5 truncate">✓ {student.lastAction.action.replace('_', ' ')} · {new Date(student.lastAction.at).toLocaleDateString('en-IN')}</div>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Right Action Button */}
+                        <div className="shrink-0 ml-3">
+                          <button
+                            onClick={() => setActiveWeakStudentModal(student)}
+                            className="px-5 py-2 rounded-xl bg-[#0c1921] hover:bg-[#152a36] text-white text-xs font-bold transition-all shadow-sm active:scale-[0.98]"
+                          >
+                            Action
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Bottom Footnote Line */}
+              <div className="text-xs text-slate-500 font-medium px-1 leading-relaxed">
+                Auto-flagged from real records: attendance &lt;80%, test average &lt;60%, or enrollment on hold. Every action you log is saved on the student and sent to their HR.
+              </div>
+
+              {/* Interactive Action Modal — every action is saved on the student and sent to their HR */}
+              {activeWeakStudentModal && (
+                <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
+                  <div className="bg-white rounded-3xl p-6 sm:p-7 max-w-md w-full shadow-2xl border border-slate-200 space-y-4 animate-scaleUp">
+                    <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                      <div className="flex items-center gap-2">
+                        <span className="text-base">⚠️</span>
+                        <h3 className="font-bold text-slate-900 text-sm">Remedial Action Plan</h3>
+                      </div>
+                      <button onClick={() => setActiveWeakStudentModal(null)} className="text-slate-400 hover:text-slate-600 font-bold text-lg">✕</button>
+                    </div>
+
+                    <div>
+                      <div className="font-bold text-slate-900 text-base">{activeWeakStudentModal.name}</div>
+                      <div className="text-xs text-slate-500">{activeWeakStudentModal.batch}</div>
+                      <div className="mt-2 p-2.5 rounded-xl bg-rose-50 text-rose-800 text-xs font-medium border border-rose-100">{activeWeakStudentModal.issue}</div>
+                      {activeWeakStudentModal.lastAction && (
+                        <div className="mt-2 text-[11px] text-slate-500">
+                          Last action: <strong>{activeWeakStudentModal.lastAction.action}</strong>{activeWeakStudentModal.lastAction.note ? ` — ${activeWeakStudentModal.lastAction.note}` : ''} ({new Date(activeWeakStudentModal.lastAction.at).toLocaleDateString('en-IN')})
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="space-y-2 text-xs">
+                      <label className="font-bold text-slate-700 block">Details (date/time, topic, what was shared):</label>
+                      <textarea
+                        rows={2}
+                        value={remedialNote}
+                        onChange={(e) => setRemedialNote(e.target.value)}
+                        placeholder="e.g. 1-on-1 on modifiers, Sat 10 AM"
+                        className="w-full p-2.5 rounded-xl border border-slate-200 text-xs focus:outline-none focus:border-teal-500"
+                      />
+                      <div className="font-bold text-slate-700 pt-1">Choose Remedial Intervention:</div>
+                      {[
+                        ['remedial_call', '📅 Schedule 1-on-1 Remedial Session'],
+                        ['shared_material', '📹 Share Revision Material + Practice Quiz'],
+                        ['escalate', '📞 Escalate to HR / Branch Mentor for Counselling']
+                      ].map(([action, label]) => (
+                        <button
+                          key={action}
+                          onClick={async () => {
+                            const target = activeWeakStudentModal;
+                            try {
+                              const updated = await logRemedialAction(target.realId, { action, note: remedialNote.trim() || label.replace(/^\S+\s/, ''), trainerName });
+                              setStudents(prev => prev.map(x => x._id === updated._id ? { ...x, ...updated } : x));
+                              setWeakStudentToast(`${label.replace(/^\S+\s/, '')} logged for ${target.name} · HR notified.`);
+                            } catch (e) {
+                              setWeakStudentToast(`Could not save action: ${e?.response?.data?.error || e.message}`);
+                            }
+                            setRemedialNote('');
+                            setActiveWeakStudentModal(null);
+                            setTimeout(() => setWeakStudentToast(null), 4000);
+                          }}
+                          className="w-full text-left p-3 rounded-xl border border-slate-200 hover:border-teal-500 hover:bg-teal-50/50 transition-all font-semibold text-slate-800 flex items-center justify-between group"
+                        >
+                          <span>{label}</span>
+                          <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-teal-600" />
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="pt-2">
+                      <button onClick={() => setActiveWeakStudentModal(null)} className="w-full py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-all">Close</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+            </div>
+          )}
+
+          {/* ================= TAB: ASSESSMENTS ================= */}
+          {activeNav === 'assessments' && (() => {
+            const scoresOf = (t) => assessmentScores[t.id] || {};
+            const hasScores = (t) => Object.keys(scoresOf(t)).length > 0;
+            const activeTests = assessmentTests.filter(t => !hasScores(t) && t.date >= todayKey);
+            const pendingTests = assessmentTests.filter(t => !hasScores(t) && t.date < todayKey);
+            const scoredTests = assessmentTests.filter(hasScores);
+            const batchKey = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+            const studentsForTest = (t) => myStudents.filter(st => batchKey(st.batchName || st.course) === batchKey(t.batch));
+            const nameOf = (key) => students.find(st => studentKeyOf(st) === key || st._id === key)?.name || key;
+            const testCard = (test) => (
+              <div key={test.id} className="bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-7 shadow-sm space-y-4 transition-all">
+                <div className="flex items-center justify-between pb-1">
+                  <div>
+                    <h3 className="text-sm sm:text-base font-bold text-slate-900">{test.name}</h3>
+                    <p className="text-xs text-slate-500 font-medium mt-0.5">{[test.type, test.batch, test.topic].filter(Boolean).join(' · ')}</p>
+                    {test.mode === 'online' && <span className="inline-block mt-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">ONLINE · {(test.questions || []).length} Q · {test.durationMin || parseInt(test.timeLimit, 10) || 45} min · auto-graded</span>}
+                  </div>
+                  <span className={`px-3 py-1 rounded-full text-xs font-bold border ${test.date < todayKey ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-[#ecfdf5] text-[#059669] border-emerald-200'}`}>
+                    {test.date < todayKey ? 'Awaiting scores' : 'Upcoming'}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
+                  {[['DATE', test.date], ['TIME LIMIT', test.timeLimit], ['TOTAL / PASS', `${test.totalMarks} / ${test.passMark}`], ['STUDENTS', studentsForTest(test).length]].map(([k, v]) => (
+                    <div key={k} className="bg-slate-50/70 rounded-2xl border border-slate-200/80 p-3 sm:p-3.5">
+                      <div className="text-[10px] tracking-wider uppercase font-bold text-slate-400">{k}</div>
+                      <div className="text-sm sm:text-base font-bold text-slate-900 font-mono mt-0.5">{v}</div>
+                    </div>
+                  ))}
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                  <button
+                    onClick={() => setActiveScoreModalTest({ id: test.id, title: test.name, max: test.totalMarks, pass: test.passMark, batch: test.batch, test })}
+                    className="bg-[#009688] hover:bg-[#00897b] text-white text-xs sm:text-sm font-bold py-3 rounded-2xl transition-all text-center shadow-sm active:scale-[0.98]"
+                  >
+                    Enter Scores
+                  </button>
+                  <button
+                    onClick={() => setActiveRationaleModalTest({ id: test.id, title: test.name })}
+                    className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs sm:text-sm font-bold py-3 rounded-2xl transition-all text-center shadow-sm active:scale-[0.98]"
+                  >
+                    {rationaleTexts[test.id] ? 'Edit Rationale' : 'Add Rationale'}
+                  </button>
+                  <button
+                    onClick={() => setOnlineTestFor(test)}
+                    className="sm:col-span-2 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-800 text-xs sm:text-sm font-bold py-3 rounded-2xl transition-all text-center active:scale-[0.98]"
+                  >
+                    {test.mode === 'online' ? 'Online questions & attempts' : 'Make it an online test (MCQ, auto-graded)'}
+                  </button>
+                </div>
+              </div>
+            );
+            return (
+            <div className="space-y-4 max-w-[1280px] animate-fadeIn">
+              {assessmentToast && (
+                <div className="p-3.5 rounded-2xl bg-[#0c1921] text-white text-xs font-semibold flex items-center justify-between shadow-lg animate-fadeIn border border-[#1b3446]">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-teal-400 animate-ping"></span>
+                    <span>{assessmentToast}</span>
+                  </div>
+                  <button onClick={() => setAssessmentToast(null)} className="text-slate-400 hover:text-white">✕</button>
+                </div>
+              )}
+
+              <div className="bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-7 shadow-sm space-y-4">
+                <div className="flex items-center justify-between flex-wrap gap-3 pb-1">
+                  <div className="flex items-center gap-2.5">
+                    <span className="text-base">📊</span>
+                    <h2 className="text-sm sm:text-base font-bold text-slate-900">Assessment Desk</h2>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setNewTestForm({ ...emptyTestForm(), batch: batches[0]?.name || '', course: batches[0]?.course || '' });
+                      setShowCreateTestModal(true);
+                    }}
+                    disabled={batches.length === 0}
+                    className="px-4 py-2 rounded-xl bg-[#0c1921] hover:bg-[#152a36] disabled:opacity-40 text-white text-xs font-bold transition-all shadow-sm active:scale-[0.98]"
+                  >
+                    + Create Test
+                  </button>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap text-xs">
+                  {[['active', 'Upcoming Tests', activeTests.length], ['pending', 'Pending Scores', pendingTests.length], ['results', 'Results & Weak Topics', scoredTests.length]].map(([key, label, count]) => (
+                    <button
+                      key={key}
+                      onClick={() => setActiveAssessmentTab(key)}
+                      className={`px-3.5 py-1.5 rounded-full font-semibold transition-all flex items-center gap-2 ${
+                        activeAssessmentTab === key ? 'bg-[#0c1921] text-white shadow-sm' : 'bg-slate-50 hover:bg-slate-100 text-slate-600 border border-slate-200/80'
+                      }`}
+                    >
+                      <span>{label}</span>
+                      <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold ${activeAssessmentTab === key ? 'bg-slate-800 text-white' : 'bg-slate-200 text-slate-700'}`}>{count}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {activeAssessmentTab === 'active' && (
+                <div className="space-y-4">
+                  {activeTests.length === 0 && <div className="bg-white rounded-3xl border border-slate-200/90 p-8 text-center text-xs text-slate-500">No upcoming tests. Create one for your batch.</div>}
+                  {activeTests.map(testCard)}
+                </div>
+              )}
+
+              {activeAssessmentTab === 'pending' && (
+                <div className="space-y-4">
+                  {pendingTests.length === 0 && <div className="bg-white rounded-3xl border border-slate-200/90 p-8 text-center text-xs text-slate-500">All conducted tests have scores entered.</div>}
+                  {pendingTests.map(testCard)}
+                </div>
+              )}
+
+              {activeAssessmentTab === 'results' && (
+                <div className="bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-7 shadow-sm space-y-4">
+                  <h3 className="text-sm font-bold text-slate-900">Batch Performance & Weak Topic Analysis</h3>
+                  {scoredTests.length === 0 ? (
+                    <div className="py-6 text-center text-xs text-slate-500">No scored tests yet.</div>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {scoredTests.map(t => {
+                        const entries = Object.entries(scoresOf(t));
+                        const avgPct = entries.length && t.totalMarks ? (entries.reduce((a, [, v]) => a + Number(v || 0), 0) / entries.length / t.totalMarks) * 100 : 0;
+                        const below = entries.filter(([, v]) => Number(v) < t.passMark);
+                        return (
+                          <div key={t.id} className="p-4 rounded-2xl bg-slate-50 border border-slate-200/80 space-y-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-xs font-bold text-slate-800">{t.name}</span>
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${below.length ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
+                                {below.length ? 'Weak area detected' : 'All passed'}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-500">
+                              {t.topic ? `${t.topic} · ` : ''}Batch average {avgPct.toFixed(1)}% · {entries.length - below.length} of {entries.length} passed (pass mark {t.passMark}/{t.totalMarks}).
+                            </p>
+                            {below.length > 0 && (
+                              <p className="text-xs text-rose-700">Below pass: {below.map(([k, v]) => `${nameOf(k)} (${v}/${t.totalMarks})`).join(', ')}</p>
+                            )}
+                            <div className="flex items-center gap-3">
+                              <button
+                                onClick={() => setActiveScoreModalTest({ id: t.id, title: t.name, max: t.totalMarks, pass: t.passMark, batch: t.batch, test: t })}
+                                className="text-[11px] font-bold text-[#00897b] hover:underline"
+                              >
+                                Edit scores
+                              </button>
+                              {t.mode === 'online' && (
+                                <button onClick={() => setOnlineTestFor(t)} className="text-[11px] font-bold text-indigo-700 hover:underline">Online attempts</button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="text-xs text-slate-500 font-medium px-1 leading-relaxed">
+                Publishing scores updates each student's test average and placement readiness on their record — visible to the student, their HR and CCCP. Averages below 60% flag the student in the Weak Student Tracker.
+              </div>
+
+              {activeScoreModalTest && (
+                <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
+                  <div className="bg-white rounded-3xl p-6 sm:p-7 max-w-md w-full shadow-2xl border border-slate-200 space-y-4 animate-scaleUp">
+                    <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                      <div>
+                        <h3 className="font-bold text-slate-900 text-sm">Enter Assessment Scores</h3>
+                        <p className="text-xs text-slate-500">{activeScoreModalTest.title} · Max {activeScoreModalTest.max} (Pass: {activeScoreModalTest.pass})</p>
+                      </div>
+                      <button onClick={() => setActiveScoreModalTest(null)} className="text-slate-400 hover:text-slate-600 font-bold text-lg">✕</button>
+                    </div>
+                    <div className="space-y-3 max-h-[340px] overflow-y-auto pr-1">
+                      {studentsForTest(activeScoreModalTest.test).length === 0 && <div className="text-xs text-slate-500 text-center py-6">No students in this batch.</div>}
+                      {studentsForTest(activeScoreModalTest.test).map(st => {
+                        const stKey = studentKeyOf(st);
+                        const raw = assessmentScores[activeScoreModalTest.id]?.[stKey];
+                        const hasScore = typeof raw === 'number';
+                        const isPass = hasScore && raw >= activeScoreModalTest.pass;
+                        return (
+                          <div key={stKey} className="p-3 rounded-2xl bg-slate-50 border border-slate-200/80 flex items-center justify-between">
+                            <div>
+                              <div className="text-xs font-bold text-slate-900">{st.name}</div>
+                              <div className="text-[10px] text-slate-400 font-mono">{stKey}</div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="number"
+                                min="0"
+                                max={activeScoreModalTest.max}
+                                value={hasScore ? raw : ''}
+                                placeholder="—"
+                                onChange={(e) => {
+                                  const v = e.target.value;
+                                  setAssessmentScores(prev => {
+                                    const cur = { ...(prev[activeScoreModalTest.id] || {}) };
+                                    if (v === '') delete cur[stKey];
+                                    else cur[stKey] = Math.max(0, Math.min(Number(activeScoreModalTest.max), Number(v)));
+                                    return { ...prev, [activeScoreModalTest.id]: cur };
+                                  });
+                                }}
+                                className="w-16 px-2 py-1 bg-white border border-slate-200 rounded-lg text-xs font-bold text-center"
+                              />
+                              {hasScore && (
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${isPass ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-rose-50 text-rose-700 border border-rose-200'}`}>
+                                  {isPass ? 'PASS' : 'FAIL'}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="pt-2 flex items-center gap-2">
+                      <button
+                        onClick={async () => {
+                          const testId = activeScoreModalTest.id;
+                          const currentScores = assessmentScores[testId] || {};
+                          const savedScores = assessmentTests.find(t => t.id === testId)?.scores || {};
+                          const cleared = Object.keys(savedScores).filter(k => !(k in currentScores));
+                          const payload = { ...Object.fromEntries(cleared.map(k => [k, null])), ...currentScores };
+                          if (!Object.keys(payload).length) { setAssessmentToast('Enter at least one score before publishing.'); setTimeout(() => setAssessmentToast(null), 3000); return; }
+                          try {
+                            const updated = await updateAssessmentScores(testId, payload);
+                            setAssessmentTests(prev => prev.map(t => t.id === testId ? { ...t, ...updated } : t));
+                            setAssessmentScores(prev => ({ ...prev, [testId]: updated?.scores || {} }));
+                            setAssessmentToast(`Scores published for ${activeScoreModalTest.title} — student averages & readiness updated.`);
+                            setActiveScoreModalTest(null);
+                          } catch (e) {
+                            setAssessmentToast(`Could not publish scores: ${e?.response?.data?.error || e.message}`);
+                          }
+                          setTimeout(() => setAssessmentToast(null), 4000);
+                        }}
+                        className="flex-1 py-3 rounded-xl bg-[#009688] hover:bg-[#00897b] text-white text-xs font-bold transition-all shadow-sm"
+                      >
+                        Publish Scores
+                      </button>
+                      <button onClick={() => setActiveScoreModalTest(null)} className="px-4 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-all">Cancel</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {activeRationaleModalTest && (
+                <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
+                  <div className="bg-white rounded-3xl p-6 sm:p-7 max-w-md w-full shadow-2xl border border-slate-200 space-y-4 animate-scaleUp">
+                    <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                      <div>
+                        <h3 className="font-bold text-slate-900 text-sm">Coding Rationale</h3>
+                        <p className="text-xs text-slate-500">{activeRationaleModalTest.title}</p>
+                      </div>
+                      <button onClick={() => setActiveRationaleModalTest(null)} className="text-slate-400 hover:text-slate-600 font-bold text-lg">✕</button>
+                    </div>
+                    <textarea
+                      rows={5}
+                      value={rationaleTexts[activeRationaleModalTest.id] || ''}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setRationaleTexts(prev => ({ ...prev, [activeRationaleModalTest.id]: val }));
+                      }}
+                      className="w-full p-3 rounded-xl border border-slate-200 text-xs text-slate-800 leading-relaxed focus:outline-teal-500"
+                      placeholder="Guidelines and question-wise breakdown for students to review..."
+                    />
+                    <div className="pt-2 flex items-center gap-2">
+                      <button
+                        onClick={async () => {
+                          const testId = activeRationaleModalTest.id;
+                          try {
+                            await updateAssessmentRationale(testId, rationaleTexts[testId] || '');
+                            setAssessmentToast(`Rationale saved for ${activeRationaleModalTest.title}.`);
+                            setActiveRationaleModalTest(null);
+                          } catch (e) {
+                            setAssessmentToast(`Could not save rationale: ${e?.response?.data?.error || e.message}`);
+                          }
+                          setTimeout(() => setAssessmentToast(null), 4000);
+                        }}
+                        className="flex-1 py-3 rounded-xl bg-[#0c1921] hover:bg-[#152a36] text-white text-xs font-bold transition-all shadow-sm"
+                      >
+                        Save Rationale
+                      </button>
+                      <button onClick={() => setActiveRationaleModalTest(null)} className="px-4 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-all">Cancel</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {onlineTestFor && (
+                <OnlineTestBuilder
+                  test={onlineTestFor}
+                  onClose={() => setOnlineTestFor(null)}
+                  onSaved={(updated) => {
+                    setAssessmentTests(prev => prev.map(t => t.id === updated.id ? { ...t, ...updated } : t));
+                    setAssessmentToast(updated.mode === 'online' ? `"${updated.name}" is now an online test — ${updated.batch} has been notified.` : `"${updated.name}" is back to an in-class test.`);
+                    setTimeout(() => setAssessmentToast(null), 4500);
+                  }}
+                />
+              )}
+
+              {showCreateTestModal && (
+                <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn overflow-y-auto">
+                  <div className="bg-white rounded-3xl p-6 sm:p-7 max-w-lg w-full shadow-2xl border border-slate-200 space-y-4 animate-scaleUp my-8 max-h-[90vh] overflow-y-auto">
+                    <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                      <div>
+                        <h3 className="font-bold text-slate-900 text-sm sm:text-base">Create Test</h3>
+                        <p className="text-xs text-slate-500">Configure a new assessment for one of your batches</p>
+                      </div>
+                      <button onClick={() => setShowCreateTestModal(false)} className="w-8 h-8 rounded-full hover:bg-slate-100 text-slate-400 hover:text-slate-600 flex items-center justify-center font-bold text-base">✕</button>
+                    </div>
+                    <form
+                      onSubmit={async (e) => {
+                        e.preventDefault();
+                        const total = Number(newTestForm.totalMarks);
+                        const pass = Number(newTestForm.passMark);
+                        if (pass > total) { setAssessmentToast('Pass mark cannot exceed total marks.'); setTimeout(() => setAssessmentToast(null), 3000); return; }
+                        const payload = {
+                          name: newTestForm.name.trim(),
+                          type: newTestForm.type,
+                          course: newTestForm.course,
+                          batch: newTestForm.batch,
+                          topic: newTestForm.topic.trim(),
+                          date: newTestForm.date,
+                          timeLimit: newTestForm.timeLimit,
+                          totalMarks: total,
+                          passMark: pass,
+                          studentsCount: myStudents.filter(st => (st.batchName || st.course) === newTestForm.batch).length,
+                          trainerId,
+                          trainerName
+                        };
+                        try {
+                          const created = await createTrainerAssessment(payload);
+                          setAssessmentTests(prev => [created, ...prev]);
+                          setAssessmentToast(`Test "${created.name}" created for ${created.batch}.`);
+                          setShowCreateTestModal(false);
+                          setActiveAssessmentTab(created.date < todayKey ? 'pending' : 'active');
+                        } catch (err) {
+                          setAssessmentToast(`Could not create test: ${err?.response?.data?.error || err.message}`);
+                        }
+                        setTimeout(() => setAssessmentToast(null), 4500);
+                      }}
+                      className="space-y-3.5 text-xs"
+                    >
+                      <div>
+                        <label className="font-bold text-slate-700 block mb-1">Test Name <span className="text-rose-500">*</span></label>
+                        <input type="text" required value={newTestForm.name} onChange={(e) => setNewTestForm(prev => ({ ...prev, name: e.target.value }))} className="w-full p-2.5 rounded-xl border border-slate-200 font-medium focus:outline-teal-500 text-xs" />
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="font-bold text-slate-700 block mb-1">Type <span className="text-rose-500">*</span></label>
+                          <select value={newTestForm.type} onChange={(e) => setNewTestForm(prev => ({ ...prev, type: e.target.value }))} className="w-full p-2.5 rounded-xl border border-slate-200 bg-white font-medium text-xs">
+                            {['Daily Quiz', 'Weekly Test', 'Module Test', 'Practice Test', 'Full Mock Exam'].map(t => <option key={t} value={t}>{t}</option>)}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="font-bold text-slate-700 block mb-1">Target Batch <span className="text-rose-500">*</span></label>
+                          <select
+                            required
+                            value={newTestForm.batch}
+                            onChange={(e) => {
+                              const b = batches.find(x => x.name === e.target.value);
+                              setNewTestForm(prev => ({ ...prev, batch: e.target.value, course: b?.course || prev.course }));
+                            }}
+                            className="w-full p-2.5 rounded-xl border border-slate-200 bg-white font-medium text-xs"
+                          >
+                            {batches.map(b => <option key={b.id} value={b.name}>{b.name} ({b.students.length})</option>)}
+                          </select>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="font-bold text-slate-700 block mb-1">Course</label>
+                          <select value={newTestForm.course} onChange={(e) => setNewTestForm(prev => ({ ...prev, course: e.target.value }))} className="w-full p-2.5 rounded-xl border border-slate-200 bg-white font-medium text-xs">
+                            {newTestForm.course && !TRAINER_COURSES.some(c => c.label === newTestForm.course) && <option value={newTestForm.course}>{newTestForm.course}</option>}
+                            {TRAINER_COURSES.map(c => <option key={c.key} value={c.label}>{c.label}</option>)}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="font-bold text-slate-700 block mb-1">Topic / Guidelines <span className="text-rose-500">*</span></label>
+                          <input type="text" required value={newTestForm.topic} onChange={(e) => setNewTestForm(prev => ({ ...prev, topic: e.target.value }))} className="w-full p-2.5 rounded-xl border border-slate-200 font-medium text-xs" />
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="font-bold text-slate-700 block mb-1">Date <span className="text-rose-500">*</span></label>
+                          <input type="date" required value={newTestForm.date} onChange={(e) => setNewTestForm(prev => ({ ...prev, date: e.target.value }))} className="w-full p-2.5 rounded-xl border border-slate-200 bg-white font-medium text-xs" />
+                        </div>
+                        <div>
+                          <label className="font-bold text-slate-700 block mb-1">Time Limit <span className="text-rose-500">*</span></label>
+                          <select value={newTestForm.timeLimit} onChange={(e) => setNewTestForm(prev => ({ ...prev, timeLimit: e.target.value }))} className="w-full p-2.5 rounded-xl border border-slate-200 bg-white font-medium text-xs">
+                            {['15 min', '30 min', '45 min', '60 min', '90 min', '120 min', '240 min'].map(t => <option key={t} value={t}>{t}</option>)}
+                          </select>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="font-bold text-slate-700 block mb-1">Total Marks <span className="text-rose-500">*</span></label>
+                          <input type="number" min="1" max="500" required value={newTestForm.totalMarks} onChange={(e) => setNewTestForm(prev => ({ ...prev, totalMarks: e.target.value }))} className="w-full p-2.5 rounded-xl border border-slate-200 font-medium text-xs" />
+                        </div>
+                        <div>
+                          <label className="font-bold text-slate-700 block mb-1">Pass Mark <span className="text-rose-500">*</span></label>
+                          <input type="number" min="1" max="500" required value={newTestForm.passMark} onChange={(e) => setNewTestForm(prev => ({ ...prev, passMark: e.target.value }))} className="w-full p-2.5 rounded-xl border border-slate-200 font-medium text-xs" />
+                        </div>
+                      </div>
+                      <div className="pt-3 flex items-center gap-2">
+                        <button type="submit" className="flex-1 py-3 rounded-xl bg-[#009688] hover:bg-[#00897b] text-white text-xs font-bold transition-all shadow-sm active:scale-[0.98]">Create Test</button>
+                        <button type="button" onClick={() => setShowCreateTestModal(false)} className="px-5 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-all">Cancel</button>
+                      </div>
+                    </form>
+                  </div>
+                </div>
+              )}
+            </div>
+            );
+          })()}
+
+          {/* ================= TAB 10: LIBRARY & MATERIALS ================= */}
+          {activeNav === 'library' && (
+            <TrainingLibraryMaterials
+              currentUser={{
+                name: trainerName,
+                id: trainerId,
+                branch: trainerBranch,
+                role: trainerRole || currentUser?.role || '',
+                trainerRole: currentUser?.trainerRole || 'trainer'
+              }}
+              canManage={canManageMaterials}
+              batches={batches}
+              materials={materials}
+              onChanged={loadRealData}
+            />
+          )}
+
+          {/* ================= TAB: SYLLABUS, ANNOUNCEMENTS & RECORDINGS ================= */}
+          {activeNav === 'batch_desk' && (
+            <TrainerBatchDesk batches={batches} />
+          )}
+
+          {/* ================= TAB: STUDENT SUBMISSIONS & REQUESTS ================= */}
+          {activeNav === 'student_desk' && (
+            <TrainerStudentDesk trainerId={trainerId} trainerName={trainerName} />
+          )}
+
+          {/* ================= TAB: PLACEMENT PREP & CERTIFICATION ================= */}
+          {activeNav === 'placement' && (
+            <TrainingPlacementPrep
+              currentUser={{ name: trainerName, id: trainerId, branch: trainerBranch }}
+              students={myStudents}
+              onStudentUpdated={(updated) => setStudents(prev => prev.map(x => x._id === updated._id ? { ...x, ...updated } : x))}
+            />
+          )}
+
+          {/* ================= TAB 11: MY PROFILE ================= */}
+          {activeNav === 'profile' && (
+            <div className="space-y-6">
+              <TrainingMyProfile trainer={trainerProfile} currentUser={currentUser} profileError={profileError} />
+              {trainerProfile?.trainerId && <TrainerQualityBoard trainerId={trainerProfile.trainerId} title="My student ratings" />}
+            </div>
+          )}
+
+          {/* ================= TAB 12: SKILLS & COURSES ================= */}
+          {activeNav === 'skills' && (
+            <TrainingSkillsCourses trainer={trainerProfile} />
+          )}
+
+          {/* ================= TAB 13: SHIFT & AVAILABILITY ================= */}
+          {activeNav === 'shift' && (
+            <TrainingShiftAvailability
+              trainer={trainerProfile}
+              demos={myExpertDemos}
+              batches={batches}
+              onTrainerUpdated={(t) => t && setTrainerProfile((prev) => ({ ...(prev || {}), ...t }))}
+            />
+          )}
+
+        </div>
+
+      </main>
+
+      {/* ================= MODAL: DOUBT REPLY POPUP ================= */}
+      {activeDoubtModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4 border border-slate-100">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <h3 className="text-sm font-bold text-slate-900">Resolve Doubt for {activeDoubtModal.student}</h3>
+              <button onClick={() => setActiveDoubtModal(null)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="text-xs bg-slate-50 p-3 rounded-xl border border-slate-100 text-slate-700">
+              <span className="font-bold text-teal-800 block mb-1">Question ({activeDoubtModal.topic}):</span>
+              {activeDoubtModal.question}
+            </div>
+            {(activeDoubtModal.thread || []).length > 0 && (
+              <div className="space-y-2 max-h-56 overflow-y-auto">
+                {activeDoubtModal.thread.map((m, i) => (
+                  <div key={i} className={`text-xs p-2.5 rounded-xl border ${m.by === 'trainer' ? 'bg-emerald-50 border-emerald-100 ml-6' : 'bg-amber-50 border-amber-100'}`}>
+                    <b>{m.by === 'trainer' ? (m.name || 'You') : (m.name || activeDoubtModal.student)}:</b> <span className="whitespace-pre-line">{m.text}</span>
+                    {m.at && <span className="block text-[10px] text-slate-400 mt-0.5">{new Date(m.at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div>
+              <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                Faculty Coding Explanation & References:
+              </label>
+              <textarea
+                rows={4}
+                value={doubtReplyText}
+                onChange={(e) => setDoubtReplyText(e.target.value)}
+                placeholder="Enter AAPC coding rationale, guideline reference or code answer..."
+                className="w-full p-3 text-xs rounded-xl border border-slate-200 focus:outline-none focus:border-teal-500"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                onClick={() => setActiveDoubtModal(null)}
+                className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-600"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleResolveDoubt}
+                className="px-4 py-2 rounded-xl bg-[#009688] hover:bg-[#00897b] text-white text-xs font-bold"
+              >
+                Send Solution & Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================= MODAL: CONVERSION BREAKDOWN ================= */}
+      {showConversionModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4 border border-slate-100">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <span className="text-base">📈</span>
+                <h3 className="text-sm font-bold text-slate-900">{monthLabel} · Demo Conversion</h3>
+              </div>
+              <button onClick={() => setShowConversionModal(false)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {(() => {
+              const attended = myMonthDemos.filter(isAttended).length;
+              const converted = convertedStudents.filter(st => String(st.createdAt || '').slice(0, 7) === monthKey).length;
+              const rate = attended > 0 ? Math.round((converted / attended) * 100) : 0;
+              const admRate = Number(trainerProfile?.admissionIncentive) || 0;
+              return (
+                <>
+                  <div className="p-4 rounded-xl bg-teal-50/70 border border-teal-200 text-teal-900 space-y-1">
+                    <div className="text-2xl font-black text-[#00897b]">{rate}% Conversion Rate</div>
+                    <div className="text-xs text-teal-700 font-medium">{converted} admissions from {attended} demos you delivered</div>
+                  </div>
+                  <div className="space-y-2 text-xs divide-y divide-slate-100">
+                    <div className="pt-2 flex justify-between">
+                      <span className="text-slate-500">Demos routed to you:</span>
+                      <span className="font-bold text-slate-900">{myMonthDemos.length}</span>
+                    </div>
+                    <div className="pt-2 flex justify-between">
+                      <span className="text-slate-500">Demos delivered:</span>
+                      <span className="font-bold text-slate-900">{attended} ({myMonthDemos.length > 0 ? Math.round((attended / myMonthDemos.length) * 100) : 0}%)</span>
+                    </div>
+                    <div className="pt-2 flex justify-between">
+                      <span className="text-slate-500">Admissions from your demos:</span>
+                      <span className="font-bold text-emerald-600">{converted}</span>
+                    </div>
+                    <div className="pt-2 flex justify-between">
+                      <span className="text-slate-500">Admission incentive:</span>
+                      <span className="font-bold text-emerald-600">{admRate > 0 ? `₹${(converted * admRate).toLocaleString()} (@ ₹${admRate.toLocaleString()} / admission)` : 'Not configured'}</span>
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
+
+            <div className="pt-2 flex justify-end">
+              <button
+                onClick={() => setShowConversionModal(false)}
+                className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold"
+              >
+                Close Summary
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================= MODAL: ALLOCATE TRAINER & BATCH (HEAD OF TRAINER) ================= */}
+      {allocationStudent && isHeadOfTrainer && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-white rounded-3xl max-w-xl w-full p-6 sm:p-7 shadow-2xl space-y-4 border border-slate-100 max-h-[90vh] overflow-y-auto">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-lg">🎯</span>
+                  <h3 className="text-base font-bold text-slate-900">
+                    {allocationStudent.trainerId ? 'Reassign Trainer & Batch' : 'Allocate Student to Trainer'}
+                  </h3>
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Assign {allocationStudent.name} ({allocationStudent.studentId || 'ID Pending'}) to a faculty trainer and batch
+                </p>
+              </div>
+              <button
+                onClick={() => setAllocationStudent(null)}
+                className="w-8 h-8 rounded-full hover:bg-slate-100 text-slate-400 hover:text-slate-600 flex items-center justify-center font-bold"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Student Details Card */}
+            <div className="bg-slate-50 rounded-2xl p-4 border border-slate-200/80 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-bold text-slate-900">{allocationStudent.name}</span>
+                <span className="text-xs font-mono font-semibold text-slate-600 bg-white px-2 py-0.5 rounded border border-slate-200">
+                  {allocationStudent.studentId || 'ID Pending'}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-xs text-slate-600">
+                <div><span className="text-slate-400">Course:</span> <strong className="text-slate-800">{allocationStudent.course}</strong></div>
+                <div><span className="text-slate-400">Branch:</span> <strong className="text-slate-800">{allocationStudent.branch || '—'}</strong></div>
+                <div><span className="text-slate-400">Mode:</span> <strong className="text-slate-800">{allocationStudent.mode || 'Offline'}</strong></div>
+                <div><span className="text-slate-400">Timing:</span> <strong className="text-slate-800">{allocationStudent.batchTiming || 'Flexible'}</strong></div>
+                <div><span className="text-slate-400">HR Counsellor:</span> <strong className="text-slate-800">{allocationStudent.hrName || '—'}</strong></div>
+                <div><span className="text-slate-400">Checklist:</span> <strong className="text-emerald-700">✓ 10-Point Verified</strong></div>
+              </div>
+
+              {(allocationStudent.trainerNote || allocationStudent.handoverNote) && (
+                <div className="pt-2 border-t border-slate-200/60 text-[11px] text-amber-900">
+                  <span className="font-bold">HR Handover Notes:</span> {allocationStudent.trainerNote || allocationStudent.handoverNote}
+                </div>
+              )}
+            </div>
+
+            {/* Form Fields */}
+            <div className="space-y-4">
+              {/* Anatomy to Medical Coding Transition Control */}
+              <div className={`p-4 rounded-2xl border transition-all ${
+                allocationForm.isAnatomyToCoding
+                  ? 'bg-gradient-to-br from-indigo-50/80 to-purple-50/40 border-indigo-200 text-indigo-950 shadow-2xs'
+                  : 'bg-slate-50 border-slate-200 text-slate-700'
+              }`}>
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(allocationForm.isAnatomyToCoding)}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setAllocationForm(prev => ({
+                        ...prev,
+                        isAnatomyToCoding: checked,
+                        syllabusModule: checked ? 'Module 3' : (allocationStudent.syllabusModule || 'Module 1'),
+                        batchName: checked && (!prev.batchName || /anatomy/i.test(prev.batchName))
+                          ? `Medical Coding - ${prev.batchTiming || allocationStudent.batchTiming || 'Regular'}`
+                          : prev.batchName
+                      }));
+                    }}
+                    className="mt-0.5 w-4 h-4 rounded text-[#483ec7] focus:ring-indigo-500 cursor-pointer"
+                  />
+                  <div className="space-y-1">
+                    <div className="font-extrabold text-xs flex items-center gap-2">
+                      <span>🔄 Anatomy to Medical Coding Batch Transition</span>
+                      {allocationForm.isAnatomyToCoding && (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-indigo-200 text-indigo-900 border border-indigo-300">
+                          Active Conversion
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-slate-600 leading-relaxed">
+                      Preserves completed Anatomy modules (Modules 1 &amp; 2) and advances student to Module 3 (Core Coding Guidelines: ICD-10-CM / CPT). Preserves schedule timing to avoid training disruptions.
+                    </p>
+                  </div>
+                </label>
+
+                {allocationForm.isAnatomyToCoding && (
+                  <div className="mt-3 pt-3 border-t border-indigo-200/70 grid grid-cols-2 gap-2.5 text-xs">
+                    <div className="p-2.5 bg-white/90 rounded-xl border border-indigo-100">
+                      <div className="text-[10px] font-bold uppercase text-indigo-700">Syllabus Progress</div>
+                      <div className="font-extrabold text-slate-900 mt-0.5 text-[11px]">✓ Modules 1 &amp; 2 Preserved</div>
+                      <div className="text-[10px] text-emerald-700 font-semibold">Active: Module 3 (Core Coding)</div>
+                    </div>
+                    <div className="p-2.5 bg-white/90 rounded-xl border border-indigo-100">
+                      <div className="text-[10px] font-bold uppercase text-indigo-700">Schedule Continuity</div>
+                      <div className="font-extrabold text-slate-900 mt-0.5 text-[11px] truncate">
+                        {allocationForm.batchTiming || allocationStudent.batchTiming || 'Timing Preserved'}
+                      </div>
+                      <div className="text-[10px] text-slate-500">Zero interruption to slot</div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Select Trainer */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                  Select Respective Trainer *
+                </label>
+                <select
+                  value={allocationForm.trainerId}
+                  onChange={(e) => setAllocationForm(prev => ({ ...prev, trainerId: e.target.value }))}
+                  className="w-full p-3 text-xs rounded-xl border border-slate-200 focus:outline-none focus:border-teal-500 bg-white font-medium"
+                >
+                  <option value="">-- Choose Trainer from Roster --</option>
+                  {trainerRoster
+                    .filter(t => t.active !== false)
+                    .slice()
+                    .sort((a, b) => {
+                      const stuBranch = (allocationStudent.branch || allocationStudent.location || allocationStudent.leadBranch || '').toLowerCase();
+                      const aBranch = (a.branchName || a.branch || '').toLowerCase();
+                      const bBranch = (b.branchName || b.branch || '').toLowerCase();
+                      const aMatch = stuBranch && (aBranch === stuBranch || aBranch.includes(stuBranch) || stuBranch.includes(aBranch)) ? 1 : 0;
+                      const bMatch = stuBranch && (bBranch === stuBranch || bBranch.includes(stuBranch) || stuBranch.includes(bBranch)) ? 1 : 0;
+                      return bMatch - aMatch;
+                    })
+                    .map(t => {
+                      const count = trainerStudentCounts[t.trainerId] || 0;
+                      const matchCourse = allocationStudent.course && t.courseKey && String(allocationStudent.course).toUpperCase().includes(t.courseKey.toUpperCase());
+                      const stuBranch = (allocationStudent.branch || allocationStudent.location || allocationStudent.leadBranch || '').toLowerCase();
+                      const tBranch = (t.branchName || t.branch || '').toLowerCase();
+                      const isBranchMatch = stuBranch && tBranch && (tBranch === stuBranch || tBranch.includes(stuBranch) || stuBranch.includes(tBranch));
+                      return (
+                        <option key={t.trainerId} value={t.trainerId}>
+                          {isBranchMatch ? '📍 [Branch Match] ' : ''}{t.trainerName} ({t.role || t.courseKey || 'Trainer'}) · {count} student(s) · {t.branchName || 'All branches'}{matchCourse ? ' ★ Recommended' : ''}
+                        </option>
+                      );
+                    })}
+                </select>
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Student counts are displayed next to each trainer to assist in workload balancing.
+                </p>
+              </div>
+
+              {/* Batch Name */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                  Batch Name *
+                </label>
+                <input
+                  type="text"
+                  list="allocation-batch-suggestions"
+                  value={allocationForm.batchName}
+                  onChange={(e) => setAllocationForm(prev => ({ ...prev, batchName: e.target.value }))}
+                  placeholder="e.g. Medical Coding - Morning Batch A"
+                  className="w-full p-3 text-xs rounded-xl border border-slate-200 focus:outline-none focus:border-teal-500 bg-white"
+                />
+                <datalist id="allocation-batch-suggestions">
+                  {allocationBatches.map(b => (
+                    <option key={b._id || b.name} value={b.name} />
+                  ))}
+                  {allocationStudent.course && (
+                    <>
+                      <option value={`${allocationStudent.course} - Regular`} />
+                      <option value={`${allocationStudent.course} - Weekend`} />
+                      <option value={`${allocationStudent.course} · ${allocationStudent.batchTiming || 'Morning'}`} />
+                    </>
+                  )}
+                </datalist>
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Pick from trainer's existing batches or enter a new batch name.
+                </p>
+              </div>
+
+              {/* Batch Timing / Schedule Continuity */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                  Training Schedule / Batch Timing *
+                </label>
+                <input
+                  type="text"
+                  value={allocationForm.batchTiming || ''}
+                  onChange={(e) => setAllocationForm(prev => ({ ...prev, batchTiming: e.target.value }))}
+                  placeholder="e.g. 9:00 AM – 11:00 AM"
+                  className="w-full p-3 text-xs rounded-xl border border-slate-200 focus:outline-none focus:border-teal-500 bg-white"
+                />
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Ensures student's daily class timing is maintained without schedule conflicts.
+                </p>
+              </div>
+
+              {/* Note / Instructions for the Trainer */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                  Instructions / Notes for Assigned Trainer (Optional)
+                </label>
+                <textarea
+                  rows={3}
+                  value={allocationForm.trainerNote}
+                  onChange={(e) => setAllocationForm(prev => ({ ...prev, trainerNote: e.target.value }))}
+                  placeholder="e.g. Student prefers Tamil explanation for anatomy concepts; start from module 1..."
+                  className="w-full p-3 text-xs rounded-xl border border-slate-200 focus:outline-none focus:border-teal-500 bg-white"
+                />
+              </div>
+            </div>
+
+            {/* Modal Actions */}
+            <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setAllocationStudent(null)}
+                className="px-4 py-2.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-600 text-xs font-bold transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmAllocation}
+                className="px-5 py-2.5 rounded-xl bg-[#009688] hover:bg-[#00897b] text-white text-xs font-bold shadow-md shadow-teal-700/20 transition-all flex items-center gap-1.5"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>Confirm Trainer Allocation</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================= MODAL: JOB-READY EVALUATION MODAL ================= */}
+      {readinessModalStudent && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 animate-fadeIn">
+          <div className="bg-white rounded-3xl max-w-xl w-full p-6 sm:p-7 shadow-2xl border border-slate-200 space-y-5 animate-in zoom-in-95 text-left max-h-[90vh] overflow-y-auto">
+            {/* Header */}
+            <div className="flex items-start justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-teal-50 text-[#00897b] border border-teal-200 flex items-center justify-center text-lg font-bold">
+                  🎯
+                </div>
+                <div>
+                  <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
+                    <span>Evaluate Job-Ready Status</span>
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium mt-0.5">
+                    {readinessModalStudent.name} <span className="font-mono text-slate-400">({readinessModalStudent.studentId})</span> · {[readinessModalStudent.course, readinessModalStudent.batchName].filter(Boolean).join(' · ')}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setReadinessModalStudent(null)}
+                className="w-8 h-8 rounded-full bg-slate-100 text-slate-400 hover:text-slate-700 hover:bg-slate-200 flex items-center justify-center text-xs font-bold cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Live Readiness Computed Gauge */}
+            {(() => {
+              const tech = readinessForm.technicalScore !== '' ? Number(readinessForm.technicalScore) : null;
+              const assess = readinessForm.assessmentScore !== '' ? Number(readinessForm.assessmentScore) : null;
+              const comm = readinessForm.communicationScore !== '' ? Number(readinessForm.communicationScore) : null;
+              const interview = readinessForm.interviewPrepScore !== '' ? Number(readinessForm.interviewPrepScore) : null;
+              const parts = [tech, assess, comm, interview].filter(v => v !== null && !isNaN(v));
+              const liveScore = parts.length > 0 ? Math.round(parts.reduce((a, b) => a + b, 0) / parts.length) : null;
+
+              return (
+                <div className="bg-gradient-to-r from-teal-50 to-emerald-50 border border-teal-200/80 rounded-2xl p-4 flex items-center justify-between gap-4">
+                  <div>
+                    <div className="text-[10.5px] font-bold text-teal-800 uppercase tracking-wider">
+                      Overall Calculated Readiness
+                    </div>
+                    <div className="text-xs text-teal-700 mt-0.5">
+                      Average of scored evaluation pillars ({parts.length}/4 entered)
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <div className={`text-3xl font-black ${liveScore === null ? 'text-slate-400' : liveScore >= 80 ? 'text-emerald-700' : liveScore >= 65 ? 'text-amber-600' : 'text-rose-600'}`}>
+                      {liveScore === null ? '—' : `${liveScore}%`}
+                    </div>
+                    <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                      Target 80%+
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* 4 Readiness Pillars Inputs */}
+            <div className="space-y-3">
+              <label className="block text-xs font-bold text-slate-800 uppercase tracking-wider">
+                4-Pillar Evaluation Scores (0 – 100)
+              </label>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* 1. Technical Knowledge */}
+                <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-3.5 space-y-1">
+                  <div className="flex items-center justify-between text-xs font-bold text-slate-800">
+                    <span className="flex items-center gap-1.5">
+                      <span>💻</span> Technical Knowledge
+                    </span>
+                    <span className="text-[11px] font-mono text-teal-700">%</span>
+                  </div>
+                  <p className="text-[10.5px] text-slate-500">Medical coding rules, ICD-10, CPT, guidelines</p>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    value={readinessForm.technicalScore}
+                    onChange={(e) => setReadinessForm(prev => ({ ...prev, technicalScore: e.target.value }))}
+                    placeholder="Enter score 0–100..."
+                    className="w-full mt-1 px-3 py-2 text-xs font-black rounded-xl bg-white border border-slate-200 focus:outline-none focus:border-teal-500"
+                  />
+                </div>
+
+                {/* 2. Assessments */}
+                <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-3.5 space-y-1">
+                  <div className="flex items-center justify-between text-xs font-bold text-slate-800">
+                    <span className="flex items-center gap-1.5">
+                      <span>📝</span> Assessments & Tests
+                    </span>
+                    <span className="text-[11px] font-mono text-teal-700">%</span>
+                  </div>
+                  <p className="text-[10.5px] text-slate-500">Weekly tests average & mock exams</p>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    value={readinessForm.assessmentScore}
+                    onChange={(e) => setReadinessForm(prev => ({ ...prev, assessmentScore: e.target.value }))}
+                    placeholder="Enter score 0–100..."
+                    className="w-full mt-1 px-3 py-2 text-xs font-black rounded-xl bg-white border border-slate-200 focus:outline-none focus:border-teal-500"
+                  />
+                </div>
+
+                {/* 3. Communication */}
+                <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-3.5 space-y-1">
+                  <div className="flex items-center justify-between text-xs font-bold text-slate-800">
+                    <span className="flex items-center gap-1.5">
+                      <span>🗣️</span> Communication Skills
+                    </span>
+                    <span className="text-[11px] font-mono text-teal-700">%</span>
+                  </div>
+                  <p className="text-[10.5px] text-slate-500">English fluency, verbal clarity & confidence</p>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    value={readinessForm.communicationScore}
+                    onChange={(e) => setReadinessForm(prev => ({ ...prev, communicationScore: e.target.value }))}
+                    placeholder="Enter score 0–100..."
+                    className="w-full mt-1 px-3 py-2 text-xs font-black rounded-xl bg-white border border-slate-200 focus:outline-none focus:border-teal-500"
+                  />
+                </div>
+
+                {/* 4. Interview Preparation */}
+                <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-3.5 space-y-1">
+                  <div className="flex items-center justify-between text-xs font-bold text-slate-800">
+                    <span className="flex items-center gap-1.5">
+                      <span>🎯</span> Interview Preparation
+                    </span>
+                    <span className="text-[11px] font-mono text-teal-700">%</span>
+                  </div>
+                  <p className="text-[10.5px] text-slate-500">Mock interview performance & HR readiness</p>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    value={readinessForm.interviewPrepScore}
+                    onChange={(e) => setReadinessForm(prev => ({ ...prev, interviewPrepScore: e.target.value }))}
+                    placeholder="Enter score 0–100..."
+                    className="w-full mt-1 px-3 py-2 text-xs font-black rounded-xl bg-white border border-slate-200 focus:outline-none focus:border-teal-500"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Job-Ready Status Choice */}
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-slate-800 uppercase tracking-wider">
+                Select Job-Ready Status *
+              </label>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { value: 'Job Ready', label: '✓ Job Ready', desc: 'Syncs to CCCP placement', activeClass: 'bg-[#00897b] text-white border-[#00897b]' },
+                  { value: 'Needs Revision', label: '⚡ Needs Revision', desc: 'Needs additional practice', activeClass: 'bg-[#f59e0b] text-white border-[#f59e0b]' },
+                  { value: 'Not Ready', label: '✕ Not Ready', desc: 'Significant gaps', activeClass: 'bg-[#ef4444] text-white border-[#ef4444]' }
+                ].map((s) => (
+                  <button
+                    key={s.value}
+                    type="button"
+                    onClick={() => setReadinessForm(prev => ({ ...prev, status: s.value }))}
+                    className={`p-3 rounded-2xl border text-left transition-all cursor-pointer ${
+                      readinessForm.status === s.value
+                        ? `${s.activeClass} shadow-md`
+                        : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    <div className="text-xs font-bold">{s.label}</div>
+                    <div className={`text-[10px] mt-0.5 ${readinessForm.status === s.value ? 'text-white/80' : 'text-slate-400'}`}>
+                      {s.desc}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Remarks / Notes */}
+            <div>
+              <label className="block text-xs font-bold text-slate-800 uppercase tracking-wider mb-1.5">
+                Trainer Remarks & Coaching Feedback
+              </label>
+              <textarea
+                rows={2}
+                value={readinessForm.feedback}
+                onChange={(e) => setReadinessForm(prev => ({ ...prev, feedback: e.target.value }))}
+                placeholder="e.g. Good command of Anatomy & CPT codes, advised to improve communication in mock rounds..."
+                className="w-full p-3 text-xs rounded-xl border border-slate-200 focus:outline-none focus:border-teal-500 bg-white"
+              />
+            </div>
+
+            {/* Modal Actions */}
+            <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setReadinessModalStudent(null)}
+                className="px-4 py-2.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-600 text-xs font-bold transition-all cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={savingReadiness}
+                onClick={handleSaveReadinessModal}
+                className="px-5 py-2.5 rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white text-xs font-bold shadow-md shadow-teal-700/20 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>{savingReadiness ? 'Saving...' : 'Save Job-Ready Evaluation'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================= MODAL: TRAINER COURSE COMPLETION & EXAM APPROVAL ================= */}
+      {trainerApprovalStudent && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 animate-fadeIn">
+          <div className="bg-white rounded-3xl max-w-xl w-full p-6 sm:p-7 shadow-2xl border border-slate-200 space-y-5 animate-in zoom-in-95 text-left max-h-[92vh] overflow-y-auto">
+            {/* Header */}
+            <div className="flex items-start justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-indigo-50 text-indigo-700 border border-indigo-200 flex items-center justify-center text-lg font-bold">
+                  <Award className="w-5 h-5 text-indigo-600" />
+                </div>
+                <div>
+                  <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
+                    <span>Course Completion & Exam Approval</span>
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium mt-0.5">
+                    {trainerApprovalStudent.name} <span className="font-mono text-slate-400">({trainerApprovalStudent.studentId})</span> · {[trainerApprovalStudent.course, trainerApprovalStudent.batchName].filter(Boolean).join(' · ')}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setTrainerApprovalStudent(null)}
+                className="w-8 h-8 rounded-full bg-slate-100 text-slate-400 hover:text-slate-700 hover:bg-slate-200 flex items-center justify-center text-xs font-bold cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Verification Instructions Callout */}
+            <div className="bg-indigo-50/70 border border-indigo-100 rounded-2xl p-3.5 text-xs text-indigo-900 flex items-start gap-2.5">
+              <span className="text-base leading-none">🛡️</span>
+              <div className="leading-relaxed">
+                <strong className="font-bold">Trainer Gatekeeper Mandate:</strong> The respective trainer must verify syllabus completion, assessment benchmark, and overall readiness before releasing the course completion certificate or AAPC exam slot booking.
+              </div>
+            </div>
+
+            {/* 3 Pillars Verification Section */}
+            <div className="space-y-3">
+              <div className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center justify-between">
+                <span>4-Pillar Verification Checklist</span>
+                <span className="text-[10.5px] font-normal text-slate-500">All 4 pillars required for full endorsement</span>
+              </div>
+
+              {/* Pillar 1: Syllabus Completion */}
+              {(() => {
+                const isSyllabusDone = trainerApprovalStudent.syllabusStatus === 'Completed' || (trainerApprovalStudent.modulesCompleted && trainerApprovalStudent.modulesCompleted.length > 0);
+                return (
+                  <label className={`p-3.5 rounded-2xl border transition-all flex items-start gap-3 cursor-pointer ${
+                    trainerApprovalForm.syllabusVerified ? 'bg-emerald-50/60 border-emerald-300' : 'bg-slate-50 border-slate-200'
+                  }`}>
+                    <input
+                      type="checkbox"
+                      checked={trainerApprovalForm.syllabusVerified}
+                      onChange={(e) => setTrainerApprovalForm(prev => ({ ...prev, syllabusVerified: e.target.checked }))}
+                      className="mt-0.5 w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 accent-emerald-600 cursor-pointer"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                          <span>📚</span> Pillar 1: Syllabus Completion
+                        </span>
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                          isSyllabusDone ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                        }`}>
+                          {isSyllabusDone ? 'Completed' : 'In Progress'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-600 mt-1">
+                        All course syllabus modules (Medical Terminology, Anatomy, ICD-10-CM, CPT-4, HCPCS) fully taught and cleared.
+                      </p>
+                    </div>
+                  </label>
+                );
+              })()}
+
+              {/* Pillar 2: Assessment Threshold */}
+              {(() => {
+                const assessScore = trainerApprovalStudent.assessmentScore != null ? Number(trainerApprovalStudent.assessmentScore) : (trainerApprovalStudent.technicalScore != null ? Number(trainerApprovalStudent.technicalScore) : null);
+                const passed = assessScore != null && assessScore >= 70;
+                return (
+                  <label className={`p-3.5 rounded-2xl border transition-all flex items-start gap-3 cursor-pointer ${
+                    trainerApprovalForm.assessmentsVerified ? 'bg-emerald-50/60 border-emerald-300' : 'bg-slate-50 border-slate-200'
+                  }`}>
+                    <input
+                      type="checkbox"
+                      checked={trainerApprovalForm.assessmentsVerified}
+                      onChange={(e) => setTrainerApprovalForm(prev => ({ ...prev, assessmentsVerified: e.target.checked }))}
+                      className="mt-0.5 w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 accent-emerald-600 cursor-pointer"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                          <span>📝</span> Pillar 2: Assessments & Mock Performance
+                        </span>
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                          passed ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                        }`}>
+                          {assessScore != null ? `${assessScore}% Average` : 'Score Pending'} (Min 70%)
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-600 mt-1">
+                        Weekly chapter tests and comprehensive mock tests cleared with passing grade threshold (70%+).
+                      </p>
+                    </div>
+                  </label>
+                );
+              })()}
+
+              {/* Pillar 3: Overall Readiness & Attendance */}
+              {(() => {
+                const att = trainerApprovalStudent.attendancePct ?? trainerApprovalStudent.attendance;
+                const attPassed = att == null || att >= 75;
+                const readyStatus = trainerApprovalStudent.jobReadyStatus || trainerApprovalStudent.trainerRecommendation || 'Pending';
+                return (
+                  <label className={`p-3.5 rounded-2xl border transition-all flex items-start gap-3 cursor-pointer ${
+                    trainerApprovalForm.readinessVerified ? 'bg-emerald-50/60 border-emerald-300' : 'bg-slate-50 border-slate-200'
+                  }`}>
+                    <input
+                      type="checkbox"
+                      checked={trainerApprovalForm.readinessVerified}
+                      onChange={(e) => setTrainerApprovalForm(prev => ({ ...prev, readinessVerified: e.target.checked }))}
+                      className="mt-0.5 w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 accent-emerald-600 cursor-pointer"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                          <span>🎯</span> Pillar 3: Overall Readiness & Attendance
+                        </span>
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                          attPassed ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
+                        }`}>
+                          {att != null ? `${att}% Attendance` : '80% Attendance'} · {readyStatus}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-600 mt-1">
+                        Minimum 75% class attendance maintained; student exhibits practical speed and coding accuracy.
+                      </p>
+                    </div>
+                  </label>
+                );
+              })()}
+
+              {/* Pillar 4: Mandatory Student Seminar */}
+              {(() => {
+                const seminarDone = Boolean(trainerApprovalStudent.seminarCompleted || trainerApprovalStudent.trainerApprovalVerification?.seminarVerified);
+                return (
+                  <label className={`p-3.5 rounded-2xl border transition-all flex items-start gap-3 cursor-pointer ${
+                    trainerApprovalForm.seminarVerified ? 'bg-emerald-50/60 border-emerald-300' : 'bg-slate-50 border-slate-200'
+                  }`}>
+                    <input
+                      type="checkbox"
+                      checked={trainerApprovalForm.seminarVerified}
+                      onChange={(e) => setTrainerApprovalForm(prev => ({ ...prev, seminarVerified: e.target.checked }))}
+                      className="mt-0.5 w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 accent-emerald-600 cursor-pointer"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                          <span>🎙️</span> Pillar 4: Mandatory Student Seminar
+                        </span>
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                          seminarDone ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                        }`}>
+                          {seminarDone ? 'Delivered' : 'Not Yet Delivered'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-600 mt-1">
+                        Student has delivered their mandatory seminar, evaluated on subject knowledge, communication, presentation and confidence.
+                      </p>
+                    </div>
+                  </label>
+                );
+              })()}
+            </div>
+
+            {/* Scope of Approval */}
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-slate-800 uppercase tracking-wider">
+                Select Approvals To Grant
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <label className={`p-3.5 rounded-2xl border transition-all flex items-start gap-2.5 cursor-pointer ${
+                  trainerApprovalForm.approveCourseCompletion ? 'bg-indigo-50/70 border-indigo-300 text-indigo-950' : 'bg-slate-50 border-slate-200 text-slate-600'
+                }`}>
+                  <input
+                    type="checkbox"
+                    checked={trainerApprovalForm.approveCourseCompletion}
+                    onChange={(e) => setTrainerApprovalForm(prev => ({ ...prev, approveCourseCompletion: e.target.checked }))}
+                    className="mt-0.5 w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 accent-indigo-600 cursor-pointer"
+                  />
+                  <div>
+                    <div className="text-xs font-bold flex items-center gap-1.5">
+                      <span>🎓</span> Course Completion Certificate
+                    </div>
+                    <div className="text-[10.5px] text-slate-500 mt-0.5">
+                      Unlocks downloadable course certificate on Student Portal.
+                    </div>
+                  </div>
+                </label>
+
+                <label className={`p-3.5 rounded-2xl border transition-all flex items-start gap-2.5 cursor-pointer ${
+                  trainerApprovalForm.approveExam ? 'bg-purple-50/70 border-purple-300 text-purple-950' : 'bg-slate-50 border-slate-200 text-slate-600'
+                }`}>
+                  <input
+                    type="checkbox"
+                    checked={trainerApprovalForm.approveExam}
+                    onChange={(e) => setTrainerApprovalForm(prev => ({ ...prev, approveExam: e.target.checked }))}
+                    className="mt-0.5 w-4 h-4 rounded text-purple-600 focus:ring-purple-500 accent-purple-600 cursor-pointer"
+                  />
+                  <div>
+                    <div className="text-xs font-bold flex items-center gap-1.5">
+                      <span>📝</span> AAPC / Certification Exam Slot
+                    </div>
+                    <div className="text-[10.5px] text-slate-500 mt-0.5">
+                      Permits student to request and book certification exam slot.
+                    </div>
+                  </div>
+                </label>
+              </div>
+            </div>
+
+            {/* Trainer Endorsement Notes */}
+            <div>
+              <label className="block text-xs font-bold text-slate-800 uppercase tracking-wider mb-1.5">
+                Trainer Endorsement / Feedback Notes
+              </label>
+              <textarea
+                rows={2}
+                value={trainerApprovalForm.notes}
+                onChange={(e) => setTrainerApprovalForm(prev => ({ ...prev, notes: e.target.value }))}
+                placeholder="e.g. Student has demonstrated excellent accuracy across ICD/CPT codes, passed all mock exams, and is fully ready for the AAPC CPC certification exam."
+                className="w-full p-3 text-xs rounded-xl border border-slate-200 focus:outline-none focus:border-indigo-500 bg-white"
+              />
+            </div>
+
+            {/* Modal Actions */}
+            <div className="flex items-center justify-between pt-3 border-t border-slate-100 flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={savingTrainerApproval}
+                onClick={() => handleSaveTrainerApproval('Declined')}
+                className="px-4 py-2 rounded-xl border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold transition-all cursor-pointer disabled:opacity-50"
+              >
+                ✕ Decline / Return for Revision
+              </button>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setTrainerApprovalStudent(null)}
+                  className="px-4 py-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-600 text-xs font-bold transition-all cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={savingTrainerApproval || (!trainerApprovalForm.approveCourseCompletion && !trainerApprovalForm.approveExam)}
+                  onClick={() => handleSaveTrainerApproval('Approved')}
+                  className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-md shadow-indigo-600/20 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>{savingTrainerApproval ? 'Saving...' : 'Grant Trainer Approval'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <BatchDetailModal
+        batchIdOrName={inspectBatchTarget}
+        isOpen={Boolean(inspectBatchTarget)}
+        onClose={() => setInspectBatchTarget(null)}
+        canManage={false}
+        trainers={trainerRoster}
+        allStudents={students}
+        onUpdated={loadRealData}
+        flashToast={flashDemoToast}
+      />
+
+    </div>
+  );
+}

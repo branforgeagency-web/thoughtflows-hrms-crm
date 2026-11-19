@@ -1,8 +1,8 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import useFileToken from '../hooks/useFileToken';
 import { localDateKey } from '../utils/dateUtils';
 import { Play, Clock, CheckSquare, Users, MessageSquare, Send, Copy, X, RefreshCw, ExternalLink, Maximize2, Minimize2, BookOpen } from 'lucide-react';
-import ZoomMeeting from './ZoomMeeting';
+import LiveClassroom from './LiveClassroom';
 import LmsMaterialViewer from './LmsMaterialViewer';
 import {
   getLiveClasses,
@@ -16,10 +16,10 @@ import {
 } from '../services/api';
 
 // Class Session Room
-//   Start  → server creates a Zoom meeting on the trainer's own Zoom user
-//   Host   → trainer joins inside the dashboard as host (ZAK)
+//   Start  → server opens a private ThoughtFlows Live Classroom (LiveKit) room
+//   Host   → trainer joins inside the dashboard as host (room admin)
 //   Join   → students join from their portal; every join is logged here
-//   End    → Zoom closes for everyone; attendance is pre-filled from the join log
+//   End    → the classroom closes for everyone; attendance is pre-filled from the join log
 const studentKeyOf = (s) => String(s?.studentId || s?._id || '');
 const fmtTimer = (secs) => [Math.floor(secs / 3600), Math.floor((secs % 3600) / 60), secs % 60].map((n) => String(n).padStart(2, '0')).join(':');
 const fmtTime = (d) => (d ? new Date(d).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '');
@@ -42,6 +42,12 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
   const [isFullView, setIsFullView] = useState(false);
   const [showRosterDrawer, setShowRosterDrawer] = useState(false);
   const [showMaterialsDrawer, setShowMaterialsDrawer] = useState(false);
+  // ONE classroom call for the whole room. Full View only re-positions it over the
+  // full-screen slot below — mounting a second LiveClassroom would leave and
+  // rejoin the call (students lose the trainer's video / screen share).
+  const fullSlotRef = useRef(null);
+  const [fullRect, setFullRect] = useState(null);
+  const liveMissRef = useRef(0);
 
   const flash = (msg, ms = 3500) => { setToast(msg); setTimeout(() => setToast(''), ms); };
   const liveBatch = live ? batches.find((b) => b.name === live.batch) || null : null;
@@ -59,7 +65,14 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
     try {
       const list = await getLiveClasses({ trainerId });
       const sess = Array.isArray(list) ? list[0] : null;
-      setLive(sess || null);
+      // A single empty poll (slow server, brief glitch) must not tear down the
+      // running classroom call — only drop the class after two misses in a row.
+      setLive((prev) => {
+        if (sess) { liveMissRef.current = 0; return sess; }
+        if (!prev) return null;
+        liveMissRef.current += 1;
+        return liveMissRef.current >= 2 ? null : prev;
+      });
       if (sess) {
         const b = batches.find((x) => x.name === sess.batch);
         if (b) setBatchId(b.id);
@@ -74,6 +87,22 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
     const unsub = onDataUpdate((e) => { if (e === 'live_class') refreshLive(); });
     return () => { clearInterval(poll); unsub(); };
   }, [live?.sessionId, refreshLive]);
+
+  // Keep the single classroom container sized to the Full View slot
+  useEffect(() => {
+    if (!isFullView) { setFullRect(null); return undefined; }
+    const el = fullSlotRef.current;
+    if (!el) return undefined;
+    const update = () => {
+      const r = el.getBoundingClientRect();
+      setFullRect({ top: r.top, left: r.left, width: r.width, height: r.height });
+    };
+    update();
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(update) : null;
+    ro?.observe(el);
+    window.addEventListener('resize', update);
+    return () => { ro?.disconnect(); window.removeEventListener('resize', update); };
+  }, [isFullView, showRosterDrawer, showMaterialsDrawer]);
 
   useEffect(() => {
     if (!live?.startedAt) { setElapsed(0); return undefined; }
@@ -101,11 +130,11 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
     }
   };
 
-  const joinDetails = useCallback((_reset, noHost) => getTrainerClassJoin(live?.sessionId, { noHost }), [live?.sessionId]);
+  const joinDetails = useCallback(() => getTrainerClassJoin(live?.sessionId), [live?.sessionId]);
 
   const handleEnd = async () => {
     if (!live) return;
-    if (!window.confirm('End the class for everyone? Zoom will close for all students.')) return;
+    if (!window.confirm('End the class for everyone? The classroom will close for all students.')) return;
     try {
       const res = await endLiveClass({ sessionId: live.sessionId });
       const ended = res?.sessions?.[0] || live;
@@ -219,10 +248,10 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
           <div className="bg-white rounded-2xl p-6 border border-slate-200/90 shadow-sm">
             <h3 className="text-sm font-bold text-slate-900 pb-2">How this class runs</h3>
             <ol className="text-xs text-slate-600 space-y-1.5 list-decimal pl-4">
-              <li>Click <b>Start Class</b> — a new Zoom meeting is created on your Zoom account and you join it here as host.</li>
+              <li>Click <b>Start Class</b> — your private live classroom opens right here and you join as host. No Zoom account needed.</li>
               <li>Your {batch.students.length} students see <b>LIVE NOW → Join Class</b> on their portal (you can also WhatsApp them).</li>
               <li>Who joined and when is tracked on the right. Add notes — students see them after class.</li>
-              <li>Click <b>End Class</b> — Zoom closes for everyone and attendance is pre-filled from the join list for you to confirm.</li>
+              <li>Click <b>End Class</b> — the classroom closes for everyone and attendance is pre-filled from the join list for you to confirm.</li>
             </ol>
             <div className="text-xs text-slate-500 mt-3">Materials for this batch: <b className="text-slate-800">{batchMaterials.length}</b></div>
           </div>
@@ -232,7 +261,7 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
           <button onClick={handleStart} disabled={starting}
             className="w-full py-4 rounded-2xl bg-[#009688] hover:bg-[#00897b] text-white text-sm font-bold flex items-center justify-center gap-2 shadow-md disabled:opacity-60">
             {starting ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4 fill-current" />}
-            <span>{starting ? 'Creating Zoom meeting…' : 'Start Class'}</span>
+            <span>{starting ? 'Opening classroom…' : 'Start Class'}</span>
           </button>
         </div>
       ) : (
@@ -306,18 +335,10 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
                 </div>
               </div>
 
-              {/* Full View Area with Zoom & Slide-over Drawers */}
+              {/* Full View Area with Classroom & Slide-over Drawers */}
               <div className="flex-1 w-full h-full relative bg-[#030b0f] overflow-hidden flex">
-                <div className="flex-1 w-full h-full relative">
-                  <ZoomMeeting
-                    key={live.sessionId}
-                    getJoinDetails={joinDetails}
-                    userName={trainerName}
-                    height="100%"
-                    isTrainerHost
-                    onLeft={() => flash('You left the Zoom call. The class is still live — rejoin anytime, or click "End Class" when you\'re done.', 6000)}
-                  />
-                </div>
+                {/* The room's single classroom call is positioned over this slot */}
+                <div ref={fullSlotRef} className="flex-1 w-full h-full relative" />
 
                 {/* Slide-over Attendees Drawer */}
                 {showRosterDrawer && (
@@ -415,7 +436,7 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
                 </span>
               </div>
               <h2 className="text-xl font-extrabold mt-1.5">{live.topic || live.batch}</h2>
-              <p className="text-xs text-slate-300">{live.batch}{live.meetingSource === 'class_link' ? ' · using your fixed class Zoom link' : ''}</p>
+              <p className="text-xs text-slate-300">{live.batch} · ThoughtFlows Live Classroom</p>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
               <button onClick={() => setIsFullView(true)}
@@ -441,28 +462,28 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
                   <Maximize2 className="w-3.5 h-3.5" />
                   <span>Full View</span>
                 </button>
-                {!isFullView ? (
-                  <ZoomMeeting
+                <div
+                  className={isFullView ? 'bg-[#030b0f]' : 'relative w-full'}
+                  style={isFullView && fullRect
+                    ? { position: 'fixed', top: fullRect.top, left: fullRect.left, width: fullRect.width, height: fullRect.height, zIndex: 101 }
+                    : { height: 620 }}
+                >
+                  <LiveClassroom
                     key={live.sessionId}
                     getJoinDetails={joinDetails}
-                    userName={trainerName}
-                    height={620}
-                    isTrainerHost
-                    onLeft={() => flash('You left the Zoom call. The class is still live — rejoin anytime, or click "End Class" when you\'re done.', 6000)}
+                    height="100%"
+                    isHost
+                    onLeft={() => flash('You left the classroom. The class is still live — rejoin anytime, or click "End Class" when you\'re done.', 6000)}
                   />
-                ) : (
+                </div>
+                {isFullView && (
                   <div className="h-[620px] w-full rounded-2xl bg-slate-950/80 border border-slate-800 flex flex-col items-center justify-center text-slate-400 gap-2">
                     <Maximize2 className="w-8 h-8 text-teal-400 animate-pulse" />
-                    <span className="text-sm font-semibold text-slate-200">Zoom call is currently open in Full View mode</span>
+                    <span className="text-sm font-semibold text-slate-200">Classroom is currently open in Full View mode</span>
                     <span className="text-xs text-slate-500">Minimize Full View above to return to this layout</span>
                   </div>
                 )}
               </div>
-              {live.zoomJoinUrl && (
-                <a href={live.zoomJoinUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-bold text-[#00897b] hover:underline">
-                  <ExternalLink className="w-3.5 h-3.5" />Open in the Zoom app instead
-                </a>
-              )}
               <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-sm space-y-3">
                 <div className="text-xs font-bold text-slate-900">Session materials</div>
                 {batchMaterials.length === 0 ? (

@@ -1,4 +1,17 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import HeadSidebarNav from './HeadSidebarNav';
+import {
+  LayoutDashboard as MenuOverviewIcon, PlayCircle as MenuLiveIcon, CalendarRange as MenuCalendarIcon,
+  UserPlus as MenuHandoverIcon, CalendarX as MenuLeaveIcon, Presentation as MenuDemoIcon, MessageCircleQuestion as MenuDoubtIcon,
+  Laptop as MenuAvailIcon, Link2 as MenuLinkIcon, UserCheck as MenuOneIcon, Clock as MenuShiftIcon,
+  Network as MenuMappingIcon, ClipboardCheck as MenuAttendanceIcon, Gauge as MenuUtilIcon, Briefcase as MenuManagersIcon,
+  Building2 as MenuBranchIcon, Layers as MenuBatchIcon, AlertTriangle as MenuWeakIcon, ListChecks as MenuSyllabusIcon, BookOpen as MenuLmsIcon
+} from 'lucide-react';
+import SchedulingCalendar from './scheduling/SchedulingCalendar';
+import AvailabilityFinder from './scheduling/AvailabilityFinder';
+import ConsultationsDesk from './scheduling/ConsultationsDesk';
+import OneOnOneDesk from './scheduling/OneOnOneDesk';
+import LiveClassMonitor from './scheduling/LiveClassMonitor';
 import {
   Home,
   UserCheck,
@@ -1255,6 +1268,8 @@ export default function TrainerHeadDashboard({
         mode: b.mode || b.courseType || 'Online',
         branch: b.branch || '',
         module: b.module || b.currentModule || 'Orientation',
+        trainerId: b.trainerId || '',
+        trainerName: b.trainerName || b.trainer || '',
         students: []
       };
     });
@@ -1271,6 +1286,8 @@ export default function TrainerHeadDashboard({
           mode: st.mode || 'Online',
           branch: st.branch || '',
           module: st.syllabusModule || 'Orientation',
+          trainerId: st.trainerId || '',
+          trainerName: st.trainerName || '',
           students: []
         };
       }
@@ -1279,6 +1296,37 @@ export default function TrainerHeadDashboard({
 
     return Object.values(map);
   }, [scopedBatches, scopedStudents]);
+
+  // People who can take a batch: roster trainers plus the Head of Trainer,
+  // Managers and Team Leads (their roster record is created on first use).
+  const batchTrainerOptions = useMemo(() => {
+    const groupOfRole = (role = '') => (/head|chief|director/i.test(role) ? 'Head of Trainer' : /manager/i.test(role) ? 'Managers' : 'Team Leads');
+    const list = scopedTrainers.map((t) => ({ ...t, group: t.leaderAccount ? groupOfRole(t.role) : 'Trainers' }));
+    const add = (people, group, label) => (people || []).forEach((l) => {
+      const id = String(l.id || l.leaderId || '');
+      const email = String(l.email || '').trim().toLowerCase();
+      const existing = list.find((t) => String(t.trainerId) === id || (email && String(t.email || '').toLowerCase() === email));
+      if (existing) { existing.group = group; return; }
+      if (!id) return;
+      list.push({ trainerId: id, trainerName: l.name || l.userName, courseKey: label, branchName: l.branch || '', email, group });
+    });
+    add(trainerCredentials?.head, 'Head of Trainer', 'Head of Trainer');
+    add(trainerCredentials?.managers, 'Managers', 'Manager');
+    add(trainerCredentials?.teamLeads, 'Team Leads', 'Team Lead');
+    return list;
+  }, [scopedTrainers, trainerCredentials]);
+
+  // Leaders start only their OWN batches; other trainers' classes are watched
+  // from Today's Classes (Wise-style) instead of being started by the leader.
+  const myBatchesForSessionRoom = useMemo(() => {
+    const myId = String(currentLeaderTrainerId || '');
+    const myName = String(currentLeaderTrainerName || '').trim().toLowerCase();
+    return formattedBatchesForSessionRoom.filter((b) => {
+      const tid = String(b.trainerId || '');
+      const tname = String(b.trainerName || '').trim().toLowerCase();
+      return (tid && tid === myId) || (myName && tname && tname === myName);
+    });
+  }, [formattedBatchesForSessionRoom, currentLeaderTrainerId, currentLeaderTrainerName]);
 
   const myAssignedDemos = useMemo(() => {
     const leaderName = currentLeaderTrainerName.toLowerCase();
@@ -1837,314 +1885,43 @@ export default function TrainerHeadDashboard({
           </div>
         </div>
 
-        {/* 8 Focused Navigation Items */}
-        <div className="flex-1 overflow-y-auto px-3 py-2 space-y-4 text-xs scrollbar-thin scrollbar-thumb-slate-800">
-          <div>
-            <div className="px-3 pb-1 text-[10px] font-bold tracking-wider uppercase text-[#476b74]">
-              {roleType === 'head' ? 'HEAD COMMAND' : roleType === 'manager' ? 'ZONE OPERATIONS' : 'POD TRACKING'}
-            </div>
-            <div className="space-y-1">
-              <button
-                type="button"
-                onClick={() => setActiveTab('session_room')}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
-                  activeTab === 'session_room'
-                    ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
-                    : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <Play className="w-4 h-4 shrink-0 text-emerald-400 fill-current" />
-                  <span>Class Session Room</span>
-                </div>
-                <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300">
-                  Take Session
-                </span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setActiveTab('overview')}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
-                  activeTab === 'overview'
-                    ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
-                    : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
-                }`}
-              >
-                <Home className="w-4 h-4 shrink-0" />
-                <span>Executive Overview</span>
-              </button>
-
-              {isHeadRole && (
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('allocation')}
-                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
-                    activeTab === 'allocation'
-                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
-                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <UserPlus className="w-4 h-4 shrink-0 text-amber-400" />
-                    <span>Student Handover &amp; Allocation</span>
-                  </div>
-                  {pendingAllocationStudents.length > 0 ? (
-                    <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-500 text-slate-900 animate-pulse">
-                      {pendingAllocationStudents.length}
-                    </span>
-                  ) : (
-                    <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-white/10 text-slate-300">
-                      {scopedStudents.length}
-                    </span>
-                  )}
-                </button>
-              )}
-
-              <button
-                type="button"
-                onClick={() => setActiveTab('utilization')}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
-                  activeTab === 'utilization'
-                    ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
-                    : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <Clock className="w-4 h-4 shrink-0 text-teal-400" />
-                  <span>Utilization Dashboard</span>
-                </div>
-                <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-teal-500/20 text-teal-300">
-                  Hourly
-                </span>
-              </button>
-
-              {isHeadRole && (
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('managers_tls')}
-                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
-                    activeTab === 'managers_tls'
-                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
-                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <Briefcase className="w-4 h-4 shrink-0 text-teal-400" />
-                    <span>Managers &amp; Team Leads</span>
-                  </div>
-                  <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-teal-500/20 text-teal-300">
-                    {trainerManagersList.length}M · {trainerTLsList.length}TL
-                  </span>
-                </button>
-              )}
-
-              <button
-                type="button"
-                onClick={() => setActiveTab('branches')}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
-                  activeTab === 'branches'
-                    ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
-                    : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <Building2 className="w-4 h-4 shrink-0" />
-                  <span>Branch-Wise Students</span>
-                </div>
-                <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-white/10">
-                  {scopedStudents.length}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setActiveTab('batches')}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
-                  activeTab === 'batches'
-                    ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
-                    : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <Layers className="w-4 h-4 shrink-0" />
-                  <span>Batch-Wise Details</span>
-                </div>
-                <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-white/10">
-                  {scopedBatches.length}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setActiveTab('weak_students')}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
-                  activeTab === 'weak_students'
-                    ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
-                    : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400" />
-                  <span>Weak Students Report</span>
-                </div>
-                {allWeakStudents.length > 0 && (
-                  <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-rose-500 text-white">
-                    {allWeakStudents.length}
-                  </span>
-                )}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setActiveTab('syllabus')}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
-                  activeTab === 'syllabus'
-                    ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
-                    : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <ListChecks className="w-4 h-4 shrink-0" />
-                  <span>Syllabus Completion</span>
-                </div>
-                <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-teal-500/20 text-teal-300">
-                  {syllabusReport.completionRate}%
-                </span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setActiveTab('mapping')}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
-                  activeTab === 'mapping'
-                    ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
-                    : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <Users className="w-4 h-4 shrink-0" />
-                  <span>Trainer &amp; Batch Mapping</span>
-                </div>
-                <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-blue-500/20 text-blue-300">
-                  {scopedTrainers.length}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setActiveTab('shift_availability')}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
-                  activeTab === 'shift_availability'
-                    ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
-                    : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <Clock className="w-4 h-4 shrink-0 text-amber-400" />
-                  <span>Shift &amp; Availability</span>
-                </div>
-                <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-md ${
-                  isHeadRole ? 'bg-amber-500/20 text-amber-300' : 'bg-slate-700 text-slate-300'
-                }`}>
-                  {isHeadRole ? 'Manage' : 'View'}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setActiveTab('leave_requests')}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
-                  activeTab === 'leave_requests'
-                    ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
-                    : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <CalendarCheck className="w-4 h-4 shrink-0 text-rose-300" />
-                  <span>Leave Requests</span>
-                </div>
-                <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-md ${pendingLeaveCount ? 'bg-rose-500 text-white' : 'bg-slate-700 text-slate-300'}`}>
-                  {pendingLeaveCount}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setActiveTab('trainer_attendance')}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
-                  activeTab === 'trainer_attendance'
-                    ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
-                    : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <Calendar className="w-4 h-4 shrink-0" />
-                  <span>Trainer Attendance</span>
-                </div>
-                <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300">
-                  Live
-                </span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setActiveTab('demos')}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
-                  activeTab === 'demos'
-                    ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
-                    : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <AtSign className="w-4 h-4 shrink-0" />
-                  <span>Demo Details</span>
-                </div>
-                <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-cyan-500/20 text-cyan-300">
-                  {scopedDemos.length}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setActiveTab('doubts')}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
-                  activeTab === 'doubts'
-                    ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
-                    : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <MessageSquare className="w-4 h-4 shrink-0" />
-                  <span>Doubt Box Details</span>
-                </div>
-                {doubtsReport.pending.length > 0 && (
-                  <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-amber-500 text-slate-900">
-                    {doubtsReport.pending.length}
-                  </span>
-                )}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setActiveTab('lms_library')}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-semibold transition-all cursor-pointer ${
-                  activeTab === 'lms_library'
-                    ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
-                    : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <BookOpen className="w-4 h-4 shrink-0 text-teal-400" />
-                  <span>LMS · PPT Library</span>
-                </div>
-                <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-teal-500/20 text-teal-300">
-                  {materials.length}
-                </span>
-              </button>
-            </div>
-          </div>
-        </div>
+        {/* Grouped, collapsible menu (HeadSidebarNav) */}
+        <HeadSidebarNav
+          activeTab={activeTab}
+          onSelect={setActiveTab}
+          sections={[
+            { id: 'home', title: 'Home', items: [
+              { id: 'overview', label: 'Overview', icon: MenuOverviewIcon, hint: 'Executive overview' },
+              { id: 'session_room', label: 'Live Classes', icon: MenuLiveIcon, hint: "Today's classes · observe live · your own classes" },
+              { id: 'sched_calendar', label: 'Calendar', icon: MenuCalendarIcon, hidden: !isHeadRole }
+            ] },
+            { id: 'action', title: 'Needs action', items: [
+              { id: 'allocation', label: 'Student Handover', icon: MenuHandoverIcon, hidden: !isHeadRole, alert: pendingAllocationStudents.length, count: scopedStudents.length, hint: 'Student handover & trainer allocation' },
+              { id: 'leave_requests', label: 'Leave Requests', icon: MenuLeaveIcon, alert: pendingLeaveCount, alertTone: 'rose' },
+              { id: 'demos', label: 'Demos', icon: MenuDemoIcon, alert: unassignedDemos.length, count: scopedDemos.length, hint: 'Demo details · amber = awaiting a trainer' },
+              { id: 'doubts', label: 'Student Doubts', icon: MenuDoubtIcon, alert: doubtsReport.pending.length, hint: 'Doubt box · amber = unanswered' }
+            ] },
+            { id: 'scheduling', title: 'Scheduling', items: [
+              { id: 'sched_availability', label: 'Availability', icon: MenuAvailIcon, hidden: !isHeadRole, hint: 'Find free trainers' },
+              { id: 'sched_consultations', label: 'Consultations', icon: MenuLinkIcon, hidden: !isHeadRole, hint: 'Booking links for demos' },
+              { id: 'sched_one_on_one', label: '1:1 Sessions', icon: MenuOneIcon, hidden: !isHeadRole },
+              { id: 'shift_availability', label: 'Shifts & Week-offs', icon: MenuShiftIcon, hint: 'Shift & availability' }
+            ] },
+            { id: 'trainers', title: 'Trainers', items: [
+              { id: 'mapping', label: 'Trainer Mapping', icon: MenuMappingIcon, count: scopedTrainers.length, hint: 'Trainer & batch mapping' },
+              { id: 'trainer_attendance', label: 'Trainer Attendance', icon: MenuAttendanceIcon },
+              { id: 'utilization', label: 'Utilization', icon: MenuUtilIcon, hint: 'Hourly utilization dashboard' },
+              { id: 'managers_tls', label: 'Managers & TLs', icon: MenuManagersIcon, hidden: !isHeadRole, count: `${trainerManagersList.length} · ${trainerTLsList.length}`, hint: `${trainerManagersList.length} managers · ${trainerTLsList.length} team leads` }
+            ] },
+            { id: 'students', title: 'Students & learning', items: [
+              { id: 'branches', label: 'Students by Branch', icon: MenuBranchIcon, count: scopedStudents.length },
+              { id: 'batches', label: 'Batches', icon: MenuBatchIcon, count: scopedBatches.length },
+              { id: 'weak_students', label: 'Weak Students', icon: MenuWeakIcon, alert: allWeakStudents.length, alertTone: 'rose' },
+              { id: 'syllabus', label: 'Syllabus Progress', icon: MenuSyllabusIcon, count: `${syllabusReport.completionRate}%` },
+              { id: 'lms_library', label: 'LMS Library', icon: MenuLmsIcon, count: materials.length, hint: 'PPTs & materials' }
+            ] }
+          ]}
+        />
 
         {/* Logout Bottom Action */}
         <div className="p-3 border-t border-[#172d3b]">
@@ -2233,7 +2010,7 @@ export default function TrainerHeadDashboard({
                   <h3 className="text-base font-extrabold text-slate-900">Live Class Session &amp; Attendance Room</h3>
                 </div>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Conduct live online or offline classes, launch Zoom sessions, log student attendance, and track syllabus modules as {currentLeaderTrainerName}.
+                  See every trainer's class today, join live classes as an observer, and run your own batches as {currentLeaderTrainerName}.
                 </p>
               </div>
               <button
@@ -2244,14 +2021,30 @@ export default function TrainerHeadDashboard({
                 View All Batches ({scopedBatches.length})
               </button>
             </div>
-            <ClassSessionRoom
-              trainerId={currentLeaderTrainerId}
-              trainerName={currentLeaderTrainerName}
-              batches={formattedBatchesForSessionRoom}
-              materials={materials}
-              canDownload={roleType !== 'tl' && (isHeadRole || isManagerRole)}
-              onAttendanceSaved={loadDashboardData}
+            <LiveClassMonitor
+              trainerIds={isHeadRole ? null : scopedTrainers.map((t) => t.trainerId).filter(Boolean)}
+              scopeLabel={isHeadRole ? 'all trainers' : 'your team'}
             />
+            <div className="space-y-3">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <h3 className="text-sm font-extrabold text-slate-900">My own classes</h3>
+                <span className="text-[11px] text-slate-500">Batches allocated to you ({myBatchesForSessionRoom.length})</span>
+              </div>
+              {myBatchesForSessionRoom.length > 0 ? (
+                <ClassSessionRoom
+                  trainerId={currentLeaderTrainerId}
+                  trainerName={currentLeaderTrainerName}
+                  batches={myBatchesForSessionRoom}
+                  materials={materials}
+                  canDownload={roleType !== 'tl' && (isHeadRole || isManagerRole)}
+                  onAttendanceSaved={loadDashboardData}
+                />
+              ) : (
+                <div className="bg-white rounded-2xl border border-dashed border-slate-300 p-6 text-center text-xs text-slate-500">
+                  No batch is allocated to you, so there is nothing for you to start. Trainers start their own classes — watch them live from Today's Classes above.
+                </div>
+              )}
+            </div>
           </div>
 
           {/* ================= SECTION 0: EXECUTIVE OVERVIEW ================= */}
@@ -4486,6 +4279,12 @@ export default function TrainerHeadDashboard({
           )}
 
           {/* ================= SECTION: SHIFT & AVAILABILITY (HEAD, MANAGER, TL) ================= */}
+          {/* Head of Trainer scheduling (Wise-style) */}
+          {isHeadRole && activeTab === 'sched_calendar' && <SchedulingCalendar />}
+          {isHeadRole && activeTab === 'sched_availability' && <AvailabilityFinder />}
+          {isHeadRole && activeTab === 'sched_consultations' && <ConsultationsDesk />}
+          {isHeadRole && activeTab === 'sched_one_on_one' && <OneOnOneDesk students={students} />}
+
           {activeTab === 'shift_availability' && (
             <div className="space-y-6">
               {/* My Shift & Availability Hero Card */}
@@ -6203,7 +6002,7 @@ export default function TrainerHeadDashboard({
       <CreateBatchModal
         isOpen={showCreateBatchModal}
         onClose={() => setShowCreateBatchModal(false)}
-        trainers={scopedTrainers}
+        trainers={batchTrainerOptions}
         students={scopedStudents}
         branches={scopedBranchNames}
         onCreated={loadDashboardData}
@@ -6212,7 +6011,7 @@ export default function TrainerHeadDashboard({
       <AutoGroupBatchModal
         isOpen={showAutoGroupModal}
         onClose={() => setShowAutoGroupModal(false)}
-        trainers={scopedTrainers}
+        trainers={batchTrainerOptions}
         students={scopedStudents}
         onCreated={loadDashboardData}
         flashToast={flashToast}
@@ -6222,7 +6021,7 @@ export default function TrainerHeadDashboard({
         isOpen={Boolean(inspectBatchTarget)}
         onClose={() => setInspectBatchTarget(null)}
         canManage={true}
-        trainers={scopedTrainers}
+        trainers={batchTrainerOptions}
         allStudents={scopedStudents}
         onUpdated={loadDashboardData}
         flashToast={flashToast}

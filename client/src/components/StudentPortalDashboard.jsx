@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import useFileToken from '../hooks/useFileToken';
-import ZoomMeeting from './ZoomMeeting';
+import LiveClassroom from './LiveClassroom';
 import {
   Home,
   CreditCard,
@@ -35,6 +35,8 @@ import {
   Maximize2,
   Minimize2
 } from 'lucide-react';
+import { CalendarClock as ScheduleIcon } from 'lucide-react';
+import StudentSchedule from './scheduling/StudentSchedule';
 import StudentOnlineTest from './StudentOnlineTest';
 import BookNewDemoModal from './BookNewDemoModal';
 import StudentDemoNotice from './StudentDemoNotice';
@@ -280,7 +282,13 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
   // --------------------------------------------------------------------------
   const st = portal?.student || null;
   const trainer = portal?.trainer || null;
-  const live = portal?.liveSession || null;
+  // While the student is in the call, a refresh that briefly comes back
+  // without the session must not unmount the classroom and drop them from class. The
+  // call itself ends when the trainer ends it (the room closes, onLeft fires).
+  const lastLiveRef = React.useRef(null);
+  const serverLive = portal?.liveSession || null;
+  if (serverLive) lastLiveRef.current = serverLive;
+  const live = serverLive || (inLiveClass ? lastLiveRef.current : null);
   const attendance = portal?.attendance || [];
   const assessments = portal?.assessments || [];
   const materials = portal?.materials || [];
@@ -617,6 +625,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
       { id: 'progress', label: 'My Progress', icon: TrendingUp }
     ] },
     { category: 'LEARNING', items: [
+      { id: 'schedule', label: 'My Schedule', icon: ScheduleIcon },
       { id: 'classes', label: 'Classes', icon: Calendar },
       { id: 'lms', label: 'Materials & Tests', icon: BookOpen },
       { id: 'trainers', label: 'My Trainer', icon: Users }
@@ -3293,6 +3302,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
           {activeNav === 'dashboard' && renderDashboard()}
           {activeNav === 'membership' && renderMembership()}
           {activeNav === 'progress' && renderProgress()}
+          {activeNav === 'schedule' && <StudentSchedule onJoinBatchClass={handleOpenLiveClass} />}
           {activeNav === 'classes' && renderClasses()}
           {activeNav === 'lms' && renderLms()}
           {activeNav === 'trainers' && renderTrainers()}
@@ -3415,14 +3425,12 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
                 </div>
               </div>
 
-              {/* Full View Zoom Container */}
+              {/* Full View Live Classroom */}
               <div className="flex-1 w-full h-full relative bg-[#030b0f] overflow-hidden flex flex-col">
-                <ZoomMeeting
+                <LiveClassroom
                   key={live.sessionId}
-                  getJoinDetails={(reset) => joinStudentLiveClass({ studentId: st.studentId, email: st.email, batch: d.batch, reset })}
-                  studentEmail={st.email || undefined}
-                  userName={d.name}
-                  isTrainerHost={false}
+                  getJoinDetails={() => joinStudentLiveClass({ studentId: st.studentId, email: st.email, batch: d.batch })}
+                  isHost={false}
                   height="100%"
                   onLeft={() => {
                     setInLiveClass(false);

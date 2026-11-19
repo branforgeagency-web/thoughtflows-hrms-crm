@@ -253,6 +253,16 @@ const demoSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  // ThoughtFlows Live Classroom (LiveKit) for demos. All candidates of one
+  // group session share demoRoom; each candidate gets their own joinCode,
+  // which makes a no-login link (/join/demo/<joinCode>) for phone or lab PC.
+  demoRoom: { type: String, default: '' },
+  // Booked by the candidate through a Consultations booking link
+  bookingLinkId: { type: String, default: '' },
+  source: { type: String, default: '' },
+  joinCode: { type: String, default: '' },
+  classroomLiveAt: { type: Date, default: null },
+  classroomJoinedAt: { type: Date, default: null },
   // History of date/time changes (and any trainer swap made at the same time)
   rescheduleHistory: {
     type: [{
@@ -275,5 +285,6 @@ const demoSchema = new mongoose.Schema({
 // Index on trainerId, preferredDate, timeSlot for fast query lookups.
 // Demos are conducted as group sessions (up to 6 students taken together in one demo session).
 demoSchema.index({ trainerId: 1, preferredDate: 1, timeSlot: 1 });
+demoSchema.index({ joinCode: 1 }, { sparse: true });
 
 export default mongoose.models.Demo || mongoose.model('Demo', demoSchema);

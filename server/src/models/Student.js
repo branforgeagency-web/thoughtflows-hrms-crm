@@ -29,8 +29,21 @@ const studentSchema = new mongoose.Schema({
   },
   email: {
     type: String,
-    default: ''
+    default: '',
+    lowercase: true,
+    trim: true
   },
+  // Personal / registration details captured by the registration forms
+  fatherName: { type: String, default: '' },
+  address: { type: String, default: '' },
+  facebookId: { type: String, default: '' },
+  college: { type: String, default: '' },
+  company: { type: String, default: '' },
+  batchType: { type: String, default: '' }, // Weekdays | Weekends | Both
+  leadCameFor: { type: String, default: '' },
+  registeredAt: { type: Date, default: null },
+  paymentReference: { type: String, default: '' },
+  notes: { type: String, default: '' },
   course: {
     type: String,
     required: true
@@ -116,9 +129,10 @@ const studentSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  // WiseApp onboarding progress ("done/7"), advanced by the WiseApp sync
   onboardStatus: {
     type: String,
-    default: '7/7 ✓'
+    default: '0/7'
   },
   syllabusModule: {
     type: String,
@@ -186,6 +200,8 @@ const studentSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  // 'all' is only a list filter; it stays in the enum so older records that
+  // were saved with it still validate, but the API never writes it now.
   statusGroup: {
     type: String,
     enum: ['all', 'in_course', 'placed', 'on_hold'],
@@ -383,15 +399,17 @@ const studentSchema = new mongoose.Schema({
     type: [{ action: String, note: String, by: String, at: Date }],
     default: []
   },
+  // Handover checklist — an item is ticked only when it is actually verified
+  // (POST /students pre-ticks what the admission itself proves).
   checklist: {
-    course: { type: Boolean, default: true },
-    branch: { type: Boolean, default: true },
-    batchMode: { type: Boolean, default: true },
+    course: { type: Boolean, default: false },
+    branch: { type: Boolean, default: false },
+    batchMode: { type: Boolean, default: false },
     paymentStatus: { type: Boolean, default: false },
     studentId: { type: Boolean, default: true },
-    language: { type: Boolean, default: true },
-    education: { type: Boolean, default: true },
-    careerGoal: { type: Boolean, default: true },
+    language: { type: Boolean, default: false },
+    education: { type: Boolean, default: false },
+    careerGoal: { type: Boolean, default: false },
     trainerNote: { type: Boolean, default: false },
     documents: { type: Boolean, default: false }
   },

@@ -1,8 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { getMyDemos, onDataUpdate } from '../services/api';
+import { getMyDemos, onDataUpdate, joinPublicDemo } from '../services/api';
 import ZoomMeeting from './ZoomMeeting';
+import LiveClassroom from './LiveClassroom';
 
-// Demo-class notifications for the logged-in student + one-click join (embedded Zoom)
+const joinCodeOf = (link = '') => (String(link).match(/\/join\/demo\/([A-Za-z0-9]+)/) || [])[1] || '';
+
+// Demo-class notifications for the logged-in student + one-click join
+// (ThoughtFlows Live Classroom; older demos still on Zoom keep the Zoom view)
 export default function StudentDemoNotice({ email, name }) {
   const [demos, setDemos] = useState([]);
   const [room, setRoom] = useState(null);
@@ -67,14 +71,22 @@ export default function StudentDemoNotice({ email, name }) {
             </button>
           </div>
           <div className="flex-1 w-full h-full relative bg-[#030b0f] overflow-hidden flex flex-col">
-            <ZoomMeeting
-              demoId={room._id}
-              studentEmail={email}
-              userName={name || 'Student'}
-              isTrainerHost={false}
-              height="100%"
-              onLeft={() => setRoom(null)}
-            />
+            {joinCodeOf(room.joinLink) ? (
+              <LiveClassroom
+                getJoinDetails={() => joinPublicDemo(joinCodeOf(room.joinLink))}
+                height="100%"
+                onLeft={() => setRoom(null)}
+              />
+            ) : (
+              <ZoomMeeting
+                demoId={room._id}
+                studentEmail={email}
+                userName={name || 'Student'}
+                isTrainerHost={false}
+                height="100%"
+                onLeft={() => setRoom(null)}
+              />
+            )}
           </div>
         </div>
       )}

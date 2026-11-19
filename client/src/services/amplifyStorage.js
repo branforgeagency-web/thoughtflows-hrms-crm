@@ -284,6 +284,25 @@ export async function uploadRecordingFile(file, entityPrefix = 'general', option
 }
 
 /**
+ * Is this saved S3 URL in the bucket this app build uploads to / can sign for?
+ * Files uploaded from another environment (deployed app vs local sandbox) live
+ * in a different bucket — the browser cannot sign those, the API server can.
+ */
+export function storedInActiveBucket(url = '') {
+  if (!url || !/^https?:\/\//i.test(url)) return true;
+  if (!isAmplifyStorageConfigured()) initAmplifyStorage();
+  const bucket = activeBucketName;
+  if (!bucket) return true;
+  try {
+    const u = new URL(url);
+    if (!/amazonaws\.com$/i.test(u.hostname)) return true;
+    return u.hostname.startsWith(`${bucket}.`) || u.pathname.startsWith(`/${bucket}/`);
+  } catch (_) {
+    return true;
+  }
+}
+
+/**
  * Extract the relative storage key/path from a key or an S3 presigned / bucket URL.
  * Handles:
  *  - recordings/...
