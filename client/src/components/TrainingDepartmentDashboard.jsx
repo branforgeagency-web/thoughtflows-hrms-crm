@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { localDateKey } from '../utils/dateUtils';
 import LiveClassroom from './LiveClassroom';
 import OneOnOneTrainerPanel from './scheduling/OneOnOneTrainerPanel';
+import { handedOverOnly } from '../utils/handover';
 import SchedulingCalendar from './scheduling/SchedulingCalendar';
 import { CalendarRange as MyCalendarIcon } from 'lucide-react';
 import { 
@@ -399,7 +400,8 @@ export default function TrainingDepartmentDashboard({
           courseKey: first.courseKey || first.course || 'CPC'
         });
       }
-      setStudents(Array.isArray(stRes) ? stRes : []);
+      // Only students HR has handed over to training (or already allocated)
+      setStudents(handedOverOnly(stRes));
     } catch (err) {
       console.error('Error fetching real trainer data:', err);
     } finally {

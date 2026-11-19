@@ -23,6 +23,7 @@ import {
 import TrainingDepartmentDashboard from './TrainingDepartmentDashboard';
 import TrainerRoleDashboard from './TrainerRoleDashboard';
 import TrainerHeadDashboard from './TrainerHeadDashboard';
+import { handedOverOnly } from '../utils/handover';
 import TrainerOrgHierarchyChart from './TrainerOrgHierarchyChart';
 import TrainerRoleLoginModal from './TrainerRoleLoginModal';
 import {
@@ -267,7 +268,7 @@ export default function TrainersDepartmentHub({
     getDemos().then((d) => setDemos(Array.isArray(d) ? d : [])).catch(() => {});
     getBranches().then((d) => setBranches(Array.isArray(d) ? d : [])).catch(() => {});
     getStudents()
-      .then((d) => setStudents(Array.isArray(d) ? d : []))
+      .then((d) => setStudents(handedOverOnly(d)))
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);

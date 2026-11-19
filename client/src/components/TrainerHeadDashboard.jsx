@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import HeadSidebarNav from './HeadSidebarNav';
+import { handedOverOnly } from '../utils/handover';
 import {
   LayoutDashboard as MenuOverviewIcon, PlayCircle as MenuLiveIcon, CalendarRange as MenuCalendarIcon,
   UserPlus as MenuHandoverIcon, CalendarX as MenuLeaveIcon, Presentation as MenuDemoIcon, MessageCircleQuestion as MenuDoubtIcon,
@@ -305,7 +306,8 @@ export default function TrainerHeadDashboard({
           }
         });
 
-        setStudents(Array.isArray(stData) ? stData : []);
+        // Only students HR has handed over to training (or already allocated)
+        setStudents(handedOverOnly(stData));
         setBatches(Array.isArray(bData) ? bData : []);
         setBranches(Array.isArray(brData) ? brData : []);
         setTrainers(realTrainers);
