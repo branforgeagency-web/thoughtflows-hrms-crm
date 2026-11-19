@@ -1042,13 +1042,6 @@ PPT decks and course materials allocated to you by your Trainer Head &amp; Manag
                           >
                             <FolderInput className="w-3.5 h-3.5" />
                           </button>
-                          <a
-                            href={trainingMaterialFileUrl(m._id, true)}
-                            className="p-1 rounded hover:text-teal-700"
-                            title="Download"
-                          >
-                            <Download className="w-3.5 h-3.5" />
-                          </a>
                           <button
                             type="button"
                             onClick={() => handleDelete(m)}

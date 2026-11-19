@@ -11771,10 +11771,11 @@ router.get('/training/materials/:id/file', async (req, res) => {
     } else if (!(await canSeeAllTrainingMaterials(req)) && !isMaterialAllocatedToUser(doc, req.user)) {
       return res.status(403).json({ error: 'This material has not been allocated to you. Please ask your Trainer Head or Manager.' });
     }
-    const wantsDownload = Boolean(req.query.download);
-    if (wantsDownload && !canManageTrainingMaterials(req)) {
-      return res.status(403).json({ error: 'Download is disabled for TL and Trainers. Please open and view in the dashboard.' });
+    // Training materials are view-only for everyone — downloads are disabled.
+    if (req.query.download) {
+      return res.status(403).json({ error: 'Downloading training materials is disabled. Please open and view them in the dashboard.' });
     }
+    const wantsDownload = false;
     if (doc.storageUrl || doc.storageKey) {
       // The bucket is private: a plain S3 link is always refused (AccessDenied),
       // so hand out a short-lived signed link — for the bucket the file was

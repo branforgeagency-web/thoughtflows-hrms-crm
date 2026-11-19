@@ -548,7 +548,10 @@ function SlideCanvas({ slide, size, scale = 1 }) {
   );
 }
 
-export default function LmsMaterialViewer({ material, canDownload = false, onClose }) {
+// Materials are view-only for everyone — no download, save or print from the viewer.
+// eslint-disable-next-line no-unused-vars
+export default function LmsMaterialViewer({ material, canDownload: _downloadIgnored, onClose }) {
+  const canDownload = false;
   const [loading, setLoading] = useState(true);
   const [loadingText, setLoadingText] = useState('Loading presentation in LMS viewer…');
   const [error, setError] = useState('');
