@@ -62,6 +62,7 @@ import TrainerHourlyWork from '../models/TrainerHourlyWork.js';
 import { DEFAULT_WORK_SLOTS } from '../constants/trainerHierarchy.js';
 import wiseappRouter from './wiseapp.js';
 import { registerSchedulingRoutes } from './scheduling.js';
+import { registerStaffDeskRoutes } from './staffdesk.js';
 import { isS3Configured, copyRemoteRecordingToS3, putRecordingBuffer, streamS3Object, signedUrlForStoredFile } from '../utils/s3Storage.js';
 import { livekitConfigured, livekitUrl, livekitToken, classRoomName, endLivekitRoom, LIVEKIT_NOT_CONFIGURED } from '../utils/livekit.js';
 import { randomInt as cryptoRandomInt } from 'crypto';
@@ -8706,6 +8707,25 @@ async function managerCanPlanFor(caller, { userId, managerId, managerName, teamL
   return false;
 }
 
+// Every id a leader / trainer may appear under in hourly-work records
+// (roster trainerId, leader id, login id) — compared case-insensitively.
+function utilCallerIds(req, caller) {
+  const u = req.user || {};
+  return new Set([u.trainerId, u.leaderId, u.id, u._id, caller?.id, caller?.leaderId]
+    .filter(Boolean).map((v) => String(v).trim().toLowerCase()));
+}
+const utilIsSelf = (req, caller, userId) => utilCallerIds(req, caller).has(String(userId || '').trim().toLowerCase());
+
+// TL may manage trainers reporting to them (per the saved work plan or the roster)
+async function tlCanManage(req, caller, userId, teamLeadIdHint = '') {
+  const mine = utilCallerIds(req, caller);
+  if (teamLeadIdHint && mine.has(String(teamLeadIdHint).toLowerCase())) return true;
+  const tr = await Trainer.findOne({ trainerId: new RegExp(`^${escapeRegex(String(userId))}$`, 'i') }).select('teamLeadId teamLeadName').lean();
+  if (tr?.teamLeadId && mine.has(String(tr.teamLeadId).toLowerCase())) return true;
+  const myName = String(caller?.name || '').trim().toLowerCase();
+  return Boolean(myName && tr?.teamLeadName && String(tr.teamLeadName).trim().toLowerCase() === myName);
+}
+
 function getUtilizationUserIdentity(req) {
   const u = req.user || {};
   const query = req.query || {};
@@ -9129,21 +9149,14 @@ router.post('/trainer/utilization/plan', async (req, res) => {
     // - Manager can plan for TLs and trainers in their zone
     // - Head / Admin can plan for any trainer department member
     let isAuthorized = false;
-    const isSelf = caller.id && caller.id.toLowerCase() === String(userId).toLowerCase();
-
-    if (isSelf) {
+    if (utilIsSelf(req, caller, userId)) {
       isAuthorized = true;
     } else if (caller.role === 'head' || caller.role === 'admin' || caller.role === 'leadership') {
       isAuthorized = true;
     } else if (caller.role === 'manager') {
       isAuthorized = await managerCanPlanFor(caller, { userId, managerId, managerName, teamLeadId });
     } else if (caller.role === 'tl') {
-      const myTlId = caller.leaderId || caller.id;
-      if (teamLeadId && teamLeadId.toLowerCase() === myTlId.toLowerCase()) isAuthorized = true;
-      if (!isAuthorized) {
-        const trMatch = await Trainer.findOne({ trainerId: new RegExp(`^${escapeRegex(String(userId))}$`, 'i') }).lean();
-        if (trMatch && trMatch.teamLeadId && trMatch.teamLeadId.toLowerCase() === myTlId.toLowerCase()) isAuthorized = true;
-      }
+      isAuthorized = await tlCanManage(req, caller, userId, teamLeadId);
     }
 
     if (!isAuthorized) {
@@ -9244,23 +9257,23 @@ router.put('/trainer/utilization/actual', async (req, res) => {
 
     // Permission Verification:
     // Allow each user to update only their own work, except the TL, who can create and manage work plans for their assigned trainers.
+    // Self, Head, the member's Team Lead, or their Manager (TLs + trainers under them)
     let isAuthorized = false;
-    const isSelf = caller.id && caller.id.toLowerCase() === String(userId).toLowerCase();
-
-    if (isSelf) {
+    if (utilIsSelf(req, caller, userId)) {
       isAuthorized = true;
     } else if (caller.role === 'head' || caller.role === 'admin' || caller.role === 'leadership') {
       isAuthorized = true;
-    } else if (caller.role === 'tl') {
-      const myTlId = caller.leaderId || caller.id;
-      const trMatch = await Trainer.findOne({ trainerId: new RegExp(`^${escapeRegex(String(userId))}$`, 'i') }).lean();
-      if (trMatch && trMatch.teamLeadId && trMatch.teamLeadId.toLowerCase() === myTlId.toLowerCase()) isAuthorized = true;
+    } else if (caller.role === 'tl' || caller.role === 'manager') {
+      const plan = await TrainerHourlyWork.findOne({ userId, date }).select('teamLeadId managerId managerName').lean();
+      isAuthorized = caller.role === 'tl'
+        ? await tlCanManage(req, caller, userId, plan?.teamLeadId)
+        : await managerCanPlanFor(caller, { userId, managerId: plan?.managerId, managerName: plan?.managerName, teamLeadId: plan?.teamLeadId });
     }
 
     if (!isAuthorized) {
       return res.status(403).json({
         success: false,
-        error: 'Permission denied: Users may update only their own hourly work progress.'
+        error: 'Permission denied: you can update your own hourly work, and your Team Lead / Manager can update it for you.'
       });
     }
 
@@ -9354,17 +9367,10 @@ router.post('/trainer/utilization/bulk-plan', async (req, res) => {
       if (!userId) continue;
 
       // Same permission as single-slot planning
-      const isSelfPlan = caller.id && caller.id.toLowerCase() === String(userId).toLowerCase();
+      const isSelfPlan = utilIsSelf(req, caller, userId);
       let allowed = isSelfPlan || ['head', 'admin', 'leadership'].includes(caller.role);
       if (!allowed && caller.role === 'manager') allowed = await managerCanPlanFor(caller, { userId, managerId, managerName, teamLeadId });
-      if (!allowed && caller.role === 'tl') {
-        const myTlId = String(caller.leaderId || caller.id || '').toLowerCase();
-        if (teamLeadId && teamLeadId.toLowerCase() === myTlId) allowed = true;
-        if (!allowed) {
-          const trMatch = await Trainer.findOne({ trainerId: new RegExp(`^${escapeRegex(String(userId))}$`, 'i') }).lean();
-          if (trMatch?.teamLeadId && trMatch.teamLeadId.toLowerCase() === myTlId) allowed = true;
-        }
-      }
+      if (!allowed && caller.role === 'tl') allowed = await tlCanManage(req, caller, userId, teamLeadId);
       if (!allowed) continue;
 
       let workDoc = await TrainerHourlyWork.findOne({ userId, date });
@@ -16047,6 +16053,9 @@ registerSchedulingRoutes(router, {
   sessionTrainerId, trainerOwnsRecord, isTrainerLeader, NOT_YOUR_RECORD,
   findPortalStudent, studentBatchOf
 });
+
+// Attendance & Leave desk for every employee
+registerStaffDeskRoutes(router, { pushNotification });
 
 router.use('/wiseapp', wiseappRouter);
 

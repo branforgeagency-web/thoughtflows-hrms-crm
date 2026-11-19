@@ -59,6 +59,9 @@ const lazyDashboard = (rawLoader, label) => {
   return Wrapped;
 };
 
+// Attendance & Leave launcher, shown inside every staff dashboard (not the Student Portal)
+const StaffDeskLauncher = React.lazy(() => import('./staffdesk/StaffDeskLauncher'));
+
 const HrDepartmentHub = lazyDashboard(() => import('./HrDepartmentHub'), 'HR & Admissions');
 const StudentPortalDashboard = lazyDashboard(() => import('./StudentPortalDashboard'), 'Student Portal');
 const AdminManagementDashboard = lazyDashboard(() => import('./AdminManagementDashboard'), 'Admin Management');
@@ -142,8 +145,15 @@ export default function DashboardModal({
     }
   };
 
+  const withDesk = (node) => (
+    <>
+      {node}
+      <React.Suspense fallback={null}><StaffDeskLauncher /></React.Suspense>
+    </>
+  );
+
   if (deptId === 'training') {
-    return (
+    return withDesk(
       <TrainersDepartmentHub
         onClose={onClose}
         currentUser={currentUser}
@@ -156,7 +166,7 @@ export default function DashboardModal({
   }
 
   if (deptId === 'hr') {
-    return (
+    return withDesk(
       <HrDepartmentHub
         onClose={onClose}
         currentUser={currentUser}
@@ -182,7 +192,7 @@ export default function DashboardModal({
   }
 
   if (deptId === 'admin') {
-    return (
+    return withDesk(
       <AdminManagementDashboard
         onClose={onClose}
         currentUser={currentUser}
@@ -194,7 +204,7 @@ export default function DashboardModal({
   }
 
   if (deptId === 'cccp') {
-    return (
+    return withDesk(
       <CccpDashboard
         onClose={onClose}
         currentUser={currentUser}
@@ -206,7 +216,7 @@ export default function DashboardModal({
   }
 
   if (deptId === 'marketing') {
-    return (
+    return withDesk(
       <MarketingDepartmentDashboard
         onClose={onClose}
         currentUser={currentUser}
@@ -218,7 +228,7 @@ export default function DashboardModal({
   }
 
   if (deptId === 'leadership') {
-    return (
+    return withDesk(
       <LeadershipHubDashboard
         onClose={onClose}
         currentUser={currentUser}
@@ -229,7 +239,7 @@ export default function DashboardModal({
   }
 
   if (deptId === 'wiseapp') {
-    return (
+    return withDesk(
       <WiseAppDashboard
         onClose={onClose}
         currentUser={currentUser}

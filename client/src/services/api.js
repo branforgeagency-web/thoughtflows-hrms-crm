@@ -1947,6 +1947,20 @@ export const addLiveClassNote = async (sessionId, text) => {
   return res.data;
 };
 
+// ============================================
+// ATTENDANCE & LEAVE DESK (all employees)
+// ============================================
+export const getStaffDeskMe = async () => (await api.get('/staff-desk/me', { skipCache: true })).data;
+export const getStaffDay = async (date) => (await api.get('/staff-desk/day', { params: { date }, skipCache: true })).data;
+export const getStaffLog = async (params) => (await api.get('/staff-desk/log', { params, skipCache: true })).data;
+export const getStaffRegister = async (month) => (await api.get('/staff-desk/register', { params: { month }, skipCache: true })).data;
+export const getStaffBalances = async (params) => (await api.get('/staff-desk/balances', { params, skipCache: true })).data;
+export const getStaffLeaves = async (params) => (await api.get('/staff-desk/leaves', { params, skipCache: true })).data;
+export const applyStaffLeave = async (body) => (await api.post('/staff-desk/leaves', body)).data;
+export const decideStaffLeave = async (id, action, note) => (await api.post(`/staff-desk/leaves/${id}/decision`, { action, note })).data;
+export const cancelStaffLeave = async (id, note) => (await api.post(`/staff-desk/leaves/${id}/cancel`, { note })).data;
+export const saveLeavePolicy = async (body) => (await api.put('/staff-desk/policy', body)).data;
+
 // Head / Manager / TL: watch another trainer's live class, or nudge a late trainer
 export const observeLiveClass = async (sessionId) => (await api.get(`/trainer/live-class/${sessionId}/observe`, { skipCache: true })).data;
 export const remindTrainerToStart = async (data) => (await api.post('/trainer/live-class/remind', data)).data;
