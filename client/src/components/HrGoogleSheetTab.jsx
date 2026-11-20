@@ -4,10 +4,30 @@ import { getSetting, saveSetting, getGoogleSheetRows, createLeadsBulk } from '..
 import { parseGoogleSheetOrCsv } from '../utils/csvParser';
 
 // Org-wide setting that holds the sheet links:
-//   { team: '<url>', users: { '<lowercased name>': '<url>' } }
+//   { team: '<old shared url>', branches: { '<City>': '<url>' }, users: { '<lowercased name>': '<url>' } }
+// Each city has its own branch sheet — all Coimbatore centres share one,
+// Trichy has one, Tirupati has one, and so on.
 const SETTING_KEY = 'hr_google_sheets';
 
 const normName = (v) => String(v || '').trim().replace(/\s+/g, ' ').toLowerCase();
+
+export const SHEET_CITIES = ['Coimbatore', 'Hyderabad', 'Kochi', 'Salem', 'Trichy', 'Tirupati', 'Trivandrum', 'Vizag', 'Pune', 'Kollapur', 'Theni'];
+const CBE_AREAS = /\b(cbe|coimbatore|saravanampatti|hopes|gandhipuram)\b/i;
+const HYD_AREAS = /\b(hyderabad|ameerpet|dilsukhnagar)\b/i;
+// "Saravanampatti (CBE)" → "Coimbatore", "Trichy (Tamil Nadu)" → "Trichy"
+export function sheetCityOf(branch) {
+  const b = String(branch || '').trim();
+  if (!b || /not\s*mentioned/i.test(b)) return '';
+  if (CBE_AREAS.test(b)) return 'Coimbatore';
+  if (HYD_AREAS.test(b)) return 'Hyderabad';
+  if (/tirupat/i.test(b)) return 'Tirupati';
+  if (/trichy|tiruchi/i.test(b)) return 'Trichy';
+  if (/kochi|cochin/i.test(b)) return 'Kochi';
+  if (/vizag|visakha/i.test(b)) return 'Vizag';
+  const known = SHEET_CITIES.find((c) => new RegExp(`\\b${c}\\b`, 'i').test(b));
+  if (known) return known;
+  return b.replace(/\([^)]*\)/g, '').trim();
+}
 
 // Turn any Google Sheets link into an embeddable editor URL (keeps the tab / gid).
 export function toEmbedUrl(raw) {
@@ -138,9 +158,13 @@ export function useGoogleSheetAutoImport(currentUser, onImported) {
 
 // canEdit: only the Department Head and Branch Head (and Admin) may change
 // sheet links or edit the sheet here — everyone else gets a view-only sheet.
-export default function HrGoogleSheetTab({ currentUser, canEdit = false }) {
+// branch: the branch this desk belongs to (Branch Head desk / the HR's own branch).
+// allBranches: Department Head / Admin — may pick and link any city's sheet.
+export default function HrGoogleSheetTab({ currentUser, canEdit = false, branch = '', allBranches = false }) {
   const me = normName(currentUser?.name);
-  const [config, setConfig] = useState({ team: '', users: {}, auto: {} });
+  const homeCity = sheetCityOf(branch || currentUser?.branch);
+  const [city, setCity] = useState(homeCity || (allBranches ? SHEET_CITIES[0] : ''));
+  const [config, setConfig] = useState({ team: '', branches: {}, users: {}, auto: {} });
   const [importing, setImporting] = useState(false);
   const [lastImport, setLastImport] = useState(() => readLastImport(normName(currentUser?.name)));
   const [loading, setLoading] = useState(true);
@@ -156,7 +180,12 @@ export default function HrGoogleSheetTab({ currentUser, canEdit = false }) {
     try {
       const res = await getSetting(SETTING_KEY);
       const v = res?.value && typeof res.value === 'object' ? res.value : {};
-      setConfig({ team: v.team || '', users: v.users && typeof v.users === 'object' ? v.users : {}, auto: v.auto && typeof v.auto === 'object' ? v.auto : {} });
+      setConfig({
+        team: v.team || '',
+        branches: v.branches && typeof v.branches === 'object' ? v.branches : {},
+        users: v.users && typeof v.users === 'object' ? v.users : {},
+        auto: v.auto && typeof v.auto === 'object' ? v.auto : {}
+      });
       return v;
     } catch (_) {
       return null;
@@ -168,7 +197,8 @@ export default function HrGoogleSheetTab({ currentUser, canEdit = false }) {
   useEffect(() => { load(); }, []);
 
   const myUrl = config.users?.[me] || '';
-  const teamUrl = config.team || '';
+  // Branch sheet of the selected city only — another branch's sheet is never shown
+  const teamUrl = (city && config.branches?.[city]) || '';
   // Default to my own sheet when I have one, otherwise the team sheet
   useEffect(() => {
     if (!loading) setSource(myUrl ? 'mine' : 'team');
@@ -197,11 +227,14 @@ export default function HrGoogleSheetTab({ currentUser, canEdit = false }) {
       const latest = (await load()) || {};
       const next = {
         team: latest.team || '',
+        branches: { ...(latest.branches || {}) },
         users: { ...(latest.users || {}) },
         auto: { ...(latest.auto || {}) }
       };
-      if (editing === 'team') next.team = link;
-      else if (link) next.users[me] = link;
+      if (editing === 'team') {
+        if (!city) { setError('This desk has no branch set, so a branch sheet cannot be linked.'); setSaving(false); return; }
+        if (link) next.branches[city] = link; else delete next.branches[city];
+      } else if (link) next.users[me] = link;
       else delete next.users[me];
       await saveSetting(SETTING_KEY, next);
       setConfig(next);
@@ -233,7 +266,7 @@ export default function HrGoogleSheetTab({ currentUser, canEdit = false }) {
   const toggleAuto = async () => {
     try {
       const latest = (await load()) || {};
-      const next = { team: latest.team || '', users: { ...(latest.users || {}) }, auto: { ...(latest.auto || {}) } };
+      const next = { team: latest.team || '', branches: { ...(latest.branches || {}) }, users: { ...(latest.users || {}) }, auto: { ...(latest.auto || {}) } };
       if (autoOn) delete next.auto[me]; else next.auto[me] = true;
       await saveSetting(SETTING_KEY, next);
       setConfig(next);
@@ -278,7 +311,16 @@ export default function HrGoogleSheetTab({ currentUser, canEdit = false }) {
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           {(canEdit || myUrl) && tabBtn('mine', 'My Sheet', Boolean(myUrl))}
-          {tabBtn('team', 'Team Sheet', Boolean(teamUrl))}
+          {tabBtn('team', city ? `${city} Sheet` : 'Branch Sheet', Boolean(teamUrl))}
+          {allBranches && source === 'team' && (
+            <select value={city} onChange={(e) => { setCity(e.target.value); setEditing(null); setFrameKey((k) => k + 1); }}
+              title="Branch sheet to view"
+              className="px-2 py-1.5 rounded-lg text-xs font-bold bg-white border border-slate-200 text-slate-600 cursor-pointer">
+              {SHEET_CITIES.map((c) => (
+                <option key={c} value={c}>{c}{config.branches?.[c] ? '' : ' (not set)'}</option>
+              ))}
+            </select>
+          )}
           {canEdit && (
             <button type="button" onClick={() => startEdit(source)} title="Change sheet link"
               className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 inline-flex items-center gap-1 cursor-pointer">
@@ -310,7 +352,7 @@ export default function HrGoogleSheetTab({ currentUser, canEdit = false }) {
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-teal-900 flex items-center gap-1.5">
               <Link2 className="w-3.5 h-3.5" />
-              {editing === 'team' ? 'Team sheet link (everyone on the HR desk sees this)' : 'My sheet link (only you see this)'}
+              {editing === 'team' ? `${city || 'Branch'} sheet link (only ${city || 'this branch'} HR staff see this)` : 'My sheet link (only you see this)'}
             </span>
             <button type="button" onClick={() => setEditing(null)} className="text-slate-400 hover:text-slate-600 cursor-pointer">
               <X className="w-4 h-4" />
@@ -355,7 +397,9 @@ export default function HrGoogleSheetTab({ currentUser, canEdit = false }) {
         <div className="h-[50vh] flex flex-col items-center justify-center gap-3 text-center border-2 border-dashed border-slate-200 rounded-xl">
           <FileSpreadsheet className="w-10 h-10 text-slate-300" />
           <p className="text-sm text-slate-500">
-            {source === 'team' ? 'No team sheet has been linked yet.' : "You haven't linked your sheet yet."}
+            {source === 'team'
+              ? (city ? `No ${city} branch sheet has been linked yet.` : 'Your branch is not set, so no branch sheet can be shown.')
+              : "You haven't linked your sheet yet."}
           </p>
           {canEdit ? (
             <button type="button" onClick={() => startEdit(source)}

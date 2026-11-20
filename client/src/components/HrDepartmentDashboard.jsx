@@ -38,7 +38,6 @@ import {
 import HrEodReportSection from './HrEodReportSection';
 import { StartWorkConfirmationModal, CloseWorkConfirmationModal } from './WorkSessionModals';
 import HrPipelineView from './HrPipelineView';
-import HrGoogleSheetTab from './HrGoogleSheetTab';
 import HrKpiDrilldownModal from './HrKpiDrilldownModal';
 import HrFollowUpBoard from './HrFollowUpBoard';
 import HrDemoDesk from './HrDemoDesk';
@@ -77,7 +76,9 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   // Persist active tab across browser refresh within this session
   const [activeTab, setActiveTab] = useState(() => {
     try {
-      return sessionStorage.getItem('thoughtflows_hr_active_tab') || 'Home';
+      const saved = sessionStorage.getItem('thoughtflows_hr_active_tab');
+      // The Google Sheet tab was removed — a saved one falls back to Home
+      return saved && saved !== 'Google Sheet' ? saved : 'Home';
     } catch {
       return 'Home';
     }
@@ -1305,7 +1306,6 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         ] : [])
       ] : []),
       { name: 'Pipeline & Follow-ups', badge: pipelineCount, icon: Filter, iconBg: 'bg-[#7c3aed]', badgeBg: 'bg-rose-500', color: 'purple' },
-      { name: 'Google Sheet', badge: null, icon: FileSpreadsheet, iconBg: 'bg-green-600', color: 'emerald' },
       { name: 'Demo Desk', badge: scopedDemos.length > 0 ? scopedDemos.length.toString() : null, icon: Monitor, iconBg: 'bg-cyan-600', color: 'cyan' },
       { name: 'Admitted Students', badge: admittedCount, icon: GraduationCap, iconBg: 'bg-emerald-600', badgeBg: 'bg-emerald-500', color: 'emerald' },
       { name: 'Call Recordings', badge: scopedRecordings.length > 0 ? String(scopedRecordings.length) : null, icon: PhoneCall, iconBg: 'bg-sky-600', badgeBg: 'bg-sky-500', color: 'sky' },
@@ -2006,11 +2006,6 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             canEdit
             scopeKind={scopeKind}
             branch={viewScope?.branch || currentUser?.branch || ''}
-          />
-        ) : activeTab === 'Google Sheet' ? (
-          <HrGoogleSheetTab
-            currentUser={currentUser}
-            canEdit={scopeKind === 'all' || scopeKind === 'branch' || isElevatedUser}
           />
         ) : activeTab === 'My Schedule' ? (
           <div className="space-y-6">
