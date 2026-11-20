@@ -21,7 +21,7 @@ import {
   AlertCircle,
   Loader2
 } from 'lucide-react';
-import { fetchTrainingMaterialBuffer, trainingMaterialFileUrl, getTrainingMaterialViewUrl, getTrainingMaterialHtml5 } from '../services/api';
+import { fetchTrainingMaterialBuffer, trainingMaterialFileUrl, getTrainingMaterialHtml5 } from '../services/api';
 import { getStorageFileUrl, storedInActiveBucket } from '../services/amplifyStorage';
 
 // Files at or under this size are downloaded whole and rendered locally (PPTX
@@ -31,7 +31,6 @@ import { getStorageFileUrl, storedInActiveBucket } from '../services/amplifyStor
 const STREAM_MIN_BYTES = 12 * 1024 * 1024;
 // Microsoft's PowerPoint web viewer renders decks exactly as PowerPoint does
 // (animations, transitions, fonts, layered images) but refuses files over ~100 MB.
-const OFFICE_VIEW_MAX_BYTES = 100 * 1024 * 1024;
 const PRESENTATION_EXTS = new Set(['pptx', 'ppt', 'ppsx', 'pps', 'potx']);
 
 const VIDEO_EXTS = new Set(['mp4', 'mov', 'webm', 'mkv', 'm4v']);
@@ -548,41 +547,6 @@ function SlideCanvas({ slide, size, scale = 1 }) {
   );
 }
 
-// Faint repeated "name · ID · date" over every material, so a screenshot or
-// screen recording shows who it came from. Sits on top but never blocks clicks.
-function viewerIdentity() {
-  try {
-    const raw = sessionStorage.getItem('thoughtflows_user') || localStorage.getItem('thoughtflows_user');
-    const u = JSON.parse(raw || 'null') || {};
-    const id = u.studentId || u.trainerId || u.employeeId || u.email || '';
-    return [u.name || u.userName || '', id].filter(Boolean).join(' · ');
-  } catch (_) {
-    return '';
-  }
-}
-function ViewerWatermark() {
-  const label = useMemo(() => {
-    const who = viewerIdentity() || 'ThoughtFlows';
-    const day = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
-    return `${who} · ${day}`;
-  }, []);
-  return (
-    <div aria-hidden="true" className="pointer-events-none select-none absolute inset-0 z-20 overflow-hidden">
-      <div
-        className="absolute -inset-1/2 grid gap-x-24 gap-y-20 content-start"
-        style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', transform: 'rotate(-24deg)' }}
-      >
-        {Array.from({ length: 120 }).map((_, i) => (
-          <span key={i} className="text-[13px] font-semibold whitespace-nowrap"
-            style={{ color: 'rgba(148, 163, 184, 0.16)', textShadow: '0 0 1px rgba(15, 23, 42, 0.12)' }}>
-            {label}
-          </span>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 // Materials are view-only for everyone — no download, save or print from the viewer.
 // eslint-disable-next-line no-unused-vars
 export default function LmsMaterialViewer({ material, canDownload: _downloadIgnored, onClose }) {
@@ -600,21 +564,43 @@ export default function LmsMaterialViewer({ material, canDownload: _downloadIgno
   const [showNotes, setShowNotes] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [stageSize, setStageSize] = useState({ width: 800, height: 500 });
-  // 'office' = PowerPoint web viewer (animations), 'quick' = built-in slide renderer
-  // Presentations always open exactly as uploaded (PowerPoint's own viewer)
-  const pptView = 'office';
-  const [officeUrl, setOfficeUrl] = useState('');
-  const [officeLoading, setOfficeLoading] = useState(false);
-  const [officeUnavailable, setOfficeUnavailable] = useState(''); // why Animated view can't be used
   const [html5Url, setHtml5Url] = useState(''); // animated HTML5 slideshow (Aspose) when ready
   const [html5Loading, setHtml5Loading] = useState(false);
   const [html5Note, setHtml5Note] = useState('');
+  const [html5Waiting, setHtml5Waiting] = useState(false); // conversion running → poll until ready
 
   const containerRef = useRef(null);
   const stageRef = useRef(null);
 
   const ext = String(material?.fileName || '').split('.').pop()?.toLowerCase() || '';
   const mime = String(material?.mimeType || '').toLowerCase();
+
+  // While the animated copy is being made, check every 15 s and switch to it when ready
+  useEffect(() => {
+    if (!html5Waiting || !material?._id) return undefined;
+    let stop = false;
+    const t = setInterval(async () => {
+      try {
+        const h = await getTrainingMaterialHtml5(material._id);
+        if (stop) return;
+        if (h?.status === 'ready' && h.url) {
+          setHtml5Waiting(false);
+          setHtml5Note('');
+          setError('');
+          setHtml5Url(h.url);
+          setHtml5Loading(true);
+          setViewerMode('html5');
+        } else if (h?.status === 'failed') {
+          setHtml5Waiting(false);
+          setHtml5Note('');
+          if (viewerMode === 'html5_wait') {
+            setError(`The animated version could not be made${h.error ? ` (${h.error})` : ''}. Ask your Head of Department or Manager to click "Retry" on this file in the library.`);
+          }
+        }
+      } catch (_) { /* try again next tick */ }
+    }, 15000);
+    return () => { stop = true; clearInterval(t); };
+  }, [html5Waiting, material?._id, viewerMode]);
 
   // Load material bytes via authenticated API request
   useEffect(() => {
@@ -666,58 +652,48 @@ export default function LmsMaterialViewer({ material, canDownload: _downloadIgno
           return;
         }
 
-        // Presentations: PowerPoint web viewer (real animations) when the file is small enough
+        // Presentations open ONLY as the animated HTML5 copy (made by the server with
+        // Aspose on upload) — never in PowerPoint's online viewer.
         const isPresentation = PRESENTATION_EXTS.has(ext) || mime.includes('presentation') || mime.includes('powerpoint');
-        setOfficeUrl('');
-        setOfficeUnavailable('');
         setHtml5Url('');
         setHtml5Note('');
-        // 1st choice: the animated HTML5 copy made on upload (animations, any size, no file to download)
+        setHtml5Waiting(false);
         if (isPresentation) {
+          setLoadingText('Opening animated slides…');
+          // Reuse this session's slideshow link (valid 10 h) so the browser's
+          // cache of the slides is used on every reopen — opens almost instantly.
+          const linkKey = `tf_html5_link_${material._id}`;
+          let h = null;
           try {
-            setLoadingText('Opening animated slides…');
-            const h = await getTrainingMaterialHtml5(material._id);
-            if (cancelled) return;
+            const saved = JSON.parse(sessionStorage.getItem(linkKey) || 'null');
+            if (saved?.url && Date.now() - saved.at < 8 * 3600 * 1000) h = { status: 'ready', url: saved.url };
+          } catch (_) { /* no saved link */ }
+          if (!h) try {
+            h = await getTrainingMaterialHtml5(material._id);
             if (h?.status === 'ready' && h.url) {
-              setHtml5Url(h.url);
-              setHtml5Loading(true);
-              setViewerMode('html5');
-              return;
-            }
-            if (h?.status === 'pending' || h?.status === 'processing') {
-              setHtml5Note('The animated version of this deck is still being prepared — showing the standard view for now.');
+              try { sessionStorage.setItem(linkKey, JSON.stringify({ url: h.url, at: Date.now() })); } catch (_) { /* storage full */ }
             }
           } catch (err) {
-            console.warn('html5-url failed, using PowerPoint view:', err?.response?.data?.error || err?.message);
+            if (cancelled) return;
+            setError(err?.response?.data?.error || 'Could not open the slides. Please try again in a moment.');
+            return;
           }
-        }
-        // Otherwise every presentation, any size, opens in PowerPoint's own viewer
-        if (isPresentation) {
-          setLoadingText('Opening presentation…');
-          // Ask the server for a signed storage link first (works for every bucket),
-          // then fall back to signing in the browser.
-          let direct = '';
-          try {
-            const v = await getTrainingMaterialViewUrl(material._id);
-            direct = v?.url || '';
-          } catch (err) {
-            console.warn('view-url failed, trying browser signing:', err?.response?.data?.error || err?.message);
-          }
-          if (!direct) direct = await resolveDirectUrl(material);
           if (cancelled) return;
-          if (!(direct && direct.startsWith('https://') && !direct.includes('/api/'))) {
-            setOfficeUnavailable('This file has no cloud storage link, so PowerPoint view can\'t open it. Re-upload the file to enable animations.');
+          if (h?.status === 'ready' && h.url) {
+            setHtml5Url(h.url);
+            setHtml5Loading(true);
+            setViewerMode('html5');
+          } else if (h?.status === 'pending' || h?.status === 'processing') {
+            setHtml5Waiting(true);
+            setViewerMode('html5_wait');
+          } else if (h?.status === 'failed') {
+            setError(`The slides could not be prepared${h.error ? ` (${h.error})` : ''}. Ask your Head of Department or Manager to click "Retry" on this file in the library.`);
+          } else if (!h?.configured) {
+            setError('Slide viewing is not switched on yet on the server (Aspose keys missing). Please contact Admin.');
+          } else {
+            setError('This file could not be prepared for viewing. Ask your Head of Department or Manager to click "Make animated" on it in the library.');
           }
-          // Microsoft fetches the file itself, so it needs a direct storage link (not our login-protected API)
-          if (direct && direct.startsWith('https://') && !direct.includes('/api/')) {
-            const url = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(direct)}`;
-            setOfficeUrl(url);
-            if (pptView === 'office') {
-              setOfficeLoading(true);
-              setViewerMode('office');
-              return;
-            }
-          }
+          return;
         }
 
         // Presentations (PPTX, PPT) & other inline materials: fetch bytes and parse
@@ -830,7 +806,7 @@ export default function LmsMaterialViewer({ material, canDownload: _downloadIgno
       cancelled = true;
       if (createdUrl) URL.revokeObjectURL(createdUrl);
     };
-  }, [material?._id, ext, mime, pptView]);
+  }, [material?._id, ext, mime]);
 
   // Track stage container size for responsive PPTX scaling
   useEffect(() => {
@@ -973,15 +949,6 @@ export default function LmsMaterialViewer({ material, canDownload: _downloadIgno
                   </button>
                 )}
               </>
-            )}
-
-            {!officeUrl && officeUnavailable && (
-              <span
-                className="px-2.5 py-1 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-200 text-[11px] font-semibold max-w-[260px] truncate"
-                title={officeUnavailable}
-              >
-                Simplified preview — hover for why
-              </span>
             )}
 
             <button
@@ -1180,33 +1147,20 @@ export default function LmsMaterialViewer({ material, canDownload: _downloadIgno
             </div>
           )}
 
-          {!loading && !error && html5Note && viewerMode !== 'html5' && (
-            <div className="absolute top-2 left-1/2 -translate-x-1/2 z-30 px-3 py-1.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-200 text-[11px] font-semibold pointer-events-none">
-              {html5Note}
+          {!loading && !error && viewerMode === 'html5_wait' && (
+            <div className="m-auto max-w-md text-center p-6 rounded-2xl bg-slate-900 border border-slate-700 space-y-3 relative z-30">
+              <Loader2 className="w-8 h-8 animate-spin text-teal-400 mx-auto" />
+              <h4 className="text-sm font-bold text-white">Preparing animated slides…</h4>
+              <p className="text-xs text-slate-400">
+                This deck{material?.fileSize ? ` (${(Number(material.fileSize) / (1024 * 1024)).toFixed(0)} MB)` : ''} is being converted for the first time.
+                Large decks can take several minutes. It will open here automatically — you can also close this and come back later.
+              </p>
             </div>
           )}
 
-          {!loading && !error && viewerMode && <ViewerWatermark />}
-
-          {!loading && !error && viewerMode === 'office' && officeUrl && (
-            <div className="w-full h-full bg-slate-900 relative">
-              {officeLoading && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-slate-300 pointer-events-none">
-                  <Loader2 className="w-8 h-8 animate-spin text-teal-400" />
-                  <p className="text-xs font-semibold">Preparing PowerPoint view with animations…</p>
-                  {Number(material?.fileSize) > OFFICE_VIEW_MAX_BYTES && (
-                    <p className="text-[11px] text-slate-400">Large file ({(Number(material.fileSize) / (1024 * 1024)).toFixed(0)} MB) — this can take a minute.</p>
-                  )}
-                </div>
-              )}
-              <iframe
-                key={officeUrl}
-                title={material?.title || 'Presentation'}
-                src={officeUrl}
-                onLoad={() => setOfficeLoading(false)}
-                className="w-full h-full border-0"
-                allowFullScreen
-              />
+          {!loading && !error && html5Note && viewerMode !== 'html5' && (
+            <div className="absolute top-2 left-1/2 -translate-x-1/2 z-30 px-3 py-1.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-200 text-[11px] font-semibold pointer-events-none">
+              {html5Note}
             </div>
           )}
 

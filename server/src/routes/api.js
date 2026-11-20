@@ -64,7 +64,7 @@ import { DEFAULT_WORK_SLOTS } from '../constants/trainerHierarchy.js';
 import wiseappRouter from './wiseapp.js';
 import { registerSchedulingRoutes } from './scheduling.js';
 import { registerStaffDeskRoutes } from './staffdesk.js';
-import { isS3Configured, copyRemoteRecordingToS3, putRecordingBuffer, streamS3Object, signedUrlForStoredFile, streamS3File } from '../utils/s3Storage.js';
+import { isS3Configured, copyRemoteRecordingToS3, putRecordingBuffer, streamS3Object, signedUrlForStoredFile, streamS3File, getObjectBuffer } from '../utils/s3Storage.js';
 import { livekitConfigured, livekitUrl, livekitToken, classRoomName, endLivekitRoom, LIVEKIT_NOT_CONFIGURED } from '../utils/livekit.js';
 import { randomInt as cryptoRandomInt } from 'crypto';
 
@@ -11744,34 +11744,7 @@ router.post('/training/materials', async (req, res) => {
   }
 });
 
-// Short-lived direct storage link for in-dashboard viewing (e.g. the PowerPoint
-// web viewer, which must fetch the file itself and can't send our login token).
-// Same access rules as /file; never a download link.
-router.get('/training/materials/:id/view-url', async (req, res) => {
-  try {
-    const doc = await TrainingMaterial.findById(req.params.id);
-    if (!doc) return res.status(404).json({ error: 'Material not found' });
-    if (req.user?.department === 'student') {
-      const st = await findStudentByAnyId(req.user.studentId || '');
-      const batch = studentBatchOf(st);
-      if (!batch || !(doc.assignments || []).some((a) => a.batch === batch)) return res.status(403).json({ error: 'This material is not assigned to your batch' });
-    } else if (!(await canSeeAllTrainingMaterials(req)) && !isMaterialAllocatedToUser(doc, req.user)) {
-      return res.status(403).json({ error: 'This material has not been allocated to you. Please ask your Trainer Head or Manager.' });
-    }
-    if (!doc.storageUrl && !doc.storageKey) return res.status(404).json({ error: 'This file is not in cloud storage.' });
-    const url = signedUrlForStoredFile({
-      storageKey: doc.storageKey, storageUrl: doc.storageUrl, expiresIn: 3600,
-      download: false, fileName: doc.fileName
-    });
-    if (!url) return res.status(404).json({ error: 'Could not create a viewing link for this file.' });
-    res.setHeader('Cache-Control', 'no-store');
-    res.json({ url, fileSize: doc.fileSize || 0 });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
-
-// Who may open a material (same rules as /file and /view-url). Returns an error message or ''.
+// Who may open a material (same rules as /file). Returns an error message or ''.
 async function materialViewDenied(req, doc) {
   if (req.user?.department === 'student') {
     const st = await findStudentByAnyId(req.user.studentId || '');
@@ -11796,7 +11769,11 @@ router.get('/training/materials/:id/html5-url', async (req, res) => {
     if (denied) return res.status(403).json({ error: denied });
     res.setHeader('Cache-Control', 'no-store');
     if (doc.html5Status !== 'ready' || !doc.html5Prefix || !doc.html5Entry) {
-      return res.json({ status: doc.html5Status || '', error: doc.html5Error || '', configured: isAsposeConfigured() });
+      // Never converted (e.g. uploaded before this feature): start it now, on first open.
+      // A failed one is not retried automatically — a manager retries it from the library.
+      let status = doc.html5Status || '';
+      if (!status && isPresentationMaterial(doc) && await queueHtml5Conversion(doc).catch(() => false)) status = 'pending';
+      return res.json({ status, error: doc.html5Error || '', configured: isAsposeConfigured() });
     }
     const token = encodeURIComponent(signMaterialViewToken(req.user, doc._id));
     const entry = doc.html5Entry.split('/').map(encodeURIComponent).join('/');
@@ -11806,6 +11783,36 @@ router.get('/training/materials/:id/html5-url', async (req, res) => {
   }
 });
 
+// Aspose draws slides at their full design size (often wider than the viewer),
+// so scale the whole page down to fit the window — slide and its Prev / Next
+// buttons — and keep it centred. Re-fits on resize, full screen and navigation.
+const SLIDE_FIT_SNIPPET = `
+<style id="tf-fit-style">html,body{margin:0!important;padding:0!important;overflow:hidden!important;background:#fff}body{transform-origin:0 0}</style>
+<script id="tf-fit-script">(function(){
+  // Measure the slideshow's natural size only a few times while it loads (never
+  // on clicks — measuring a big deck is slow), then just rescale on resize.
+  var b=document.body,d=document.documentElement,W=0,H=0;
+  function measure(){
+    var t=b.style.transform;b.style.transform='none';
+    W=Math.max(d.scrollWidth,b.scrollWidth,1);H=Math.max(d.scrollHeight,b.scrollHeight,1);
+    b.style.transform=t;
+  }
+  function apply(){
+    if(!W)return;
+    var vw=window.innerWidth,vh=window.innerHeight,s=Math.min(vw/W,vh/H);
+    if(s>=1){b.style.transform='none';b.style.width='';return;}
+    var x=Math.max(0,(vw-W*s)/2),y=Math.max(0,(vh-H*s)/2);
+    b.style.width=W+'px';
+    b.style.transform='translate('+x+'px,'+y+'px) scale('+s+')';
+  }
+  function fit(){measure();apply();}
+  if(document.readyState!=='loading')fit();else document.addEventListener('DOMContentLoaded',fit);
+  window.addEventListener('load',function(){fit();setTimeout(fit,1500);});
+  window.addEventListener('resize',apply);
+  document.addEventListener('fullscreenchange',function(){setTimeout(apply,50);});
+})();</script>
+`;
+
 // Files of the animated slideshow (the token in the path was checked by requireAuth)
 router.get('/training/materials/:id/html5/:token/*', async (req, res) => {
   try {
@@ -11814,6 +11821,23 @@ router.get('/training/materials/:id/html5/:token/*', async (req, res) => {
     if (!doc || doc.html5Status !== 'ready' || !doc.html5Prefix) return res.status(404).send('Slideshow not found');
     const rel = String(req.params[0] || '').replace(/\\/g, '/');
     if (!rel || rel.startsWith('/') || rel.split('/').includes('..')) return res.status(400).send('Bad path');
+    if (/\.html?$/i.test(rel)) {
+      // Slideshow page: add the fit-to-window script so slides are never cut off
+      let html = (await getObjectBuffer(doc.html5Prefix + rel)).toString('utf8');
+      html = /<\/body>/i.test(html) ? html.replace(/<\/body>(?![\s\S]*<\/body>)/i, `${SLIDE_FIT_SNIPPET}</body>`) : html + SLIDE_FIT_SNIPPET;
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      // Same link is reused for the session (viewer keeps it), so let the browser keep the page
+      res.setHeader('Cache-Control', 'private, max-age=18000');
+      return res.send(html);
+    }
+    // Images, scripts, fonts, media: send the browser straight to S3 (Mumbai)
+    // with a short-lived signed link instead of piping every byte through this
+    // server — much faster, and the browser caches it for the session.
+    const direct = signedUrlForStoredFile({ storageKey: doc.html5Prefix + rel, expiresIn: 6 * 3600 });
+    if (direct) {
+      res.setHeader('Cache-Control', 'private, max-age=18000');
+      return res.redirect(302, direct);
+    }
     await streamS3File(doc.html5Prefix + rel, res, contentTypeFor(rel));
   } catch (e) {
     if (!res.headersSent) res.status(e?.name === 'NoSuchKey' ? 404 : 500).send(e?.name === 'NoSuchKey' ? 'Not found' : e.message);

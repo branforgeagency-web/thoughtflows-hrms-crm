@@ -6,7 +6,7 @@
 // Needs in server/.env: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION and
 // AWS_STORAGE_BUCKET_NAME (the Amplify bucket from amplify_outputs.json).
 import crypto from 'crypto';
-import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, CopyObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 
 let client = null;
 
@@ -154,4 +154,28 @@ export async function streamS3File(key, res, contentType) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   if (out.ContentLength != null) res.setHeader('Content-Length', String(out.ContentLength));
   out.Body.pipe(res);
+}
+
+// Server-side copy of a stored file (any size up to 5 GB, nothing passes through
+// this server) into another bucket in the same region — used to hand big decks
+// to Aspose through its linked S3 storage.
+export async function copyStoredFileToBucket({ storageKey = '', storageUrl = '' }, destBucket, destKey) {
+  const fromUrl = storageUrl ? parseS3Url(storageUrl) : null;
+  const srcKey = storageKey || fromUrl?.key || '';
+  const srcBucket = fromUrl?.bucket || s3Bucket();
+  if (!srcKey || !srcBucket) throw new Error('The file is not in cloud storage');
+  const copySource = `${srcBucket}/${srcKey.split('/').map(encodeURIComponent).join('/')}`;
+  await s3().send(new CopyObjectCommand({ Bucket: destBucket, Key: destKey, CopySource: copySource }));
+}
+
+export async function deleteObjectIn(bucket, key) {
+  await s3().send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+}
+
+// Whole object as a Buffer (small files only — e.g. the slideshow's HTML page)
+export async function getObjectBuffer(key) {
+  const out = await s3().send(new GetObjectCommand({ Bucket: s3Bucket(), Key: key }));
+  const chunks = [];
+  for await (const c of out.Body) chunks.push(c);
+  return Buffer.concat(chunks);
 }

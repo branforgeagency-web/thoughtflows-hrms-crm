@@ -10,15 +10,33 @@
 // Needs in server/.env:
 //   ASPOSE_CLIENT_ID, ASPOSE_CLIENT_SECRET   (from https://dashboard.aspose.cloud → Applications)
 //   ASPOSE_API_BASE                          (optional, default https://api.aspose.cloud)
+// For decks over ~95 MB (Aspose refuses uploads over 100,000,000 bytes) link a
+// separate, empty S3 bucket as storage in the Aspose dashboard and set:
+//   ASPOSE_STORAGE_NAME    the "Storage Name" given in the Aspose dashboard
+//   ASPOSE_STORAGE_BUCKET  that S3 bucket's name (same AWS region as the main bucket)
+// The server then copies each deck into that bucket (S3 → S3, nothing is
+// downloaded) and Aspose reads it from there — no size limit from uploading.
 import https from 'https';
 import zlib from 'zlib';
 import crypto from 'crypto';
 import TrainingMaterial from '../models/TrainingMaterial.js';
-import { isS3Configured, signedUrlForStoredFile, putObjectBuffer } from './s3Storage.js';
+import { isS3Configured, signedUrlForStoredFile, putObjectBuffer, copyStoredFileToBucket, deleteObjectIn } from './s3Storage.js';
 
 export const HTML5_PRESENTATION_EXTS = new Set(['ppt', 'pptx', 'pps', 'ppsx', 'pot', 'potx', 'pptm', 'odp']);
-const API_BASE = () => String(process.env.ASPOSE_API_BASE || 'https://api.aspose.cloud').replace(/\/+$/, '');
+export const API_BASE = () => String(process.env.ASPOSE_API_BASE || 'https://api.aspose.cloud').replace(/\/+$/, '');
 const TEMP_FOLDER = 'thoughtflows-tmp';
+const ASPOSE_UPLOAD_MAX_BYTES = 100000000; // Aspose Cloud's request-body limit
+const linkedStorage = () => {
+  const name = String(process.env.ASPOSE_STORAGE_NAME || '').trim();
+  const bucket = String(process.env.ASPOSE_STORAGE_BUCKET || '').trim();
+  return name && bucket ? { name, bucket } : null;
+};
+// Tried in order until one works (each try is one Aspose API call)
+export const HTML5_OPTION_SETS = [
+  { Format: 'html5', AnimateShapes: true, AnimateTransitions: true },
+  { AnimateShapes: true, AnimateTransitions: true },
+  null // Aspose defaults
+];
 const CONVERT_TIMEOUT_MS = 30 * 60 * 1000; // big decks can take many minutes
 
 export const isAsposeConfigured = () => Boolean(process.env.ASPOSE_CLIENT_ID && process.env.ASPOSE_CLIENT_SECRET);
@@ -29,7 +47,7 @@ export const isPresentationMaterial = (doc) =>
 // HTTPS helper — node's fetch gives up waiting for headers after 5 minutes,
 // which a long conversion can exceed, so plain https is used instead.
 // ---------------------------------------------------------------------------
-function httpsRequest(url, { method = 'GET', headers = {}, body = null, timeoutMs = 120000 } = {}) {
+export function httpsRequest(url, { method = 'GET', headers = {}, body = null, timeoutMs = 120000 } = {}) {
   return new Promise((resolve, reject) => {
     const req = https.request(url, { method, headers }, (res) => {
       const chunks = [];
@@ -49,7 +67,7 @@ const errText = (r) => {
 };
 
 let tokenCache = { value: '', until: 0 };
-async function asposeToken() {
+export async function asposeToken() {
   if (tokenCache.value && Date.now() < tokenCache.until) return tokenCache.value;
   const form = new URLSearchParams({
     grant_type: 'client_credentials',
@@ -70,13 +88,43 @@ async function asposeToken() {
 // ---------------------------------------------------------------------------
 // Aspose: upload to its temp storage → convert to HTML5 → delete temp copy
 // ---------------------------------------------------------------------------
-async function convertWithAspose(buffer, fileName) {
+// Run the HTML5 conversion on a file already in Aspose-visible storage.
+async function convertStored(remoteName, storageName = '') {
   const token = await asposeToken();
   const auth = { Authorization: `Bearer ${token}` };
-  const remoteName = encodeURIComponent(fileName);
-  const storagePath = `${TEMP_FOLDER}/${remoteName}`;
+  const qs = `folder=${encodeURIComponent(TEMP_FOLDER)}${storageName ? `&storage=${encodeURIComponent(storageName)}` : ''}`;
+  // Aspose's engine sometimes rejects an option set with "Operation is not valid
+  // due to the current state of the object" — so try the full animated settings
+  // first, then simpler ones.
+  let lastErr = '';
+  for (const opts of HTML5_OPTION_SETS) {
+    const body = opts ? JSON.stringify(opts) : '';
+    const conv = await httpsRequest(`${API_BASE()}/v3.0/slides/${encodeURIComponent(remoteName)}/html5?${qs}`, {
+      method: 'POST',
+      headers: {
+        ...auth, Accept: '*/*',
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+        'Content-Length': Buffer.byteLength(body)
+      },
+      body: body || null,
+      timeoutMs: CONVERT_TIMEOUT_MS
+    });
+    if (conv.status === 200 && conv.body.length) {
+      if (opts !== HTML5_OPTION_SETS[0]) console.log('Aspose HTML5 converted with fallback options:', body || '(none)');
+      return conv.body;
+    }
+    lastErr = `(${conv.status}): ${errText(conv)}`;
+    // Only an engine error (500) is worth another try; auth / quota / bad request is not
+    if (conv.status !== 500) break;
+  }
+  throw new Error(`Aspose HTML5 conversion failed ${lastErr}`);
+}
 
-  // 1. Upload (multipart, part named "file")
+// Small decks: upload straight to Aspose's own storage, convert, delete.
+async function convertViaUpload(buffer, fileName) {
+  const token = await asposeToken();
+  const auth = { Authorization: `Bearer ${token}` };
+  const storagePath = `${TEMP_FOLDER}/${encodeURIComponent(fileName)}`;
   const boundary = `----tf${crypto.randomBytes(12).toString('hex')}`;
   const head = Buffer.from(
     `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${fileName.replace(/"/g, '')}"\r\n` +
@@ -91,25 +139,22 @@ async function convertWithAspose(buffer, fileName) {
     timeoutMs: CONVERT_TIMEOUT_MS
   });
   if (up.status < 200 || up.status >= 300) throw new Error(`Aspose upload failed (${up.status}): ${errText(up)}`);
-
   try {
-    // 2. Convert the stored file to HTML5 with shape animations + slide transitions
-    const options = JSON.stringify({ Format: 'html5', AnimateShapes: true, AnimateTransitions: true, EmbedImages: false });
-    const conv = await httpsRequest(
-      `${API_BASE()}/v3.0/slides/${remoteName}/html5?folder=${encodeURIComponent(TEMP_FOLDER)}`,
-      {
-        method: 'POST',
-        headers: { ...auth, 'Content-Type': 'application/json', Accept: '*/*', 'Content-Length': Buffer.byteLength(options) },
-        body: options,
-        timeoutMs: CONVERT_TIMEOUT_MS
-      }
-    );
-    if (conv.status !== 200 || !conv.body.length) throw new Error(`Aspose HTML5 conversion failed (${conv.status}): ${errText(conv)}`);
-    return conv.body;
+    return await convertStored(fileName);
   } finally {
-    // 3. Don't leave the deck in Aspose storage
-    httpsRequest(`${API_BASE()}/v3.0/slides/storage/file/${storagePath}`, { method: 'DELETE', headers: auth })
-      .catch(() => {});
+    httpsRequest(`${API_BASE()}/v3.0/slides/storage/file/${storagePath}`, { method: 'DELETE', headers: auth }).catch(() => {});
+  }
+}
+
+// Any size: copy the deck into the S3 bucket linked to Aspose, convert there, delete.
+async function convertViaLinkedStorage(doc, fileName) {
+  const ls = linkedStorage();
+  const key = `${TEMP_FOLDER}/${fileName}`;
+  await copyStoredFileToBucket(doc, ls.bucket, key);
+  try {
+    return await convertStored(fileName, ls.name);
+  } finally {
+    deleteObjectIn(ls.bucket, key).catch(() => {});
   }
 }
 
@@ -196,14 +241,23 @@ async function convertOne(id) {
   doc.html5UpdatedAt = new Date();
   await doc.save();
   try {
-    const fileUrl = signedUrlForStoredFile({ storageKey: doc.storageKey, storageUrl: doc.storageUrl, expiresIn: 3600, download: false, fileName: doc.fileName });
-    if (!fileUrl) throw new Error('The PowerPoint file is not in cloud storage');
-    const src = await fetch(fileUrl);
-    if (!src.ok) throw new Error(`Could not read the PowerPoint from storage (${src.status})`);
-    const pptx = Buffer.from(await src.arrayBuffer());
-
     const ext = String(doc.fileName).split('.').pop().toLowerCase();
-    const body = await convertWithAspose(pptx, `${doc._id}-${Date.now()}.${ext}`);
+    const remoteName = `${doc._id}-${Date.now()}.${ext}`;
+    let body;
+    if (linkedStorage()) {
+      // Preferred: Aspose reads the deck from the linked bucket — any size, and
+      // this server never holds the whole file in memory.
+      body = await convertViaLinkedStorage(doc, remoteName);
+    } else {
+      if (Number(doc.fileSize) >= ASPOSE_UPLOAD_MAX_BYTES - 1024 * 1024) {
+        throw new Error(`This deck is ${(Number(doc.fileSize) / 1048576).toFixed(0)} MB; Aspose accepts uploads only up to about 95 MB. Admin needs to link S3 storage in the Aspose dashboard (ASPOSE_STORAGE_NAME / ASPOSE_STORAGE_BUCKET).`);
+      }
+      const fileUrl = signedUrlForStoredFile({ storageKey: doc.storageKey, storageUrl: doc.storageUrl, expiresIn: 3600, download: false, fileName: doc.fileName });
+      if (!fileUrl) throw new Error('The PowerPoint file is not in cloud storage');
+      const src = await fetch(fileUrl);
+      if (!src.ok) throw new Error(`Could not read the PowerPoint from storage (${src.status})`);
+      body = await convertViaUpload(Buffer.from(await src.arrayBuffer()), remoteName);
+    }
     const { files, entry } = outputFiles(body);
 
     const prefix = `training-html5/${doc._id}/${Date.now()}/`;
