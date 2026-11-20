@@ -21,7 +21,7 @@ import {
   AlertCircle,
   Loader2
 } from 'lucide-react';
-import { fetchTrainingMaterialBuffer, trainingMaterialFileUrl, getTrainingMaterialViewUrl } from '../services/api';
+import { fetchTrainingMaterialBuffer, trainingMaterialFileUrl, getTrainingMaterialViewUrl, getTrainingMaterialHtml5 } from '../services/api';
 import { getStorageFileUrl, storedInActiveBucket } from '../services/amplifyStorage';
 
 // Files at or under this size are downloaded whole and rendered locally (PPTX
@@ -548,6 +548,41 @@ function SlideCanvas({ slide, size, scale = 1 }) {
   );
 }
 
+// Faint repeated "name · ID · date" over every material, so a screenshot or
+// screen recording shows who it came from. Sits on top but never blocks clicks.
+function viewerIdentity() {
+  try {
+    const raw = sessionStorage.getItem('thoughtflows_user') || localStorage.getItem('thoughtflows_user');
+    const u = JSON.parse(raw || 'null') || {};
+    const id = u.studentId || u.trainerId || u.employeeId || u.email || '';
+    return [u.name || u.userName || '', id].filter(Boolean).join(' · ');
+  } catch (_) {
+    return '';
+  }
+}
+function ViewerWatermark() {
+  const label = useMemo(() => {
+    const who = viewerIdentity() || 'ThoughtFlows';
+    const day = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+    return `${who} · ${day}`;
+  }, []);
+  return (
+    <div aria-hidden="true" className="pointer-events-none select-none absolute inset-0 z-20 overflow-hidden">
+      <div
+        className="absolute -inset-1/2 grid gap-x-24 gap-y-20 content-start"
+        style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', transform: 'rotate(-24deg)' }}
+      >
+        {Array.from({ length: 120 }).map((_, i) => (
+          <span key={i} className="text-[13px] font-semibold whitespace-nowrap"
+            style={{ color: 'rgba(148, 163, 184, 0.16)', textShadow: '0 0 1px rgba(15, 23, 42, 0.12)' }}>
+            {label}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // Materials are view-only for everyone — no download, save or print from the viewer.
 // eslint-disable-next-line no-unused-vars
 export default function LmsMaterialViewer({ material, canDownload: _downloadIgnored, onClose }) {
@@ -571,6 +606,9 @@ export default function LmsMaterialViewer({ material, canDownload: _downloadIgno
   const [officeUrl, setOfficeUrl] = useState('');
   const [officeLoading, setOfficeLoading] = useState(false);
   const [officeUnavailable, setOfficeUnavailable] = useState(''); // why Animated view can't be used
+  const [html5Url, setHtml5Url] = useState(''); // animated HTML5 slideshow (Aspose) when ready
+  const [html5Loading, setHtml5Loading] = useState(false);
+  const [html5Note, setHtml5Note] = useState('');
 
   const containerRef = useRef(null);
   const stageRef = useRef(null);
@@ -632,7 +670,28 @@ export default function LmsMaterialViewer({ material, canDownload: _downloadIgno
         const isPresentation = PRESENTATION_EXTS.has(ext) || mime.includes('presentation') || mime.includes('powerpoint');
         setOfficeUrl('');
         setOfficeUnavailable('');
-        // Every presentation, any size, opens in PowerPoint's own viewer
+        setHtml5Url('');
+        setHtml5Note('');
+        // 1st choice: the animated HTML5 copy made on upload (animations, any size, no file to download)
+        if (isPresentation) {
+          try {
+            setLoadingText('Opening animated slides…');
+            const h = await getTrainingMaterialHtml5(material._id);
+            if (cancelled) return;
+            if (h?.status === 'ready' && h.url) {
+              setHtml5Url(h.url);
+              setHtml5Loading(true);
+              setViewerMode('html5');
+              return;
+            }
+            if (h?.status === 'pending' || h?.status === 'processing') {
+              setHtml5Note('The animated version of this deck is still being prepared — showing the standard view for now.');
+            }
+          } catch (err) {
+            console.warn('html5-url failed, using PowerPoint view:', err?.response?.data?.error || err?.message);
+          }
+        }
+        // Otherwise every presentation, any size, opens in PowerPoint's own viewer
         if (isPresentation) {
           setLoadingText('Opening presentation…');
           // Ask the server for a signed storage link first (works for every bucket),
@@ -1098,6 +1157,36 @@ export default function LmsMaterialViewer({ material, canDownload: _downloadIgno
               </div>
             </div>
           )}
+
+          {!loading && !error && viewerMode === 'html5' && html5Url && (
+            <div className="w-full h-full bg-black relative">
+              {html5Loading && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-slate-300 pointer-events-none">
+                  <Loader2 className="w-8 h-8 animate-spin text-teal-400" />
+                  <p className="text-xs font-semibold">Loading animated slides…</p>
+                </div>
+              )}
+              {/* sandbox without allow-same-origin: the slideshow can't reach the dashboard's login */}
+              <iframe
+                key={html5Url}
+                title={material?.title || 'Presentation'}
+                src={html5Url}
+                onLoad={() => setHtml5Loading(false)}
+                sandbox="allow-scripts"
+                allow="fullscreen; autoplay"
+                allowFullScreen
+                className="w-full h-full border-0"
+              />
+            </div>
+          )}
+
+          {!loading && !error && html5Note && viewerMode !== 'html5' && (
+            <div className="absolute top-2 left-1/2 -translate-x-1/2 z-30 px-3 py-1.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-200 text-[11px] font-semibold pointer-events-none">
+              {html5Note}
+            </div>
+          )}
+
+          {!loading && !error && viewerMode && <ViewerWatermark />}
 
           {!loading && !error && viewerMode === 'office' && officeUrl && (
             <div className="w-full h-full bg-slate-900 relative">

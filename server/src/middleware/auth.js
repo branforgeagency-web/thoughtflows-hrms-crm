@@ -43,6 +43,17 @@ export function signFileToken(user) {
   const { iat, exp, typ, ...claims } = user || {};
   return jwt.sign({ ...claims, typ: 'file' }, secret(), { expiresIn: FILE_TOKEN_TTL });
 }
+// Viewing link for the animated HTML5 copy of one training material. The token
+// sits in the URL *path* (/training/materials/<id>/html5/<token>/index.html) so
+// the slideshow's own relative script / image links carry it too. It only opens
+// that one material, read-only, and lasts one teaching day.
+const MATERIAL_VIEW_TTL = '10h';
+export function signMaterialViewToken(user, materialId) {
+  const { iat, exp, typ, ...claims } = user || {};
+  return jwt.sign({ ...claims, typ: 'mview', mid: String(materialId) }, secret(), { expiresIn: MATERIAL_VIEW_TTL });
+}
+const MATERIAL_HTML5_ROUTE = /^\/training\/materials\/([^/]+)\/html5\/([^/]+)\/.+$/;
+
 const FILE_ROUTES = [/^\/recordings\/[^/]+\/audio$/, /^\/training\/materials\/[^/]+\/file$/, /^\/student-portal\/submissions\/[^/]+\/file$/];
 
 // ---------------------------------------------------------------------------
@@ -143,6 +154,7 @@ const STAFF_RULES = [
   ['PUT', /^\/training\/materials\/[^/]+\/pin$/, ['training']],
   ['PUT', /^\/training\/materials\/[^/]+\/allocate$/, ['training']],
   ['DELETE', /^\/training\/materials\/[^/]+$/, ['training']],
+  ['POST', /^\/training\/materials\/([^/]+\/html5\/convert|html5\/convert-all)$/, ['training']],
   ['PUT', /^\/student-portal\/submissions\/[^/]+\/review$/, ['training']],
   // Syllabus tracker, batch announcements, online tests, class recordings
   ['*', /^\/training\/(syllabus|announcements)(\/|$)/, ['training']],
@@ -234,6 +246,7 @@ const STUDENT_RULES = [
   ['PUT', /^\/notifications\/[^/]+\/read$/],
   ['GET', /^\/student-portal\/submissions\/[^/]+\/file$/],
   ['GET', /^\/training\/materials\/[^/]+\/file$/],
+  ['GET', /^\/training\/materials\/[^/]+\/html5-url$/],
   ['POST', /^\/trainer\/doubts$/, (req, u) => { req.body = { ...(req.body || {}), studentId: u.studentId || req.body?.studentId || '' }; }],
   ['POST', /^\/leadership\/escalations$/, (req, u) => { req.body = { ...(req.body || {}), raisedBy: `${u.name || 'Student'} (${u.studentId || req.body?.studentId || ''})`, studentId: u.studentId || req.body?.studentId || '' }; }],
   ['POST', /^\/demos$/],
@@ -286,6 +299,18 @@ export function requireAuth(req, res, next) {
 
   const header = req.headers.authorization || '';
   const fromHeader = header.startsWith('Bearer ');
+  // Animated slideshow files: token in the path, valid for that one material only
+  const html5Hit = !fromHeader && req.method === 'GET' ? req.path.match(MATERIAL_HTML5_ROUTE) : null;
+  if (html5Hit) {
+    try {
+      const viewer = jwt.verify(decodeURIComponent(html5Hit[2]), secret());
+      if (viewer.typ !== 'mview' || viewer.mid !== decodeURIComponent(html5Hit[1])) throw new Error('wrong material');
+      req.user = viewer;
+      return next();
+    } catch (_) {
+      return res.status(401).send('This slideshow link has expired. Close it and open the material again from the dashboard.');
+    }
+  }
   // ?token= is only for short-lived file tokens on file downloads (see signFileToken)
   const token = fromHeader ? header.slice(7) : (req.query.token || '');
   if (!token) return res.status(401).json({ error: 'Please log in to continue.', code: 'AUTH_REQUIRED' });

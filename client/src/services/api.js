@@ -1328,6 +1328,23 @@ export const getTrainingMaterialViewUrl = async (id) => {
   return res.data;
 };
 
+// Animated HTML5 slideshow of a PowerPoint: { status, path? } — path is under the API
+export const getTrainingMaterialHtml5 = async (id) => {
+  const res = await api.get(`/training/materials/${id}/html5-url`);
+  const data = res.data || {};
+  return { ...data, url: data.path ? `${API_BASE}${data.path}` : '' };
+};
+
+export const convertTrainingMaterialHtml5 = async (id) => {
+  const res = await api.post(`/training/materials/${id}/html5/convert`);
+  return res.data;
+};
+
+export const convertAllTrainingMaterialsHtml5 = async () => {
+  const res = await api.post('/training/materials/html5/convert-all');
+  return res.data;
+};
+
 export const fetchTrainingMaterialBuffer = async (id) => {
   const res = await api.get(`/training/materials/${id}/file`, {
     params: { stream: 1 },

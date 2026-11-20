@@ -34,6 +34,13 @@ const trainingMaterialSchema = new mongoose.Schema(
     // Trainers this file is allocated to by the Trainer Head / Manager. Only
     // Head, Manager, Admin and Leadership see every file; TLs and trainers see
     // only the files whose list includes them.
+    // Animated HTML5 copy of a PowerPoint (made by Aspose.Slides Cloud on upload).
+    // '' = not a presentation / not converted yet; pending → processing → ready | failed
+    html5Status: { type: String, enum: ['', 'pending', 'processing', 'ready', 'failed'], default: '' },
+    html5Prefix: { type: String, default: '' }, // S3 folder holding the converted files
+    html5Entry: { type: String, default: '' },  // start page inside that folder (e.g. index.html)
+    html5Error: { type: String, default: '' },
+    html5UpdatedAt: { type: Date },
     allocatedTrainers: {
       type: [{ trainerId: String, name: String, email: String, by: String, at: Date }],
       default: []

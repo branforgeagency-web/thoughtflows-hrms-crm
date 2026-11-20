@@ -135,3 +135,23 @@ export function signedUrlForStoredFile({ storageKey = '', storageUrl = '', expir
     responseContentDisposition: download ? `attachment; filename="${String(fileName || key.split('/').pop()).replace(/"/g, '')}"` : undefined
   });
 }
+
+// ---------------------------------------------------------------------------
+// Generic object helpers (used for the HTML5 versions of training slides)
+// ---------------------------------------------------------------------------
+export async function putObjectBuffer(key, buffer, contentType = 'application/octet-stream') {
+  await s3().send(new PutObjectCommand({ Bucket: s3Bucket(), Key: key, Body: buffer, ContentType: contentType }));
+  return key;
+}
+
+// Stream one stored object back with the given content type (no download prompt).
+export async function streamS3File(key, res, contentType) {
+  const out = await s3().send(new GetObjectCommand({ Bucket: s3Bucket(), Key: key }));
+  res.status(200);
+  res.setHeader('Content-Type', contentType || out.ContentType || 'application/octet-stream');
+  res.setHeader('Content-Disposition', 'inline');
+  res.setHeader('Cache-Control', 'private, max-age=3600');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  if (out.ContentLength != null) res.setHeader('Content-Length', String(out.ContentLength));
+  out.Body.pipe(res);
+}

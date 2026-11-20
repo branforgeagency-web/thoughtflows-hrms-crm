@@ -34,7 +34,9 @@ import {
   renameTrainingFolder,
   deleteTrainingFolder,
   allocateTrainingMaterial,
-  getTrainerSettings
+  getTrainerSettings,
+  convertTrainingMaterialHtml5,
+  convertAllTrainingMaterialsHtml5
 } from '../services/api';
 import { isAmplifyStorageConfigured, uploadTrainingMaterialFile } from '../services/amplifyStorage';
 import LmsMaterialViewer from './LmsMaterialViewer';
@@ -142,6 +144,39 @@ export default function TrainingLibraryMaterials({
   const flash = (msg) => {
     setToast(msg);
     setTimeout(() => setToast(null), 3500);
+  };
+
+  // ── Animated HTML5 copies of PowerPoints (made by the server on upload) ──
+  const html5Busy = materials.some((m) => m.html5Status === 'pending' || m.html5Status === 'processing');
+  useEffect(() => {
+    if (!html5Busy || !onChanged) return undefined;
+    const t = setInterval(() => onChanged(), 20000); // refresh status until conversions finish
+    return () => clearInterval(t);
+  }, [html5Busy]); // eslint-disable-line react-hooks/exhaustive-deps
+  const handleMakeAnimated = async (m) => {
+    try {
+      await convertTrainingMaterialHtml5(m._id);
+      flash(`Preparing animated slides for "${m.title}"…`);
+      if (onChanged) onChanged();
+    } catch (err) {
+      flash(err?.response?.data?.error || err.message || 'Could not start the conversion');
+    }
+  };
+  const handleMakeAllAnimated = async () => {
+    try {
+      const r = await convertAllTrainingMaterialsHtml5();
+      flash(r?.queued ? `Preparing animated slides for ${r.queued} presentation(s)…` : 'Every presentation already has animated slides.');
+      if (onChanged) onChanged();
+    } catch (err) {
+      flash(err?.response?.data?.error || err.message || 'Could not start the conversion');
+    }
+  };
+  const html5Badge = (m) => {
+    const st = m.html5Status || '';
+    if (st === 'ready') return { text: 'Animated ✓', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200', action: false };
+    if (st === 'pending' || st === 'processing') return { text: 'Preparing animated…', cls: 'bg-amber-50 text-amber-700 border-amber-200', action: false };
+    if (st === 'failed') return { text: 'Animated failed · Retry', cls: 'bg-rose-50 text-rose-700 border-rose-200', action: true, title: m.html5Error || '' };
+    return { text: 'Make animated', cls: 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100', action: true };
   };
   const myId = currentUser.id || currentUser._id || currentUser.trainerId || currentUser.name || '';
 
@@ -592,9 +627,19 @@ export default function TrainingLibraryMaterials({
                 <p className="text-[11px] text-slate-500">Head of Department &amp; Manager Upload Desk</p>
               </div>
             </div>
-            <span className="px-3 py-1 rounded-full bg-[#e6f7f5] text-[#00897b] text-xs font-semibold">
-              Visible to trainers only after you allocate
-            </span>
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={handleMakeAllAnimated}
+                title="Convert every PPT that has no animated copy yet"
+                className="px-3 py-1 rounded-full bg-white border border-teal-300 text-[#00897b] text-xs font-semibold hover:bg-teal-50 cursor-pointer"
+              >
+                Make all PPTs animated
+              </button>
+              <span className="px-3 py-1 rounded-full bg-[#e6f7f5] text-[#00897b] text-xs font-semibold">
+                Visible to trainers only after you allocate
+              </span>
+            </div>
           </div>
           <div className="p-3.5 rounded-xl bg-slate-50/80 border border-slate-200 text-xs text-slate-600 leading-relaxed">
             Upload <strong>PPT / PPTX</strong> presentations, PDFs, class recordings, or course materials — <strong>up to {MAX_MB} MB per file</strong>. Every file is stored in the academy&apos;s AWS S3 bucket and streams straight there from your browser — nothing is kept in the database. New files are visible only to Trainer Head &amp; Manager. Use <strong>Allocate</strong> on a file (or on a folder) to choose which trainers can see it — Team Leads and Trainers only see files allocated to them, view-only (download and delete are restricted).
@@ -976,6 +1021,17 @@ PPT decks and course materials allocated to you by your Trainer Head &amp; Manag
                             {m.fileFormat}
                           </span>
                         )}
+                        {canManage && isPpt && (() => {
+                          const b = html5Badge(m);
+                          return b.action ? (
+                            <button type="button" onClick={() => handleMakeAnimated(m)} title={b.title || 'Make an animated HTML5 copy of this deck'}
+                              className={`px-2 py-0.5 rounded-md text-[10px] font-bold border cursor-pointer ${b.cls}`}>
+                              {b.text}
+                            </button>
+                          ) : (
+                            <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold border ${b.cls}`}>{b.text}</span>
+                          );
+                        })()}
                         {m.folder && activeFolder === null && (
                           <button
                             type="button"

@@ -41,7 +41,8 @@ import ClassFeedback from '../models/ClassFeedback.js';
 import LmsProgress from '../models/LmsProgress.js';
 import CallLog from '../models/CallLog.js';
 import { MANDATORY_MODULES, MODULE_ITEMS, PASS_MARK, COURSE_PASS_MARK, QUESTION_BANK, courseQuestions, courseModuleFor } from '../constants/hrLms.js';
-import { requireAuth, normalizeDept, signToken, signFileToken, checkPassword, hashPassword, hashIfPlain } from '../middleware/auth.js';
+import { requireAuth, normalizeDept, signToken, signFileToken, signMaterialViewToken, checkPassword, hashPassword, hashIfPlain } from '../middleware/auth.js';
+import { queueHtml5Conversion, resumeHtml5Queue, isAsposeConfigured, isPresentationMaterial, contentTypeFor, html5QueueLength } from '../utils/materialHtml5.js';
 import LiveClassSession from '../models/LiveClassSession.js';
 import StudentSubmission from '../models/StudentSubmission.js';
 import { PLACEMENT_EDITORS, autoStage, effectiveStage, blockReason, stageChecks } from '../constants/placement.js';
@@ -63,7 +64,7 @@ import { DEFAULT_WORK_SLOTS } from '../constants/trainerHierarchy.js';
 import wiseappRouter from './wiseapp.js';
 import { registerSchedulingRoutes } from './scheduling.js';
 import { registerStaffDeskRoutes } from './staffdesk.js';
-import { isS3Configured, copyRemoteRecordingToS3, putRecordingBuffer, streamS3Object, signedUrlForStoredFile } from '../utils/s3Storage.js';
+import { isS3Configured, copyRemoteRecordingToS3, putRecordingBuffer, streamS3Object, signedUrlForStoredFile, streamS3File } from '../utils/s3Storage.js';
 import { livekitConfigured, livekitUrl, livekitToken, classRoomName, endLivekitRoom, LIVEKIT_NOT_CONFIGURED } from '../utils/livekit.js';
 import { randomInt as cryptoRandomInt } from 'crypto';
 
@@ -11662,6 +11663,7 @@ function isMaterialAllocatedToUser(doc, user = {}) {
 
 router.get('/training/materials', async (req, res) => {
   try {
+    resumeHtml5Queue().catch(() => {}); // once per server start: finish conversions cut off by a restart
     const { batch } = req.query;
     const query = batch ? { 'assignments.batch': batch } : {};
     let list = await TrainingMaterial.find(query).sort({ createdAt: -1 }).lean();
@@ -11732,6 +11734,8 @@ router.post('/training/materials', async (req, res) => {
       uploaderId: String(req.user?.trainerId || req.user?.sub || req.user?.id || uploaderId || ''),
       branch: branch || req.user?.branch || ''
     });
+    // Animated HTML5 copy of a PowerPoint, made in the background
+    if (await queueHtml5Conversion(doc).catch(() => false)) doc.html5Status = 'pending';
     const obj = doc.toObject();
     delete obj.data;
     res.status(201).json(obj);
@@ -11762,6 +11766,85 @@ router.get('/training/materials/:id/view-url', async (req, res) => {
     if (!url) return res.status(404).json({ error: 'Could not create a viewing link for this file.' });
     res.setHeader('Cache-Control', 'no-store');
     res.json({ url, fileSize: doc.fileSize || 0 });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Who may open a material (same rules as /file and /view-url). Returns an error message or ''.
+async function materialViewDenied(req, doc) {
+  if (req.user?.department === 'student') {
+    const st = await findStudentByAnyId(req.user.studentId || '');
+    const batch = studentBatchOf(st);
+    if (!batch || !(doc.assignments || []).some((a) => a.batch === batch)) return 'This material is not assigned to your batch';
+    return '';
+  }
+  if (!(await canSeeAllTrainingMaterials(req)) && !isMaterialAllocatedToUser(doc, req.user)) {
+    return 'This material has not been allocated to you. Please ask your Trainer Head or Manager.';
+  }
+  return '';
+}
+
+// Animated HTML5 slideshow link for a PowerPoint (see utils/materialHtml5.js).
+// Returns { status } and, once ready, a path under the API to load in an iframe.
+router.get('/training/materials/:id/html5-url', async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Material not found' });
+    const doc = await TrainingMaterial.findById(req.params.id).lean();
+    if (!doc) return res.status(404).json({ error: 'Material not found' });
+    const denied = await materialViewDenied(req, doc);
+    if (denied) return res.status(403).json({ error: denied });
+    res.setHeader('Cache-Control', 'no-store');
+    if (doc.html5Status !== 'ready' || !doc.html5Prefix || !doc.html5Entry) {
+      return res.json({ status: doc.html5Status || '', error: doc.html5Error || '', configured: isAsposeConfigured() });
+    }
+    const token = encodeURIComponent(signMaterialViewToken(req.user, doc._id));
+    const entry = doc.html5Entry.split('/').map(encodeURIComponent).join('/');
+    res.json({ status: 'ready', path: `/training/materials/${doc._id}/html5/${token}/${entry}` });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Files of the animated slideshow (the token in the path was checked by requireAuth)
+router.get('/training/materials/:id/html5/:token/*', async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).send('Not found');
+    const doc = await TrainingMaterial.findById(req.params.id).select('html5Status html5Prefix').lean();
+    if (!doc || doc.html5Status !== 'ready' || !doc.html5Prefix) return res.status(404).send('Slideshow not found');
+    const rel = String(req.params[0] || '').replace(/\\/g, '/');
+    if (!rel || rel.startsWith('/') || rel.split('/').includes('..')) return res.status(400).send('Bad path');
+    await streamS3File(doc.html5Prefix + rel, res, contentTypeFor(rel));
+  } catch (e) {
+    if (!res.headersSent) res.status(e?.name === 'NoSuchKey' ? 404 : 500).send(e?.name === 'NoSuchKey' ? 'Not found' : e.message);
+  }
+});
+
+// (Re)make the animated copy of one presentation — Head of Department / Manager
+router.post('/training/materials/:id/html5/convert', async (req, res) => {
+  try {
+    if (!canManageTrainingMaterials(req)) return res.status(403).json({ error: 'Only Head of Department and Manager can do this.' });
+    if (!isAsposeConfigured()) return res.status(503).json({ error: 'Animated slides are not set up: add ASPOSE_CLIENT_ID and ASPOSE_CLIENT_SECRET to the server environment.' });
+    const doc = await TrainingMaterial.findById(req.params.id).lean();
+    if (!doc) return res.status(404).json({ error: 'Material not found' });
+    if (!isPresentationMaterial(doc)) return res.status(400).json({ error: 'Only PowerPoint files can be turned into animated slides.' });
+    const ok = await queueHtml5Conversion(doc);
+    res.json({ queued: ok, status: ok ? 'pending' : doc.html5Status || '' });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Make animated copies of every PowerPoint that doesn't have one yet (or failed)
+router.post('/training/materials/html5/convert-all', async (req, res) => {
+  try {
+    if (!canManageTrainingMaterials(req)) return res.status(403).json({ error: 'Only Head of Department and Manager can do this.' });
+    if (!isAsposeConfigured()) return res.status(503).json({ error: 'Animated slides are not set up: add ASPOSE_CLIENT_ID and ASPOSE_CLIENT_SECRET to the server environment.' });
+    const docs = await TrainingMaterial.find({ $or: [{ html5Status: { $in: ['', 'failed', null] } }, { html5Status: { $exists: false } }] })
+      .select('_id fileName').lean();
+    let queuedCount = 0;
+    for (const d of docs) if (await queueHtml5Conversion(d)) queuedCount += 1;
+    res.json({ queued: queuedCount, inQueue: html5QueueLength() });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
