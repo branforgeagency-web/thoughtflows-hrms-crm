@@ -765,7 +765,8 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         return (
           matchesMyName(l.counselorAssigned, myName, rb, branchName) ||
           matchesMyName(l.allocatedTo, myName, rb, branchName) ||
-          matchesMyName(l.spokenBy, myName, rb, branchName)
+          // Spoken-by only counts when the lead isn't allocated to anyone
+          (!l.counselorAssigned && !l.allocatedTo && matchesMyName(l.spokenBy, myName, rb, branchName))
         );
       });
     }
@@ -875,7 +876,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         return (
           ownerMatch(l.counselorAssigned, rb) ||
           ownerMatch(l.allocatedTo, rb) ||
-          ownerMatch(l.spokenBy, rb)
+          (!l.counselorAssigned && !l.allocatedTo && ownerMatch(l.spokenBy, rb))
         );
       });
     }

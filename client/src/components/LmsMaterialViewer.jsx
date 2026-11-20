@@ -632,10 +632,8 @@ export default function LmsMaterialViewer({ material, canDownload: _downloadIgno
         const isPresentation = PRESENTATION_EXTS.has(ext) || mime.includes('presentation') || mime.includes('powerpoint');
         setOfficeUrl('');
         setOfficeUnavailable('');
-        if (isPresentation && sizeBytes > OFFICE_VIEW_MAX_BYTES) {
-          setOfficeUnavailable(`File is ${(sizeBytes / (1024 * 1024)).toFixed(0)} MB — PowerPoint's web viewer only opens files up to 100 MB. Compress pictures and re-upload to get animations.`);
-        }
-        if (isPresentation && (!sizeBytes || sizeBytes <= OFFICE_VIEW_MAX_BYTES)) {
+        // Every presentation, any size, opens in PowerPoint's own viewer
+        if (isPresentation) {
           setLoadingText('Opening presentation…');
           // Ask the server for a signed storage link first (works for every bucket),
           // then fall back to signing in the browser.
@@ -1107,6 +1105,9 @@ export default function LmsMaterialViewer({ material, canDownload: _downloadIgno
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-slate-300 pointer-events-none">
                   <Loader2 className="w-8 h-8 animate-spin text-teal-400" />
                   <p className="text-xs font-semibold">Preparing PowerPoint view with animations…</p>
+                  {Number(material?.fileSize) > OFFICE_VIEW_MAX_BYTES && (
+                    <p className="text-[11px] text-slate-400">Large file ({(Number(material.fileSize) / (1024 * 1024)).toFixed(0)} MB) — this can take a minute.</p>
+                  )}
                 </div>
               )}
               <iframe

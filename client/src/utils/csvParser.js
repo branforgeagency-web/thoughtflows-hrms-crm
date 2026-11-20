@@ -589,9 +589,11 @@ export function parseGoogleSheetOrCsv(rawText) {
       course,
       branch,
       sourceName,
-      counselorAssigned: counselorAssigned || spokenBy || '',
-      allocatedTo: counselorAssigned || spokenBy || '',
-      spokenBy: spokenBy || counselorAssigned || '',
+      // Only the "Allocated to" column decides who owns the row; "Spoken by"
+      // is kept for reference and never puts the row on that person's desk.
+      counselorAssigned: counselorAssigned || '',
+      allocatedTo: counselorAssigned || '',
+      spokenBy: spokenBy || '',
       category,
       stage: mapCategoryToStage(category),
       education,

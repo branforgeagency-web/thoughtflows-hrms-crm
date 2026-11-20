@@ -3457,23 +3457,33 @@ async function hrTeamScopeNames(req) {
 }
 const BRANCH_FIELDS_LEAD = ['branch', 'location'];
 const BRANCH_FIELDS_STUDENT = ['branch', 'leadBranch', 'location'];
+// "Spoken by" only records who talked to the candidate — it is NOT ownership.
+// A record shows on the spoken-by person's desk only when nobody else owns it
+// (every other owner field empty, e.g. old manual entries); once a record is
+// allocated to someone, only that allocated person sees it.
+const EMPTY_VAL = { $in: [null, ''] };
+const ownerFieldCond = (f, rx, ownerFields) => {
+  if (f !== 'spokenBy') return { [f]: rx };
+  const others = ownerFields.filter((o) => o !== 'spokenBy');
+  return { $and: [{ spokenBy: rx }, ...others.map((o) => ({ [o]: EMPTY_VAL }))] };
+};
 const ownerSingleBranchConditions = (name, branch, ownerFields, branchFields) => {
   const { strictRx, unconditionalRx, branchScopedRx, strictIsBranchScoped, branchRx } = analyzeCounselorName(name, branch);
   const conds = [];
   if (unconditionalRx) {
-    conds.push({ $or: ownerFields.map((f) => ({ [f]: unconditionalRx })) });
+    conds.push({ $or: ownerFields.map((f) => ownerFieldCond(f, unconditionalRx, ownerFields)) });
   } else if (!strictIsBranchScoped) {
-    conds.push({ $or: ownerFields.map((f) => ({ [f]: strictRx })) });
+    conds.push({ $or: ownerFields.map((f) => ownerFieldCond(f, strictRx, ownerFields)) });
   }
   if (branchScopedRx && branchRx && branchFields.length) {
     conds.push({
       $and: [
-        { $or: ownerFields.map((f) => ({ [f]: branchScopedRx })) },
+        { $or: ownerFields.map((f) => ownerFieldCond(f, branchScopedRx, ownerFields)) },
         { $or: branchFields.map((f) => ({ [f]: branchRx })) }
       ]
     });
   } else if (branchScopedRx && !conds.length) {
-    conds.push({ $or: ownerFields.map((f) => ({ [f]: strictRx })) });
+    conds.push({ $or: ownerFields.map((f) => ownerFieldCond(f, strictRx, ownerFields)) });
   }
   return conds;
 };
@@ -3556,17 +3566,7 @@ const leadHasCounselor = (lead, user) => {
     user.email ? user.email.split('@')[0] : ''
   ].map((s) => String(s || '').trim()).filter(Boolean);
 
-  const candidateLeadOwners = [
-    lead.counselorAssigned,
-    lead.allocatedTo,
-    lead.spokenBy,
-    lead.counselor,
-    lead.counselorName,
-    lead.hrName,
-    lead.bookedBy,
-    lead.createdBy,
-    lead.assignedTo
-  ].map((s) => String(s || '').trim()).filter(Boolean);
+  const candidateLeadOwners = recordOwnerNames(lead);
 
   // If no counsellor has been assigned yet, any counsellor can view / edit / manage it
   if (candidateLeadOwners.length === 0) return true;
@@ -3587,10 +3587,16 @@ const leadHasCounselor = (lead, user) => {
 //   Branch Head    → records of their own branch only (a record with no branch is not theirs)
 //   Counsellor     → their own records (or unassigned ones)
 //   Admin / Leadership / HR Department Head → everything
-const recordOwnerNames = (r) => [
-  r?.counselorAssigned, r?.allocatedTo, r?.spokenBy, r?.counselor, r?.counselorName,
-  r?.hrName, r?.bookedBy, r?.createdBy, r?.assignedTo
-].map((v) => String(v || '').trim()).filter(Boolean);
+function recordOwnerNames(r) {
+  const owners = [
+    r?.counselorAssigned, r?.allocatedTo, r?.counselor, r?.counselorName,
+    r?.hrName, r?.bookedBy, r?.createdBy, r?.assignedTo
+  ].map((v) => String(v || '').trim()).filter(Boolean);
+  // Spoken-by counts as owner only when the record is not allocated to anyone
+  if (owners.length) return owners;
+  const spoken = String(r?.spokenBy || '').replace(/\s*·\s*YOU/i, '').trim();
+  return spoken ? [spoken] : [];
+}
 const teamOwnsRecord = (req, rec) => {
   const owners = recordOwnerNames(rec);
   if (!owners.length) return true;
@@ -5414,8 +5420,10 @@ router.post('/leads/bulk', async (req, res) => {
       if (!payload.course) {
         payload.course = req.body?.defaultCourse || 'AMCT Beginner (Classroom)';
       }
+      // Allocation comes only from the sheet's "Allocated to" column (or the
+      // uploader) — the "Spoken by" person never becomes the owner.
       if (!payload.counselorAssigned) {
-        payload.counselorAssigned = payload.allocatedTo || payload.spokenBy || counselor;
+        payload.counselorAssigned = payload.allocatedTo || counselor;
       }
       if (!payload.allocatedTo) {
         payload.allocatedTo = payload.counselorAssigned;
