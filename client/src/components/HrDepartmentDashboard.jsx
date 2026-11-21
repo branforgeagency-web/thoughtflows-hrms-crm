@@ -1785,6 +1785,19 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             </div>
             <div className="text-left text-[11px] leading-tight hidden sm:block">
               <div className="font-bold">{userName}</div>
+              {currentUser?.role && (
+                <div className={`text-[10px] font-semibold mt-0.5 ${
+                  barTheme === 'clay'
+                    ? 'text-teal-800'
+                    : barTheme === 'turquoise'
+                      ? 'text-[#0b4a54]'
+                      : barTheme === 'light'
+                        ? 'text-slate-600'
+                        : 'text-slate-300'
+                }`}>
+                  {currentUser.role}
+                </div>
+              )}
               <div className={`text-[9.5px] uppercase tracking-wider flex items-center gap-1 mt-0.5 ${
                 barTheme === 'clay'
                   ? 'text-teal-700 font-semibold'
