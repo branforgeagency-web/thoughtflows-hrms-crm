@@ -1,0 +1,2026 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { 
+  Phone, 
+  MessageSquare, 
+  Clock, 
+  Filter, 
+  CheckCircle2, 
+  Sparkles, 
+  ChevronRight, 
+  Search, 
+  UserPlus,
+  Smartphone,
+  Check,
+  CheckCircle,
+  XCircle,
+  RotateCcw,
+  AlertTriangle,
+  Kanban,
+  LayoutGrid,
+  LayoutList,
+  Edit2,
+  ArrowRight,
+  Trash2,
+  Loader2,
+  ChevronDown,
+  FileText
+} from 'lucide-react';
+
+import { getLeads, getLeadFilterOptions, updateLead, deleteLead, createEscalation } from '../services/api';
+import { redirectToWhatsAppWeb } from '../utils/whatsapp';
+import PaginationBar from './PaginationBar';
+import EditLeadModal from './EditLeadModal';
+import { canonicalLeadSource } from '../constants/leadSourceCanon';
+
+const STAGE_ORDER = ['new', 'contacted', 'demo_booked', 'demo_attended', 'fee_followup', 'done', 'admitted', 'not_mentioned'];
+
+const STAGE_LABELS = {
+  new: 'New Lead',
+  contacted: 'Contacted',
+  demo_booked: 'Demo Booked',
+  demo_attended: 'Demo Attended',
+  fee_followup: 'Fee Follow-up',
+  done: 'Flows Done',
+  admitted: 'Admitted & Enrolled',
+  not_mentioned: 'Not Mentioned'
+};
+
+const NEXT_STAGE_LABELS = {
+  new: 'Contacted',
+  contacted: 'Demo Booked',
+  demo_booked: 'Demo Attended',
+  demo_attended: 'Fee Follow-up',
+  fee_followup: 'Mark Flows Done',
+  done: 'Admit Student',
+  admitted: 'Enrolled',
+  not_mentioned: 'Contacted'
+};
+
+// Classifies a lead's follow-up against real dates instead of guessing.
+function classifyFollowUp(lead) {
+  const rawFollowUpStatus = (lead.followUpStatus || '').toLowerCase();
+  const rawDecision = (lead.decisionStatus || '').toLowerCase();
+  const noteStr = (lead.followUpNote || lead.notes || '');
+  const isResolved = lead.stage === 'admitted' || lead.stage === 'closed' ||
+    rawFollowUpStatus === 'no_followup_needed' || rawFollowUpStatus === 'not_interested' || rawFollowUpStatus === 'done' ||
+    rawDecision.includes('no follow') || rawDecision.includes('not interest') ||
+    noteStr.includes('No Follow-up Needed - Done') || noteStr.includes('Not Interested - Done');
+
+  const raw = (lead.followUpDate || '').trim();
+  let target = null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const [y, m, d] = raw.split('-').map(Number);
+    target = new Date(y, m - 1, d);
+  } else if (raw) {
+    const parsed = new Date(raw);
+    if (!isNaN(parsed.getTime())) target = parsed;
+  }
+
+  if (isResolved) {
+    return { isOverdue: false, isToday: false, isTomorrow: false, timeframe: 'resolved', hasDate: Boolean(target) };
+  }
+
+  if (!target) {
+    if (lead.stage === 'new') {
+      return { isOverdue: true, isToday: false, isTomorrow: false, timeframe: 'overdue', hasDate: false };
+    }
+    return { isOverdue: false, isToday: false, isTomorrow: false, timeframe: null, hasDate: false };
+  }
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  target.setHours(0, 0, 0, 0);
+  const diffDays = Math.round((target - today) / (1000 * 60 * 60 * 24));
+
+  if (diffDays < 0) return { isOverdue: true, isToday: false, isTomorrow: false, timeframe: 'overdue', hasDate: true };
+  if (diffDays === 0) return { isOverdue: false, isToday: true, isTomorrow: false, timeframe: 'today', hasDate: true };
+  if (diffDays === 1) return { isOverdue: false, isToday: false, isTomorrow: true, timeframe: 'tomorrow', hasDate: true };
+  if (diffDays <= 7) return { isOverdue: false, isToday: false, isTomorrow: false, timeframe: 'this_week', hasDate: true };
+  return { isOverdue: false, isToday: false, isTomorrow: false, timeframe: null, hasDate: true };
+}
+
+export default function HrPipelineView({ 
+  leads: propLeads, 
+  onRefreshLeads, 
+  onAddLeadClick,
+  onAdmitLead,
+  onCallLead,
+  initialViewMode = 'kanban',
+  currentUser,
+  hrLeadCounts = null,
+  page: propPage,
+  totalPages: propTotalPages,
+  totalCount: propTotalCount,
+  limit: propLimit = 25,
+  onPageChange,
+  onFilterChange,
+  onViewModeChange,
+  scopeBranch = ''       // Branch Head desk: HR & branch lists limited to this branch
+}) {
+  const [viewMode, setViewMode] = useState(initialViewMode); // 'kanban' | 'followup' | 'table'
+  const [boardRenderLimit, setBoardRenderLimit] = useState(50);
+  const handleViewModeSwitch = (nextMode) => {
+    setViewMode(nextMode);
+    setBoardRenderLimit(50);
+    if (onViewModeChange) onViewModeChange(nextMode);
+  };
+  const [activeFilter, setActiveFilter] = useState('all'); // all, overdue, today, tomorrow, this_week, demo, fee, admitted
+  const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [monthFilter, setMonthFilter] = useState('all'); // 'all' or 'YYYY-MM' — bulk uploads are tagged by enquiry month
+  const [counselorFilter, setCounselorFilter] = useState('all');
+  const [branchFilter, setBranchFilter] = useState('all');
+  const [courseFilter, setCourseFilter] = useState('all');
+  const [sourceFilter, setSourceFilter] = useState('all');
+  const [stageFilter, setStageFilter] = useState('all');
+  const [filterOptions, setFilterOptions] = useState({
+    counselors: [],
+    branches: [],
+    courses: [],
+    sources: [],
+    months: []
+  });
+  const [actionNotice, setActionNotice] = useState(null);
+  const [actionLoading, setActionLoading] = useState({});
+  const [escalatedIds, setEscalatedIds] = useState(new Set());
+  const [leads, setLeads] = useState(propLeads || []);
+  const [localPage, setLocalPage] = useState(1);
+  const [localTotalPages, setLocalTotalPages] = useState(1);
+  const [localTotalCount, setLocalTotalCount] = useState(0);
+  const [editingLead, setEditingLead] = useState(null);
+  const [deletingLead, setDeletingLead] = useState(null);
+  const [isDeletingLead, setIsDeletingLead] = useState(false);
+  const [doneMenuCardId, setDoneMenuCardId] = useState(null);
+
+  const handleConfirmDeleteLead = async () => {
+    if (!deletingLead) return;
+    setIsDeletingLead(true);
+    try {
+      const targetId = deletingLead._id || deletingLead.id;
+      await deleteLead(targetId);
+      setLeads(prev => prev.filter(l => (l._id || l.id) !== targetId));
+      triggerAction(`✓ Deleted enquiry for ${deletingLead.fullName || deletingLead.name}`);
+      setDeletingLead(null);
+      if (onRefreshLeads) onRefreshLeads();
+    } catch (err) {
+      console.error('Failed to delete enquiry:', err);
+      triggerAction(`⚠ ${err?.response?.data?.error || 'Could not delete enquiry'}`);
+    } finally {
+      setIsDeletingLead(false);
+    }
+  };
+
+  useEffect(() => {
+    getLeadFilterOptions(scopeBranch ? { branch: scopeBranch } : undefined)
+      .then((opts) => {
+        if (opts && typeof opts === 'object') {
+          setFilterOptions({
+            counselors: Array.isArray(opts.counselors) ? opts.counselors : [],
+            branches: Array.isArray(opts.branches) ? opts.branches : [],
+            courses: Array.isArray(opts.courses) ? opts.courses : [],
+            sources: Array.isArray(opts.sources) ? opts.sources : [],
+            months: Array.isArray(opts.months) ? opts.months : []
+          });
+        }
+      })
+      .catch(() => {});
+  }, [scopeBranch]);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(searchQuery.trim()), 350);
+    return () => clearTimeout(t);
+  }, [searchQuery]);
+
+  const filtersMountedRef = React.useRef(false);
+  useEffect(() => {
+    if (!filtersMountedRef.current) {
+      filtersMountedRef.current = true;
+      return;
+    }
+    const nextFilters = {
+      counselor: counselorFilter,
+      branch: branchFilter,
+      course: courseFilter,
+      source: sourceFilter,
+      stage: stageFilter,
+      enquiryMonth: monthFilter,
+      search: debouncedSearch
+    };
+    if (onFilterChange) {
+      onFilterChange(nextFilters);
+    } else if (propLeads === undefined) {
+      setLocalPage(1);
+    }
+  }, [counselorFilter, branchFilter, courseFilter, sourceFilter, stageFilter, monthFilter, debouncedSearch]);
+
+  useEffect(() => {
+    if (propLeads !== undefined) {
+      setLeads(propLeads);
+    } else {
+      const isTable = viewMode === 'table';
+      const params = {
+        counselor: counselorFilter !== 'all' ? counselorFilter : (currentUser?.name || undefined),
+        branch: branchFilter !== 'all' ? branchFilter : undefined,
+        course: courseFilter !== 'all' ? courseFilter : undefined,
+        source: sourceFilter !== 'all' ? sourceFilter : undefined,
+        stage: stageFilter !== 'all' ? stageFilter : undefined,
+        enquiryMonth: monthFilter !== 'all' ? monthFilter : undefined,
+        search: debouncedSearch || undefined,
+        page: isTable ? localPage : 1,
+        limit: isTable ? propLimit : 200
+      };
+      getLeads(params)
+        .then(res => {
+          if (res && res.leads) {
+            setLeads(res.leads);
+            setLocalTotalCount(res.totalCount ?? res.leads.length);
+            setLocalTotalPages(res.totalPages || 1);
+          }
+        })
+        .catch(err => console.error('Error fetching leads:', err));
+    }
+  }, [propLeads, currentUser?.name, localPage, viewMode, propLimit, counselorFilter, branchFilter, courseFilter, sourceFilter, stageFilter, monthFilter, debouncedSearch]);
+
+  const triggerAction = (msg) => {
+    setActionNotice(msg);
+    setTimeout(() => setActionNotice(null), 3500);
+  };
+
+  const handleAdvanceStage = async (leadId, currentStage) => {
+    const currentIdx = STAGE_ORDER.indexOf(currentStage || 'new');
+    const nextStage = currentIdx >= 0 && currentIdx < STAGE_ORDER.length - 1 ? STAGE_ORDER[currentIdx + 1] : 'admitted';
+
+    const targetLead = leads.find(l => (l._id || l.id) === leadId);
+    if (nextStage === 'admitted') {
+      if (targetLead && onAdmitLead) onAdmitLead(targetLead);
+      return;
+    }
+
+    if (nextStage === 'done') {
+      setActionLoading(prev => ({ ...prev, [leadId]: 'advance' }));
+      try {
+        const updateData = {
+          stage: 'done',
+          status: 'completed',
+          followUpStatus: 'done',
+          decisionStatus: 'Follow-up Done',
+          lastCallTime: new Date()
+        };
+        await updateLead(leadId, updateData);
+        setLeads(prev => prev.map(l => ((l._id || l.id) === leadId) ? { ...l, ...updateData } : l));
+        if (onRefreshLeads) onRefreshLeads();
+        triggerAction(`✓ Flows done for ${targetLead?.fullName || targetLead?.name}! Ready to Move to Admitted.`);
+      } catch (err) {
+        console.error('Failed to advance lead to done:', err);
+        triggerAction('Error updating lead stage');
+      } finally {
+        setActionLoading(prev => ({ ...prev, [leadId]: false }));
+      }
+      return;
+    }
+
+    setActionLoading(prev => ({ ...prev, [leadId]: 'advance' }));
+    try {
+      await updateLead(leadId, {
+        stage: nextStage,
+        status: 'in_progress',
+        lastCallTime: new Date()
+      });
+      setLeads(prev => prev.map(l => ((l._id || l.id) === leadId) ? { ...l, stage: nextStage, status: 'in_progress' } : l));
+      if (onRefreshLeads) onRefreshLeads();
+      const nextStageName = NEXT_STAGE_LABELS[currentStage] || STAGE_LABELS[nextStage] || nextStage;
+      triggerAction(`✓ Advanced lead to ${nextStageName.toUpperCase()}`);
+    } catch (err) {
+      console.error('Failed to advance lead stage:', err);
+      triggerAction('Error updating lead stage');
+    } finally {
+      setActionLoading(prev => ({ ...prev, [leadId]: false }));
+    }
+  };
+
+  const handleMarkDoneStatus = async (card, statusType) => {
+    const leadId = card.id;
+    setDoneMenuCardId(null);
+    setActionLoading(prev => ({ ...prev, [leadId]: statusType }));
+
+    try {
+      if (statusType === 'no_followup_needed') {
+        const dateStr = new Date().toLocaleDateString();
+        const existingNote = card.rawLead?.followUpNote || '';
+        const updatedNote = existingNote 
+          ? `[No Follow-up Needed - Done on ${dateStr}]: ${existingNote}`
+          : `[No Follow-up Needed - Done on ${dateStr}]`;
+
+        const updateData = {
+          followUpStatus: 'no_followup_needed',
+          decisionStatus: 'No Follow-up Needed',
+          stage: 'closed',
+          status: 'completed',
+          followUpNote: updatedNote
+        };
+
+        await updateLead(leadId, updateData);
+        setLeads(prev => prev.map(l => ((l._id || l.id) === leadId) ? { ...l, ...updateData } : l));
+        triggerAction(`✓ Marked as No Follow-up Needed Done for ${card.name}`);
+        if (onRefreshLeads) onRefreshLeads();
+      } else if (statusType === 'not_interested') {
+        const dateStr = new Date().toLocaleDateString();
+        const existingNote = card.rawLead?.followUpNote || '';
+        const updatedNote = existingNote 
+          ? `[Not Interested - Done on ${dateStr}]: ${existingNote}`
+          : `[Not Interested - Done on ${dateStr}]`;
+
+        const updateData = {
+          followUpStatus: 'not_interested',
+          decisionStatus: 'Not Interested',
+          stage: 'closed',
+          status: 'cancelled',
+          followUpNote: updatedNote
+        };
+
+        await updateLead(leadId, updateData);
+        setLeads(prev => prev.map(l => ((l._id || l.id) === leadId) ? { ...l, ...updateData } : l));
+        triggerAction(`✓ Marked as Not Interested Done for ${card.name}`);
+        if (onRefreshLeads) onRefreshLeads();
+      } else if (statusType === 'done') {
+        const currentStage = card.stage || 'new';
+        const currentIdx = STAGE_ORDER.indexOf(currentStage);
+        const nextStage = currentIdx >= 0 && currentIdx < STAGE_ORDER.length - 1 ? STAGE_ORDER[currentIdx + 1] : 'admitted';
+
+        const targetLead = leads.find(l => (l._id || l.id) === leadId) || card.rawLead;
+
+        if (nextStage === 'admitted') {
+          if (targetLead && onAdmitLead) {
+            onAdmitLead(targetLead);
+            triggerAction(`✓ Opening Admission & Enrollment form for ${card.name}...`);
+          } else {
+            triggerAction(`Ready for Admission: ${card.name}`);
+          }
+          return;
+        }
+
+        const nextStageName = NEXT_STAGE_LABELS[currentStage] || STAGE_LABELS[nextStage] || nextStage;
+
+        const updateData = {
+          stage: nextStage,
+          followUpStatus: 'done',
+          decisionStatus: 'Follow-up Done',
+          status: 'in_progress',
+          lastCallTime: new Date()
+        };
+
+        await updateLead(leadId, updateData);
+        setLeads(prev => prev.map(l => ((l._id || l.id) === leadId) ? { ...l, ...updateData } : l));
+        triggerAction(`✓ Follow-up Done! Moved ${card.name} → ${nextStageName}`);
+        if (onRefreshLeads) onRefreshLeads();
+      }
+    } catch (err) {
+      console.error('Failed to update follow-up status:', err);
+      triggerAction('Error updating follow-up status');
+    } finally {
+      setActionLoading(prev => ({ ...prev, [leadId]: false }));
+    }
+  };
+
+  const handleReopenFollowUp = async (card) => {
+    const leadId = card.id;
+    setActionLoading(prev => ({ ...prev, [leadId]: 'reopen' }));
+    try {
+      const resetStage = card.rawLead?.stage === 'closed' ? 'contacted' : (card.rawLead?.stage || 'new');
+      const updateData = {
+        followUpStatus: '',
+        decisionStatus: '',
+        stage: resetStage,
+        status: 'in_progress'
+      };
+      await updateLead(leadId, updateData);
+      setLeads(prev => prev.map(l => ((l._id || l.id) === leadId) ? { ...l, ...updateData } : l));
+      triggerAction(`Follow-up reopened for ${card.name}`);
+      if (onRefreshLeads) onRefreshLeads();
+    } catch (err) {
+      console.error('Failed to reopen follow-up:', err);
+      triggerAction('Could not reopen follow-up');
+    } finally {
+      setActionLoading(prev => ({ ...prev, [leadId]: false }));
+    }
+  };
+
+  const handleDoneFollowUp = (card) => handleMarkDoneStatus(card, 'done');
+
+  const handleEscalate = async (card) => {
+    const leadId = card.id;
+    setActionLoading(prev => ({ ...prev, [leadId]: 'escalate' }));
+    try {
+      await createEscalation({
+        title: `Follow-up Escalation: ${card.name} (${card.phone || 'No phone'})`,
+        description: `Urgent follow-up escalation for candidate ${card.name}. Course: ${card.course || '—'}. Current stage: ${(STAGE_LABELS[card.stage] || card.stage || 'new')}. Assigned counsellor: ${card.assigned || currentUser?.name || 'HR Team'}.`,
+        departmentCode: 'DEP-HR-001',
+        branchName: card.rawLead?.branch || currentUser?.branch || '',
+        studentId: '',
+        raisedBy: currentUser?.name || card.assigned || 'HR Counsellor',
+        priority: 'urgent',
+        type: 'Operational Issue',
+        status: 'open'
+      });
+
+      const updatedNote = card.rawLead?.followUpNote 
+        ? `[ESCALATED to Supervisor on ${new Date().toLocaleDateString()}]: ${card.rawLead.followUpNote}`
+        : `[ESCALATED to Supervisor on ${new Date().toLocaleDateString()}]`;
+
+      await updateLead(leadId, {
+        decisionStatus: 'escalated',
+        followUpNote: updatedNote
+      });
+
+      setEscalatedIds(prev => new Set(prev).add(leadId));
+      setLeads(prev => prev.map(l => ((l._id || l.id) === leadId) ? { ...l, decisionStatus: 'escalated', followUpNote: updatedNote } : l));
+      triggerAction(`🚨 Follow-up escalated for ${card.name} to Supervisor & Leadership Hub`);
+      if (onRefreshLeads) onRefreshLeads();
+    } catch (err) {
+      console.error('Failed to escalate follow-up:', err);
+      triggerAction('Could not escalate follow-up');
+    } finally {
+      setActionLoading(prev => ({ ...prev, [leadId]: false }));
+    }
+  };
+
+  // "YYYY-MM" this lead belongs to — the explicit enquiryMonth tag set at bulk
+  // upload time, falling back to when the record was actually created.
+  const leadMonthKey = (l) => l.enquiryMonth || String(l.createdAt || '').slice(0, 7);
+
+  const MONTH_LABEL = (key) => {
+    if (!key) return 'Unknown';
+    const [y, m] = key.split('-').map(Number);
+    if (!y || !m) return key;
+    return new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  };
+
+  // "Sep 12" style label for the Enquiries Table's Date column — short month + day.
+  // Falls back to the month alone (no day) when only enquiryMonth is known.
+  const enquiryDateLabel = (l) => {
+    const d = String(l.enquiryDate || '');
+    if (/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+      const dt = new Date(`${d}T00:00:00`);
+      if (!isNaN(dt.getTime())) return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    }
+    const key = leadMonthKey(l);
+    return key ? MONTH_LABEL(key) : '—';
+  };
+
+  // Every distinct month present across leads (preferring server-wide filterOptions)
+  const availableMonths = useMemo(() => {
+    const set = new Set([...(filterOptions.months || []), ...leads.map(leadMonthKey).filter(Boolean)]);
+    return Array.from(set).sort((a, b) => b.localeCompare(a));
+  }, [leads, filterOptions.months]);
+
+  // "AMCT / CPC", "amct/cpc" and "AMCT /CPC" are one value: compare without spaces, ignoring case
+  const compactKey = (v) => String(v || '').toLowerCase().replace(/\s+/g, '');
+  const dedupeFilterValues = (arr, mode = 'title') => {
+    const PLACEHOLDERS = new Set(['n/a', 'na', 'none', 'nil', 'null', 'undefined', 'unknown', 'not mentioned']);
+    const toTitle = (str) =>
+      str.replace(/\w\S*/g, (w) => (w.length <= 2 && w === w.toUpperCase() ? w : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()));
+    const map = new Map();
+    arr.forEach((raw) => {
+      const val = String(raw || '').replace(/\s*\/\s*/g, ' / ').replace(/\s+/g, ' ').trim();
+      if (!val || !/[a-zA-Z]/.test(val)) return;
+      if (PLACEHOLDERS.has(val.toLowerCase())) return;
+      const key = compactKey(val);
+      if (!map.has(key)) {
+        map.set(key, mode === 'upper' ? val.toUpperCase() : mode === 'raw' ? val : toTitle(val));
+      }
+    });
+    return Array.from(map.values()).sort((a, b) => a.localeCompare(b));
+  };
+
+  const availableCounselors = useMemo(
+    () => dedupeFilterValues(
+      (filterOptions.counselors || []).length
+        ? [...filterOptions.counselors, counselorFilter !== 'all' ? counselorFilter : '']
+        : leads.map(l => l.counselorAssigned || l.allocatedTo || ''),
+      'title'
+    ),
+    [leads, filterOptions.counselors, counselorFilter]
+  );
+
+  const availableBranches = useMemo(
+    () => dedupeFilterValues([...(filterOptions.branches || []), ...leads.map(l => l.branch || '')], 'title'),
+    [leads, filterOptions.branches]
+  );
+
+  const availableCourses = useMemo(
+    () => dedupeFilterValues([...(filterOptions.courses || []), ...leads.map(l => l.course || '')], 'upper'),
+    [leads, filterOptions.courses]
+  );
+
+  const availableSources = useMemo(
+    () => dedupeFilterValues([...(filterOptions.sources || []), ...leads.map(l => l.sourceName || l.sourceBadge || '')].map(canonicalLeadSource), 'raw'),
+    [leads, filterOptions.sources]
+  );
+
+  const hasActiveDropdownFilters =
+    counselorFilter !== 'all' ||
+    branchFilter !== 'all' ||
+    courseFilter !== 'all' ||
+    sourceFilter !== 'all' ||
+    stageFilter !== 'all' ||
+    monthFilter !== 'all' ||
+    searchQuery.trim() !== '';
+
+  const resetAllFilters = () => {
+    setSearchQuery('');
+    setDebouncedSearch('');
+    setMonthFilter('all');
+    setCounselorFilter('all');
+    setBranchFilter('all');
+    setCourseFilter('all');
+    setSourceFilter('all');
+    setStageFilter('all');
+    setActiveFilter('all');
+  };
+
+  // Search + dropdown filtered leads
+  const searchFilteredLeads = useMemo(() => {
+    let out = leads;
+    // When the parent reloads leads from the server on every filter change
+    // (onFilterChange), the server has already applied the HR / branch / course /
+    // source filters — with loose name matching ("Jeba" = "Jeba Sorna"). Filtering
+    // again here with an exact compare would hide leads the counts include.
+    const serverFiltered = Boolean(onFilterChange);
+    if (monthFilter !== 'all') {
+      out = out.filter(l => leadMonthKey(l) === monthFilter);
+    }
+    if (!serverFiltered && counselorFilter !== 'all') {
+      const cf = compactKey(counselorFilter);
+      out = out.filter(l => compactKey(l.counselorAssigned || l.allocatedTo || l.spokenBy) === cf);
+    }
+    if (!serverFiltered && branchFilter !== 'all') {
+      const bf = branchFilter.toLowerCase();
+      out = out.filter(l => (l.branch || '').toLowerCase() === bf);
+    }
+    if (!serverFiltered && courseFilter !== 'all') {
+      const cr = compactKey(courseFilter);
+      out = out.filter(l => compactKey(l.course) === cr);
+    }
+    if (!serverFiltered && sourceFilter !== 'all') {
+      const sf = canonicalLeadSource(sourceFilter);
+      out = out.filter(l => canonicalLeadSource(l.sourceName || l.sourceBadge) === sf);
+    }
+    if (stageFilter !== 'all') {
+      out = out.filter(l => (l.stage || 'new') === stageFilter);
+    }
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      out = out.filter(l => 
+        (l.fullName || l.name || '').toLowerCase().includes(q) ||
+        (l.phone || '').toLowerCase().includes(q) ||
+        (l.course || '').toLowerCase().includes(q) ||
+        (l.counselorAssigned || '').toLowerCase().includes(q) ||
+        (l.allocatedTo || '').toLowerCase().includes(q) ||
+        (l.spokenBy || '').toLowerCase().includes(q) ||
+        `${l.followUpNote || ''} ${l.notes || ''}`.toLowerCase().includes(q)
+      );
+    }
+    return out;
+  }, [leads, searchQuery, monthFilter, counselorFilter, branchFilter, courseFilter, sourceFilter, stageFilter, onFilterChange]);
+
+  // Stage Pipeline columns
+  const PIPELINE_COLUMNS = useMemo(() => {
+    const cols = [
+      { id: 'new', title: 'NEW', dotColor: 'bg-slate-900', stageMatches: ['new'] },
+      { id: 'contacted', title: 'CONTACTED', dotColor: 'bg-blue-600', stageMatches: ['contacted'] },
+      { id: 'pitched', title: 'DEMO / PITCH', dotColor: 'bg-purple-600', stageMatches: ['demo_booked', 'demo_attended'] },
+      { id: 'fees', title: 'FEES TALK', dotColor: 'bg-amber-600', stageMatches: ['fee_followup'] },
+      { id: 'done', title: 'DONE', dotColor: 'bg-slate-700', stageMatches: ['done'] },
+      { id: 'admitted', title: 'ADMITTED', dotColor: 'bg-emerald-600', stageMatches: ['admitted'] },
+      { id: 'not_mentioned', title: 'NOT MENTIONED', dotColor: 'bg-slate-500', stageMatches: ['not_mentioned', 'not mentioned'] }
+    ];
+
+    return cols.map(c => {
+      const matchingLeads = searchFilteredLeads.filter(l => {
+        const hasStudentId = Boolean(l.admittedStudentId || l.studentId);
+        const st = String(l.stage || 'new').toLowerCase();
+        const status = String(l.status || '').toLowerCase();
+        const rawFU = String(l.followUpStatus || '').toLowerCase();
+        const dec = String(l.decisionStatus || '').toLowerCase();
+        const note = String(l.followUpNote || l.notes || '');
+
+        const isLeadFlowDone = !hasStudentId && (
+          st === 'done' || st === 'admitted' || status === 'completed' || rawFU === 'done' ||
+          rawFU === 'no_followup_needed' || rawFU === 'not_interested' ||
+          dec.includes('follow-up done') || dec.includes('no follow') || dec.includes('not interest') ||
+          note.includes('No Follow-up Needed - Done') || note.includes('Not Interested - Done') || note.includes('[Follow-up Done')
+        );
+
+        if (c.id === 'admitted') return hasStudentId;
+        if (c.id === 'done') return isLeadFlowDone;
+        if (hasStudentId || isLeadFlowDone) return false;
+        return c.stageMatches.includes(st);
+      });
+
+      return {
+        id: c.id,
+        title: c.title,
+        count: matchingLeads.length,
+        dotColor: c.dotColor,
+        cards: matchingLeads.map(lead => {
+          const followUp = classifyFollowUp(lead);
+          const hasStudentId = Boolean(lead.admittedStudentId || lead.studentId);
+          const st = String(lead.stage || 'new').toLowerCase();
+          const status = String(lead.status || '').toLowerCase();
+          const rawFU = String(lead.followUpStatus || '').toLowerCase();
+          const dec = String(lead.decisionStatus || '').toLowerCase();
+          const note = String(lead.followUpNote || lead.notes || '');
+
+          const isFlowDone = !hasStudentId && (
+            st === 'done' || st === 'admitted' || status === 'completed' || rawFU === 'done' ||
+            rawFU === 'no_followup_needed' || rawFU === 'not_interested' ||
+            dec.includes('follow-up done') || dec.includes('no follow') || dec.includes('not interest') ||
+            note.includes('No Follow-up Needed - Done') || note.includes('Not Interested - Done') || note.includes('[Follow-up Done')
+          );
+
+          const rawEdu = (lead.education || '').trim();
+          const cleanEdu = rawEdu && rawEdu !== '-' && rawEdu !== 'null' ? rawEdu : null;
+          const cleanCourse = (lead.course || '').trim() && lead.course !== '-' && lead.course !== 'null' ? lead.course : null;
+          const eduPart = cleanEdu || cleanCourse || 'Graduate';
+          const sub = [lead.phone, eduPart].filter(Boolean).join(' · ');
+
+          return {
+            id: lead._id || lead.id,
+            name: lead.fullName || lead.name,
+            isNew: lead.stage === 'new',
+            isAdmitted: hasStudentId,
+            isFlowDone,
+            hasStudentId,
+            sub,
+            cleanCourse,
+            source: (lead.sourceName || lead.source || 'DIRECT').toUpperCase(),
+            sourceClass: hasStudentId
+              ? 'bg-white text-teal-800 border-teal-300 font-bold'
+              : isFlowDone
+                ? 'bg-slate-100 text-slate-800 border-slate-300 font-bold'
+                : 'bg-cyan-50 text-cyan-800 border-cyan-200',
+            hasActions: !hasStudentId && !isFlowDone,
+            phone: lead.phone,
+            whatsappNumber: lead.whatsappNumber || lead.phone,
+            currentStage: lead.stage || 'new',
+            course: lead.course || 'CPC',
+            counselor: lead.counselorAssigned || '',
+            ...followUp,
+            rawLead: lead
+          };
+        })
+      };
+    });
+  }, [searchFilteredLeads]);
+
+  // Follow-up card items for the board view
+  const FOLLOW_UPS = useMemo(() => {
+    return searchFilteredLeads.map((lead) => {
+      const { timeframe, hasDate, isOverdue } = classifyFollowUp(lead);
+      const hasStudentId = Boolean(lead.admittedStudentId || lead.studentId);
+
+      const isEscalated = lead.decisionStatus === 'escalated' || 
+        escalatedIds.has(lead._id || lead.id) || 
+        Boolean(lead.notes && lead.notes.includes('[ESCALATED]')) || 
+        Boolean(lead.followUpNote && lead.followUpNote.includes('[ESCALATED]'));
+
+      const rawFollowUpStatus = (lead.followUpStatus || '').toLowerCase();
+      const rawDecision = (lead.decisionStatus || '').toLowerCase();
+      const noteStr = (lead.followUpNote || lead.notes || '');
+      const st = String(lead.stage || '').toLowerCase();
+      const status = String(lead.status || '').toLowerCase();
+
+      let followUpDoneStatus = null;
+      if (rawFollowUpStatus === 'no_followup_needed' || rawDecision.includes('no follow') || noteStr.includes('No Follow-up Needed - Done')) {
+        followUpDoneStatus = 'no_followup_needed';
+      } else if (rawFollowUpStatus === 'not_interested' || rawDecision.includes('not interest') || noteStr.includes('Not Interested - Done')) {
+        followUpDoneStatus = 'not_interested';
+      } else if (rawFollowUpStatus === 'done' || rawDecision === 'follow-up done' || rawDecision === 'done' || noteStr.includes('[Follow-up Done')) {
+        followUpDoneStatus = 'done';
+      }
+
+      const isLeadFlowDone = !hasStudentId && (
+        st === 'done' || st === 'admitted' || status === 'completed' || Boolean(followUpDoneStatus)
+      );
+      const isDone = Boolean(followUpDoneStatus) || isLeadFlowDone;
+
+      let badge;
+      let badgeClass = isOverdue ? 'bg-rose-100 text-rose-700 font-bold' : 'bg-slate-100 text-slate-700 font-semibold';
+      let borderColor = isEscalated ? 'border-l-rose-600' : isOverdue ? 'border-l-rose-500' : timeframe === 'today' ? 'border-l-amber-500' : 'border-l-slate-300';
+
+      if (hasStudentId) {
+        badge = 'Admitted & Enrolled';
+        badgeClass = 'bg-emerald-100 text-emerald-800 font-bold';
+        borderColor = 'border-l-emerald-500';
+      } else if (isLeadFlowDone) {
+        badge = 'Flows Done (Ready to Admit)';
+        badgeClass = 'bg-slate-100 text-slate-800 font-bold';
+        borderColor = 'border-l-slate-600';
+      } else if (followUpDoneStatus === 'no_followup_needed') {
+        badge = 'No follow-up needed (Done)';
+        badgeClass = 'bg-slate-100 text-slate-700 font-bold';
+        borderColor = 'border-l-slate-400';
+      } else if (followUpDoneStatus === 'not_interested') {
+        badge = 'Not interested (Done)';
+        badgeClass = 'bg-rose-100 text-rose-700 font-bold';
+        borderColor = 'border-l-rose-400';
+      } else if (followUpDoneStatus === 'done') {
+        badge = 'Follow-up done';
+        badgeClass = 'bg-emerald-100 text-emerald-800 font-bold';
+        borderColor = 'border-l-emerald-400';
+      } else if (hasDate) {
+        badge = lead.followUpTime ? `${lead.followUpDate} · ${lead.followUpTime}` : lead.followUpDate;
+      } else if (lead.stage === 'new') {
+        badge = 'First call needed';
+        borderColor = isEscalated ? 'border-l-rose-600' : 'border-l-teal-500';
+      } else {
+        badge = 'No follow-up scheduled';
+      }
+
+      const currentStageLabel = STAGE_LABELS[lead.stage] || (lead.stage || 'NEW').replace('_', ' ');
+
+      const statusTag = followUpDoneStatus === 'no_followup_needed'
+        ? { label: 'NO FOLLOW-UP', class: 'bg-slate-100 text-slate-700 border-slate-300 font-bold' }
+        : followUpDoneStatus === 'not_interested'
+          ? { label: 'NOT INTERESTED', class: 'bg-rose-100 text-rose-700 border-rose-300 font-bold' }
+          : followUpDoneStatus === 'done'
+            ? { label: 'DONE', class: 'bg-emerald-100 text-emerald-700 border-emerald-300 font-bold' }
+            : null;
+
+      return {
+        id: lead._id || lead.id,
+        name: lead.fullName || lead.name,
+        phone: lead.phone || '',
+        whatsappNumber: lead.whatsappNumber || lead.phone || '',
+        badge,
+        badgeClass,
+        borderColor,
+        timeframe,
+        stage: lead.stage || 'new',
+        hasStudentId,
+        isFlowDone: isLeadFlowDone,
+        isEscalated,
+        followUpDoneStatus,
+        isDone,
+        type: lead.stage === 'fee_followup' ? 'fee' : (lead.stage && lead.stage.includes('demo')) ? 'demo' : 'general',
+        tags: [
+          hasStudentId
+            ? { label: 'ENROLLED', class: 'bg-emerald-50 text-emerald-700 border-emerald-300 font-bold' }
+            : isLeadFlowDone
+              ? { label: 'FLOW DONE', class: 'bg-slate-100 text-slate-700 border-slate-300 font-bold' }
+              : { label: currentStageLabel.toUpperCase(), class: 'bg-teal-50 text-teal-800 border-teal-200 font-bold' },
+          statusTag,
+          isEscalated
+            ? { label: 'ESCALATED', class: 'bg-rose-100 text-rose-700 border-rose-300 font-bold' }
+            : null,
+          { label: lead.course || 'CPC', class: 'bg-cyan-50 text-cyan-700 border-cyan-200' },
+          { label: (lead.sourceName || lead.source || 'LEAD').toUpperCase(), class: 'bg-indigo-50 text-indigo-700 border-indigo-200' }
+        ].filter(Boolean),
+        note: lead.followUpNote || lead.notes || `${lead.education || 'Graduate'} · Stage: ${currentStageLabel.toUpperCase()}`,
+        assigned: lead.counselorAssigned || '',
+        course: lead.course || 'CPC',
+        rawLead: lead
+      };
+    });
+  }, [searchFilteredLeads, escalatedIds]);
+
+  // Overall metric counts
+  const stageCounts = useMemo(() => {
+    const followUpFlags = leads.map(classifyFollowUp);
+    const admittedLeads = leads.filter(l => Boolean(l.admittedStudentId || l.studentId));
+    const doneLeads = leads.filter(l => {
+      if (l.admittedStudentId || l.studentId) return false;
+      const raw = (l.followUpStatus || '').toLowerCase();
+      const dec = (l.decisionStatus || '').toLowerCase();
+      const st = (l.stage || '').toLowerCase();
+      const status = (l.status || '').toLowerCase();
+      const note = (l.followUpNote || l.notes || '');
+      return st === 'done' || st === 'admitted' || status === 'completed' || raw === 'done' ||
+        raw === 'no_followup_needed' || raw === 'not_interested' ||
+        dec.includes('follow-up done') || dec.includes('no follow') || dec.includes('not interest') ||
+        note.includes('No Follow-up Needed - Done') || note.includes('Not Interested - Done') || note.includes('[Follow-up Done');
+    });
+
+    return {
+      total: leads.length,
+      newCount: leads.filter(l => (l.stage || 'new') === 'new' && !l.admittedStudentId).length,
+      contactedCount: leads.filter(l => l.stage === 'contacted' && !l.admittedStudentId).length,
+      pitchedCount: leads.filter(l => (l.stage === 'demo_booked' || l.stage === 'demo_attended') && !l.admittedStudentId).length,
+      demoCount: leads.filter(l => l.stage === 'demo_booked' && !l.admittedStudentId).length,
+      feeCount: leads.filter(l => l.stage === 'fee_followup' && !l.admittedStudentId).length,
+      doneCount: doneLeads.length,
+      convertedCount: admittedLeads.length,
+      todayCount: followUpFlags.filter(f => f.isToday).length,
+      overdueCount: followUpFlags.filter(f => f.isOverdue).length,
+      tomorrowCount: followUpFlags.filter(f => f.isTomorrow).length
+    };
+  }, [leads]);
+
+  // Filtered follow-up cards
+  const filteredFollowUps = useMemo(() => {
+    return FOLLOW_UPS.filter(item => {
+      if (activeFilter === 'all') return true;
+      if (activeFilter === 'overdue') return item.timeframe === 'overdue' && !item.isDone;
+      if (activeFilter === 'today') return item.timeframe === 'today' && !item.isDone;
+      if (activeFilter === 'tomorrow') return item.timeframe === 'tomorrow' && !item.isDone;
+      if (activeFilter === 'this_week') return item.timeframe === 'this_week' && !item.isDone;
+      if (activeFilter === 'demo') return item.type === 'demo';
+      if (activeFilter === 'fee') return item.type === 'fee';
+      if (activeFilter === 'done') return item.isFlowDone;
+      if (activeFilter === 'admitted') return item.hasStudentId;
+      return true;
+    });
+  }, [FOLLOW_UPS, activeFilter]);
+
+  // Filtered leads for Table view
+  const tableLeads = useMemo(() => {
+    return searchFilteredLeads.filter(lead => {
+      if (activeFilter === 'all') return true;
+      const hasStudentId = Boolean(lead.admittedStudentId || lead.studentId);
+      const raw = (lead.followUpStatus || '').toLowerCase();
+      const dec = (lead.decisionStatus || '').toLowerCase();
+      const st = (lead.stage || '').toLowerCase();
+      const status = (lead.status || '').toLowerCase();
+      const note = (lead.followUpNote || lead.notes || '');
+      const isLeadFlowDone = !hasStudentId && (
+        st === 'done' || st === 'admitted' || status === 'completed' || raw === 'done' ||
+        raw === 'no_followup_needed' || raw === 'not_interested' ||
+        dec.includes('follow-up done') || dec.includes('no follow') || dec.includes('not interest') ||
+        note.includes('No Follow-up Needed - Done') || note.includes('Not Interested - Done') || note.includes('[Follow-up Done')
+      );
+
+      if (activeFilter === 'done') return isLeadFlowDone;
+      if (activeFilter === 'admitted') return hasStudentId;
+      const flags = classifyFollowUp(lead);
+      if (activeFilter === 'overdue') return flags.timeframe === 'overdue';
+      if (activeFilter === 'today') return flags.timeframe === 'today';
+      if (activeFilter === 'tomorrow') return flags.timeframe === 'tomorrow';
+      if (activeFilter === 'demo') return (lead.stage || '').includes('demo');
+      if (activeFilter === 'fee') return lead.stage === 'fee_followup';
+      return true;
+    });
+  }, [searchFilteredLeads, activeFilter]);
+
+  const FILTERS = [
+    { key: 'all', label: 'All', count: (!hasActiveDropdownFilters && hrLeadCounts?.totalLeads != null) ? hrLeadCounts.totalLeads : stageCounts.total, activeClass: 'bg-slate-900 text-white' },
+    { key: 'overdue', label: '🔴 Overdue', count: (!hasActiveDropdownFilters && hrLeadCounts?.overdueCount != null) ? hrLeadCounts.overdueCount : stageCounts.overdueCount, activeClass: 'bg-rose-600 text-white' },
+    { key: 'today', label: '🟡 Today', count: (!hasActiveDropdownFilters && hrLeadCounts?.todayCount != null) ? hrLeadCounts.todayCount : stageCounts.todayCount, activeClass: 'bg-amber-600 text-white' },
+    { key: 'tomorrow', label: '⚪ Tomorrow', count: (!hasActiveDropdownFilters && hrLeadCounts?.tomorrowCount != null) ? hrLeadCounts.tomorrowCount : stageCounts.tomorrowCount, activeClass: 'bg-sky-600 text-white' },
+    { key: 'demo', label: '🟣 Demos', count: (!hasActiveDropdownFilters && hrLeadCounts?.demoCount != null) ? hrLeadCounts.demoCount : stageCounts.demoCount, activeClass: 'bg-purple-600 text-white' },
+    { key: 'fee', label: '🟠 Fees', count: (!hasActiveDropdownFilters && hrLeadCounts?.feeCount != null) ? hrLeadCounts.feeCount : stageCounts.feeCount, activeClass: 'bg-amber-700 text-white' },
+    { key: 'done', label: '✓ Done', count: (!hasActiveDropdownFilters && hrLeadCounts?.doneCount != null) ? hrLeadCounts.doneCount : stageCounts.doneCount, activeClass: 'bg-slate-800 text-white' },
+    { key: 'admitted', label: '🟢 Admitted', count: (!hasActiveDropdownFilters && hrLeadCounts?.admittedCount != null) ? hrLeadCounts.admittedCount : stageCounts.convertedCount, activeClass: 'bg-emerald-600 text-white' }
+  ];
+
+  return (
+    <div className="space-y-4 pb-12">
+      {/* Toast feedback */}
+      {actionNotice && (
+        <div className="fixed top-20 right-8 z-50 bg-slate-900 text-white px-4 py-2.5 rounded-xl shadow-xl border border-teal-400 text-xs font-semibold flex items-center gap-2 animate-bounce">
+          <Sparkles className="w-4 h-4 text-teal-400" />
+          <span>{actionNotice}</span>
+        </div>
+      )}
+
+      {/* Top Header: Title, Controls, View Mode Switcher */}
+      <div className="pt-1 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-slate-900">
+            Pipeline & <span className="text-[#00897b]">Follow-ups</span>
+          </h1>
+          <p className="text-xs sm:text-[13px] text-slate-500 font-medium mt-0.5">
+            Unified lead tracker · <strong className="text-slate-800 font-bold">{(propTotalCount ?? localTotalCount ?? leads.length).toLocaleString()} total leads</strong> · {stageCounts.overdueCount} overdue · {stageCounts.todayCount} due today
+          </p>
+        </div>
+
+        {/* View Mode Switcher & Add Lead Button */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* View Toggle: Kanban vs Followup Board */}
+          <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200 shadow-2xs">
+            <button
+              type="button"
+              onClick={() => handleViewModeSwitch('kanban')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                viewMode === 'kanban'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+              title="View Stage Pipeline (Kanban)"
+            >
+              <Kanban className="w-3.5 h-3.5 text-[#00897b]" />
+              <span>Stage Pipeline</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => handleViewModeSwitch('followup')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                viewMode === 'followup'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+              title="View Follow-up Board (Urgency Cards)"
+            >
+              <LayoutGrid className="w-3.5 h-3.5 text-amber-600" />
+              <span>Follow-up Board</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => handleViewModeSwitch('table')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                viewMode === 'table'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+              title="View Enquiries Table"
+            >
+              <LayoutList className="w-3.5 h-3.5 text-teal-600" />
+              <span>Enquiries Table</span>
+            </button>
+          </div>
+
+          {onAddLeadClick && (
+            <button
+              onClick={onAddLeadClick}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-[#00897b] hover:bg-[#00796b] text-white shadow-xs transition-all active:scale-95 cursor-pointer"
+            >
+              <UserPlus className="w-4 h-4" />
+              <span>Add Enquiry</span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Search & Filter Bar */}
+      <div className="bg-white border border-slate-200/80 rounded-2xl p-3 shadow-xs space-y-2.5">
+        <div className="flex flex-col sm:flex-row items-center gap-3">
+          {/* Search Input */}
+          <div className="relative w-full sm:w-80">
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search candidate, phone, course..."
+              className="w-full rounded-xl pl-9 pr-4 py-1.5 text-xs bg-slate-50 border border-slate-200 focus:bg-white focus:border-[#00897b] outline-none transition-all"
+            />
+          </div>
+
+          {/* Month Filter — bulk uploads are tagged by the enquiry month */}
+          {availableMonths.length > 0 && (
+            <select
+              value={monthFilter}
+              onChange={(e) => setMonthFilter(e.target.value)}
+              className="w-full sm:w-44 rounded-xl px-3 py-1.5 text-xs font-semibold bg-slate-50 border border-slate-200 focus:bg-white focus:border-[#00897b] outline-none transition-all cursor-pointer"
+              title="Filter by the enquiry's month (set when the batch was bulk uploaded)"
+            >
+              <option value="all">All Months</option>
+              {availableMonths.map((m) => (
+                <option key={m} value={m}>{MONTH_LABEL(m)}</option>
+              ))}
+            </select>
+          )}
+
+          {/* Quick Filter Pills */}
+          <div className="flex items-center gap-1.5 overflow-x-auto w-full no-scrollbar pb-0.5">
+            {FILTERS.map((f) => {
+              const isActive = activeFilter === f.key;
+              return (
+                <button
+                  key={f.key}
+                  type="button"
+                  onClick={() => setActiveFilter(f.key)}
+                  className={`px-3 py-1 rounded-xl text-xs font-bold whitespace-nowrap transition-all cursor-pointer flex items-center gap-1.5 border ${
+                    isActive
+                      ? `${f.activeClass} border-transparent shadow-xs`
+                      : 'bg-white hover:bg-slate-50 text-slate-600 border-slate-200'
+                  }`}
+                >
+                  <span>{f.label}</span>
+                  <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-black ${
+                    isActive ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-700'
+                  }`}>
+                    {f.count}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* HR, Branch, Course, Source & Stage Filters */}
+        <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100">
+          <select
+            value={counselorFilter}
+            onChange={(e) => setCounselorFilter(e.target.value)}
+            className="rounded-xl px-3 py-1.5 text-xs font-semibold bg-slate-50 border border-slate-200 focus:bg-white focus:border-[#00897b] outline-none transition-all cursor-pointer"
+            title="Filter by HR / Counsellor"
+          >
+            <option value="all">All HRs / Counsellors</option>
+            {availableCounselors.map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
+
+          <select
+            value={branchFilter}
+            onChange={(e) => setBranchFilter(e.target.value)}
+            className="rounded-xl px-3 py-1.5 text-xs font-semibold bg-slate-50 border border-slate-200 focus:bg-white focus:border-[#00897b] outline-none transition-all cursor-pointer"
+            title="Filter by Branch"
+          >
+            <option value="all">{scopeBranch ? `${scopeBranch} (my branch)` : 'All Branches'}</option>
+            {!scopeBranch && availableBranches.map((b) => (
+              <option key={b} value={b}>{b}</option>
+            ))}
+          </select>
+
+          <select
+            value={courseFilter}
+            onChange={(e) => setCourseFilter(e.target.value)}
+            className="rounded-xl px-3 py-1.5 text-xs font-semibold bg-slate-50 border border-slate-200 focus:bg-white focus:border-[#00897b] outline-none transition-all cursor-pointer"
+            title="Filter by Course"
+          >
+            <option value="all">All Courses</option>
+            {availableCourses.map((cr) => (
+              <option key={cr} value={cr}>{cr}</option>
+            ))}
+          </select>
+
+          <select
+            value={sourceFilter}
+            onChange={(e) => setSourceFilter(e.target.value)}
+            className="rounded-xl px-3 py-1.5 text-xs font-semibold bg-slate-50 border border-slate-200 focus:bg-white focus:border-[#00897b] outline-none transition-all cursor-pointer"
+            title="Filter by Lead Source"
+          >
+            <option value="all">All Sources</option>
+            {availableSources.map((src) => (
+              <option key={src} value={src}>{src}</option>
+            ))}
+          </select>
+
+          <select
+            value={stageFilter}
+            onChange={(e) => setStageFilter(e.target.value)}
+            className="rounded-xl px-3 py-1.5 text-xs font-semibold bg-slate-50 border border-slate-200 focus:bg-white focus:border-[#00897b] outline-none transition-all cursor-pointer"
+            title="Filter by Pipeline Stage"
+          >
+            <option value="all">All Stages</option>
+            <option value="new">New</option>
+            <option value="contacted">Contacted</option>
+            <option value="demo_booked">Demo Booked</option>
+            <option value="demo_attended">Demo Attended</option>
+            <option value="fee_followup">Fee Discussion</option>
+            <option value="done">Done</option>
+            <option value="admitted">Admitted</option>
+            <option value="not_mentioned">Not Mentioned</option>
+          </select>
+
+          {hasActiveDropdownFilters && (
+            <button
+              type="button"
+              onClick={resetAllFilters}
+              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 transition-all cursor-pointer"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Clear Filters</span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* ========================================================================= */}
+      {/* MODE 1: KANBAN STAGE PIPELINE                                            */}
+      {/* ========================================================================= */}
+      {viewMode === 'kanban' && (
+        <div className="overflow-x-auto pb-6 scrollbar-thin scrollbar-thumb-slate-300 -mx-1 px-1">
+          <div className="flex gap-3.5 pt-1 items-start min-w-max pb-2">
+          {PIPELINE_COLUMNS.map((col) => {
+            const visibleCards = col.cards.filter(c => {
+              if (activeFilter === 'all') return true;
+              if (activeFilter === 'overdue') return c.isOverdue;
+              if (activeFilter === 'today') return c.isToday;
+              if (activeFilter === 'tomorrow') return c.isTomorrow;
+              if (activeFilter === 'demo') return c.currentStage === 'demo_booked' || c.currentStage === 'demo_attended';
+              if (activeFilter === 'fee') return c.currentStage === 'fee_followup';
+              if (activeFilter === 'done') return c.isFlowDone;
+              if (activeFilter === 'admitted') return c.isAdmitted;
+              return true;
+            });
+
+            return (
+              <div key={col.id} className="w-[275px] shrink-0 flex flex-col space-y-2.5">
+                {/* Column Header */}
+                <div className="flex items-center justify-between pb-2 px-1 border-b border-slate-200/90">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${col.dotColor}`}></span>
+                    <span className="font-extrabold text-[12px] text-slate-800 uppercase tracking-wide truncate">
+                      {col.title}
+                    </span>
+                  </div>
+                  <span className="px-2 py-0.5 rounded-full text-xs font-black bg-slate-100 text-slate-700 shrink-0 ml-1">
+                    {visibleCards.length}
+                  </span>
+                </div>
+
+                {/* Cards in this column */}
+                <div className="space-y-2.5 min-h-[420px]">
+                  {visibleCards.length === 0 ? (
+                    <div className="p-5 text-center text-[11.5px] font-medium text-slate-400 bg-slate-50/70 rounded-2xl border border-dashed border-slate-200 min-h-[110px] flex items-center justify-center">
+                      <span>No leads in this stage</span>
+                    </div>
+                  ) : (
+                    <>
+                    {visibleCards.slice(0, boardRenderLimit).map((card) => {
+                      if (card.isAdmitted) {
+                        const studentIdStr = card.rawLead?.admittedStudentId || card.rawLead?.studentId;
+
+                        return (
+                          <div
+                            key={card.id}
+                            className="bg-[#dcfce7] border border-emerald-300 rounded-2xl p-3.5 shadow-xs transition-all hover:shadow-md hover:border-emerald-400 relative flex flex-col justify-between"
+                          >
+                            <div>
+                              <div className="flex items-start justify-between gap-1.5">
+                                <div className="font-extrabold text-slate-900 text-[13px] leading-snug break-words">
+                                  {card.name}
+                                </div>
+                                <span className="bg-emerald-600 text-white text-[9px] font-black uppercase px-2 py-0.5 rounded shrink-0 tracking-wide">
+                                  ENROLLED
+                                </span>
+                              </div>
+
+                              <div className="text-[11px] text-emerald-800 font-medium mt-1">
+                                {card.sub}
+                              </div>
+                            </div>
+
+                            <div className="mt-3 pt-2.5 border-t border-emerald-200/70 space-y-2">
+                              <div className="flex items-center justify-between gap-1.5">
+                                <span className={`inline-block text-[9.5px] px-2 py-0.5 rounded-md border font-bold truncate max-w-[170px] ${card.sourceClass}`}>
+                                  {card.source}
+                                </span>
+                                {card.phone && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      redirectToWhatsAppWeb(card.phone);
+                                    }}
+                                    className="text-emerald-700 hover:text-emerald-900 text-xs font-bold flex items-center gap-1 cursor-pointer shrink-0"
+                                    title={`Open WhatsApp chat with ${card.name}`}
+                                  >
+                                    <MessageSquare className="w-3 h-3 fill-emerald-600" />
+                                    <span>Chat</span>
+                                  </button>
+                                )}
+                              </div>
+
+                              {/* Admitted Student Details Badge */}
+                              <div className="bg-emerald-100/90 border border-emerald-300 text-emerald-900 text-[11px] font-bold py-1.5 px-2.5 rounded-xl flex items-center justify-center gap-1.5 shadow-2xs">
+                                <Check className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                                <span className="font-mono text-[11px]">{studentIdStr ? `Admitted (${studentIdStr})` : 'Admitted Student'}</span>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      if (card.isFlowDone) {
+                        return (
+                          <div
+                            key={card.id}
+                            className="bg-slate-50 border border-slate-300 rounded-2xl p-3.5 shadow-xs transition-all hover:shadow-md hover:border-slate-400 relative flex flex-col justify-between"
+                          >
+                            <div>
+                              <div className="flex items-start justify-between gap-1.5">
+                                <div className="font-extrabold text-slate-900 text-[13px] leading-snug break-words">
+                                  {card.name}
+                                </div>
+                                <span className="bg-slate-800 text-white text-[9px] font-black uppercase px-2 py-0.5 rounded tracking-wide shrink-0">
+                                  FLOW DONE
+                                </span>
+                              </div>
+
+                              <div className="text-[11px] text-slate-600 font-medium mt-1">
+                                {card.sub}
+                              </div>
+                            </div>
+
+                            <div className="mt-3 pt-2.5 border-t border-slate-200 space-y-2">
+                              <div className="flex items-center justify-between gap-1.5">
+                                <span className={`inline-block text-[9.5px] px-2 py-0.5 rounded-md border font-bold truncate max-w-[170px] ${card.sourceClass}`}>
+                                  {card.source}
+                                </span>
+                                {card.phone && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      redirectToWhatsAppWeb(card.phone);
+                                    }}
+                                    className="text-emerald-700 hover:text-emerald-900 text-xs font-bold flex items-center gap-1 cursor-pointer shrink-0"
+                                    title={`Open WhatsApp chat with ${card.name}`}
+                                  >
+                                    <MessageSquare className="w-3 h-3 fill-emerald-600" />
+                                    <span>Chat</span>
+                                  </button>
+                                )}
+                              </div>
+
+                              {/* Move to Admitted Students Action */}
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (onAdmitLead) onAdmitLead(card.rawLead || card);
+                                }}
+                                className="w-full bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-[11px] py-2 px-2.5 rounded-xl flex items-center justify-center gap-1.5 shadow-xs transition-all active:scale-95 cursor-pointer hover:shadow-md"
+                                title={`Flows completed for ${card.name} — Click to fill registration and move to Admitted Students`}
+                              >
+                                <UserPlus className="w-3.5 h-3.5 shrink-0" />
+                                <span>Move to Admitted Students</span>
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div
+                          key={card.id}
+                          onClick={() => onCallLead && onCallLead(card.rawLead || card)}
+                          className="bg-white border border-slate-200/90 rounded-2xl p-3.5 shadow-xs transition-all hover:shadow-md hover:border-teal-400 relative group cursor-pointer"
+                        >
+                          {/* Top Header */}
+                          <div className="flex items-start justify-between gap-1">
+                            <div className="font-extrabold text-slate-900 text-[13px] leading-snug">
+                              {card.name}
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              {card.isNew ? (
+                                <span className="bg-[#00897b] text-white text-[9px] font-black uppercase px-1.5 py-0.5 rounded tracking-wide shrink-0">
+                                  NEW
+                                </span>
+                              ) : card.isOverdue ? (
+                                <span className="bg-rose-100 text-rose-700 text-[9px] font-black uppercase px-1.5 py-0.5 rounded tracking-wide shrink-0">
+                                  OVERDUE
+                                </span>
+                              ) : card.isToday ? (
+                                <span className="bg-amber-100 text-amber-800 text-[9px] font-black uppercase px-1.5 py-0.5 rounded tracking-wide shrink-0">
+                                  TODAY
+                                </span>
+                              ) : null}
+
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setEditingLead(card.rawLead || card);
+                                }}
+                                className="p-1 rounded-md text-slate-400 hover:text-[#00897b] hover:bg-teal-50 transition-colors cursor-pointer"
+                                title={`Edit enquiry for ${card.name}`}
+                              >
+                                <Edit2 className="w-3 h-3" />
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setDeletingLead(card.rawLead || card);
+                                }}
+                                className="p-1 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                                title={`Delete enquiry for ${card.name}`}
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Sub info */}
+                          <div className="text-[11px] text-slate-500 font-mono mt-1">
+                            {card.sub}
+                          </div>
+
+                          {/* Source & Course Tags */}
+                          <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                            <span className={`inline-block text-[9.5px] font-bold px-2 py-0.5 rounded-md border tracking-wider uppercase ${card.sourceClass}`}>
+                              {card.source}
+                            </span>
+                            {card.cleanCourse && (
+                              <span className="inline-block text-[9.5px] font-bold px-2 py-0.5 rounded-md border bg-slate-50 text-slate-600 border-slate-200">
+                                {card.cleanCourse}
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Action Buttons for leads */}
+                          {card.hasActions && (
+                            <div className="space-y-1.5 mt-3 pt-2 border-t border-slate-100">
+                              <div className="grid grid-cols-2 gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (onCallLead) {
+                                      onCallLead(card.rawLead || card);
+                                    } else {
+                                      triggerAction(`No phone number for ${card.name}`);
+                                    }
+                                  }}
+                                  className="bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-[11px] py-1.5 px-2 rounded-lg flex items-center justify-center gap-1 shadow-xs transition-all active:scale-95 cursor-pointer"
+                                  title={`Student details & upload call recording (${card.phone})`}
+                                >
+                                  <FileText className="w-3 h-3" />
+                                  <span>Student Form</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const targetPhone = card.whatsappNumber || card.phone;
+                                    const success = redirectToWhatsAppWeb(targetPhone);
+                                    if (!success) {
+                                      triggerAction(`No valid phone number for ${card.name}`);
+                                    }
+                                  }}
+                                  className="bg-[#25d366] hover:bg-[#20bd5a] text-white font-bold text-[11px] py-1.5 px-2 rounded-lg flex items-center justify-center gap-1 shadow-xs transition-all active:scale-95 cursor-pointer"
+                                  title={`Open WhatsApp Web & Desktop App with ${card.name}`}
+                                >
+                                  <MessageSquare className="w-3 h-3 fill-white" />
+                                  <span>WhatsApp</span>
+                                </button>
+                              </div>
+
+                              <button
+                                type="button"
+                                disabled={Boolean(actionLoading[card.id])}
+                                onClick={() => handleAdvanceStage(card.id, card.currentStage)}
+                                className="w-full py-1 px-2 rounded-lg bg-slate-50 hover:bg-slate-100 text-slate-700 hover:text-slate-900 border border-slate-200 text-[10.5px] font-bold flex items-center justify-center gap-1 transition-all cursor-pointer disabled:opacity-50"
+                                title="Advance to Next Stage"
+                              >
+                                {actionLoading[card.id] ? (
+                                  <>
+                                    <Loader2 className="w-3 h-3 animate-spin text-[#00897b]" />
+                                    <span>Moving...</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <span>Advance Stage</span>
+                                    <ArrowRight className="w-3 h-3 text-[#00897b]" />
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                    {visibleCards.length > boardRenderLimit && (
+                      <button
+                        type="button"
+                        onClick={() => setBoardRenderLimit((n) => n + 50)}
+                        className="w-full py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-bold text-slate-700 transition cursor-pointer"
+                      >
+                        Show more ({visibleCards.length - boardRenderLimit} remaining)
+                      </button>
+                    )}
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODE 2: FOLLOW-UP BOARD (URGENCY CARDS GRID)                              */}
+      {/* ========================================================================= */}
+      {viewMode === 'followup' && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3.5 pt-1">
+          {filteredFollowUps.length === 0 ? (
+            <div className="col-span-full bg-white rounded-2xl border border-slate-200/80 p-12 text-center text-slate-400 space-y-2">
+              <div className="text-3xl">📭</div>
+              <div className="font-bold text-sm text-slate-700">No follow-ups match this filter</div>
+              <p className="text-xs text-slate-400">Try changing the filter or search query above</p>
+            </div>
+          ) : (
+            <>
+            {filteredFollowUps.slice(0, boardRenderLimit).map((card) => {
+              return (
+                <div
+                  key={card.id}
+                  onClick={() => onCallLead && onCallLead(card.rawLead || card)}
+                  className={`bg-white border rounded-2xl p-4 shadow-xs transition-all hover:shadow-md hover:border-teal-400 cursor-pointer flex flex-col justify-between border-l-4 ${card.borderColor} ${
+                    card.stage === 'admitted' || card.isDone ? 'opacity-85 bg-slate-50/50' : ''
+                  }`}
+                >
+                  <div>
+                    {/* Top Row: Name + Badge */}
+                    <div className="flex items-start justify-between gap-1.5">
+                      <div className="font-extrabold text-slate-900 text-sm leading-snug flex items-center gap-1">
+                        <span>{card.name}</span>
+                        {card.stage === 'admitted' && <Check className="w-3.5 h-3.5 text-emerald-600" />}
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span className={`text-[10px] px-2 py-0.5 rounded-md whitespace-nowrap font-medium ${card.badgeClass}`}>
+                          {card.badge}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEditingLead(card.rawLead || card);
+                          }}
+                          className="p-1 rounded-md text-slate-400 hover:text-[#00897b] hover:bg-teal-50 transition-colors cursor-pointer"
+                          title={`Edit enquiry for ${card.name}`}
+                        >
+                          <Edit2 className="w-3 h-3" />
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDeletingLead(card.rawLead || card);
+                          }}
+                          className="p-1 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                          title={`Delete enquiry for ${card.name}`}
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Phone number */}
+                    <div className="text-[11px] text-slate-500 font-mono mt-1 flex items-center gap-1.5">
+                      <Smartphone className="w-3 h-3 text-slate-400" />
+                      <span>{card.phone}</span>
+                    </div>
+
+                    {/* Category Tags */}
+                    <div className="flex items-center gap-1.5 flex-wrap mt-2.5">
+                      {card.tags.map((tag, idx) => (
+                        <span
+                          key={idx}
+                          className={`text-[9.5px] font-bold px-2 py-0.5 rounded-md border tracking-wide uppercase ${tag.class}`}
+                        >
+                          {tag.label}
+                        </span>
+                      ))}
+                    </div>
+
+                    {/* Note / Context snippet */}
+                    <div className="text-[11px] text-slate-600 mt-2.5 leading-relaxed bg-slate-50/90 p-2.5 rounded-xl border border-slate-100 flex items-start gap-1.5">
+                      <span className="text-amber-500 text-xs shrink-0">📌</span>
+                      <span className="leading-snug">{card.note}</span>
+                    </div>
+                  </div>
+
+                  {/* Card Footer & Action Buttons */}
+                  <div className="mt-3.5 pt-2.5 border-t border-slate-100 space-y-2">
+                    <div className="text-[10.5px] text-slate-400 font-medium">
+                      Assigned: <strong className="text-slate-600 font-semibold">{card.assigned || '—'}</strong>
+                    </div>
+
+                    {/* Action Buttons: 2 balanced rows */}
+                    <div className="space-y-1.5">
+                      {/* Row 1: Direct Contact (Call & WhatsApp) */}
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (onCallLead) {
+                              onCallLead(card.rawLead || card);
+                            } else {
+                              triggerAction(`No phone number for ${card.name}`);
+                            }
+                          }}
+                          className="bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-[11px] py-1.5 px-2 rounded-lg flex items-center justify-center gap-1.5 shadow-xs transition-all active:scale-95 cursor-pointer"
+                          title={`Student details & upload phone recording (${card.phone})`}
+                        >
+                          <FileText className="w-3 h-3" />
+                          <span>Student Form</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const targetPhone = card.whatsappNumber || card.phone;
+                            const success = redirectToWhatsAppWeb(targetPhone);
+                            if (!success) {
+                              triggerAction(`No valid phone number for ${card.name}`);
+                            }
+                          }}
+                          className="bg-[#25d366] hover:bg-[#20bd5a] text-white font-bold text-[11px] py-1.5 px-2 rounded-lg flex items-center justify-center gap-1.5 shadow-xs transition-all active:scale-95 cursor-pointer"
+                          title={`Open WhatsApp Web & Desktop App with ${card.name}`}
+                        >
+                          <MessageSquare className="w-3 h-3 fill-white" />
+                          <span>WhatsApp</span>
+                        </button>
+                      </div>
+
+                      {/* Row 2: Follow-up Status or Admitted Badge / Move to Admitted */}
+                      {card.hasStudentId ? (
+                        <div className="bg-emerald-50 text-emerald-800 border border-emerald-200/80 font-bold text-[11px] py-1.5 px-3 rounded-lg flex items-center justify-center gap-1.5">
+                          <Check className="w-3.5 h-3.5 text-emerald-600" />
+                          <span>Student Admitted & Enrolled ({card.rawLead?.admittedStudentId || card.rawLead?.studentId})</span>
+                        </div>
+                      ) : card.isFlowDone ? (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (onAdmitLead) onAdmitLead(card.rawLead || card);
+                          }}
+                          className="w-full bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-[11px] py-1.5 px-3 rounded-lg flex items-center justify-center gap-1.5 shadow-xs transition-all active:scale-95 cursor-pointer hover:shadow-md"
+                          title={`Flows completed for ${card.name} — Click to fill registration and move to Admitted Students`}
+                        >
+                          <UserPlus className="w-3.5 h-3.5 shrink-0" />
+                          <span>Move to Admitted Students</span>
+                        </button>
+                      ) : card.followUpDoneStatus ? (
+                        <div className="flex items-center gap-1.5 w-full">
+                          <button
+                            type="button"
+                            disabled
+                            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg border font-bold text-[10.5px] cursor-not-allowed shadow-2xs opacity-95 ${
+                              card.followUpDoneStatus === 'no_followup_needed'
+                                ? 'bg-slate-100 text-slate-700 border-slate-300'
+                                : card.followUpDoneStatus === 'not_interested'
+                                  ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                  : 'bg-emerald-50 text-emerald-700 border-emerald-300'
+                            }`}
+                          >
+                            {card.followUpDoneStatus === 'no_followup_needed' ? (
+                              <>
+                                <CheckCircle className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                                <span className="truncate">No Follow-up Needed Done</span>
+                              </>
+                            ) : card.followUpDoneStatus === 'not_interested' ? (
+                              <>
+                                <XCircle className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                                <span className="truncate">Not Interested Done</span>
+                              </>
+                            ) : (
+                              <>
+                                <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                                <span className="truncate">Follow-up Done</span>
+                              </>
+                            )}
+                          </button>
+
+                          <button
+                            type="button"
+                            disabled={Boolean(actionLoading[card.id])}
+                            onClick={() => handleReopenFollowUp(card)}
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 border border-slate-200 text-[10px] font-bold transition-all cursor-pointer shrink-0"
+                            title="Reopen follow-up or change status"
+                          >
+                            {actionLoading[card.id] === 'reopen' ? (
+                              <Loader2 className="w-3 h-3 animate-spin text-slate-600" />
+                            ) : (
+                              <span className="flex items-center gap-0.5">
+                                <RotateCcw className="w-3 h-3" />
+                                <span className="text-[9.5px]">Change</span>
+                              </span>
+                            )}
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-2 gap-1.5 relative">
+                          {/* Done Dropdown Trigger */}
+                          <div className="relative">
+                            <button
+                              type="button"
+                              disabled={Boolean(actionLoading[card.id])}
+                              onClick={() => setDoneMenuCardId(prev => prev === card.id ? null : card.id)}
+                              className="w-full bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-300 font-bold text-[10.5px] py-1 px-2 rounded-lg flex items-center justify-center gap-1 transition-all active:scale-95 cursor-pointer disabled:opacity-50"
+                              title="Click to complete follow-up with status"
+                            >
+                              {actionLoading[card.id] ? (
+                                <>
+                                  <Loader2 className="w-3 h-3 animate-spin text-emerald-600" />
+                                  <span>Saving...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Check className="w-3 h-3 text-emerald-600" />
+                                  <span>Done</span>
+                                  <ChevronDown className="w-2.5 h-2.5 text-emerald-600" />
+                                </>
+                              )}
+                            </button>
+
+                            {/* Done Status Selection Popover Menu */}
+                            {doneMenuCardId === card.id && (
+                              <>
+                                <div
+                                  className="fixed inset-0 z-30"
+                                  onClick={() => setDoneMenuCardId(null)}
+                                />
+                                <div className="absolute bottom-full left-0 mb-1.5 w-56 sm:w-64 bg-white rounded-xl shadow-2xl border border-slate-200 p-1.5 z-40 text-left animate-in fade-in zoom-in-95">
+                                  <div className="text-[9.5px] font-black uppercase text-slate-400 px-2.5 py-1 font-mono tracking-wider border-b border-slate-100 mb-1">
+                                    Select Done Status:
+                                  </div>
+
+                                  {/* 1. No Follow-up Needed */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleMarkDoneStatus(card, 'no_followup_needed')}
+                                    className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-slate-100 flex items-start gap-2 transition-colors cursor-pointer group"
+                                  >
+                                    <span className="text-xs leading-none mt-0.5">🚫</span>
+                                    <div>
+                                      <div className="text-[11px] font-bold text-slate-800 group-hover:text-slate-900">
+                                        No Follow-up Needed
+                                      </div>
+                                      <div className="text-[9.5px] text-slate-500">
+                                        Mark as No Follow-up Needed Done
+                                      </div>
+                                    </div>
+                                  </button>
+
+                                  {/* 2. Not Interested */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleMarkDoneStatus(card, 'not_interested')}
+                                    className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-rose-50 flex items-start gap-2 transition-colors cursor-pointer group"
+                                  >
+                                    <span className="text-xs leading-none mt-0.5">⛔</span>
+                                    <div>
+                                      <div className="text-[11px] font-bold text-rose-700 group-hover:text-rose-800">
+                                        Not Interested
+                                      </div>
+                                      <div className="text-[9.5px] text-rose-500">
+                                        Mark as Not Interested Done
+                                      </div>
+                                    </div>
+                                  </button>
+
+                                  {/* 3. Follow-up Done / Next Process */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleMarkDoneStatus(card, 'done')}
+                                    className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-emerald-50 flex items-start gap-2 transition-colors cursor-pointer group"
+                                  >
+                                    <span className="text-xs leading-none mt-0.5">✓</span>
+                                    <div>
+                                      <div className="text-[11px] font-bold text-emerald-700 group-hover:text-emerald-800">
+                                        Follow-up Done
+                                      </div>
+                                      <div className="text-[9.5px] text-emerald-600">
+                                        Move to {NEXT_STAGE_LABELS[card.stage] || 'Next Process'}
+                                      </div>
+                                    </div>
+                                  </button>
+                                </div>
+                              </>
+                            )}
+                          </div>
+
+                          {card.isEscalated ? (
+                            <div
+                              className="bg-rose-50 text-rose-700 border border-rose-200 font-bold text-[10.5px] py-1 px-2 rounded-lg flex items-center justify-center gap-1 cursor-default shadow-2xs"
+                              title="Follow-up escalated to Supervisor / Team Lead"
+                            >
+                              <AlertTriangle className="w-3 h-3 text-rose-600 shrink-0" />
+                              <span className="truncate">Escalated 🚨</span>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              disabled={Boolean(actionLoading[card.id])}
+                              onClick={() => handleEscalate(card)}
+                              className="bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-bold text-[10.5px] py-1 px-2 rounded-lg flex items-center justify-center gap-1 transition-all active:scale-95 cursor-pointer disabled:opacity-50"
+                              title="Escalate to Supervisor / Team Lead"
+                            >
+                              {actionLoading[card.id] === 'escalate' ? (
+                                <>
+                                  <Loader2 className="w-3 h-3 animate-spin text-rose-600" />
+                                  <span>Saving...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <AlertTriangle className="w-3 h-3" />
+                                  <span>Escalate</span>
+                                </>
+                              )}
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+            {filteredFollowUps.length > boardRenderLimit && (
+              <div className="col-span-full flex justify-center pt-2">
+                <button
+                  type="button"
+                  onClick={() => setBoardRenderLimit((n) => n + 50)}
+                  className="px-4 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-bold text-slate-700 transition cursor-pointer"
+                >
+                  Show more ({filteredFollowUps.length - boardRenderLimit} remaining)
+                </button>
+              </div>
+            )}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODE 3: ENQUIRIES TABLE VIEW                                              */}
+      {/* ========================================================================= */}
+      {viewMode === 'table' && (
+        <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="bg-slate-50/80 border-b border-slate-200 text-[10.5px] font-bold font-mono tracking-wider text-slate-500 uppercase whitespace-nowrap">
+                  <th className="py-3 px-3.5">Candidate Name</th>
+                  <th className="py-3 px-3.5">Contact</th>
+                  <th className="py-3 px-3.5">Interested Course</th>
+                  <th className="py-3 px-3.5">Stage</th>
+                  <th className="py-3 px-3.5">Source</th>
+                  <th className="py-3 px-3.5">Enquiry Date</th>
+                  <th className="py-3 px-3.5">Enquiry Month</th>
+                  <th className="py-3 px-3.5">Follow-up</th>
+                  <th className="py-3 px-3.5">Remarks</th>
+                  <th className="py-3 px-3.5">Counsellor</th>
+                  <th className="py-3 px-3.5 text-center">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-[11px]">
+                {tableLeads.length === 0 ? (
+                  <tr>
+                    <td colSpan="11" className="py-12 text-center text-slate-400">
+                      <div className="text-3xl mb-1">📭</div>
+                      <div className="font-bold text-slate-600">No student enquiries found</div>
+                      <p className="text-xs text-slate-400 mt-0.5">Try adjusting your search query or filter</p>
+                    </td>
+                  </tr>
+                ) : (
+                  tableLeads.map((lead, idx) => {
+                    const flags = classifyFollowUp(lead);
+                    const leadId = lead._id || lead.id || idx;
+                    const stageLabel = (lead.stage || 'new').replace('_', ' ').toUpperCase();
+                    const stageColor = lead.stage === 'admitted'
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : lead.stage === 'fee_followup'
+                        ? 'bg-amber-100 text-amber-900'
+                        : lead.stage?.includes('demo')
+                          ? 'bg-purple-100 text-purple-900'
+                          : lead.stage === 'contacted'
+                            ? 'bg-blue-100 text-blue-900'
+                            : 'bg-slate-100 text-slate-700';
+
+                    return (
+                      <tr key={leadId} className="hover:bg-teal-50/50 transition-colors group">
+                        {/* Name */}
+                        <td className="py-3 px-3.5 whitespace-nowrap">
+                          <div className="font-extrabold text-slate-900 group-hover:text-[#00897b] transition-colors">
+                            {lead.fullName || lead.name}
+                          </div>
+                          <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+                            {lead.education || 'Graduate'} {lead.passoutYear ? `(${lead.passoutYear})` : ''}
+                          </div>
+                        </td>
+
+                        {/* Contact */}
+                        <td className="py-3 px-3.5 whitespace-nowrap">
+                          <div className="font-mono text-slate-700 font-bold">{lead.phone}</div>
+                          <div className="flex items-center gap-1.5 mt-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (onCallLead) onCallLead(lead);
+                              }}
+                              className="p-1 rounded-md bg-[#00897b]/10 hover:bg-[#00897b] text-[#00897b] hover:text-white transition-colors cursor-pointer"
+                              title={`Fill student details & upload call recording for ${lead.fullName || lead.name}`}
+                            >
+                              <FileText className="w-2.5 h-2.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => redirectToWhatsAppWeb(lead.whatsappNumber || lead.phone)}
+                              className="p-1 rounded-md bg-[#25d366]/15 hover:bg-[#25d366] text-[#25d366] hover:text-white transition-colors cursor-pointer"
+                              title={`WhatsApp ${lead.fullName || lead.name}`}
+                            >
+                              <MessageSquare className="w-2.5 h-2.5" />
+                            </button>
+                          </div>
+                        </td>
+
+                        {/* Course */}
+                        <td className="py-3 px-3.5 whitespace-nowrap">
+                          <span className="font-bold text-slate-800">{lead.course || 'AMCT'}</span>
+                          {lead.batchTiming && (
+                            <div className="text-[10px] text-slate-400 truncate max-w-[150px]">{lead.batchTiming}</div>
+                          )}
+                        </td>
+
+                        {/* Stage */}
+                        <td className="py-3 px-3.5 whitespace-nowrap">
+                          <span className={`text-[10px] font-black px-2 py-0.5 rounded-md ${stageColor}`}>
+                            {stageLabel}
+                          </span>
+                        </td>
+
+                        {/* Source */}
+                        <td className="py-3 px-3.5 whitespace-nowrap">
+                          <span className="bg-purple-50 text-purple-800 text-[10px] font-bold px-2 py-0.5 rounded-md border border-purple-200">
+                            {lead.sourceName || lead.source || 'DIRECT'}
+                          </span>
+                        </td>
+
+                        {/* Enquiry Date — "Sep 12" style, from the bulk-upload sheet's own Date/Month column */}
+                        <td className="py-3 px-3.5 whitespace-nowrap font-mono font-bold text-slate-700">
+                          {enquiryDateLabel(lead)}
+                        </td>
+
+                        {/* Enquiry Month */}
+                        <td className="py-3 px-3.5 whitespace-nowrap text-slate-600 font-medium">
+                          {leadMonthKey(lead) ? MONTH_LABEL(leadMonthKey(lead)) : '—'}
+                        </td>
+
+                        {/* Follow-up */}
+                        <td className="py-3 px-3.5 whitespace-nowrap">
+                          {lead.followUpDate ? (
+                            <div>
+                              <div className={`font-bold font-mono text-[10.5px] ${flags.isOverdue ? 'text-rose-600' : 'text-slate-800'}`}>
+                                {lead.followUpDate}
+                              </div>
+                              <div className="text-[9.5px] text-slate-400">{lead.followUpTime || 'Morning'}</div>
+                            </div>
+                          ) : (
+                            <span className="text-slate-400 text-[10px]">No schedule</span>
+                          )}
+                        </td>
+
+                        {/* Remarks — latest follow-up note, falls back to uploaded notes */}
+                        <td className="py-3 px-3.5 text-slate-600 max-w-[220px]">
+                          {(lead.followUpNote || lead.notes) ? (
+                            <div className="line-clamp-2 text-[10.5px] leading-snug" title={lead.followUpNote || lead.notes}>
+                              {lead.followUpNote || lead.notes}
+                            </div>
+                          ) : (
+                            <span className="text-slate-400 text-[10px]">—</span>
+                          )}
+                        </td>
+
+                        {/* Counsellor */}
+                        <td className="py-3 px-3.5 whitespace-nowrap text-slate-600 font-medium">
+                          {lead.counselorAssigned || '—'}
+                        </td>
+
+                        {/* Actions */}
+                        <td className="py-3 px-3.5 whitespace-nowrap text-center">
+                          <div className="inline-flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => setEditingLead(lead)}
+                              className="inline-flex items-center gap-1 text-[10.5px] font-bold px-2.5 py-1 rounded-lg bg-teal-50 hover:bg-[#00897b] text-[#00897b] hover:text-white border border-[#00897b]/30 hover:border-[#00897b] transition-all cursor-pointer shadow-2xs active:scale-95"
+                              title={`Edit enquiry for ${lead.fullName || lead.name}`}
+                            >
+                              <Edit2 className="w-3 h-3" />
+                              <span>Edit</span>
+                            </button>
+
+                            {Boolean(lead.admittedStudentId || lead.studentId) ? (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200">
+                                <Check className="w-3 h-3 text-emerald-600" />
+                                <span>{lead.admittedStudentId || lead.studentId}</span>
+                              </span>
+                            ) : (lead.stage === 'done' || lead.stage === 'admitted' || lead.status === 'completed' || lead.followUpStatus === 'done') ? (
+                              <button
+                                type="button"
+                                onClick={() => onAdmitLead && onAdmitLead(lead)}
+                                className="inline-flex items-center gap-1 text-[10px] font-bold px-2.5 py-1 rounded-lg bg-[#00897b] hover:bg-[#00796b] text-white shadow-2xs transition-all cursor-pointer active:scale-95"
+                                title="Flows completed — Move to Admitted Students"
+                              >
+                                <UserPlus className="w-3 h-3" />
+                                <span>Move to Admitted</span>
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                disabled={Boolean(actionLoading[leadId])}
+                                onClick={() => handleAdvanceStage(leadId, lead.stage || 'new')}
+                                className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 transition-all cursor-pointer disabled:opacity-50"
+                                title="Advance Stage"
+                              >
+                                {actionLoading[leadId] ? (
+                                  <>
+                                    <Loader2 className="w-2.5 h-2.5 animate-spin text-[#00897b]" />
+                                    <span>Moving...</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <span>Advance</span>
+                                    <ArrowRight className="w-2.5 h-2.5 text-[#00897b]" />
+                                  </>
+                                )}
+                              </button>
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={() => setDeletingLead(lead)}
+                              className="inline-flex items-center gap-1 text-[10.5px] font-bold px-2 py-1 rounded-lg bg-rose-50 hover:bg-rose-600 text-rose-600 hover:text-white border border-rose-200 hover:border-rose-600 transition-all cursor-pointer shadow-2xs active:scale-95"
+                              title={`Delete enquiry for ${lead.fullName || lead.name}`}
+                            >
+                              <Trash2 className="w-3 h-3" />
+                              <span>Delete</span>
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Lead Modal */}
+      {editingLead && (
+        <EditLeadModal
+          isOpen={!!editingLead}
+          lead={editingLead}
+          onClose={() => setEditingLead(null)}
+          onSuccess={(updated) => {
+            setLeads(prev => prev.map(l => {
+              const match = (l._id && l._id === updated._id) || (l.id && l.id === updated.id);
+              return match ? { ...l, ...updated } : l;
+            }));
+            triggerAction(`✓ Updated enquiry details for ${updated.fullName || updated.name}`);
+            if (onRefreshLeads) onRefreshLeads();
+          }}
+          onDelete={(targetId) => {
+            setLeads(prev => prev.filter(l => (l._id || l.id) !== targetId));
+            triggerAction('✓ Enquiry removed');
+            if (onRefreshLeads) onRefreshLeads();
+          }}
+        />
+      )}
+
+      {/* Delete Enquiry Confirmation Modal */}
+      {deletingLead && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4 text-left animate-in zoom-in-95">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-100 flex items-center justify-center text-rose-600 shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-extrabold text-slate-900">Delete Enquiry</h3>
+                <p className="text-xs text-slate-500">This action cannot be undone</p>
+              </div>
+            </div>
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Are you sure you want to permanently delete enquiry for <strong className="text-slate-900">{deletingLead.fullName || deletingLead.name}</strong> ({deletingLead.phone || deletingLead.email || 'No contact'})?
+            </p>
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setDeletingLead(null)}
+                disabled={isDeletingLead}
+                className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50 transition-all cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeleteLead}
+                disabled={isDeletingLead}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-md transition-all cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>{isDeletingLead ? 'Deleting...' : 'Delete Enquiry'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {viewMode === 'table' && (
+        <PaginationBar
+          page={propPage ?? localPage}
+          totalPages={propTotalPages ?? localTotalPages}
+          totalCount={propTotalCount ?? localTotalCount}
+          limit={propLimit}
+          itemLabel="enquiries"
+          onPageChange={(nextPage) => {
+            if (onPageChange) onPageChange(nextPage);
+            else setLocalPage(nextPage);
+          }}
+        />
+      )}
+    </div>
+  );
+}

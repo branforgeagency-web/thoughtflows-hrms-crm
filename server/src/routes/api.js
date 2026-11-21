@@ -38,6 +38,7 @@ import TrainingMaterial from '../models/TrainingMaterial.js';
 import TrainingFolder from '../models/TrainingFolder.js';
 import Notification from '../models/Notification.js';
 import ClassFeedback from '../models/ClassFeedback.js';
+import { canonicalLeadSource } from '../constants/leadSourceCanon.js';
 import LmsProgress from '../models/LmsProgress.js';
 import CallLog from '../models/CallLog.js';
 import { MANDATORY_MODULES, MODULE_ITEMS, PASS_MARK, COURSE_PASS_MARK, QUESTION_BANK, courseQuestions, courseModuleFor } from '../constants/hrLms.js';
@@ -1801,7 +1802,12 @@ const BRANCH_ROLE_RX = /branch|business\s*(lead|head)|\bbm\b/i;
 const isOrgWideViewer = (req) => {
   const role = String(req.user?.role || '');
   const dept = String(req.user?.department || '').toLowerCase();
-  if (['admin', 'leadership'].includes(dept) || /\badmin\b|director|founder|\bceo\b/i.test(role)) return true;
+  if (/\badmin\b|director|founder|\bceo\b/i.test(role)) return true;
+  // Branch Head / Branch Manager / Business Lead accounts are signed in under the
+  // 'leadership' department (Leadership Hub card), but they still only see their
+  // own branch — the department alone must not make them org-wide.
+  if (BRANCH_ROLE_RX.test(role)) return false;
+  if (['admin', 'leadership'].includes(dept)) return true;
   return /department\s*head|dept\.?\s*head|\bhead\s+of\b|\bhod\b/i.test(role) && !/branch/i.test(role);
 };
 const isScopedBranchManager = (req) => Boolean(req.user?.branch)
@@ -3552,6 +3558,40 @@ const requestBranchScope = (req) => {
   return q && q !== 'all' ? branchShort(q) : '';
 };
 const NO_MATCH_NAME = '__no_branch_staff__';
+// Branch desk leads = leads ALLOCATED to one of that branch's HR staff.
+// The lead's own "branch" value is not trusted: bulk uploads stamp the
+// uploader's branch on every row that has none.
+const LEAD_ALLOC_FIELDS = ['allocatedTo', 'counselorAssigned'];
+// Lead owners of a branch desk: its HR staff + its Branch Head (Branch Heads also
+// take leads in bulk uploads). Kept separate from branchHrNames, which feeds
+// "All HR" targets / tasks where the Branch Head must not be included.
+const branchLeadOwnerCache = new Map();
+async function branchLeadOwnerNames(branch) {
+  const short = branchShort(branch);
+  const key = short.toLowerCase();
+  if (!key) return [];
+  const hit = branchLeadOwnerCache.get(key);
+  if (hit && Date.now() - hit.at < 60000) return hit.names;
+  const bRx = new RegExp(escapeRegex(short), 'i');
+  const [hrs, heads] = await Promise.all([
+    branchHrNames(branch),
+    User.find({ $and: [{ role: /branch\s*(head|manager)|branch\s*hr\s*head/i }, ACTIVE_USER, { branch: bRx }] }).select('name').lean()
+  ]);
+  const seen = new Set();
+  const names = [...hrs, ...heads.map((u) => String(u.name || '').trim())].filter((n) => {
+    const k = normName(n);
+    if (!n || seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  branchLeadOwnerCache.set(key, { at: Date.now(), names });
+  return names;
+}
+async function branchAllocationQuery(branch, requestedCounselor) {
+  const staff = await branchLeadOwnerNames(branch);
+  const names = staff.length ? pickTeamNames(staff, requestedCounselor) : [NO_MATCH_NAME];
+  return ownerAnyQuery(names, LEAD_ALLOC_FIELDS, []);
+}
 
 const leadOwner = (l) => l?.counselorAssigned || l?.allocatedTo || l?.spokenBy || l?.counselor || l?.hrName || '';
 const leadOwnerQuery = (name, branch = '') => ownerQueryWithBranch(name, branch, LEAD_OWNER_FIELDS, BRANCH_FIELDS_LEAD);
@@ -4921,20 +4961,61 @@ router.delete('/students/:id', async (req, res) => {
 // ==========================================
 // REAL CRM LEADS & PIPELINE API
 // ==========================================
+// Filter values typed by hand ("AMCT / CPC", "amct/cpc", "AMCT /CPC") are the
+// same value: compare them with spaces removed and case ignored.
+const filterCompactKey = (v) => String(v || '').toLowerCase().replace(/\s+/g, '');
+const tidyFilterLabel = (v) => String(v || '').replace(/\s*\/\s*/g, ' / ').replace(/\s+/g, ' ').trim();
+// Matches every spacing / case variant of a filter value, e.g. "AMCT / CPC" → /^\s*a\s*m\s*c\s*t\s*\/\s*c\s*p\s*c\s*$/i
+const spacingInsensitiveRx = (v) => {
+  const chars = [...filterCompactKey(v)];
+  return new RegExp(`^\\s*${chars.map((c) => escapeRegex(c)).join('\\s*')}\\s*$`, 'i');
+};
+// Only real HR staff belong in the HR / Counsellor filter — not values like
+// "Management" or "Instagram Chatting" that were typed into the owner field.
+const isKnownStaffName = (val) => {
+  const staff = staffNameCache.staff || [];
+  if (!staffNameCache.loaded || !staff.length) return true; // roster unavailable: don't hide anyone
+  const c = normStaffName(val).replace(/\s+/g, '');
+  if (!c) return false;
+  return staff.some((s) => s.compact === c || (s.words[0] && s.words[0].replace(/\s+/g, '') === c) || (c.length >= 4 && s.compact.startsWith(c)));
+};
+
+// Every stored spelling of a lead source, grouped under its one canonical name
+// (see constants/leadSourceCanon.js). Cached 5 min — the list of raw values is small.
+let leadSourceVariantCache = { at: 0, map: null };
+async function leadSourceVariants(source) {
+  if (!leadSourceVariantCache.map || Date.now() - leadSourceVariantCache.at > 5 * 60000) {
+    const [names, badges] = await Promise.all([StudentLead.distinct('sourceName'), StudentLead.distinct('sourceBadge')]);
+    const map = new Map();
+    [...names, ...badges].forEach((raw) => {
+      const canon = canonicalLeadSource(raw);
+      if (!canon) return;
+      if (!map.has(canon)) map.set(canon, new Set());
+      map.get(canon).add(raw);
+    });
+    leadSourceVariantCache = { at: Date.now(), map };
+  }
+  const canon = canonicalLeadSource(source);
+  return [...(leadSourceVariantCache.map.get(canon) || [])];
+}
+
 router.get('/leads/filter-options', async (req, res) => {
   try {
     await ensureStaffNamesLoaded();
     const matchConds = [];
+    let deskBranch = ''; // set when this is a Branch Head desk (own branch, or opened by Admin / Leadership)
     if (req.hrTeamNames) {
       matchConds.push(ownerAnyQuery(req.hrTeamNames, LEAD_OWNER_FIELDS, BRANCH_FIELDS_LEAD));
     } else if (isScopedHr(req) && req.user?.name) {
       matchConds.push(leadOwnerQuery(req.user.name, req.user?.branch || ''));
     } else if (isScopedBranchManager(req)) {
       const bmBranch = getBranchManagerBranch(req);
-      if (bmBranch) matchConds.push({ branch: { $regex: new RegExp(escapeRegex(bmBranch.trim()), 'i') } });
+      deskBranch = bmBranch;
+      if (bmBranch) matchConds.push(await branchAllocationQuery(bmBranch));
     } else if (req.query.branch && req.query.branch !== 'all') {
       // Branch desk opened by Admin / Leadership: only that branch's HRs & values
-      matchConds.push({ branch: { $regex: new RegExp(escapeRegex(branchShort(String(req.query.branch))), 'i') } });
+      deskBranch = branchShort(String(req.query.branch));
+      matchConds.push(await branchAllocationQuery(deskBranch));
     }
     const matchQuery = matchConds.length > 0 ? { $and: matchConds } : {};
 
@@ -4953,12 +5034,12 @@ router.get('/leads/filter-options', async (req, res) => {
     const cleanSorted = (arr, { desc = false, mode = 'title' } = {}) => {
       const map = new Map();
       (arr || []).forEach((raw) => {
-        const val = String(raw || '').replace(/\s+/g, ' ').trim();
+        const val = tidyFilterLabel(raw);
         if (!val) return;
         // Skip punctuation-only ('-', '--', '`') and pure numbers/phone numbers
         if (!/[a-zA-Z]/.test(val)) return;
-        const key = val.toLowerCase();
-        if (PLACEHOLDERS.has(key)) return;
+        if (PLACEHOLDERS.has(val.toLowerCase())) return;
+        const key = filterCompactKey(val); // "AMCT / CPC" = "amct/cpc" = "AMCT /CPC"
         if (!map.has(key)) {
           const formatted = mode === 'upper' ? val.toUpperCase() : mode === 'raw' ? val : toTitleCase(val);
           map.set(key, formatted);
@@ -4967,15 +5048,26 @@ router.get('/leads/filter-options', async (req, res) => {
       return Array.from(map.values()).sort((a, b) => (desc ? b.localeCompare(a) : a.localeCompare(b)));
     };
 
+    // Branch desk: the HR filter lists the staff who WORK in this branch (its HRs,
+    // Branch Head, Department Head) — not every counsellor whose name appears on
+    // one of the branch's leads (old staff, other branches' HRs, typed-in values).
+    // Same people whose allocated leads make up the branch desk (branchHrNames),
+    // so every name in the filter has data and every lead's owner is in the filter.
+    let branchCounselors = null;
+    if (deskBranch) {
+      const names = await branchLeadOwnerNames(deskBranch);
+      if (names.length) branchCounselors = cleanSorted(names, { mode: 'title' });
+    }
+
     const cleanMonths = (arr) =>
       Array.from(new Set((arr || []).map((v) => String(v || '').trim()).filter((v) => /^\d{4}-\d{2}$/.test(v))))
         .sort((a, b) => b.localeCompare(a));
 
     res.json({
-      counselors: cleanSorted(counselors, { mode: 'title' }),
+      counselors: branchCounselors || cleanSorted(counselors, { mode: 'title' }).filter(isKnownStaffName),
       branches: cleanSorted(branches, { mode: 'title' }),
       courses: cleanSorted(courses, { mode: 'upper' }),
-      sources: cleanSorted(sources, { mode: 'title' }),
+      sources: cleanSorted((sources || []).map(canonicalLeadSource), { mode: 'raw' }),
       months: cleanMonths(months)
     });
   } catch (err) {
@@ -4992,15 +5084,34 @@ router.get('/hr/lead-counts', async (req, res) => {
     const isBM = isScopedBranchManager(req);
     const effectiveBranch = isBM ? getBranchManagerBranch(req) : branch;
 
+    const allocationDesk = !req.hrTeamNames && !isScopedHr(req) && effectiveBranch && effectiveBranch !== 'all';
     if (req.hrTeamNames) {
       matchConds.push(ownerAnyQuery(pickTeamNames(req.hrTeamNames, counselor), LEAD_OWNER_FIELDS, BRANCH_FIELDS_LEAD));
+    } else if (allocationDesk) {
+      // Branch desk counts: only leads allocated to this branch's HRs
+      matchConds.push(await branchAllocationQuery(effectiveBranch, counselor));
     } else if (effectiveCounselor && effectiveCounselor !== 'all') {
       const ownerBranch = isScopedHr(req) ? (req.user?.branch || '') : (effectiveBranch && effectiveBranch !== 'all' ? effectiveBranch : '');
       matchConds.push(leadOwnerQuery(effectiveCounselor, ownerBranch));
     }
-    if (effectiveBranch && effectiveBranch !== 'all') {
+    if (!allocationDesk && effectiveBranch && effectiveBranch !== 'all') {
       matchConds.push({ branch: { $regex: new RegExp(escapeRegex(effectiveBranch.trim()), 'i') } });
     }
+    // The pipeline's dropdown filters, applied exactly as GET /leads applies them,
+    // so the All / Overdue / Today ... pills count the full filtered set (not
+    // just the page of leads loaded in the browser).
+    const { course: fCourse, source: fSource, enquiryMonth: fMonth, search: fSearch, stage: fStage } = req.query;
+    if (fCourse && fCourse !== 'all') matchConds.push({ course: { $regex: spacingInsensitiveRx(fCourse) } });
+    if (fSource && fSource !== 'all') {
+      const variants = [...(await leadSourceVariants(fSource)), spacingInsensitiveRx(fSource)];
+      matchConds.push({ $or: [{ sourceName: { $in: variants } }, { sourceBadge: { $in: variants } }] });
+    }
+    if (fMonth && fMonth !== 'all') matchConds.push({ enquiryMonth: String(fMonth).trim() });
+    if (fSearch) {
+      const searchRegex = { $regex: escapeRegex(String(fSearch).trim()), $options: 'i' };
+      matchConds.push({ $or: [{ fullName: searchRegex }, { phone: searchRegex }, { email: searchRegex }, { location: searchRegex }, { course: searchRegex }] });
+    }
+    if (fStage && fStage !== 'all') matchConds.push({ stage: fStage });
     const matchQuery = matchConds.length > 0 ? { $and: matchConds } : {};
 
     const now = new Date();
@@ -5172,21 +5283,26 @@ router.get('/leads', async (req, res) => {
     const isBM = isScopedBranchManager(req);
     const targetBranch = isBM ? getBranchManagerBranch(req) : branch;
     const baseConditions = [];
+    const allocationDesk = !req.hrTeamNames && !isScopedHr(req) && targetBranch && targetBranch !== 'all';
     if (req.hrTeamNames) {
       baseConditions.push(ownerAnyQuery(pickTeamNames(req.hrTeamNames, req.query.counselor), LEAD_OWNER_FIELDS, BRANCH_FIELDS_LEAD));
+    } else if (allocationDesk) {
+      // Branch desk: only leads allocated to this branch's HRs (optionally one of them)
+      baseConditions.push(await branchAllocationQuery(targetBranch, req.query.counselor));
     } else if (counselor && counselor !== 'all') {
       const ownerBranch = isScopedHr(req) ? (req.user?.branch || '') : (branch && branch !== 'all' ? branch : '');
       baseConditions.push(leadOwnerQuery(counselor, ownerBranch));
     }
-    if (targetBranch && targetBranch !== 'all') {
+    if (!allocationDesk && targetBranch && targetBranch !== 'all') {
       baseConditions.push({ branch: { $regex: new RegExp(escapeRegex(targetBranch.trim()), 'i') } });
     }
     if (course && course !== 'all') {
-      baseConditions.push({ course: { $regex: new RegExp(`^${escapeRegex(String(course).trim())}$`, 'i') } });
+      baseConditions.push({ course: { $regex: spacingInsensitiveRx(course) } });
     }
     if (source && source !== 'all') {
-      const srcRx = new RegExp(`^${escapeRegex(String(source).trim())}$`, 'i');
-      baseConditions.push({ $or: [{ sourceName: srcRx }, { sourceBadge: srcRx }] });
+      // "Instagram Chatting" also finds leads saved as "Instagram Chat", "Instragram", ...
+      const variants = [...(await leadSourceVariants(source)), spacingInsensitiveRx(source)];
+      baseConditions.push({ $or: [{ sourceName: { $in: variants } }, { sourceBadge: { $in: variants } }] });
     }
     if (enquiryMonth && enquiryMonth !== 'all') {
       baseConditions.push({ enquiryMonth: String(enquiryMonth).trim() });

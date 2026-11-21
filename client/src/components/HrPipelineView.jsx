@@ -30,6 +30,7 @@ import { getLeads, getLeadFilterOptions, updateLead, deleteLead, createEscalatio
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 import PaginationBar from './PaginationBar';
 import EditLeadModal from './EditLeadModal';
+import { canonicalLeadSource } from '../constants/leadSourceCanon';
 
 const STAGE_ORDER = ['new', 'contacted', 'demo_booked', 'demo_attended', 'fee_followup', 'done', 'admitted', 'not_mentioned'];
 
@@ -472,26 +473,33 @@ export default function HrPipelineView({
     return Array.from(set).sort((a, b) => b.localeCompare(a));
   }, [leads, filterOptions.months]);
 
+  // "AMCT / CPC", "amct/cpc" and "AMCT /CPC" are one value: compare without spaces, ignoring case
+  const compactKey = (v) => String(v || '').toLowerCase().replace(/\s+/g, '');
   const dedupeFilterValues = (arr, mode = 'title') => {
     const PLACEHOLDERS = new Set(['n/a', 'na', 'none', 'nil', 'null', 'undefined', 'unknown', 'not mentioned']);
     const toTitle = (str) =>
       str.replace(/\w\S*/g, (w) => (w.length <= 2 && w === w.toUpperCase() ? w : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()));
     const map = new Map();
     arr.forEach((raw) => {
-      const val = String(raw || '').replace(/\s+/g, ' ').trim();
+      const val = String(raw || '').replace(/\s*\/\s*/g, ' / ').replace(/\s+/g, ' ').trim();
       if (!val || !/[a-zA-Z]/.test(val)) return;
-      const key = val.toLowerCase();
-      if (PLACEHOLDERS.has(key)) return;
+      if (PLACEHOLDERS.has(val.toLowerCase())) return;
+      const key = compactKey(val);
       if (!map.has(key)) {
-        map.set(key, mode === 'upper' ? val.toUpperCase() : toTitle(val));
+        map.set(key, mode === 'upper' ? val.toUpperCase() : mode === 'raw' ? val : toTitle(val));
       }
     });
     return Array.from(map.values()).sort((a, b) => a.localeCompare(b));
   };
 
   const availableCounselors = useMemo(
-    () => dedupeFilterValues([...(filterOptions.counselors || []), ...leads.map(l => l.counselorAssigned || l.allocatedTo || '')], 'title'),
-    [leads, filterOptions.counselors]
+    () => dedupeFilterValues(
+      (filterOptions.counselors || []).length
+        ? [...filterOptions.counselors, counselorFilter !== 'all' ? counselorFilter : '']
+        : leads.map(l => l.counselorAssigned || l.allocatedTo || ''),
+      'title'
+    ),
+    [leads, filterOptions.counselors, counselorFilter]
   );
 
   const availableBranches = useMemo(
@@ -505,10 +513,14 @@ export default function HrPipelineView({
   );
 
   const availableSources = useMemo(
-    () => dedupeFilterValues([...(filterOptions.sources || []), ...leads.map(l => l.sourceName || l.sourceBadge || '')], 'title'),
+    () => dedupeFilterValues([...(filterOptions.sources || []), ...leads.map(l => l.sourceName || l.sourceBadge || '')].map(canonicalLeadSource), 'raw'),
     [leads, filterOptions.sources]
   );
 
+  // Parent reloads hrLeadCounts with the active filters, so they are the true
+  // totals even while filtering (the loaded leads are only one page, max 200)
+  const countsFollowFilters = Boolean(onFilterChange);
+  const useServerCounts = (v) => v != null && (countsFollowFilters || !hasActiveDropdownFilters);
   const hasActiveDropdownFilters =
     counselorFilter !== 'all' ||
     branchFilter !== 'all' ||
@@ -533,24 +545,29 @@ export default function HrPipelineView({
   // Search + dropdown filtered leads
   const searchFilteredLeads = useMemo(() => {
     let out = leads;
+    // When the parent reloads leads from the server on every filter change
+    // (onFilterChange), the server has already applied the HR / branch / course /
+    // source filters — with loose name matching ("Jeba" = "Jeba Sorna"). Filtering
+    // again here with an exact compare would hide leads the counts include.
+    const serverFiltered = Boolean(onFilterChange);
     if (monthFilter !== 'all') {
       out = out.filter(l => leadMonthKey(l) === monthFilter);
     }
-    if (counselorFilter !== 'all') {
-      const cf = counselorFilter.toLowerCase();
-      out = out.filter(l => (l.counselorAssigned || l.allocatedTo || l.spokenBy || '').toLowerCase() === cf);
+    if (!serverFiltered && counselorFilter !== 'all') {
+      const cf = compactKey(counselorFilter);
+      out = out.filter(l => compactKey(l.counselorAssigned || l.allocatedTo || l.spokenBy) === cf);
     }
-    if (branchFilter !== 'all') {
+    if (!serverFiltered && branchFilter !== 'all') {
       const bf = branchFilter.toLowerCase();
       out = out.filter(l => (l.branch || '').toLowerCase() === bf);
     }
-    if (courseFilter !== 'all') {
-      const cr = courseFilter.toLowerCase();
-      out = out.filter(l => (l.course || '').toLowerCase() === cr);
+    if (!serverFiltered && courseFilter !== 'all') {
+      const cr = compactKey(courseFilter);
+      out = out.filter(l => compactKey(l.course) === cr);
     }
-    if (sourceFilter !== 'all') {
-      const sf = sourceFilter.toLowerCase();
-      out = out.filter(l => (l.sourceName || l.sourceBadge || '').toLowerCase() === sf);
+    if (!serverFiltered && sourceFilter !== 'all') {
+      const sf = canonicalLeadSource(sourceFilter);
+      out = out.filter(l => canonicalLeadSource(l.sourceName || l.sourceBadge) === sf);
     }
     if (stageFilter !== 'all') {
       out = out.filter(l => (l.stage || 'new') === stageFilter);
@@ -568,7 +585,7 @@ export default function HrPipelineView({
       );
     }
     return out;
-  }, [leads, searchQuery, monthFilter, counselorFilter, branchFilter, courseFilter, sourceFilter, stageFilter]);
+  }, [leads, searchQuery, monthFilter, counselorFilter, branchFilter, courseFilter, sourceFilter, stageFilter, onFilterChange]);
 
   // Stage Pipeline columns
   const PIPELINE_COLUMNS = useMemo(() => {
@@ -849,14 +866,14 @@ export default function HrPipelineView({
   }, [searchFilteredLeads, activeFilter]);
 
   const FILTERS = [
-    { key: 'all', label: 'All', count: (!hasActiveDropdownFilters && hrLeadCounts?.totalLeads != null) ? hrLeadCounts.totalLeads : stageCounts.total, activeClass: 'bg-slate-900 text-white' },
-    { key: 'overdue', label: '🔴 Overdue', count: (!hasActiveDropdownFilters && hrLeadCounts?.overdueCount != null) ? hrLeadCounts.overdueCount : stageCounts.overdueCount, activeClass: 'bg-rose-600 text-white' },
-    { key: 'today', label: '🟡 Today', count: (!hasActiveDropdownFilters && hrLeadCounts?.todayCount != null) ? hrLeadCounts.todayCount : stageCounts.todayCount, activeClass: 'bg-amber-600 text-white' },
-    { key: 'tomorrow', label: '⚪ Tomorrow', count: (!hasActiveDropdownFilters && hrLeadCounts?.tomorrowCount != null) ? hrLeadCounts.tomorrowCount : stageCounts.tomorrowCount, activeClass: 'bg-sky-600 text-white' },
-    { key: 'demo', label: '🟣 Demos', count: (!hasActiveDropdownFilters && hrLeadCounts?.demoCount != null) ? hrLeadCounts.demoCount : stageCounts.demoCount, activeClass: 'bg-purple-600 text-white' },
-    { key: 'fee', label: '🟠 Fees', count: (!hasActiveDropdownFilters && hrLeadCounts?.feeCount != null) ? hrLeadCounts.feeCount : stageCounts.feeCount, activeClass: 'bg-amber-700 text-white' },
-    { key: 'done', label: '✓ Done', count: (!hasActiveDropdownFilters && hrLeadCounts?.doneCount != null) ? hrLeadCounts.doneCount : stageCounts.doneCount, activeClass: 'bg-slate-800 text-white' },
-    { key: 'admitted', label: '🟢 Admitted', count: (!hasActiveDropdownFilters && hrLeadCounts?.admittedCount != null) ? hrLeadCounts.admittedCount : stageCounts.convertedCount, activeClass: 'bg-emerald-600 text-white' }
+    { key: 'all', label: 'All', count: useServerCounts(hrLeadCounts?.totalLeads) ? hrLeadCounts.totalLeads : stageCounts.total, activeClass: 'bg-slate-900 text-white' },
+    { key: 'overdue', label: '🔴 Overdue', count: useServerCounts(hrLeadCounts?.overdueCount) ? hrLeadCounts.overdueCount : stageCounts.overdueCount, activeClass: 'bg-rose-600 text-white' },
+    { key: 'today', label: '🟡 Today', count: useServerCounts(hrLeadCounts?.todayCount) ? hrLeadCounts.todayCount : stageCounts.todayCount, activeClass: 'bg-amber-600 text-white' },
+    { key: 'tomorrow', label: '⚪ Tomorrow', count: useServerCounts(hrLeadCounts?.tomorrowCount) ? hrLeadCounts.tomorrowCount : stageCounts.tomorrowCount, activeClass: 'bg-sky-600 text-white' },
+    { key: 'demo', label: '🟣 Demos', count: useServerCounts(hrLeadCounts?.demoCount) ? hrLeadCounts.demoCount : stageCounts.demoCount, activeClass: 'bg-purple-600 text-white' },
+    { key: 'fee', label: '🟠 Fees', count: useServerCounts(hrLeadCounts?.feeCount) ? hrLeadCounts.feeCount : stageCounts.feeCount, activeClass: 'bg-amber-700 text-white' },
+    { key: 'done', label: '✓ Done', count: useServerCounts(hrLeadCounts?.doneCount) ? hrLeadCounts.doneCount : stageCounts.doneCount, activeClass: 'bg-slate-800 text-white' },
+    { key: 'admitted', label: '🟢 Admitted', count: useServerCounts(hrLeadCounts?.admittedCount) ? hrLeadCounts.admittedCount : stageCounts.convertedCount, activeClass: 'bg-emerald-600 text-white' }
   ];
 
   return (

@@ -644,7 +644,9 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         })
         .catch(() => {});
 
-      getHrLeadCounts(shouldFilterOnServer ? { counselor: counselorFilter, ...branchParam } : (branchParam.branch ? branchParam : undefined))
+      // Pill counts use the same filters as the lead list (minus paging)
+      const { page: _p, limit: _l, ...countParams } = leadParams;
+      getHrLeadCounts(Object.keys(countParams).length ? countParams : undefined)
         .then((countsRes) => { if (countsRes && typeof countsRes === 'object') setHrLeadCounts(countsRes); })
         .catch(() => {});
 
