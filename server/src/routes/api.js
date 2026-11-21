@@ -3523,10 +3523,40 @@ const LEAD_OWNER_FIELDS = ['counselorAssigned', 'allocatedTo', 'spokenBy', 'coun
 const STUDENT_OWNER_FIELDS = ['hrName', 'counselorAssigned', 'counselor', 'counselorName', 'allocatedTo', 'spokenBy'];
 const DEMO_OWNER_FIELDS = ['bookedBy', 'counselor', 'counselorName', 'hrName', 'allocatedTo', 'counselorAssigned'];
 // A Team Lead asking for one counsellor gets that counsellor only if they are in the team
+// The HR filter can hold several names, sent as "Jeba Sorna,Prabhu"
+const splitCounselorParam = (v) => String(v || '').split(',').map((x) => x.trim()).filter((x) => x && x !== 'all');
 const pickTeamNames = (team, requested) => {
-  if (!requested || requested === 'all') return team;
-  const one = team.find((n) => namesMatch(n, requested) || normName(n) === normName(requested));
-  return one ? [one] : ['__no_such_team_member__'];
+  const wanted = splitCounselorParam(requested);
+  if (!wanted.length) return team;
+  const picked = [];
+  wanted.forEach((w) => {
+    const one = team.find((n) => namesMatch(n, w) || normName(n) === normName(w));
+    if (one && !picked.includes(one)) picked.push(one);
+  });
+  return picked.length ? picked : ['__no_such_team_member__'];
+};
+// Course / source / stage filters can also hold several values ("A,B,C")
+const splitFilterParam = (v) => String(v || '').split(',').map((x) => x.trim()).filter((x) => x && x !== 'all');
+const courseFilterCond = (course) => {
+  const list = splitFilterParam(course);
+  return list.length ? { course: { $in: list.map(spacingInsensitiveRx) } } : null;
+};
+async function sourceFilterCond(source) {
+  const list = splitFilterParam(source);
+  if (!list.length) return null;
+  const variants = [];
+  for (const one of list) variants.push(...(await leadSourceVariants(one)), spacingInsensitiveRx(one));
+  return { $or: [{ sourceName: { $in: variants } }, { sourceBadge: { $in: variants } }] };
+}
+const stageFilterCond = (stage) => {
+  const list = splitFilterParam(stage);
+  return list.length ? { stage: list.length === 1 ? list[0] : { $in: list } } : null;
+};
+// One or several counsellors (comma-separated) → owner query
+const leadOwnerQueryMulti = (counselorParam, branch = '') => {
+  const list = splitCounselorParam(counselorParam);
+  if (list.length <= 1) return leadOwnerQuery(list[0] || counselorParam, branch);
+  return { $or: list.map((n) => leadOwnerQuery(n, branch)) };
 };
 
 // Branch Head scope: the HR staff of one branch (HR users + HR team roster).
@@ -5092,7 +5122,7 @@ router.get('/hr/lead-counts', async (req, res) => {
       matchConds.push(await branchAllocationQuery(effectiveBranch, counselor));
     } else if (effectiveCounselor && effectiveCounselor !== 'all') {
       const ownerBranch = isScopedHr(req) ? (req.user?.branch || '') : (effectiveBranch && effectiveBranch !== 'all' ? effectiveBranch : '');
-      matchConds.push(leadOwnerQuery(effectiveCounselor, ownerBranch));
+      matchConds.push(isScopedHr(req) ? leadOwnerQuery(effectiveCounselor, ownerBranch) : leadOwnerQueryMulti(effectiveCounselor, ownerBranch));
     }
     if (!allocationDesk && effectiveBranch && effectiveBranch !== 'all') {
       matchConds.push({ branch: { $regex: new RegExp(escapeRegex(effectiveBranch.trim()), 'i') } });
@@ -5101,17 +5131,17 @@ router.get('/hr/lead-counts', async (req, res) => {
     // so the All / Overdue / Today ... pills count the full filtered set (not
     // just the page of leads loaded in the browser).
     const { course: fCourse, source: fSource, enquiryMonth: fMonth, search: fSearch, stage: fStage } = req.query;
-    if (fCourse && fCourse !== 'all') matchConds.push({ course: { $regex: spacingInsensitiveRx(fCourse) } });
-    if (fSource && fSource !== 'all') {
-      const variants = [...(await leadSourceVariants(fSource)), spacingInsensitiveRx(fSource)];
-      matchConds.push({ $or: [{ sourceName: { $in: variants } }, { sourceBadge: { $in: variants } }] });
-    }
+    const fCourseCond = courseFilterCond(fCourse);
+    if (fCourseCond) matchConds.push(fCourseCond);
+    const fSourceCond = await sourceFilterCond(fSource);
+    if (fSourceCond) matchConds.push(fSourceCond);
     if (fMonth && fMonth !== 'all') matchConds.push({ enquiryMonth: String(fMonth).trim() });
     if (fSearch) {
       const searchRegex = { $regex: escapeRegex(String(fSearch).trim()), $options: 'i' };
       matchConds.push({ $or: [{ fullName: searchRegex }, { phone: searchRegex }, { email: searchRegex }, { location: searchRegex }, { course: searchRegex }] });
     }
-    if (fStage && fStage !== 'all') matchConds.push({ stage: fStage });
+    const fStageCond = stageFilterCond(fStage);
+    if (fStageCond) matchConds.push(fStageCond);
     const matchQuery = matchConds.length > 0 ? { $and: matchConds } : {};
 
     const now = new Date();
@@ -5125,7 +5155,8 @@ router.get('/hr/lead-counts', async (req, res) => {
       studentMatchConds.push(ownerAnyQuery(pickTeamNames(req.hrTeamNames, counselor), STUDENT_OWNER_FIELDS, BRANCH_FIELDS_STUDENT));
     } else if (effectiveCounselor && effectiveCounselor !== 'all') {
       const ownerBranch = isScopedHr(req) ? (req.user?.branch || '') : (effectiveBranch && effectiveBranch !== 'all' ? effectiveBranch : '');
-      studentMatchConds.push(ownerQueryWithBranch(effectiveCounselor, ownerBranch, STUDENT_OWNER_FIELDS, BRANCH_FIELDS_STUDENT));
+      const who = isScopedHr(req) ? [effectiveCounselor] : splitCounselorParam(effectiveCounselor);
+      studentMatchConds.push({ $or: who.map((n) => ownerQueryWithBranch(n, ownerBranch, STUDENT_OWNER_FIELDS, BRANCH_FIELDS_STUDENT)) });
     } else if (effectiveBranch && effectiveBranch !== 'all') {
       const bRx = new RegExp(escapeRegex(effectiveBranch.trim()), 'i');
       studentMatchConds.push({ $or: [{ branch: bRx }, { location: bRx }, { leadBranch: bRx }] });
@@ -5291,19 +5322,16 @@ router.get('/leads', async (req, res) => {
       baseConditions.push(await branchAllocationQuery(targetBranch, req.query.counselor));
     } else if (counselor && counselor !== 'all') {
       const ownerBranch = isScopedHr(req) ? (req.user?.branch || '') : (branch && branch !== 'all' ? branch : '');
-      baseConditions.push(leadOwnerQuery(counselor, ownerBranch));
+      baseConditions.push(isScopedHr(req) ? leadOwnerQuery(counselor, ownerBranch) : leadOwnerQueryMulti(counselor, ownerBranch));
     }
     if (!allocationDesk && targetBranch && targetBranch !== 'all') {
       baseConditions.push({ branch: { $regex: new RegExp(escapeRegex(targetBranch.trim()), 'i') } });
     }
-    if (course && course !== 'all') {
-      baseConditions.push({ course: { $regex: spacingInsensitiveRx(course) } });
-    }
-    if (source && source !== 'all') {
-      // "Instagram Chatting" also finds leads saved as "Instagram Chat", "Instragram", ...
-      const variants = [...(await leadSourceVariants(source)), spacingInsensitiveRx(source)];
-      baseConditions.push({ $or: [{ sourceName: { $in: variants } }, { sourceBadge: { $in: variants } }] });
-    }
+    const courseCond = courseFilterCond(course);
+    if (courseCond) baseConditions.push(courseCond);
+    // "Instagram Chatting" also finds leads saved as "Instagram Chat", "Instragram", ...
+    const sourceCond = await sourceFilterCond(source);
+    if (sourceCond) baseConditions.push(sourceCond);
     if (enquiryMonth && enquiryMonth !== 'all') {
       baseConditions.push({ enquiryMonth: String(enquiryMonth).trim() });
     }
@@ -5320,9 +5348,8 @@ router.get('/leads', async (req, res) => {
       });
     }
     const andConditions = [...baseConditions];
-    if (stage && stage !== 'all') {
-      andConditions.push({ stage });
-    }
+    const stageCond = stageFilterCond(stage);
+    if (stageCond) andConditions.push(stageCond);
     const baseQuery = baseConditions.length > 0 ? { $and: baseConditions } : {};
     const query = andConditions.length > 0 ? { $and: andConditions } : {};
 

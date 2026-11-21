@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Phone, 
   MessageSquare, 
@@ -98,6 +98,71 @@ function classifyFollowUp(lead) {
   if (diffDays <= 7) return { isOverdue: false, isToday: false, isTomorrow: false, timeframe: 'this_week', hasDate: true };
   return { isOverdue: false, isToday: false, isTomorrow: false, timeframe: null, hasDate: true };
 }
+
+// Checkbox dropdown filter. value is 'all' or a comma-separated list
+// ("Jeba Sorna,Prabhu"), which the server reads as "any of these".
+// options: strings, or { value, label } when the shown text differs from the value.
+function MultiSelectFilter({ value, options, onChange, allLabel, title }) {
+  const [open, setOpen] = useState(false);
+  const boxRef = useRef(null);
+  const opts = options.map((o) => (typeof o === 'string' ? { value: o, label: o } : o));
+  const selected = value && value !== 'all' ? value.split(',').map((v) => v.trim()).filter(Boolean) : [];
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = (e) => { if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [open]);
+  const toggle = (v) => {
+    const next = selected.includes(v) ? selected.filter((n) => n !== v) : [...selected, v];
+    onChange(next.length ? next.join(',') : 'all');
+  };
+  const labelOf = (v) => opts.find((o) => o.value === v)?.label || v;
+  const label = !selected.length
+    ? allLabel
+    : selected.length === 1 ? labelOf(selected[0]) : `${labelOf(selected[0])} +${selected.length - 1} more`;
+  return (
+    <div className="relative" ref={boxRef}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className={`rounded-xl px-3 py-1.5 text-xs font-semibold border outline-none transition-all cursor-pointer flex items-center gap-2 ${selected.length ? 'bg-white border-[#00897b] text-[#00695c]' : 'bg-slate-50 border-slate-200'}`}
+        title={title}
+      >
+        <span className="max-w-[200px] truncate">{label}</span>
+        <span className="text-[10px] opacity-60">▾</span>
+      </button>
+      {open && (
+        <div className="absolute z-30 mt-1 w-64 max-h-72 overflow-auto rounded-xl border border-slate-200 bg-white shadow-lg p-1">
+          <button
+            type="button"
+            onClick={() => { onChange('all'); setOpen(false); }}
+            className={`w-full text-left px-3 py-1.5 rounded-lg text-xs font-semibold hover:bg-slate-50 ${!selected.length ? 'text-[#00695c]' : 'text-slate-600'}`}
+          >
+            {allLabel}
+          </button>
+          {opts.map((o) => (
+            <label key={o.value} className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer">
+              <input type="checkbox" className="accent-[#00897b]" checked={selected.includes(o.value)} onChange={() => toggle(o.value)} />
+              <span className="truncate">{o.label}</span>
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const STAGE_FILTER_OPTIONS = [
+  { value: 'new', label: 'New' },
+  { value: 'contacted', label: 'Contacted' },
+  { value: 'demo_booked', label: 'Demo Booked' },
+  { value: 'demo_attended', label: 'Demo Attended' },
+  { value: 'fee_followup', label: 'Fee Discussion' },
+  { value: 'done', label: 'Done' },
+  { value: 'admitted', label: 'Admitted' },
+  { value: 'not_mentioned', label: 'Not Mentioned' }
+];
 
 export default function HrPipelineView({ 
   leads: propLeads, 
@@ -495,7 +560,7 @@ export default function HrPipelineView({
   const availableCounselors = useMemo(
     () => dedupeFilterValues(
       (filterOptions.counselors || []).length
-        ? [...filterOptions.counselors, counselorFilter !== 'all' ? counselorFilter : '']
+        ? [...filterOptions.counselors, ...(counselorFilter !== 'all' ? counselorFilter.split(',') : [])]
         : leads.map(l => l.counselorAssigned || l.allocatedTo || ''),
       'title'
     ),
@@ -554,23 +619,24 @@ export default function HrPipelineView({
       out = out.filter(l => leadMonthKey(l) === monthFilter);
     }
     if (!serverFiltered && counselorFilter !== 'all') {
-      const cf = compactKey(counselorFilter);
-      out = out.filter(l => compactKey(l.counselorAssigned || l.allocatedTo || l.spokenBy) === cf);
+      const cfs = counselorFilter.split(',').map(compactKey).filter(Boolean);
+      out = out.filter(l => cfs.includes(compactKey(l.counselorAssigned || l.allocatedTo || l.spokenBy)));
     }
     if (!serverFiltered && branchFilter !== 'all') {
       const bf = branchFilter.toLowerCase();
       out = out.filter(l => (l.branch || '').toLowerCase() === bf);
     }
     if (!serverFiltered && courseFilter !== 'all') {
-      const cr = compactKey(courseFilter);
-      out = out.filter(l => compactKey(l.course) === cr);
+      const crs = courseFilter.split(',').map(compactKey).filter(Boolean);
+      out = out.filter(l => crs.includes(compactKey(l.course)));
     }
     if (!serverFiltered && sourceFilter !== 'all') {
-      const sf = canonicalLeadSource(sourceFilter);
-      out = out.filter(l => canonicalLeadSource(l.sourceName || l.sourceBadge) === sf);
+      const sfs = sourceFilter.split(',').map(canonicalLeadSource).filter(Boolean);
+      out = out.filter(l => sfs.includes(canonicalLeadSource(l.sourceName || l.sourceBadge)));
     }
     if (stageFilter !== 'all') {
-      out = out.filter(l => (l.stage || 'new') === stageFilter);
+      const stages = stageFilter.split(',');
+      out = out.filter(l => stages.includes(l.stage || 'new'));
     }
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
@@ -1013,17 +1079,13 @@ export default function HrPipelineView({
 
         {/* HR, Branch, Course, Source & Stage Filters */}
         <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100">
-          <select
+          <MultiSelectFilter
             value={counselorFilter}
-            onChange={(e) => setCounselorFilter(e.target.value)}
-            className="rounded-xl px-3 py-1.5 text-xs font-semibold bg-slate-50 border border-slate-200 focus:bg-white focus:border-[#00897b] outline-none transition-all cursor-pointer"
-            title="Filter by HR / Counsellor"
-          >
-            <option value="all">All HRs / Counsellors</option>
-            {availableCounselors.map((c) => (
-              <option key={c} value={c}>{c}</option>
-            ))}
-          </select>
+            options={availableCounselors}
+            onChange={setCounselorFilter}
+            allLabel="All HRs / Counsellors"
+            title="Filter by HR / Counsellor (select one or more)"
+          />
 
           <select
             value={branchFilter}
@@ -1037,46 +1099,29 @@ export default function HrPipelineView({
             ))}
           </select>
 
-          <select
+          <MultiSelectFilter
             value={courseFilter}
-            onChange={(e) => setCourseFilter(e.target.value)}
-            className="rounded-xl px-3 py-1.5 text-xs font-semibold bg-slate-50 border border-slate-200 focus:bg-white focus:border-[#00897b] outline-none transition-all cursor-pointer"
-            title="Filter by Course"
-          >
-            <option value="all">All Courses</option>
-            {availableCourses.map((cr) => (
-              <option key={cr} value={cr}>{cr}</option>
-            ))}
-          </select>
+            options={availableCourses}
+            onChange={setCourseFilter}
+            allLabel="All Courses"
+            title="Filter by Course (select one or more)"
+          />
 
-          <select
+          <MultiSelectFilter
             value={sourceFilter}
-            onChange={(e) => setSourceFilter(e.target.value)}
-            className="rounded-xl px-3 py-1.5 text-xs font-semibold bg-slate-50 border border-slate-200 focus:bg-white focus:border-[#00897b] outline-none transition-all cursor-pointer"
-            title="Filter by Lead Source"
-          >
-            <option value="all">All Sources</option>
-            {availableSources.map((src) => (
-              <option key={src} value={src}>{src}</option>
-            ))}
-          </select>
+            options={availableSources}
+            onChange={setSourceFilter}
+            allLabel="All Sources"
+            title="Filter by Lead Source (select one or more)"
+          />
 
-          <select
+          <MultiSelectFilter
             value={stageFilter}
-            onChange={(e) => setStageFilter(e.target.value)}
-            className="rounded-xl px-3 py-1.5 text-xs font-semibold bg-slate-50 border border-slate-200 focus:bg-white focus:border-[#00897b] outline-none transition-all cursor-pointer"
-            title="Filter by Pipeline Stage"
-          >
-            <option value="all">All Stages</option>
-            <option value="new">New</option>
-            <option value="contacted">Contacted</option>
-            <option value="demo_booked">Demo Booked</option>
-            <option value="demo_attended">Demo Attended</option>
-            <option value="fee_followup">Fee Discussion</option>
-            <option value="done">Done</option>
-            <option value="admitted">Admitted</option>
-            <option value="not_mentioned">Not Mentioned</option>
-          </select>
+            options={STAGE_FILTER_OPTIONS}
+            onChange={setStageFilter}
+            allLabel="All Stages"
+            title="Filter by Pipeline Stage (select one or more)"
+          />
 
           {hasActiveDropdownFilters && (
             <button
