@@ -76,7 +76,7 @@ export function registerSchedulingRoutes(router, deps) {
 
   async function loadCtx({ trainerIds, dates, trainers }) {
     const [batches, demos, sessions, staleBatchKeys] = await Promise.all([
-      Batch.find({ trainerId: { $in: trainerIds } }).select('batchName course trainerId scheduledTime days startDate status').lean(),
+      Batch.find({ trainerId: { $in: trainerIds } }).select('batchName course trainerId scheduledTime days startDate endDate createdAt status').lean(),
       Demo.find({ preferredDate: { $in: dates }, status: { $in: ['booked', 'confirmed'] } }).select('trainerId preferredDate timeSlot time status').lean(),
       OneOnOneSession.find({ date: { $in: dates }, status: { $in: ['scheduled', 'live'] } }).select('trainerId date startMin endMin status studentName').lean(),
       trainers ? staleBatchKeysFor(trainers) : Promise.resolve(new Set())
@@ -110,7 +110,7 @@ export function registerSchedulingRoutes(router, deps) {
       const staleBatchKeys = await staleBatchKeysFor(trainers);
       if (isTrainerLeader(req)) pruneStaleTimetables(trainers, staleBatchKeys);
       const [batches, live, demos, sessions] = await Promise.all([
-        Batch.find({ trainerId: { $in: ids } }).select('batchName course trainerId scheduledTime days startDate status').lean(),
+        Batch.find({ trainerId: { $in: ids } }).select('batchName course trainerId scheduledTime days startDate endDate createdAt status').lean(),
         LiveClassSession.find({
           trainerId: { $in: ids },
           startedAt: { $gte: new Date(`${A.addDays(from, -1)}T00:00:00Z`), $lte: new Date(`${A.addDays(to, 1)}T23:59:59Z`) }
@@ -224,7 +224,7 @@ export function registerSchedulingRoutes(router, deps) {
 
       // Batch classes (from the batch's trainer timetable) + whether this student joined
       if (batch) {
-        const batchDoc = await Batch.findOne({ batchName: batch }).select('batchName course trainerId trainerName scheduledTime days startDate status').lean();
+        const batchDoc = await Batch.findOne({ batchName: batch }).select('batchName course trainerId trainerName scheduledTime days startDate endDate createdAt status').lean();
         const tid = batchDoc?.trainerId || st.trainerId;
         const t = tid ? await Trainer.findOne({ trainerId: tid }).select(TRAINER_FIELDS).lean() : null;
         const held = (await LiveClassSession.find({

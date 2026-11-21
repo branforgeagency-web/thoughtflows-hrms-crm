@@ -59,6 +59,11 @@ const batchSchema = new mongoose.Schema(
       type: String,
       default: ''
     },
+    // Last class day (YYYY-MM-DD, inclusive). Blank = runs until marked Completed.
+    endDate: {
+      type: String,
+      default: ''
+    },
     minStudents: {
       type: Number,
       default: 10

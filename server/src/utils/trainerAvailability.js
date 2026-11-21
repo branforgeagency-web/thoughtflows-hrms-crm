@@ -141,7 +141,11 @@ export function trainerDayBusy(t, date, ctx = {}) {
   const myBatches = (ctx.batches || []).filter((b) => b.trainerId === t.trainerId && ['active', 'forming', ''].includes(norm(b.status)));
   const batchNames = new Set(myBatches.map((b) => norm(b.batchName)));
   for (const b of myBatches) {
-    if (b.startDate && String(b.startDate).slice(0, 10) > date) continue;
+    // Only between the batch's start and end dates. A batch saved without a start
+    // date starts on the day it was created (never shown in earlier months).
+    const start = String(b.startDate || '').slice(0, 10) || (b.createdAt ? zonedParts(new Date(b.createdAt)).date : '');
+    if (start && start > date) continue;
+    if (b.endDate && String(b.endDate).slice(0, 10) < date) continue;
     if (!daysInclude(b.days, wd)) continue;
     const r = parseRange(b.scheduledTime);
     if (r) busy.push({ ...r, type: 'class', label: b.batchName || 'Batch class', batch: b.batchName, course: b.course || '' });

@@ -22,7 +22,7 @@ import crypto from 'crypto';
 import TrainingMaterial from '../models/TrainingMaterial.js';
 import { isS3Configured, signedUrlForStoredFile, putObjectBuffer, copyStoredFileToBucket, deleteObjectIn } from './s3Storage.js';
 
-export const HTML5_PRESENTATION_EXTS = new Set(['ppt', 'pptx', 'pps', 'ppsx', 'pot', 'potx', 'pptm', 'odp']);
+export const HTML5_PRESENTATION_EXTS = new Set(['ppt', 'pptx', 'pps', 'ppsx', 'pot', 'potx', 'pptm', 'odp', 'zip']);
 export const API_BASE = () => String(process.env.ASPOSE_API_BASE || 'https://api.aspose.cloud').replace(/\/+$/, '');
 const TEMP_FOLDER = 'thoughtflows-tmp';
 const ASPOSE_UPLOAD_MAX_BYTES = 100000000; // Aspose Cloud's request-body limit
@@ -233,6 +233,60 @@ const queue = [];
 const queued = new Set();
 let running = false;
 
+// Direct extraction for pre-packaged HTML5 / SCORM presentation ZIPs (e.g. from iSpring / Articulate)
+export async function processPresentationZip(doc) {
+  if (!doc) return false;
+  const ext = String(doc.fileName || '').split('.').pop().toLowerCase();
+  if (ext !== 'zip') return false;
+
+  await TrainingMaterial.updateOne({ _id: doc._id }, { html5Status: 'processing', html5Error: '', html5UpdatedAt: new Date() });
+  try {
+    const fileUrl = signedUrlForStoredFile({ storageKey: doc.storageKey, storageUrl: doc.storageUrl, expiresIn: 3600, download: false, fileName: doc.fileName });
+    if (!fileUrl) throw new Error('The ZIP file is not in cloud storage');
+    const src = await fetch(fileUrl);
+    if (!src.ok) throw new Error(`Could not read the ZIP from storage (${src.status})`);
+    const buffer = Buffer.from(await src.arrayBuffer());
+
+    let packageData;
+    try {
+      packageData = outputFiles(buffer);
+    } catch (parseErr) {
+      // If it doesn't contain HTML files, it is just a regular archive file, not a presentation
+      console.log(`ZIP "${doc.fileName}" is not an HTML5 presentation (${parseErr.message})`);
+      await TrainingMaterial.updateOne({ _id: doc._id }, { html5Status: '', html5UpdatedAt: new Date() });
+      return false;
+    }
+
+    const { files, entry } = packageData;
+    if (!files.length || !entry) {
+      await TrainingMaterial.updateOne({ _id: doc._id }, { html5Status: '', html5UpdatedAt: new Date() });
+      return false;
+    }
+
+    const prefix = `training-html5/${doc._id}/${Date.now()}/`;
+    for (const f of files) {
+      await putObjectBuffer(prefix + f.path, f.data, contentTypeFor(f.path));
+    }
+    await TrainingMaterial.updateOne({ _id: doc._id }, {
+      html5Status: 'ready',
+      html5Prefix: prefix,
+      html5Entry: entry,
+      html5Error: '',
+      html5UpdatedAt: new Date()
+    });
+    console.log(`Presentation ZIP ready for "${doc.title}" (${files.length} files, entry: ${entry})`);
+    return true;
+  } catch (err) {
+    console.error(`Presentation ZIP extraction failed for "${doc.title}":`, err.message);
+    await TrainingMaterial.updateOne({ _id: doc._id }, {
+      html5Status: 'failed',
+      html5Error: String(err.message || err).slice(0, 500),
+      html5UpdatedAt: new Date()
+    });
+    return false;
+  }
+}
+
 async function convertOne(id) {
   const doc = await TrainingMaterial.findById(id);
   if (!doc || !isPresentationMaterial(doc)) return;
@@ -290,9 +344,14 @@ async function runQueue() {
   }
 }
 
-// Returns false when conversion is not set up (no Aspose keys / no S3) or the file isn't a presentation.
+// Returns false when conversion is not set up or the file isn't a presentation.
 export async function queueHtml5Conversion(doc) {
-  if (!doc || !isPresentationMaterial(doc) || !isAsposeConfigured() || !isS3Configured()) return false;
+  if (!doc || !isPresentationMaterial(doc) || !isS3Configured()) return false;
+  const ext = String(doc?.fileName || '').split('.').pop().toLowerCase();
+  if (ext === 'zip') {
+    return processPresentationZip(doc);
+  }
+  if (!isAsposeConfigured()) return false;
   const id = String(doc._id);
   if (queued.has(id)) return true;
   queued.add(id);
@@ -305,7 +364,7 @@ export async function queueHtml5Conversion(doc) {
 // After a server restart, pick up decks that were waiting or mid-conversion.
 let resumed = false;
 export async function resumeHtml5Queue() {
-  if (resumed || !isAsposeConfigured() || !isS3Configured()) return;
+  if (resumed || !isS3Configured()) return;
   resumed = true;
   const stuck = await TrainingMaterial.find({ html5Status: { $in: ['pending', 'processing'] } }).select('_id fileName').lean();
   for (const d of stuck) await queueHtml5Conversion(d);

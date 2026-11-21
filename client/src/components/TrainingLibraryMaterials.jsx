@@ -56,7 +56,7 @@ const CATEGORIES = [
 // Hard ceiling for one file. Every material is stored in the academy's AWS S3
 // bucket — the database only ever holds the metadata row plus the S3 key. There
 // is deliberately no base64/MongoDB fallback: the bytes never enter Mongo.
-const MAX_MB = 200;
+const MAX_MB = 400;
 
 const formatSize = (bytes = 0) =>
   bytes >= 1024 * 1024
@@ -67,12 +67,14 @@ const isPptMaterial = (m) => {
   const fmt = String(m?.fileFormat || '').toUpperCase();
   const name = String(m?.fileName || '').toLowerCase();
   const mime = String(m?.mimeType || '').toLowerCase();
-  return fmt === 'PPT' || fmt === 'PPTX' || name.endsWith('.ppt') || name.endsWith('.pptx') || mime.includes('presentation') || mime.includes('powerpoint');
+  const isZipDeck = (fmt === 'ZIP' || name.endsWith('.zip')) && Boolean(m?.html5Status || m?.html5Prefix);
+  return fmt === 'PPT' || fmt === 'PPTX' || name.endsWith('.ppt') || name.endsWith('.pptx') || mime.includes('presentation') || mime.includes('powerpoint') || isZipDeck;
 };
 
 const formatBadgeStyle = (m) => {
   const fmt = String(m?.fileFormat || '').toUpperCase();
   if (fmt === 'PPT' || fmt === 'PPTX') return 'bg-amber-100 text-amber-800 border-amber-200';
+  if ((fmt === 'ZIP' || String(m?.fileName || '').toLowerCase().endsWith('.zip')) && (m?.html5Status === 'ready')) return 'bg-teal-100 text-teal-800 border-teal-200';
   if (fmt === 'PDF') return 'bg-rose-100 text-rose-700 border-rose-200';
   if (['PNG', 'JPG', 'JPEG', 'WEBP'].includes(fmt)) return 'bg-sky-100 text-sky-700 border-sky-200';
   return 'bg-slate-100 text-slate-700 border-slate-200';
@@ -173,10 +175,11 @@ export default function TrainingLibraryMaterials({
   };
   const html5Badge = (m) => {
     const st = m.html5Status || '';
-    if (st === 'ready') return { text: 'Animated ✓', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200', action: false };
-    if (st === 'pending' || st === 'processing') return { text: 'Preparing animated…', cls: 'bg-amber-50 text-amber-700 border-amber-200', action: false };
-    if (st === 'failed') return { text: 'Animated failed · Retry', cls: 'bg-rose-50 text-rose-700 border-rose-200', action: true, title: m.html5Error || '' };
-    return { text: 'Make animated', cls: 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100', action: true };
+    const isZip = String(m?.fileName || '').toLowerCase().endsWith('.zip') || String(m?.fileFormat || '').toUpperCase() === 'ZIP';
+    if (st === 'ready') return { text: isZip ? 'Interactive ✓' : 'Animated ✓', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200', action: false };
+    if (st === 'pending' || st === 'processing') return { text: 'Preparing slides…', cls: 'bg-amber-50 text-amber-700 border-amber-200', action: false };
+    if (st === 'failed') return { text: 'Slide prep failed · Retry', cls: 'bg-rose-50 text-rose-700 border-rose-200', action: true, title: m.html5Error || '' };
+    return { text: isZip ? 'Unpack slides' : 'Make animated', cls: 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100', action: true };
   };
   const myId = currentUser.id || currentUser._id || currentUser.trainerId || currentUser.name || '';
 

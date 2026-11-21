@@ -83,6 +83,9 @@ export function CreateBatchModal({
   const [mode, setMode] = useState('Online');
   const [branch, setBranch] = useState('');
   const [days, setDays] = useState('Weekdays');
+  const todayYmd = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const [startDate, setStartDate] = useState(todayYmd);
+  const [endDate, setEndDate] = useState('');
   const [batchName, setBatchName] = useState('');
   const [nameEdited, setNameEdited] = useState(false);
   const [minStudents, setMinStudents] = useState(10);
@@ -161,6 +164,10 @@ export function CreateBatchModal({
       setError('Course, assigned trainer, and scheduled time are required.');
       return;
     }
+    if (endDate && startDate && endDate < startDate) {
+      setError('End date cannot be before the start date.');
+      return;
+    }
     setSaving(true);
     setError('');
     try {
@@ -172,6 +179,8 @@ export function CreateBatchModal({
         mode,
         branch,
         days,
+        startDate,
+        endDate,
         minStudents: Number(minStudents) || 10,
         maxStudents: Number(maxStudents) || 15,
         studentIds: selectedIds,
@@ -282,6 +291,18 @@ export function CreateBatchModal({
                   <option value="Mon-Sat">Mon–Sat</option>
                 </select>
               </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Start Date</label>
+                <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white font-semibold" />
+              </div>
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">End Date</label>
+                <input type="date" value={endDate} min={startDate || undefined} onChange={(e) => setEndDate(e.target.value)} className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white font-semibold" />
+              </div>
+              <p className="col-span-2 text-[11px] text-slate-500 -mt-1">Classes show on the calendar only between these dates. Leave End Date empty if not fixed yet.</p>
             </div>
 
             <div className="grid grid-cols-3 gap-2">
@@ -555,7 +576,9 @@ export function BatchDetailModal({
           scheduledTime: data.batch.scheduledTime || '',
           mode: data.batch.mode || 'Online',
           branch: data.batch.branch || '',
-          status: data.batch.status || 'Active'
+          status: data.batch.status || 'Active',
+          startDate: data.batch.startDate || (data.batch.createdAt ? String(data.batch.createdAt).slice(0, 10) : ''),
+          endDate: data.batch.endDate || ''
         });
       }
     } catch (err) {
@@ -745,6 +768,14 @@ export function BatchDetailModal({
                       <option value="Completed">Completed</option>
                       <option value="Archived">Archived</option>
                     </select>
+                    <label className="flex flex-col gap-1">
+                      <span className="text-[11px] font-bold text-slate-600">Start Date</span>
+                      <input type="date" value={editForm.startDate || ''} onChange={(e) => setEditForm((p) => ({ ...p, startDate: e.target.value }))} className="px-3 py-2 rounded-xl border border-slate-200 bg-white font-semibold" />
+                    </label>
+                    <label className="flex flex-col gap-1">
+                      <span className="text-[11px] font-bold text-slate-600">End Date (blank = until Completed)</span>
+                      <input type="date" value={editForm.endDate || ''} min={editForm.startDate || undefined} onChange={(e) => setEditForm((p) => ({ ...p, endDate: e.target.value }))} className="px-3 py-2 rounded-xl border border-slate-200 bg-white font-semibold" />
+                    </label>
                   </div>
                   <div className="flex justify-end gap-2">
                     <button type="button" onClick={() => setEditing(false)} className="px-3 py-1.5 rounded-xl bg-white border border-slate-200 font-bold cursor-pointer">Cancel</button>

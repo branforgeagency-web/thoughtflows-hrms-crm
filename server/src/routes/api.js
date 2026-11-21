@@ -10201,6 +10201,7 @@ router.post('/batches', async (req, res) => {
       branch = '',
       days = 'Weekdays',
       startDate = '',
+      endDate = '',
       minStudents = 10,
       maxStudents = 15,
       notes = '',
@@ -10211,6 +10212,11 @@ router.post('/batches', async (req, res) => {
     if (!course.trim()) return res.status(400).json({ error: 'Course is required to create a batch' });
     if (!trainerId) return res.status(400).json({ error: 'Assigned trainer is required to create a batch' });
     if (!scheduledTime.trim()) return res.status(400).json({ error: 'Scheduled time (e.g. 11:00 AM – 1:00 PM) is required' });
+    // Class dates: start defaults to today (IST); end is optional (blank = until Completed)
+    const isYmd = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ''));
+    const cleanStart = isYmd(startDate) ? startDate : new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10);
+    const cleanEnd = isYmd(endDate) ? endDate : '';
+    if (cleanEnd && cleanEnd < cleanStart) return res.status(400).json({ error: 'End date cannot be before the start date' });
 
     const trainer = await rosterTrainerFor(trainerId);
     if (!trainer) return res.status(404).json({ error: 'Trainer not found in roster' });
@@ -10249,7 +10255,8 @@ router.post('/batches', async (req, res) => {
       mode: mode === 'Classroom' ? 'Classroom' : 'Online',
       branch: branch || trainer.branchName || '',
       days: days || trainer.workingDays || 'Weekdays',
-      startDate,
+      startDate: cleanStart,
+      endDate: cleanEnd,
       minStudents: capMin,
       maxStudents: capMax,
       status: uniqueStudentIds.length >= capMin ? 'Active' : 'Forming',
@@ -10351,6 +10358,7 @@ router.put('/batches/:id', async (req, res) => {
       branch,
       days,
       startDate,
+      endDate,
       minStudents,
       maxStudents,
       status,
@@ -10373,6 +10381,10 @@ router.put('/batches/:id', async (req, res) => {
     if (typeof branch === 'string') batchDoc.branch = branch.trim();
     if (typeof days === 'string') batchDoc.days = days.trim();
     if (typeof startDate === 'string') batchDoc.startDate = startDate;
+    if (typeof endDate === 'string') batchDoc.endDate = endDate;
+    if (batchDoc.startDate && batchDoc.endDate && batchDoc.endDate < batchDoc.startDate) {
+      return res.status(400).json({ error: 'End date cannot be before the start date' });
+    }
     if (typeof minStudents === 'number' && minStudents > 0) batchDoc.minStudents = minStudents;
     if (typeof maxStudents === 'number' && maxStudents > 0) batchDoc.maxStudents = maxStudents;
     if (status && ['Forming', 'Active', 'Completed', 'Archived'].includes(status)) batchDoc.status = status;
@@ -11603,7 +11615,7 @@ router.put('/notifications/:id/read', async (req, res) => {
 // ==========================================
 // Training material files live in AWS S3 only — the database holds the metadata
 // row and the S3 key, never the bytes. Hard ceiling for one file:
-const MAX_S3_MATERIAL_BYTES = 200 * 1024 * 1024;
+const MAX_S3_MATERIAL_BYTES = 400 * 1024 * 1024;
 // Above this, an S3-backed file is never proxied through Node — the client is
 // redirected to the bucket so the download/stream uses S3 bandwidth and Range
 // requests instead of this process's memory.
@@ -11822,9 +11834,12 @@ router.get('/training/materials/:id/html5/:token/*', async (req, res) => {
     const rel = String(req.params[0] || '').replace(/\\/g, '/');
     if (!rel || rel.startsWith('/') || rel.split('/').includes('..')) return res.status(400).send('Bad path');
     if (/\.html?$/i.test(rel)) {
-      // Slideshow page: add the fit-to-window script so slides are never cut off
+      // Slideshow page: add the fit-to-window script for Aspose slides (iSpring / SCORM has its own responsive player)
       let html = (await getObjectBuffer(doc.html5Prefix + rel)).toString('utf8');
-      html = /<\/body>/i.test(html) ? html.replace(/<\/body>(?![\s\S]*<\/body>)/i, `${SLIDE_FIT_SNIPPET}</body>`) : html + SLIDE_FIT_SNIPPET;
+      const isIspringOrScorm = html.includes('ispring') || html.includes('PresentationPlayer') || html.includes('scorm') || html.includes('lms.js');
+      if (!isIspringOrScorm) {
+        html = /<\/body>/i.test(html) ? html.replace(/<\/body>(?![\s\S]*<\/body>)/i, `${SLIDE_FIT_SNIPPET}</body>`) : html + SLIDE_FIT_SNIPPET;
+      }
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       // Same link is reused for the session (viewer keeps it), so let the browser keep the page
       res.setHeader('Cache-Control', 'private, max-age=18000');
@@ -11848,10 +11863,13 @@ router.get('/training/materials/:id/html5/:token/*', async (req, res) => {
 router.post('/training/materials/:id/html5/convert', async (req, res) => {
   try {
     if (!canManageTrainingMaterials(req)) return res.status(403).json({ error: 'Only Head of Department and Manager can do this.' });
-    if (!isAsposeConfigured()) return res.status(503).json({ error: 'Animated slides are not set up: add ASPOSE_CLIENT_ID and ASPOSE_CLIENT_SECRET to the server environment.' });
     const doc = await TrainingMaterial.findById(req.params.id).lean();
     if (!doc) return res.status(404).json({ error: 'Material not found' });
-    if (!isPresentationMaterial(doc)) return res.status(400).json({ error: 'Only PowerPoint files can be turned into animated slides.' });
+    const ext = String(doc.fileName || '').split('.').pop().toLowerCase();
+    if (ext !== 'zip' && !isAsposeConfigured()) {
+      return res.status(503).json({ error: 'Animated slides are not set up: add ASPOSE_CLIENT_ID and ASPOSE_CLIENT_SECRET to the server environment.' });
+    }
+    if (!isPresentationMaterial(doc)) return res.status(400).json({ error: 'Only PowerPoint and presentation ZIP files can be turned into animated slides.' });
     const ok = await queueHtml5Conversion(doc);
     res.json({ queued: ok, status: ok ? 'pending' : doc.html5Status || '' });
   } catch (e) {

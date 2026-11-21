@@ -652,14 +652,13 @@ export default function LmsMaterialViewer({ material, canDownload: _downloadIgno
           return;
         }
 
-        // Presentations open ONLY as the animated HTML5 copy (made by the server with
-        // Aspose on upload) — never in PowerPoint's online viewer.
-        const isPresentation = PRESENTATION_EXTS.has(ext) || mime.includes('presentation') || mime.includes('powerpoint');
+        // Presentations (PPTX, PPT, or interactive HTML5/SCORM ZIPs) open as the animated HTML5 copy
+        const isPresentation = PRESENTATION_EXTS.has(ext) || mime.includes('presentation') || mime.includes('powerpoint') || ext === 'zip';
         setHtml5Url('');
         setHtml5Note('');
         setHtml5Waiting(false);
         if (isPresentation) {
-          setLoadingText('Opening animated slides…');
+          setLoadingText('Opening presentation slides…');
           // Reuse this session's slideshow link (valid 10 h) so the browser's
           // cache of the slides is used on every reopen — opens almost instantly.
           const linkKey = `tf_html5_link_${material._id}`;
@@ -675,6 +674,10 @@ export default function LmsMaterialViewer({ material, canDownload: _downloadIgno
             }
           } catch (err) {
             if (cancelled) return;
+            if (ext === 'zip') {
+              setViewerMode('unsupported');
+              return;
+            }
             setError(err?.response?.data?.error || 'Could not open the slides. Please try again in a moment.');
             return;
           }
@@ -683,17 +686,25 @@ export default function LmsMaterialViewer({ material, canDownload: _downloadIgno
             setHtml5Url(h.url);
             setHtml5Loading(true);
             setViewerMode('html5');
+            return;
           } else if (h?.status === 'pending' || h?.status === 'processing') {
             setHtml5Waiting(true);
             setViewerMode('html5_wait');
+            return;
           } else if (h?.status === 'failed') {
             setError(`The slides could not be prepared${h.error ? ` (${h.error})` : ''}. Ask your Head of Department or Manager to click "Retry" on this file in the library.`);
+            return;
+          } else if (ext === 'zip') {
+            // ZIP with no HTML5 presentation inside
+            setViewerMode('unsupported');
+            return;
           } else if (!h?.configured) {
-            setError('Slide viewing is not switched on yet on the server (Aspose keys missing). Please contact Admin.');
+            setError('Slide viewing is not switched on yet on the server (Aspose keys missing). Please contact Admin, or export from PowerPoint with iSpring as a ZIP.');
+            return;
           } else {
             setError('This file could not be prepared for viewing. Ask your Head of Department or Manager to click "Make animated" on it in the library.');
+            return;
           }
-          return;
         }
 
         // Presentations (PPTX, PPT) & other inline materials: fetch bytes and parse
@@ -1133,13 +1144,13 @@ export default function LmsMaterialViewer({ material, canDownload: _downloadIgno
                   <p className="text-xs font-semibold">Loading animated slides…</p>
                 </div>
               )}
-              {/* sandbox without allow-same-origin: the slideshow can't reach the dashboard's login */}
+              {/* allow-scripts allow-same-origin allow-forms: needed for interactive iSpring/HTML5 players */}
               <iframe
                 key={html5Url}
                 title={material?.title || 'Presentation'}
                 src={html5Url}
                 onLoad={() => setHtml5Loading(false)}
-                sandbox="allow-scripts"
+                sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
                 allow="fullscreen; autoplay"
                 allowFullScreen
                 className="w-full h-full border-0"
