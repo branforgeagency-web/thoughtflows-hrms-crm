@@ -110,11 +110,6 @@ export const HR_ROLE_ORDER = ['hr', 'tl', 'branch', 'business', 'head'];
 const lc = (v) => String(v || '').toLowerCase();
 const isBranchHeadRole = (role) => /branch\s*(manager|head)/i.test(role || '');
 const isBusinessLeadRole = (role) => /business\s*lead/i.test(role || '');
-const isAdminUser = (u) => {
-  const r = lc(u?.role);
-  const d = lc(u?.department);
-  return d === 'admin' || /super admin|^admin$|management|operational head|regional manager/.test(r);
-};
 const isHrUser = (u) => lc(u?.department) === 'hr' || /\bhr\b/i.test(u?.role || '');
 
 // Which HR desk a signed-in user belongs to (null = not an HR Department user)
@@ -133,7 +128,8 @@ export function inferHrRole(u) {
 // Can this account open the given role desk?
 export function hrRoleAllows(roleKey, u) {
   if (!u) return false;
-  if (isAdminUser(u)) return true;
+  // Each account opens only its own desk — no cross-desk or Admin entry
+  if (inferHrRole({ ...u, hrRole: undefined }) !== roleKey) return false;
   const role = String(u.role || '');
   switch (roleKey) {
     case 'hr':
@@ -186,6 +182,7 @@ export default function HrRoleLoginModal({ isOpen, roleKey = 'hr', onClose, onLo
         email: email.trim(), 
         password, 
         role: roleKey,
+        card: `hr:${roleKey}`, // only this desk's accounts may sign in here
         ...(loc?.success ? { location: loc, address: loc.address } : {})
       });
       const authedUser = res.data?.user;

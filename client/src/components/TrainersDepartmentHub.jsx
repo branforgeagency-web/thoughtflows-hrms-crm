@@ -318,7 +318,7 @@ export default function TrainersDepartmentHub({
   // Handle clicking a role card
   const handleRoleCardClick = (roleKey) => {
     // If user is already authenticated in this session for this role, enter directly
-    if (activeTrainerUser && (activeTrainerUser.trainerRole === roleKey || (roleKey === 'trainer' && activeTrainerUser.trainerId))) {
+    if (activeTrainerUser && (activeTrainerUser.trainerRole || 'trainer') === roleKey) {
       setSelectedLeaderId(activeTrainerUser.leaderId || null);
       if (roleKey === 'trainer') {
         setSelectedTrainerUser(activeTrainerUser);

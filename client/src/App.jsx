@@ -81,6 +81,8 @@ export default function App() {
     }
   });
 
+  const isBusinessLeadUser = (u) => /business\s*lead/i.test(String(u?.role || ''));
+
   const isHeadOfTrainerUser = (u) => {
     if (!u) return false;
     const role = String(u.role || '').toLowerCase();
@@ -158,8 +160,10 @@ export default function App() {
     // Start downloading this dashboard's code chunk now, while the user is
     // still reading the card or typing their password.
     preloadDashboard(card.id);
-    // If user is already authenticated in this session, grant immediate access
-    if (currentUser) {
+    // Already signed in: open only the dashboard this account belongs to.
+    // Any other card asks for that card's own login.
+    const ownDashboard = currentUser && (/business\s*lead/i.test(String(currentUser.role || '')) ? 'hr' : currentUser.department);
+    if (currentUser && (card.id === ownDashboard || card.id === 'training' || card.id === 'hr')) {
       setIsDashboardOpen(true);
     } else if (card.id === 'training' || card.id === 'hr') {
       // Training & HR open straight into their role-desk hub;
@@ -189,7 +193,13 @@ export default function App() {
 
     // Open dashboard corresponding to the authenticated department
     let targetDept = user.department;
-    if (isHeadOfTrainerUser(user)) targetDept = 'training';
+    if (isBusinessLeadUser(user)) {
+      // Business Lead always lands on their own Business Lead desk in the HR hub
+      targetDept = 'hr';
+      sessionStorage.setItem('thoughtflows_hr_user', JSON.stringify({ ...user, hrRole: 'business' }));
+      sessionStorage.setItem('thoughtflows_hr_role', 'business');
+      setHrRole('business');
+    } else if (isHeadOfTrainerUser(user)) targetDept = 'training';
     else if (!targetDept || targetDept === 'Medical Coding Faculty') targetDept = 'training';
     const matchedCard = DEPT_CARDS.find(c => c.id === targetDept) || DEPT_CARDS[0];
     preloadDashboard(matchedCard.id);

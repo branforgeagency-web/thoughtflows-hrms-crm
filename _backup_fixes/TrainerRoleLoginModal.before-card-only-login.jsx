@@ -1,0 +1,264 @@
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
+import {
+  Crown,
+  Briefcase,
+  Users,
+  GraduationCap,
+  Eye,
+  EyeOff,
+  Lock,
+  Mail,
+  ShieldCheck,
+  X,
+  ArrowRight
+} from 'lucide-react';
+
+const ROLE_META = {
+  head: {
+    key: 'head',
+    tier: 'EXECUTIVE LEADERSHIP',
+    title: 'Department Head of Training Sign In',
+    subtitle: 'Sign in with your Admin-created Department Head of Training account',
+    icon: Crown,
+    gradient: 'linear-gradient(135deg, #005a9c, #0284c7)',
+    badgeBg: 'bg-blue-50 text-blue-700 border-blue-200',
+    color: '#005a9c'
+  },
+  manager: {
+    key: 'manager',
+    tier: 'OPERATIONS MANAGEMENT',
+    title: 'Trainer Manager Sign In',
+    subtitle: 'Regional Training Operations · TN, KL, AP & TS',
+    icon: Briefcase,
+    gradient: 'linear-gradient(135deg, #00828a, #0d9488)',
+    badgeBg: 'bg-teal-50 text-teal-700 border-teal-200',
+    color: '#0d9488'
+  },
+  tl: {
+    key: 'tl',
+    tier: 'TEAM LEADERSHIP',
+    title: 'Training Team Lead Sign In',
+    subtitle: 'Faculty Squad Leaders · Tamil Nadu, Kerala & AP/TS',
+    icon: Users,
+    gradient: 'linear-gradient(135deg, #2e7d32, #16a34a)',
+    badgeBg: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    color: '#16a34a'
+  },
+  part_time: {
+    key: 'part_time',
+    tier: 'FACULTY DESK',
+    title: 'Part Time Trainer Sign In',
+    subtitle: 'Part-Time & Visiting Faculty Desks Across 12 Branches',
+    icon: GraduationCap,
+    gradient: 'linear-gradient(135deg, #8B5CF6, #6366F1)',
+    badgeBg: 'bg-purple-50 text-purple-700 border-purple-200',
+    color: '#7c3aed'
+  },
+  trainer: {
+    key: 'trainer',
+    tier: 'FACULTY DESK',
+    title: 'Trainer & Faculty Sign In',
+    subtitle: 'Medical Coding Faculty Desks Across 12 Branches',
+    icon: GraduationCap,
+    gradient: 'linear-gradient(135deg, #38BDF8, #2563EB)',
+    badgeBg: 'bg-sky-50 text-sky-700 border-sky-200',
+    color: '#0284c7'
+  }
+};
+
+export default function TrainerRoleLoginModal({
+  isOpen,
+  roleKey = 'head',
+  onClose,
+  onLoginSuccess
+}) {
+  const meta = ROLE_META[roleKey] || ROLE_META.head;
+  const Icon = meta.icon;
+
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  // When opened or roleKey changes, reset inputs to empty so user enters their Admin-created credentials
+  useEffect(() => {
+    if (isOpen) {
+      setEmail('');
+      setPassword('');
+      setError('');
+      setShowPassword(false);
+    }
+  }, [isOpen, roleKey]);
+
+  if (!isOpen) return null;
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!email.trim() || !password) {
+      setError('Please enter your email / Trainer ID and password.');
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+
+    try {
+      const res = await axios.post('/api/auth/login', {
+        email: email.trim(),
+        password,
+        role: roleKey
+      });
+
+      if (res.data?.success && res.data?.user) {
+        const authedUser = res.data.user;
+
+        // Persist session to sessionStorage
+        try {
+          sessionStorage.setItem('thoughtflows_user', JSON.stringify(authedUser));
+          sessionStorage.setItem('thoughtflows_trainer_user', JSON.stringify(authedUser));
+          const targetRole = authedUser.trainerRole || roleKey || 'head';
+          sessionStorage.setItem('thoughtflows_trainer_role', targetRole);
+          if (authedUser.leaderId) {
+            sessionStorage.setItem('thoughtflows_trainer_leader_id', authedUser.leaderId);
+          }
+          if (targetRole === 'trainer' || authedUser.trainerId) {
+            sessionStorage.setItem('thoughtflows_trainer_selected_user', JSON.stringify(authedUser));
+          }
+        } catch (_) {}
+
+        setLoading(false);
+        onLoginSuccess(authedUser);
+        return;
+      }
+      setError(res.data?.message || 'Login failed. Please verify your credentials.');
+    } catch (err) {
+      const msg = err.response?.data?.message || err.response?.data?.error || 'Authentication failed. Please verify credentials.';
+      setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-md animate-fadeIn overflow-y-auto">
+      <div className="relative w-full max-w-[500px] bg-white rounded-[28px] p-6 sm:p-8 shadow-2xl border border-slate-100 my-auto text-left transition-all">
+        {/* Close Button */}
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute top-5 right-5 w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-800 flex items-center justify-center transition-colors cursor-pointer"
+          title="Close Login"
+        >
+          <X className="w-4 h-4" />
+        </button>
+
+        {/* Role Header Banner */}
+        <div className="flex items-center gap-3.5 mb-5">
+          <div
+            className="w-13 h-13 rounded-2xl grid place-items-center text-white shadow-md shrink-0"
+            style={{ background: meta.gradient }}
+          >
+            <Icon className="w-7 h-7" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <span className={`inline-block text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md border mb-1 ${meta.badgeBg}`}>
+              {meta.tier}
+            </span>
+            <h2 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight leading-tight">
+              {meta.title}
+            </h2>
+            <p className="text-xs text-slate-500 font-medium truncate mt-0.5">
+              {meta.subtitle}
+            </p>
+          </div>
+        </div>
+
+        {/* Admin Account Requirement Notice */}
+        <div className="mb-5 bg-slate-50 border border-slate-200/80 rounded-2xl p-3.5 flex items-start gap-2.5">
+          <ShieldCheck className="w-4 h-4 text-teal-600 shrink-0 mt-0.5" />
+          <div className="text-xs text-slate-600">
+            <span className="font-bold text-slate-800 block mb-0.5">{roleKey === 'head' ? 'Admin-Created Head of Trainer Account Required' : 'Admin-Created Account Required'}</span>
+            {roleKey === 'head' ? 'Please create the user in Admin Management Dashboard with role "HEAD OF TRAINER", and sign in with that login.' : 'Please sign in using the email address and password created for you in Admin. If you do not have an account yet, please contact your administrator.'}
+          </div>
+        </div>
+
+        {/* Error Alert */}
+        {error && (
+          <div className="p-3 mb-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium flex items-center gap-2">
+            <span className="font-bold">⚠</span>
+            <span>{error}</span>
+          </div>
+        )}
+
+        {/* Form */}
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-[11px] font-extrabold uppercase tracking-wider text-slate-700 mb-1.5 flex items-center gap-1.5">
+              <Mail className="w-3.5 h-3.5 text-slate-400" />
+              {roleKey === 'head' ? 'Department Head of Training Email' : (roleKey === 'trainer' || roleKey === 'part_time') ? 'Email Address or Trainer ID' : 'Account Email'}
+            </label>
+            <input
+              type="text"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder={roleKey === 'head' ? 'Enter Department Head of Training email' : (roleKey === 'trainer' || roleKey === 'part_time') ? 'Enter email address or Trainer ID' : 'Enter email address'}
+              required
+              autoFocus
+              autoComplete="username"
+              className="w-full px-3.5 py-2.5 text-xs text-slate-900 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 font-medium outline-none transition-all"
+            />
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-extrabold uppercase tracking-wider text-slate-700 mb-1.5 flex items-center gap-1.5">
+              <Lock className="w-3.5 h-3.5 text-slate-400" />
+              Password
+            </label>
+            <div className="relative">
+              <input
+                type={showPassword ? 'text' : 'password'}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Enter password"
+                required
+                autoComplete="current-password"
+                className="w-full px-3.5 py-2.5 pr-10 text-xs text-slate-900 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 font-medium outline-none transition-all"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
+                title={showPassword ? 'Hide password' : 'Show password'}
+              >
+                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
+
+          {/* Submit Button */}
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full py-3 px-5 rounded-xl text-white font-extrabold text-sm flex items-center justify-center gap-2 shadow-md hover:shadow-lg transition-all active:scale-[0.98] cursor-pointer disabled:opacity-70"
+            style={{ background: meta.gradient }}
+          >
+            <span>{loading ? 'Authenticating...' : `Access ${meta.title.replace(' Sign In', '')} Dashboard`}</span>
+            <ArrowRight className="w-4 h-4" />
+          </button>
+        </form>
+
+        {/* Security & Access Notice */}
+        <div className="mt-5 pt-3.5 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-400">
+          <div className="flex items-center gap-1">
+            <ShieldCheck className="w-3.5 h-3.5 text-teal-600" />
+            <span>Role-Based API Guard Enforced</span>
+          </div>
+          <span className="font-mono text-[10px]">Thoughtflows Security</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+

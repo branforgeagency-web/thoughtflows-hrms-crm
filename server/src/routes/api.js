@@ -7292,6 +7292,16 @@ const mapRoleOrDeptToDashboard = (role = '', department = '') => {
   const r = (role || '').toLowerCase();
   const d = (department || '').toLowerCase();
 
+  // Business Lead's desk lives in the HR hub (Business Lead card), whatever
+  // department the account was saved under — never the Marketing dashboard.
+  if (/business\s*lead/.test(r)) {
+    return {
+      department: 'hr',
+      departmentCode: 'HR',
+      departmentName: 'HR & Counseling',
+      color: '#ea580c'
+    };
+  }
   if (r.includes('trainer') || r.includes('training') || r.includes('faculty') || d.includes('faculty') || d.includes('training')) {
     return {
       department: 'training',
@@ -7364,6 +7374,47 @@ const mapRoleOrDeptToDashboard = (role = '', department = '') => {
   };
 };
 
+// ---- Login cards: which card(s) each account is allowed to sign in from ----
+//   hr:<desk>        HR Department hub role cards (hr, tl, branch, business, head)
+//   training:<desk>  Trainers Department hub role cards (head, manager, tl, part_time, trainer)
+//   leadership:branch  branch sign-in inside the Leadership Hub
+//   <dashboard>      main landing cards (cccp, marketing, leadership, student, admin, wiseapp)
+const LOGIN_CARD_LABELS = {
+  'hr:hr': 'HR', 'hr:tl': 'HR Team Lead', 'hr:branch': 'Branch Head', 'hr:business': 'Business Lead', 'hr:head': 'HR Department Head',
+  'training:head': 'Department Head of Training', 'training:manager': 'Trainer Manager', 'training:tl': 'Training Team Lead',
+  'training:part_time': 'Part Time Trainer', 'training:trainer': 'Trainer',
+  cccp: 'CCCP', marketing: 'Marketing', leadership: 'Leadership', 'leadership:branch': 'Branch',
+  student: 'Student', admin: 'Admin & Management', wiseapp: 'WiseApp'
+};
+const LOGIN_CARD_WHERE = {
+  'hr:hr': 'the HR card in HR Department', 'hr:tl': 'the HR Team Lead card in HR Department',
+  'hr:branch': 'the Branch Head card in HR Department', 'hr:business': 'the Business Lead card in HR Department',
+  'hr:head': 'the HR Department Head card in HR Department',
+  'training:head': 'the Department Head of Training card in Trainers Department', 'training:manager': 'the Trainer Manager card in Trainers Department',
+  'training:tl': 'the Team Lead card in Trainers Department', 'training:part_time': 'the Part Time Trainer card in Trainers Department',
+  'training:trainer': 'the Full-Time Trainer card in Trainers Department',
+  cccp: 'the CCCP Dashboard card', marketing: 'the Marketing Department card', leadership: 'the Leadership Hub card',
+  'leadership:branch': 'the Leadership Hub card', student: 'the Student Dashboard card',
+  admin: 'the Admin & Management card', wiseapp: 'the WiseApp Academy Hub card'
+};
+function loginCardsFor(user = {}) {
+  const role = String(user.role || '');
+  const dept = String(user.department || '').toLowerCase();
+  if (/business\s*lead/i.test(role)) return ['hr:business'];
+  if (/branch\s*(manager|head)/i.test(role)) return ['hr:branch', 'leadership', 'leadership:branch'];
+  if (dept === 'hr') {
+    if (/\bhead\b|\bhod\b/i.test(role)) return ['hr:head'];
+    if (/\btl\b|team\s*lead/i.test(role)) return ['hr:tl'];
+    return ['hr:hr'];
+  }
+  if (dept === 'training') {
+    const tr = String(user.trainerRole || 'trainer').toLowerCase().replace(/[\s-]+/g, '_');
+    return [`training:${['head', 'manager', 'tl', 'part_time'].includes(tr) ? tr : 'trainer'}`];
+  }
+  if (dept === 'leadership') return ['leadership', 'leadership:branch'];
+  return [dept];
+}
+
 router.post('/auth/login', async (req, res) => {
   const { email, password } = req.body || {};
   if (!email || !password) {
@@ -7371,7 +7422,19 @@ router.post('/auth/login', async (req, res) => {
   }
   const normalizedEmail = String(email).trim().toLowerCase();
   const deny = (message = 'Invalid email or password.') => res.status(401).json({ success: false, message });
-  const grant = (user, message) => res.json({ success: true, message, user: { ...user, token: signToken(user) } });
+  // Every login card sends `card`; an account may only sign in from its own card(s).
+  const card = String(req.body?.card || '').trim().toLowerCase();
+  const cardMismatch = (user) => {
+    if (!card) return null;
+    const home = loginCardsFor(user);
+    if (home.includes(card)) return null;
+    return `This is a ${LOGIN_CARD_LABELS[home[0]] || 'different'} account. Please sign in from ${LOGIN_CARD_WHERE[home[0]] || 'your own login card'}.`;
+  };
+  const grant = (user, message) => {
+    const mismatch = cardMismatch(user);
+    if (mismatch) return res.status(403).json({ success: false, message: mismatch });
+    return res.json({ success: true, message, user: { ...user, token: signToken(user) } });
+  };
 
   // Attach the signed-in trainer's roster record (Trainer collection) so the
   // trainer dashboard runs on real shift / course / branch data
@@ -7498,6 +7561,9 @@ router.post('/auth/login', async (req, res) => {
           ...rosterFields,
           ...(studentId ? { studentId } : {})
         };
+        // Wrong login card: refuse before any login attendance is recorded
+        const wrongCard = cardMismatch(grantedUser);
+        if (wrongCard) return res.status(403).json({ success: false, message: wrongCard });
         // Training staff (Trainer, Part-time, TL, Manager, Head): login = attendance start
         if (mapping.department === 'training') {
           try {
@@ -7507,7 +7573,7 @@ router.post('/auth/login', async (req, res) => {
           }
         }
         // HR staff: login = record attendance with location
-        if (mapping.department === 'hr' || /hr|counsel/i.test(dbUser.role || '')) {
+        if ((mapping.department === 'hr' || /hr|counsel/i.test(dbUser.role || '')) && !/business\s*lead/i.test(dbUser.role || '')) {
           try {
             const locBody = req.body?.location ? { location: req.body.location, address: req.body.address } : {};
             await applySelfAttendance({ user: grantedUser, body: locBody, query: {} }, 'start_work', 'login');

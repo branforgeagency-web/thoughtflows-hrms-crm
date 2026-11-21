@@ -126,6 +126,7 @@ export default function BranchLoginModal({
         email: normEmail,
         password,
         department: 'leadership',
+        card: 'leadership:branch',
         ...(loc?.success ? { location: loc, address: loc.address } : {})
       });
 

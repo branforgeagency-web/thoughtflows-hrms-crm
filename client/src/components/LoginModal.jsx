@@ -202,6 +202,7 @@ export default function LoginModal({
         email: normalizedEmail, 
         password,
         department: activeDept.id,
+        card: activeDept.id, // only accounts that belong to this card may sign in here
         ...(loc?.success ? { location: loc, address: loc.address } : {})
       });
       if (res.data?.success && res.data?.user) {

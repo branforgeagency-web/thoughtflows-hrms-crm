@@ -108,7 +108,8 @@ export default function TrainerRoleLoginModal({
       const res = await axios.post('/api/auth/login', {
         email: email.trim(),
         password,
-        role: roleKey
+        role: roleKey,
+        card: `training:${roleKey}` // only this desk's accounts may sign in here
       });
 
       if (res.data?.success && res.data?.user) {
