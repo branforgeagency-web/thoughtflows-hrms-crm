@@ -588,10 +588,29 @@ const trackRequestEnd = (config) => {
   }
 };
 
+// Demo / session join links saved while testing locally carry a localhost
+// address. On the live site, point them at the live site instead.
+const LOCAL_JOIN_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?::\d+)?(\/join\/(?:demo|session)\/.*)$/i;
+const fixLocalJoinLinks = (data, depth = 0) => {
+  if (typeof window === 'undefined' || depth > 6 || !data || typeof data !== 'object') return data;
+  if (/^(localhost|127\.0\.0\.1)$/i.test(window.location.hostname)) return data;
+  const origin = window.location.origin;
+  if (Array.isArray(data)) { data.forEach((v) => fixLocalJoinLinks(v, depth + 1)); return data; }
+  for (const k of Object.keys(data)) {
+    const v = data[k];
+    if (typeof v === 'string') {
+      const m = v.match(LOCAL_JOIN_RE);
+      if (m) data[k] = origin + m[1];
+    } else if (v && typeof v === 'object') fixLocalJoinLinks(v, depth + 1);
+  }
+  return data;
+};
+
 api.interceptors.request.use((config) => trackRequestStart(attachToken(config)));
 api.interceptors.response.use(
   (r) => {
     trackRequestEnd(r?.config);
+    try { fixLocalJoinLinks(r?.data); } catch (_) {}
     const method = String(r?.config?.method || 'get').toLowerCase();
     if (!['get', 'head', 'options'].includes(method)) clearApiGetCache();
     return r;

@@ -13359,7 +13359,7 @@ async function uniqueDemoJoinCode() {
 function publicAppBase(req) {
   const clean = (u) => String(u || '').trim().replace(/\/+$/, '');
   if (process.env.PUBLIC_APP_URL) return clean(process.env.PUBLIC_APP_URL);
-  const origin = clean(req.get('origin'));
+  const origin = clean(req.get('origin') || (() => { try { return new URL(req.get('referer')).origin; } catch (_) { return ''; } })());
   if (/^https?:\/\//i.test(origin)) return origin;
   const first = String(process.env.CLIENT_URL || '').split(',').map(clean).find((u) => /^https?:\/\//i.test(u));
   return first || '';
@@ -13396,7 +13396,9 @@ router.get('/demos/:id/classroom-join', async (req, res) => {
     if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid demo' });
     let demo = await Demo.findById(req.params.id);
     if (!demo) return res.status(404).json({ error: 'Demo not found' });
-    if (demo.meetingProvider !== 'livekit' || !demo.demoRoom || !demo.joinCode) demo = await ensureDemoClassroom(demo, publicAppBase(req));
+    const joinBase = publicAppBase(req);
+    const staleLink = joinBase && demo.link && !String(demo.link).startsWith(joinBase + '/');
+    if (demo.meetingProvider !== 'livekit' || !demo.demoRoom || !demo.joinCode || staleLink) demo = await ensureDemoClassroom(demo, joinBase);
     await Demo.updateMany({ demoRoom: demo.demoRoom }, { $set: { classroomLiveAt: new Date() } });
     const token = livekitToken({
       room: demo.demoRoom,
