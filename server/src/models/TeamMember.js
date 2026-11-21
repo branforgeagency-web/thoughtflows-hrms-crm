@@ -18,4 +18,6 @@ const teamMemberSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+teamMemberSchema.index({ name: 1 });
+
 export default mongoose.models.TeamMember || mongoose.model('TeamMember', teamMemberSchema);

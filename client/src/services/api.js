@@ -617,6 +617,17 @@ api.interceptors.response.use(
   },
   (err) => {
     trackRequestEnd(err?.config);
+    // A GET that hit a gateway timeout / server waking up (502/503/504, or no
+    // response at all) is safe to repeat — retry it once after a short pause
+    // instead of showing the user an error.
+    const cfg = err?.config;
+    const status = err?.response?.status;
+    const method = String(cfg?.method || 'get').toLowerCase();
+    const retryable = !status || [502, 503, 504].includes(status);
+    if (cfg && method === 'get' && retryable && !cfg.__retried && !axios.isCancel(err)) {
+      cfg.__retried = true;
+      return new Promise((resolve) => setTimeout(resolve, 1500)).then(() => api(cfg));
+    }
     return handleAuthError(err);
   }
 );

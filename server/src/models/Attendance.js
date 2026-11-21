@@ -53,5 +53,7 @@ const attendanceSchema = new mongoose.Schema(
 );
 
 attendanceSchema.index({ branchName: 1, employeeName: 1, date: 1 }, { unique: true });
+// Self-attendance / day views look up by date + name (no branch) — this keeps them off a collection scan
+attendanceSchema.index({ date: 1, employeeName: 1 });
 
 export default mongoose.models.Attendance || mongoose.model('Attendance', attendanceSchema);

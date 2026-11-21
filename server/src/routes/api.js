@@ -106,7 +106,8 @@ router.use(async (req, res, next) => {
     if (!hit || Date.now() - hit.at > 60000) {
       const or = [];
       if (mongoose.isValidObjectId(u.sub)) or.push({ _id: u.sub });
-      if (u.email) or.push({ email: exactNameRx(u.email) });
+      // User.email is stored lowercased + unique, so an exact match uses the index (a regex scans every user)
+      if (u.email) or.push({ email: String(u.email).trim().toLowerCase() });
       const doc = or.length ? await User.findOne({ $or: or }).select('role branch').lean() : null;
       hit = { at: Date.now(), doc };
       liveUserCache.set(key, hit);
@@ -2994,9 +2995,22 @@ router.get('/calls/log', async (req, res) => {
 
 // Self attendance for the signed-in staff member (HR dashboard clock-in / break /
 // end-of-day). Writes the same Attendance rows Leadership's branch view reads.
+// TeamMember name → { name, branchName } changes rarely; cache it so every
+// attendance call doesn't run a case-insensitive regex scan over TeamMember.
+const selfMemberCache = new Map(); // lowercased name → { at, member }
 async function selfAttendanceKey(req) {
   const employeeName = String(req.user?.name || '').trim();
-  const member = employeeName ? await TeamMember.findOne({ name: new RegExp(`^${escapeRegex(employeeName)}$`, 'i') }).select('name branchName') : null;
+  let member = null;
+  if (employeeName) {
+    const key = employeeName.toLowerCase();
+    const hit = selfMemberCache.get(key);
+    if (hit && Date.now() - hit.at < 5 * 60000) member = hit.member;
+    else {
+      member = await TeamMember.findOne({ name: employeeName }).select('name branchName').lean()
+        || await TeamMember.findOne({ name: new RegExp(`^${escapeRegex(employeeName)}$`, 'i') }).select('name branchName').lean();
+      selfMemberCache.set(key, { at: Date.now(), member });
+    }
+  }
   return {
     employeeName: member?.name || employeeName,
     branchName: member?.branchName || String(req.body?.branchName || req.query?.branchName || req.user?.branch || '').trim() || 'Unassigned'
@@ -3042,15 +3056,21 @@ const attendanceView = (r) => {
   };
 };
 
+// Today's attendance row for one person. Tries the exact name first (served by the
+// { date, employeeName } index), and only falls back to the slower
+// case/whitespace-insensitive match when the stored name is spelled differently.
+async function findTodayAttendance(employeeName, branchName, date, { lean = false } = {}) {
+  const run = (q) => (lean ? Attendance.findOne(q).lean() : Attendance.findOne(q));
+  return (await run({ date, employeeName }))
+    || (await run({ date, employeeName: exactNameRx(employeeName) }));
+}
+
 router.get('/attendance/me', async (req, res) => {
   try {
     const { employeeName, branchName } = await selfAttendanceKey(req);
     if (!employeeName) return res.status(400).json({ error: 'No staff name on this login' });
     const date = todayStr();
-    let rec = await Attendance.findOne({ employeeName: exactNameRx(employeeName), date });
-    if (!rec && branchName) {
-      rec = await Attendance.findOne({ employeeName, branchName, date });
-    }
+    const rec = await findTodayAttendance(employeeName, branchName, date, { lean: true });
     res.json(attendanceView(rec) || { 
       employeeName, 
       branchName, 
@@ -3080,10 +3100,7 @@ async function applySelfAttendance(req, action, source = '') {
     const hhmmFormatted = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
     const hhmm = now.toTimeString().slice(0, 5);
 
-    let rec = await Attendance.findOne({ employeeName: exactNameRx(employeeName), date });
-    if (!rec && branchName) {
-      rec = await Attendance.findOne({ employeeName, branchName, date });
-    }
+    let rec = await findTodayAttendance(employeeName, branchName, date);
     if (!rec) {
       rec = new Attendance({ 
         employeeName, 
