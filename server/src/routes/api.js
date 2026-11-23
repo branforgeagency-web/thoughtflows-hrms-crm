@@ -5369,6 +5369,9 @@ router.get('/hr/lead-counts', async (req, res) => {
     const studentMatchConds = [];
     if (req.hrTeamNames) {
       studentMatchConds.push(ownerAnyQuery(pickTeamNames(req.hrTeamNames, counselor), STUDENT_OWNER_FIELDS, BRANCH_FIELDS_STUDENT));
+    } else if (allocationDesk) {
+      // Branch desk: same rule as the Admitted Students list (GET /students)
+      studentMatchConds.push(await branchStudentQuery(effectiveBranch, counselor));
     } else if (effectiveCounselor && effectiveCounselor !== 'all') {
       const ownerBranch = isScopedHr(req) ? (req.user?.branch || '') : (effectiveBranch && effectiveBranch !== 'all' ? effectiveBranch : '');
       const who = isScopedHr(req) ? [effectiveCounselor] : splitCounselorParam(effectiveCounselor);
