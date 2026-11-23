@@ -141,6 +141,12 @@ router.use((req, res, next) => {
 // Resolved once per request so the sync ownership checks can use it.
 router.use(async (req, res, next) => {
   try { req.hrTeamNames = await hrTeamScopeNames(req); } catch (_) { req.hrTeamNames = null; }
+  // Branch Head / Business Lead: names of their branch's HRs (record ownership checks)
+  try {
+    req.branchOwnerNames = (req.user && isScopedBranchManager(req))
+      ? await branchStudentOwnerNames(getBranchManagerBranch(req))
+      : null;
+  } catch (_) { req.branchOwnerNames = null; }
   next();
 });
 
@@ -3617,6 +3623,70 @@ async function branchLeadOwnerNames(branch) {
   branchLeadOwnerCache.set(key, { at: Date.now(), names });
   return names;
 }
+// ---- Admitted students on a Branch Head / Business Lead desk ----
+// Same rule as leads: a student belongs to the branch of the HR who admitted
+// them (hrName / counsellor), not the sheet's BRANCH column — bulk uploads
+// stamp the uploader's default branch on "ONLINE" / blank rows. The branch
+// field is used only when the student's HR is not staff of any branch
+// (blank HR, or a sheet name that matches nobody).
+const branchStudentOwnerCache = new Map();
+async function branchStudentOwnerNames(branch) {
+  const short = branchShort(branch);
+  const key = short.toLowerCase();
+  if (!key) return [];
+  const hit = branchStudentOwnerCache.get(key);
+  if (hit && Date.now() - hit.at < 60000) return hit.names;
+  const bRx = new RegExp(escapeRegex(short), 'i');
+  const [owners, leads] = await Promise.all([
+    branchLeadOwnerNames(branch),
+    User.find({ $and: [{ role: /business\s*(lead|head)/i }, ACTIVE_USER, { branch: bRx }] }).select('name').lean()
+  ]);
+  const seen = new Set();
+  const names = [...owners, ...leads.map((u) => String(u.name || '').trim())].filter((n) => {
+    const k = normName(n);
+    if (!n || seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  branchStudentOwnerCache.set(key, { at: Date.now(), names });
+  return names;
+}
+// Every HR / Branch Head / Business Lead with a branch (any branch)
+const allBranchStaffCache = { at: 0, names: [] };
+async function allBranchStaffNames() {
+  if (Date.now() - allBranchStaffCache.at < 60000) return allBranchStaffCache.names;
+  const [users, team] = await Promise.all([
+    User.find({ $and: [ACTIVE_USER, { branch: { $nin: [null, ''] } }, { $or: [HR_STAFF, { role: /branch\s*(head|manager)|business\s*(lead|head)/i }] }] }).select('name role').lean(),
+    TeamMember.find({ $and: [deptCodeQuery('DEP-HR-001'), { branchName: { $nin: [null, ''] } }] }).select('name role').lean()
+  ]);
+  const heads = await deptHeadNameSet();
+  const seen = new Set();
+  const names = [...users, ...team]
+    .filter((u) => !isDeptHeadRole(u.role) && !heads.has(normName(u.name)))
+    .map((u) => String(u.name || '').trim())
+    .filter((n) => { const k = normName(n); if (!n || seen.has(k)) return false; seen.add(k); return true; });
+  allBranchStaffCache.at = Date.now();
+  allBranchStaffCache.names = names;
+  return names;
+}
+const STUDENT_BRANCH_OWNER_FIELDS = ['hrName', 'counselorAssigned', 'counselor', 'counselorName', 'allocatedTo'];
+async function branchStudentQuery(branch, requestedHr) {
+  const owners = await branchStudentOwnerNames(branch);
+  const wanted = splitCounselorParam(requestedHr);
+  const picked = owners.length ? pickTeamNames(owners, requestedHr) : [];
+  const ownedByBranch = ownerAnyQuery(picked.length ? picked : [NO_MATCH_NAME], STUDENT_BRANCH_OWNER_FIELDS, []);
+  // One HR picked in the filter → only that HR's students
+  if (wanted.length) return ownedByBranch;
+  const bRx = new RegExp(escapeRegex(branchShort(branch)), 'i');
+  const ownerKeys = new Set(owners.map(normName));
+  const otherStaff = (await allBranchStaffNames()).filter((n) => !ownerKeys.has(normName(n)));
+  const branchFieldMatch = { $or: BRANCH_FIELDS_STUDENT.map((f) => ({ [f]: bRx })) };
+  const unownedHere = otherStaff.length
+    ? { $and: [branchFieldMatch, { $nor: [ownerAnyQuery(otherStaff, STUDENT_BRANCH_OWNER_FIELDS, [])] }] }
+    : branchFieldMatch;
+  return { $or: [ownedByBranch, unownedHere] };
+}
+
 async function branchAllocationQuery(branch, requestedCounselor) {
   const staff = await branchLeadOwnerNames(branch);
   const names = staff.length ? pickTeamNames(staff, requestedCounselor) : [NO_MATCH_NAME];
@@ -3694,6 +3764,11 @@ const teamOwnsRecord = (req, rec) => {
 const branchOwnsRecord = (req, rec) => {
   const ub = bClean(getBranchManagerBranch(req));
   if (!ub) return false;
+  // Owned by one of this branch's HRs / its Branch Head / Business Lead
+  if (Array.isArray(req.branchOwnerNames) && req.branchOwnerNames.length) {
+    const owners = recordOwnerNames(rec);
+    if (owners.some((o) => req.branchOwnerNames.some((n) => namesMatch(n, o, '', '')))) return true;
+  }
   const vals = [rec?.branch, rec?.leadBranch, rec?.location].map(bClean).filter(Boolean);
   return vals.some((v) => v.includes(ub) || ub.includes(v));
 };
@@ -3859,8 +3934,8 @@ router.get('/students', async (req, res) => {
     }
 
     if (isBM && userBranch) {
-      const bRx = new RegExp(escapeRegex(userBranch), 'i');
-      andConditions.push({ $or: [{ branch: bRx }, { location: bRx }, { leadBranch: bRx }] });
+      // Branch Head / Business Lead: students admitted by their branch's HRs
+      andConditions.push(await branchStudentQuery(userBranch, req.query.hrName));
     } else if (req.hrTeamNames) {
       andConditions.push(ownerAnyQuery(pickTeamNames(req.hrTeamNames, req.query.hrName), STUDENT_OWNER_FIELDS, BRANCH_FIELDS_STUDENT));
     } else if (isScopedHr(req)) {
@@ -3871,8 +3946,8 @@ router.get('/students', async (req, res) => {
     } else if (hrName && hrName !== 'all') {
       andConditions.push(ownerQueryWithBranch(hrName, req.query.branch || '', STUDENT_OWNER_FIELDS, BRANCH_FIELDS_STUDENT));
     } else if (userBranch && !/^all/i.test(userBranch)) {
-      const bRx = new RegExp(escapeRegex(userBranch), 'i');
-      andConditions.push({ $or: [{ branch: bRx }, { location: bRx }, { leadBranch: bRx }] });
+      // Admin / Department Head opening one branch's desk — same rule as the Branch Head
+      andConditions.push(await branchStudentQuery(userBranch));
     }
 
     if (search) {
