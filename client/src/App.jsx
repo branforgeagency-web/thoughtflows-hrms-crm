@@ -193,7 +193,13 @@ export default function App() {
 
     // Open dashboard corresponding to the authenticated department
     let targetDept = user.department;
-    if (isBusinessLeadUser(user)) {
+    if (user.hrRole) {
+      // Signed in from an HR role in the portal login — open that role's own desk in the HR hub
+      targetDept = 'hr';
+      sessionStorage.setItem('thoughtflows_hr_user', JSON.stringify(user));
+      sessionStorage.setItem('thoughtflows_hr_role', user.hrRole);
+      setHrRole(user.hrRole);
+    } else if (isBusinessLeadUser(user)) {
       // Business Lead always lands on their own Business Lead desk in the HR hub
       targetDept = 'hr';
       sessionStorage.setItem('thoughtflows_hr_user', JSON.stringify({ ...user, hrRole: 'business' }));

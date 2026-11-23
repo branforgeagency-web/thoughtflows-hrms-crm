@@ -2,6 +2,21 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Eye, EyeOff } from 'lucide-react';
 import { fetchCurrentLocation } from '../utils/geolocation';
+import { HR_ROLE_META, HR_ROLE_ORDER, hrRoleAllows } from './HrRoleLoginModal';
+
+// Role desks inside the HR and Training departments. Each role signs in
+// with its own login card (hr:<role> / training:<role>) and lands on its own desk.
+export const DEPT_ROLES = {
+  hr: HR_ROLE_ORDER.map((key) => ({ key, label: HR_ROLE_META[key].name, adminRole: HR_ROLE_META[key].adminRole })),
+  training: [
+    { key: 'head', label: 'Dept Head of Training', adminRole: 'Department Head of Training' },
+    { key: 'manager', label: 'Trainer Manager', adminRole: 'Trainer Manager' },
+    { key: 'tl', label: 'Training Team Lead', adminRole: 'Training Team Lead' },
+    { key: 'trainer', label: 'Trainer', adminRole: 'Trainer' },
+    { key: 'part_time', label: 'Part Time Trainer', adminRole: 'Part Time Trainer' }
+  ]
+};
+const DEFAULT_ROLE = { hr: 'hr', training: 'trainer' };
 
 export const TRAINER_PROFILES = [
   {
@@ -168,12 +183,14 @@ export default function LoginModal({
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [activeRoleKey, setActiveRoleKey] = useState(DEFAULT_ROLE[initialDepartment] || null);
 
   // Reset inputs when modal opens or initialDepartment changes
   useEffect(() => {
     if (isOpen) {
       const dept = DEPARTMENTS.find(d => d.id === initialDepartment) || DEPARTMENTS[1];
       setActiveDeptId(dept.id);
+      setActiveRoleKey(DEFAULT_ROLE[dept.id] || null);
       if (dept.id === 'leadership') {
         setEmail('leadership@thoughtflows.in');
         setPassword('Leadership@123');
@@ -187,6 +204,9 @@ export default function LoginModal({
   }, [isOpen, initialDepartment]);
 
   const activeDept = DEPARTMENTS.find(d => d.id === activeDeptId) || DEPARTMENTS[0];
+  const deptRoles = DEPT_ROLES[activeDept.id] || null;
+  const activeRole = deptRoles ? (deptRoles.find(r => r.key === activeRoleKey) || deptRoles[0]) : null;
+  const loginCard = activeRole ? `${activeDept.id}:${activeRole.key}` : activeDept.id;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -202,12 +222,29 @@ export default function LoginModal({
         email: normalizedEmail, 
         password,
         department: activeDept.id,
-        card: activeDept.id, // only accounts that belong to this card may sign in here
+        ...(activeRole ? { role: activeRole.key } : {}),
+        card: loginCard, // only accounts that belong to this card (and role) may sign in here
         ...(loc?.success ? { location: loc, address: loc.address } : {})
       });
       if (res.data?.success && res.data?.user) {
+        let authedUser = res.data.user;
+        if (activeDept.id === 'hr' && activeRole) {
+          if ((activeRole.key === 'branch' || activeRole.key === 'business') && !String(authedUser.branch || '').trim()) {
+            setLoading(false);
+            setError(`This ${activeRole.label} account has no branch set. Ask Admin to set the branch on this user before signing in.`);
+            return;
+          }
+          if (!hrRoleAllows(activeRole.key, authedUser)) {
+            setLoading(false);
+            setError(`This account (${authedUser.role || 'no role'}) is not a ${activeRole.label} account. Pick your own role above.`);
+            return;
+          }
+          authedUser = { ...authedUser, hrRole: activeRole.key };
+        } else if (activeDept.id === 'training' && activeRole) {
+          authedUser = { ...authedUser, trainerRole: authedUser.trainerRole || activeRole.key };
+        }
         setLoading(false);
-        onLoginSuccess(res.data.user);
+        onLoginSuccess(authedUser);
         onClose();
         return;
       }
@@ -274,12 +311,12 @@ export default function LoginModal({
             <div className="text-[10px] sm:text-[11px] font-extrabold tracking-wider text-slate-500 uppercase mb-2 flex items-center justify-between px-1">
               <span>Select Dashboard</span>
               <span className="text-[10px] font-bold text-[#00897b] bg-teal-50 px-2 py-0.5 rounded-full border border-teal-200">
-                8 Options
+                {DEPARTMENTS.filter(d => d.id !== 'wiseapp').length} Options
               </span>
             </div>
 
             <div className="flex flex-wrap items-center justify-center gap-1.5 sm:gap-2 p-2 bg-slate-50/80 rounded-2xl border border-slate-200/60">
-              {DEPARTMENTS.map((dept) => {
+              {DEPARTMENTS.filter(d => d.id !== 'wiseapp').map((dept) => {
                 const isSelected = activeDeptId === dept.id;
                 return (
                   <button
@@ -287,6 +324,7 @@ export default function LoginModal({
                     type="button"
                     onClick={() => {
                       setActiveDeptId(dept.id);
+                      setActiveRoleKey(DEFAULT_ROLE[dept.id] || null);
                       setEmail('');
                       setPassword('');
                       setError('');
@@ -313,6 +351,47 @@ export default function LoginModal({
         )}
 
 
+
+        {/* Role picker — HR & Training each have several role desks with their own login */}
+        {deptRoles && (
+          <div className="mb-4">
+            <div className="text-[10px] sm:text-[11px] font-extrabold tracking-wider text-slate-500 uppercase mb-2 flex items-center justify-between px-1">
+              <span>Select Your Role</span>
+              <span
+                className="text-[10px] font-bold px-2 py-0.5 rounded-full border"
+                style={{ color: activeDept.color, borderColor: `${activeDept.color}55`, backgroundColor: `${activeDept.color}12` }}
+              >
+                {deptRoles.length} Roles
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center justify-center gap-1.5 sm:gap-2 p-2 bg-slate-50/80 rounded-2xl border border-slate-200/60">
+              {deptRoles.map((role) => {
+                const isSelected = activeRole?.key === role.key;
+                return (
+                  <button
+                    key={role.key}
+                    type="button"
+                    onClick={() => {
+                      setActiveRoleKey(role.key);
+                      setEmail('');
+                      setPassword('');
+                      setError('');
+                    }}
+                    className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all cursor-pointer select-none ${
+                      isSelected
+                        ? 'text-white shadow-md shadow-slate-900/15 scale-[1.04] ring-2 ring-offset-1 ring-slate-400'
+                        : 'bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 shadow-xs active:scale-[0.97]'
+                    }`}
+                    style={isSelected ? { backgroundColor: activeDept.color } : {}}
+                    title={`${role.label} sign in`}
+                  >
+                    {role.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {error && (
           <div className="p-2.5 mb-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs text-center font-medium">
@@ -400,7 +479,7 @@ export default function LoginModal({
               className="font-bold px-2 py-0.5 rounded-md text-white text-[10.5px] shadow-xs"
               style={{ backgroundColor: activeDept.color }}
             >
-              {activeDept.icon} {activeDept.title}
+              {activeDept.icon} {activeDept.title}{activeRole ? ` · ${activeRole.label}` : ''}
             </span>
           </div>
         </div>

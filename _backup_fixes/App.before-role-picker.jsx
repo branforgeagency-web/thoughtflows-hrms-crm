@@ -1,0 +1,435 @@
+import React, { useState, useEffect } from 'react';
+import Navbar from './components/Navbar';
+import PortalHero from './components/PortalHero';
+import SevenDashboardsSection from './components/SevenDashboardsSection';
+import ConstellationCanvas from './components/ConstellationCanvas';
+import FloatingStaffDots from './components/FloatingStaffDots';
+import DepartmentsModal from './components/DepartmentsModal';
+import DashboardModal, { preloadDashboard } from './components/DashboardModal';
+import LoginModal from './components/LoginModal';
+import CourseCatalogWidget from './components/CourseCatalogWidget';
+import StudentRegistrationPage from './components/StudentRegistrationPage';
+import ScreenGuard from './components/ScreenGuard';
+import GlobalApiLoader from './components/GlobalApiLoader';
+import axios from 'axios';
+import { recordTrainingLogout, prewarmCommonData } from './services/api';
+
+export default function App() {
+  const [isRegistrationRoute, setIsRegistrationRoute] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    const path = (window.location.pathname || '').toLowerCase();
+    const search = new URLSearchParams(window.location.search);
+    return (
+      path === '/register' ||
+      path === '/registration' ||
+      path.startsWith('/register/') ||
+      search.get('register') === 'true' ||
+      search.has('register')
+    );
+  });
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const path = (window.location.pathname || '').toLowerCase();
+      const search = new URLSearchParams(window.location.search);
+      setIsRegistrationRoute(
+        path === '/register' ||
+        path === '/registration' ||
+        path.startsWith('/register/') ||
+        search.get('register') === 'true' ||
+        search.has('register')
+      );
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  const [isDepartmentsOpen, setIsDepartmentsOpen] = useState(false);
+  const [isLoginOpen, setIsLoginOpen] = useState(false);
+  const [loginDepartment, setLoginDepartment] = useState('hr');
+  const [showLoginDeptSelector, setShowLoginDeptSelector] = useState(false);
+  const [selectedStaff, setSelectedStaff] = useState(null);
+  const [backendHealth, setBackendHealth] = useState(null);
+
+  // Department card reference
+  const DEPT_CARDS = [
+    { id: 'hr', title: 'HR Department', status: 'LIVE', description: 'Academic counsellors who turn enquiries into futures · lead capture, calls, follow-ups & admissions' },
+    { id: 'training', title: 'Trainers Department', status: '5 ROLES', description: 'Trainers across 12 branches · Department Head of Training, Manager, Team Lead, Part-Time & Full-Time Trainers' },
+    { id: 'cccp', title: 'CCCP Dashboard', status: '8 TODAY', description: 'Placement Cell · Examination Cell · College & Company Cell — three cells, one career path' },
+    { id: 'marketing', title: 'Marketing Department', status: 'ACTIVE', description: 'Digital, outdoor & campaigns driving 100+ lead sources every month across all branches' },
+    { id: 'leadership', title: 'Leadership Hub', status: '4 ROLES', description: 'All the heads in one place — Operational, Department, Regional & Branch. Open to pick your role.' },
+    { id: 'student', title: 'Student Dashboard', status: '247 ONLINE', description: 'Students log in here to track attendance, syllabus, exam slot bookings, assignments & placement opportunities' },
+    { id: 'admin', title: 'Admin & Management', status: '3 ALERTS', description: "Founders' command bridge · back-office operations · strategy, red-line alerts & administration" },
+    { id: 'wiseapp', title: 'WiseApp Academy Hub', status: 'LMS LIVE', description: 'WiseApp-style LMS · tests, question bank, class schedules, allocations, videos, feedback & reports' }
+  ];
+
+  // Clear any old long-lived localStorage auth so past sessions cannot leak across window close
+  useEffect(() => {
+    try {
+      localStorage.removeItem('thoughtflows_user');
+      localStorage.removeItem('thoughtflows_dashboard');
+    } catch (_) {}
+  }, []);
+
+  // Session-scoped user state: automatically cleared by the browser when the window/tab is closed
+  const [currentUser, setCurrentUser] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem('thoughtflows_user');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+
+  const isBusinessLeadUser = (u) => /business\s*lead/i.test(String(u?.role || ''));
+
+  const isHeadOfTrainerUser = (u) => {
+    if (!u) return false;
+    const role = String(u.role || '').toLowerCase();
+    const dept = String(u.department || '').toLowerCase();
+    return /department head of training|head of trainer|trainer head|training head|chief trainer|chief faculty/i.test(role) || (role.includes('head') && (role.includes('trainer') || dept.includes('training')));
+  };
+
+  const [selectedDashboard, setSelectedDashboard] = useState(() => {
+    try {
+      // A session opened from the HR hub (HR / HR TL / Branch Head / Business Lead / HR Dept Head) reopens the HR hub
+      if (sessionStorage.getItem('thoughtflows_hr_role')) {
+        const hrCard = DEPT_CARDS.find(c => c.id === 'hr');
+        if (hrCard) return hrCard;
+      }
+      const userSaved = sessionStorage.getItem('thoughtflows_user');
+      if (userSaved) {
+        const u = JSON.parse(userSaved);
+        let dept = u.department;
+        if (isHeadOfTrainerUser(u)) dept = 'training';
+        else if (!dept || dept === 'Medical Coding Faculty') dept = 'training';
+        const matched = DEPT_CARDS.find(c => c.id === dept);
+        if (matched) return matched;
+      }
+      const trainerSaved = sessionStorage.getItem('thoughtflows_trainer_user');
+      const trainerRoleSaved = sessionStorage.getItem('thoughtflows_trainer_role');
+      if (trainerSaved || trainerRoleSaved) {
+        const matched = DEPT_CARDS.find(c => c.id === 'training');
+        if (matched) return matched;
+      }
+      const saved = sessionStorage.getItem('thoughtflows_dashboard');
+      if (saved) return JSON.parse(saved);
+      return null;
+    } catch {
+      return null;
+    }
+  });
+
+  const [isDashboardOpen, setIsDashboardOpen] = useState(() => {
+    try {
+      const userSaved = sessionStorage.getItem('thoughtflows_user');
+      const trainerSaved = sessionStorage.getItem('thoughtflows_trainer_user');
+      const trainerRoleSaved = sessionStorage.getItem('thoughtflows_trainer_role');
+      // If user is actively logged in within this tab session, remain open across refreshes
+      return !!(userSaved || trainerSaved || trainerRoleSaved);
+    } catch {
+      return false;
+    }
+  });
+
+  // Which HR hub desk is open ('hr' | 'tl' | 'branch' | 'business' | 'head' | null)
+  const [hrRole, setHrRole] = useState(() => {
+    try { return sessionStorage.getItem('thoughtflows_hr_role') || null; } catch { return null; }
+  });
+
+  // Clay 3D theme removed – the classic flat theme is the only theme
+  const theme = 'classic';
+  const handleToggleTheme = () => {};
+
+  useEffect(() => {
+    // Check backend health on initial load
+    axios.get('/api/health')
+      .then(res => setBackendHealth(res.data))
+      .catch(err => {
+        console.log('Backend starting up or running in offline mode');
+      });
+  }, []);
+
+  const handleNodeClick = (node) => {
+    setSelectedStaff(node);
+  };
+
+  const handleSelectDashboard = (card) => {
+    setSelectedDashboard(card);
+    sessionStorage.setItem('thoughtflows_dashboard', JSON.stringify(card));
+    // Start downloading this dashboard's code chunk now, while the user is
+    // still reading the card or typing their password.
+    preloadDashboard(card.id);
+    // Already signed in: open only the dashboard this account belongs to.
+    // Any other card asks for that card's own login.
+    const ownDashboard = currentUser && (/business\s*lead/i.test(String(currentUser.role || '')) ? 'hr' : currentUser.department);
+    if (currentUser && (card.id === ownDashboard || card.id === 'training' || card.id === 'hr')) {
+      setIsDashboardOpen(true);
+    } else if (card.id === 'training' || card.id === 'hr') {
+      // Training & HR open straight into their role-desk hub;
+      // each role card there has its own login.
+      setIsDashboardOpen(true);
+    } else {
+      // Require department-specific login
+      setLoginDepartment(card.id);
+      setShowLoginDeptSelector(false);
+      setIsLoginOpen(true);
+    }
+  };
+
+  const handleLoginSuccess = (user) => {
+    setCurrentUser(user);
+    sessionStorage.setItem('thoughtflows_user', JSON.stringify(user));
+    if (user?.trainerRole || user?.trainerId || user?.department === 'training') {
+      sessionStorage.setItem('thoughtflows_trainer_user', JSON.stringify(user));
+      if (user?.trainerRole) sessionStorage.setItem('thoughtflows_trainer_role', user.trainerRole);
+      if (user?.leaderId) sessionStorage.setItem('thoughtflows_trainer_leader_id', user.leaderId);
+    }
+    try {
+      localStorage.removeItem('thoughtflows_user');
+      localStorage.removeItem('thoughtflows_dashboard');
+    } catch (_) {}
+    setIsLoginOpen(false);
+
+    // Open dashboard corresponding to the authenticated department
+    let targetDept = user.department;
+    if (isBusinessLeadUser(user)) {
+      // Business Lead always lands on their own Business Lead desk in the HR hub
+      targetDept = 'hr';
+      sessionStorage.setItem('thoughtflows_hr_user', JSON.stringify({ ...user, hrRole: 'business' }));
+      sessionStorage.setItem('thoughtflows_hr_role', 'business');
+      setHrRole('business');
+    } else if (isHeadOfTrainerUser(user)) targetDept = 'training';
+    else if (!targetDept || targetDept === 'Medical Coding Faculty') targetDept = 'training';
+    const matchedCard = DEPT_CARDS.find(c => c.id === targetDept) || DEPT_CARDS[0];
+    preloadDashboard(matchedCard.id);
+    // Warm the shared reference data (branches, departments, stats) that every
+    // dashboard asks for, so the first open reads it straight from cache.
+    prewarmCommonData();
+    setSelectedDashboard(matchedCard);
+    sessionStorage.setItem('thoughtflows_dashboard', JSON.stringify(matchedCard));
+    setIsDashboardOpen(true);
+  };
+
+  const handleSignOut = () => {
+    recordTrainingLogout();
+    sessionStorage.removeItem('thoughtflows_user');
+    sessionStorage.removeItem('thoughtflows_dashboard');
+    sessionStorage.removeItem('thoughtflows_trainer_user');
+    sessionStorage.removeItem('thoughtflows_trainer_role');
+    sessionStorage.removeItem('thoughtflows_trainer_leader_id');
+    sessionStorage.removeItem('thoughtflows_trainer_selected_user');
+    sessionStorage.removeItem('thoughtflows_trainer_faculty_nav');
+    sessionStorage.removeItem('thoughtflows_trainer_tab_head');
+    sessionStorage.removeItem('thoughtflows_trainer_tab_manager');
+    sessionStorage.removeItem('thoughtflows_trainer_tab_tl');
+    sessionStorage.removeItem('tf_picked_trainer_identity');
+    sessionStorage.removeItem('thoughtflows_hr_user');
+    sessionStorage.removeItem('thoughtflows_hr_role');
+    sessionStorage.removeItem('thoughtflows_hr_active_tab');
+    setHrRole(null);
+    try {
+      localStorage.removeItem('thoughtflows_user');
+      localStorage.removeItem('thoughtflows_dashboard');
+      localStorage.removeItem('thoughtflows_hr_active_tab');
+    } catch (_) {}
+    setCurrentUser(null);
+    setSelectedDashboard(null);
+    setIsDashboardOpen(false);
+  };
+
+  const handleOpenMyDashboardHero = () => {
+    if (currentUser) {
+      setIsDashboardOpen(true);
+    } else {
+      setLoginDepartment('hr');
+      setShowLoginDeptSelector(true);
+      setIsLoginOpen(true);
+    }
+  };
+
+  const handleSwitchDepartment = (targetDeptId) => {
+    if (targetDeptId) {
+      const matchedCard = DEPT_CARDS.find(c => c.id === targetDeptId) || { id: targetDeptId, title: targetDeptId };
+      setSelectedDashboard(matchedCard);
+      sessionStorage.setItem('thoughtflows_dashboard', JSON.stringify(matchedCard));
+      setIsDashboardOpen(true);
+      return;
+    }
+    setIsDashboardOpen(false);
+    setLoginDepartment(currentUser?.department || 'hr');
+    setIsLoginOpen(true);
+  };
+
+  const handleExploreDepartments = () => {
+    const el = document.getElementById('dashboards-section');
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth' });
+    } else {
+      setIsDepartmentsOpen(true);
+    }
+  };
+
+  if (isRegistrationRoute) {
+    return (
+      <>
+        <GlobalApiLoader />
+        <StudentRegistrationPage
+          onBack={() => {
+            if (window.history?.pushState) {
+              window.history.pushState({}, '', '/');
+            } else {
+              window.location.href = '/';
+            }
+            setIsRegistrationRoute(false);
+          }}
+        />
+      </>
+    );
+  }
+
+  return (
+    <div className="relative min-h-screen w-full overflow-x-hidden bg-[#f4fcfb] selection:bg-teal-200 selection:text-teal-950 font-sans flex flex-col justify-between">
+      <GlobalApiLoader />
+      {/* Background Gradient Mesh matching the exact bright mint aesthetic in screenshot */}
+      <div 
+        className="fixed inset-0 pointer-events-none z-0"
+        style={{
+          background: `
+            radial-gradient(circle at 20% 25%, rgba(255, 255, 255, 0.95) 0%, rgba(235, 252, 249, 0.8) 40%, transparent 75%),
+            radial-gradient(circle at 88% 15%, rgba(175, 241, 234, 0.5) 0%, transparent 55%),
+            radial-gradient(circle at 5% 90%, rgba(195, 244, 238, 0.6) 0%, transparent 50%),
+            linear-gradient(135deg, #f6fdfc 0%, #ebf9f6 38%, #daf4f0 75%, #c8efe8 100%)
+          `
+        }}
+      />
+
+      {/* Banner Section (Navbar + Hero) */}
+      <div 
+        id="banner-section"
+        className="relative z-20 w-full min-h-screen flex flex-col justify-between bg-no-repeat bg-cover bg-[position:82%_center] lg:bg-[position:right_center]"
+        style={{
+          backgroundImage: `url('/hero-banner-bg.png')`,
+        }}
+      >
+        {/* Top Navigation */}
+        <Navbar
+          onSignInClick={() => {
+            if (currentUser) {
+              setIsDashboardOpen(true);
+            } else {
+              setLoginDepartment(currentUser?.department || 'hr');
+              setShowLoginDeptSelector(true);
+              setIsLoginOpen(true);
+            }
+          }}
+          onHomeClick={() => {
+            setIsDepartmentsOpen(false);
+            setIsDashboardOpen(false);
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+          }}
+          currentUser={currentUser}
+          onSignOut={handleSignOut}
+          onSwitchDepartment={handleSwitchDepartment}
+          theme={theme}
+          onToggleTheme={handleToggleTheme}
+        />
+
+        {/* Main Hero View */}
+        <main className="relative flex-1 flex flex-col justify-between">
+          <PortalHero
+            onOpenDashboard={handleOpenMyDashboardHero}
+            onExploreDepartments={handleExploreDepartments}
+            theme={theme}
+          />
+        </main>
+      </div>
+
+      {/* Second Section: Seven Dashboards. One Mission. */}
+      <SevenDashboardsSection
+        onSelectDashboard={handleSelectDashboard}
+        currentUser={currentUser}
+        theme={theme}
+      />
+
+      {/* Footer */}
+      <footer className={`relative z-20 py-8 px-6 text-center border-t transition-all ${
+        theme === 'clay' 
+          ? 'bg-white/70 border-white shadow-[0_-8px_24px_rgba(7,55,52,0.03)] backdrop-blur-md' 
+          : 'border-teal-500/15 bg-white/40 backdrop-blur-sm'
+      } mt-12`}>
+        <div className="max-w-[1360px] mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+          <p className="text-[11px] font-semibold tracking-[0.25em] text-[#6b9691] uppercase select-none">
+            PEOPLE &nbsp;&nbsp;|&nbsp;&nbsp; PROCESS &nbsp;&nbsp;|&nbsp;&nbsp; POSSIBILITIES
+          </p>
+          <p className="text-xs text-[#557b77]">
+            Thoughtflows Medical Coding Academy • Internal Operations & ERP
+          </p>
+        </div>
+      </footer>
+
+      {/* Selected Staff Quick Drawer / Toast */}
+      {selectedStaff && (
+        <div className="fixed bottom-6 left-6 z-40 p-4 rounded-xl bg-slate-900/90 border border-teal-500/40 backdrop-blur-md shadow-2xl flex items-center gap-3 animate-fadeIn text-white">
+          <div className="w-10 h-10 rounded-full bg-teal-500/30 border border-teal-400/50 flex items-center justify-center font-bold text-teal-200">
+            {selectedStaff.initials}
+          </div>
+          <div>
+            <div className="text-sm font-bold text-white">{selectedStaff.name}</div>
+            <div className="text-xs text-teal-300">{selectedStaff.dept}</div>
+          </div>
+          <button
+            onClick={() => setSelectedStaff(null)}
+            className="ml-4 text-xs text-slate-400 hover:text-white px-2 py-1 rounded bg-white/5 hover:bg-white/10"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Modals */}
+      <DepartmentsModal
+        isOpen={isDepartmentsOpen}
+        onClose={() => setIsDepartmentsOpen(false)}
+        theme={theme}
+      />
+
+      <DashboardModal
+        isOpen={isDashboardOpen}
+        onClose={handleSignOut}
+        selectedDashboard={selectedDashboard}
+        currentUser={currentUser}
+        onSwitchDepartment={handleSwitchDepartment}
+        onSignOut={handleSignOut}
+        onTrainerLogout={() => setCurrentUser(null)}
+        onHrAuth={(user, role) => {
+          setCurrentUser(user || null);
+          setHrRole(role || null);
+        }}
+        onHrRoleChange={(role) => setHrRole(role || null)}
+        theme={theme}
+      />
+
+      <LoginModal
+        isOpen={isLoginOpen}
+        onClose={() => setIsLoginOpen(false)}
+        initialDepartment={loginDepartment}
+        showDepartmentSelector={showLoginDeptSelector}
+        onLoginSuccess={handleLoginSuccess}
+        theme={theme}
+      />
+
+      <ScreenGuard active={Boolean(currentUser && isDashboardOpen)} />
+
+      {/* Course Catalog — visible ONLY when logged into the HR Department dashboard */}
+      <CourseCatalogWidget
+        hidden={
+          !isDashboardOpen ||
+          (selectedDashboard?.id !== 'hr' && selectedDashboard !== 'hr') ||
+          hrRole !== 'hr'
+        }
+      />
+    </div>
+  );
+}
+
