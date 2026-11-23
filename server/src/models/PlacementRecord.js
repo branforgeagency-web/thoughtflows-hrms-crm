@@ -36,4 +36,8 @@ const placementRecordSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Indexes for the dashboard / portal queries that filter and sort on these fields
+placementRecordSchema.index({ studentId: 1 });
+placementRecordSchema.index({ tfId: 1 });
+
 export default mongoose.models.PlacementRecord || mongoose.model('PlacementRecord', placementRecordSchema);

@@ -67,6 +67,9 @@ const trainerAssessmentSchema = new mongoose.Schema({
     default: ''
   },
   // 'online' = MCQ test taken in the Student Portal and graded automatically
+  // Set when the test belongs to a Test Series (open to a whole course, no batch)
+  seriesId: { type: String, default: '', index: true },
+  seriesOrder: { type: Number, default: 0 },
   mode: { type: String, enum: ['offline', 'online'], default: 'offline' },
   durationMin: { type: Number, default: null },
   questions: {
@@ -85,5 +88,9 @@ const trainerAssessmentSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
+
+// Indexes for the dashboard / portal queries that filter and sort on these fields
+trainerAssessmentSchema.index({ batch: 1, createdAt: -1 });
+trainerAssessmentSchema.index({ trainerId: 1, createdAt: -1 });
 
 export default mongoose.models.TrainerAssessment || mongoose.model('TrainerAssessment', trainerAssessmentSchema);

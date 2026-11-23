@@ -26,4 +26,7 @@ const notificationSchema = new mongoose.Schema(
 
 notificationSchema.index({ audience: 1, recipientId: 1, recipientName: 1, createdAt: -1 });
 
+// Indexes for the dashboard / portal queries that filter and sort on these fields
+notificationSchema.index({ audience: 1, batch: 1, createdAt: -1 });
+
 export default mongoose.models.Notification || mongoose.model('Notification', notificationSchema);

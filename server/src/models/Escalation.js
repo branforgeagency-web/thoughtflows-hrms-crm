@@ -20,4 +20,7 @@ const escalationSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Indexes for the dashboard / portal queries that filter and sort on these fields
+escalationSchema.index({ studentId: 1, createdAt: -1 });
+
 export default mongoose.models.Escalation || mongoose.model('Escalation', escalationSchema);

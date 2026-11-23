@@ -53,6 +53,8 @@ import Batch from '../models/Batch.js';
 import CourseSyllabus from '../models/CourseSyllabus.js';
 import BatchAnnouncement from '../models/BatchAnnouncement.js';
 import TestAttempt from '../models/TestAttempt.js';
+import TestSeries from '../models/TestSeries.js';
+import { contactFilter, startContactKeyBackfill } from '../utils/contactKeys.js';
 import AppSetting from '../models/AppSetting.js';
 import ContentPiece from '../models/ContentPiece.js';
 import BranchLeadDemand from '../models/BranchLeadDemand.js';
@@ -65,7 +67,7 @@ import { DEFAULT_WORK_SLOTS } from '../constants/trainerHierarchy.js';
 import wiseappRouter from './wiseapp.js';
 import { registerSchedulingRoutes } from './scheduling.js';
 import { registerStaffDeskRoutes } from './staffdesk.js';
-import { isS3Configured, copyRemoteRecordingToS3, putRecordingBuffer, streamS3Object, signedUrlForStoredFile, streamS3File, getObjectBuffer } from '../utils/s3Storage.js';
+import { isS3Configured, copyRemoteRecordingToS3, putRecordingBuffer, streamS3Object, signedUrlForStoredFile, streamS3File, getObjectBuffer, deleteObjectIn, s3Bucket, presignPutUrl } from '../utils/s3Storage.js';
 import { livekitConfigured, livekitUrl, livekitToken, classRoomName, endLivekitRoom, LIVEKIT_NOT_CONFIGURED } from '../utils/livekit.js';
 import { randomInt as cryptoRandomInt } from 'crypto';
 
@@ -3829,13 +3831,22 @@ const STUDENT_SYSTEM_FIELDS = [
 ];
 const stripFields = (obj, keys) => { keys.forEach((k) => delete obj[k]); return obj; };
 
-// Indian mobile: accepts +91 / 0 prefixes, spaces and dashes; returns the 10
-// digits, or '' when it is not a valid mobile number.
+// Mobile number: Indian numbers (+91 / 0 prefixes, spaces, dashes) are returned as
+// the 10 digits; foreign numbers with a country code are returned as +<digits>.
+// Returns '' when it is not a valid number.
 const normalizeMobile = (v) => {
-  let d = String(v || '').replace(/\D/g, '');
-  if (d.length === 12 && d.startsWith('91')) d = d.slice(2);
-  if (d.length === 11 && d.startsWith('0')) d = d.slice(1);
-  return /^[6-9]\d{9}$/.test(d) ? d : '';
+  const raw = String(v || '').trim();
+  let d = raw.replace(/\D/g, '');
+  const intl = /^(\+|00)/.test(raw);
+  if (intl && raw.startsWith('00')) d = d.slice(2);
+  const india = (x) => (/^[6-9]\d{9}$/.test(x) ? x : '');
+  // India: bare 10 digits, 91XXXXXXXXXX, +91..., or 0XXXXXXXXXX → stored as the 10 digits
+  if (d.length === 12 && d.startsWith('91')) return india(d.slice(2));
+  if (intl) return d.length >= 8 && d.length <= 15 && !d.startsWith('0') ? `+${d}` : '';
+  if (d.length === 11 && d.startsWith('0')) return india(d.slice(1));
+  if (d.length === 10) return india(d);
+  // Foreign number typed (or pasted from Excel) without the "+": 11–15 digits incl. country code
+  return d.length >= 11 && d.length <= 15 && !d.startsWith('0') ? `+${d}` : '';
 };
 const EMAIL_RX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -3844,14 +3855,14 @@ const EMAIL_RX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 function validateStudentContact(payload, { requirePhone = false } = {}) {
   if (requirePhone || 'phone' in payload) {
     const m = normalizeMobile(payload.phone);
-    if (!m) return 'Enter a valid 10-digit mobile number.';
+    if (!m) return 'Enter a valid mobile number — 10-digit Indian mobile, or a foreign number with its country code (e.g. +971 50 123 4567).';
     payload.phone = m;
   }
   for (const k of ['whatsappNumber', 'alternatePhone', 'additionalNumber']) {
     if (!(k in payload)) continue;
     if (!String(payload[k] || '').trim()) { payload[k] = ''; continue; }
     const m = normalizeMobile(payload[k]);
-    if (!m) return `Enter a valid 10-digit ${k === 'whatsappNumber' ? 'WhatsApp' : 'alternate'} number.`;
+    if (!m) return `Enter a valid ${k === 'whatsappNumber' ? 'WhatsApp' : 'alternate'} number — 10-digit Indian mobile, or a foreign number with its country code (e.g. +971 50 123 4567).`;
     payload[k] = m;
   }
   if ('email' in payload) {
@@ -3886,8 +3897,8 @@ async function findLeadByContact({ leadId, email, phone }, stageFilter) {
   }
   const digits = phoneDigits(phone);
   if (digits.length === 10) {
-    // Cheap pre-filter on the last 4 digits, exact match on all 10
-    const candidates = await StudentLead.find({ ...base, phone: new RegExp(`${digits.slice(-4).split('').join('\\D*')}\\D*$`) }).sort({ createdAt: -1 });
+    // Indexed pre-filter on the phone keys, exact match on all 10
+    const candidates = await StudentLead.find({ ...base, ...contactFilter(StudentLead, { phones: [digits] }) }).sort({ createdAt: -1 }).limit(50);
     return candidates.find((l) => phoneDigits(l.phone) === digits) || null;
   }
   return null;
@@ -4195,7 +4206,7 @@ async function generateStandardStudentId({ branch, course, mode, date }) {
   const prefix = `TF${b}${c}${t}${m}${y}`.toUpperCase();
 
   // 7. Serial number (001, 002, 003...)
-  const existing = await Student.find({ studentId: new RegExp(`^${prefix}`, 'i') }).select('studentId').lean();
+  const existing = await Student.find({ studentId: new RegExp(`^${escapeRegex(prefix)}`) }).select('studentId').lean();
   let maxSerial = 0;
   for (const st of existing) {
     const suf = String(st.studentId || '').slice(prefix.length);
@@ -4428,17 +4439,8 @@ async function checkDuplicateRegistration({ phone, whatsappNumber, email, leadId
   }
 
   // 1. Search existing Student records
-  const studentQueries = [];
-  if (digits && digits.length === 10) {
-    const rx = new RegExp(`${digits.slice(-4).split('').join('\\D*')}\\D*$`);
-    studentQueries.push({ phone: rx });
-    studentQueries.push({ whatsappNumber: rx });
-  }
-  if (mail) {
-    studentQueries.push({ email: exactNameRx(mail) });
-  }
-
-  const existingStudents = await Student.find({ $or: studentQueries }).sort({ createdAt: -1 });
+  const contact = { phones: digits && digits.length === 10 ? [digits] : [], email: mail };
+  const existingStudents = await Student.find(contactFilter(Student, contact)).sort({ createdAt: -1 }).limit(100);
   const matchedStudent = existingStudents.find((s) => {
     if (excludeStudentId && (s.studentId === excludeStudentId || String(s._id) === String(excludeStudentId))) {
       return false;
@@ -4452,17 +4454,7 @@ async function checkDuplicateRegistration({ phone, whatsappNumber, email, leadId
   });
 
   // 2. Search existing StudentLead records
-  const leadQueries = [];
-  if (digits && digits.length === 10) {
-    const rx = new RegExp(`${digits.slice(-4).split('').join('\\D*')}\\D*$`);
-    leadQueries.push({ phone: rx });
-    leadQueries.push({ whatsappNumber: rx });
-  }
-  if (mail) {
-    leadQueries.push({ email: exactNameRx(mail) });
-  }
-
-  const existingLeads = await StudentLead.find({ $or: leadQueries }).sort({ createdAt: -1 });
+  const existingLeads = await StudentLead.find(contactFilter(StudentLead, contact)).select('-whatsappMessages').sort({ createdAt: -1 }).limit(100);
   const matchedLead = existingLeads.find((l) => {
     if (skipLeadIds.has(String(l._id))) return false;
     const lPhone = phoneDigits(l.phone);
@@ -4788,16 +4780,11 @@ const LEAD_STAGE_RANK = { fee_followup: 5, demo_attended: 4, demo_booked: 3, con
 async function findOpenLeadsByContact(row) {
   const digits = [row.phone, row.whatsappNumber].map(phoneDigits).filter((d) => d.length === 10);
   const mail = String(row.email || '').trim().toLowerCase();
-  const or = [];
-  [...new Set(digits)].forEach((d) => {
-    const rx = new RegExp(`${d.slice(-4).split('').join('\\D*')}\\D*$`);
-    or.push({ phone: rx }, { whatsappNumber: rx });
-  });
-  if (mail) or.push({ email: exactNameRx(mail) });
-  if (!or.length) return [];
+  if (!digits.length && !mail) return [];
+  const byContact = contactFilter(StudentLead, { phones: digits, email: mail });
   const candidates = await StudentLead.find({
     $and: [
-      { $or: or },
+      byContact,
       { $or: [{ admittedStudentId: { $exists: false } }, { admittedStudentId: '' }, { admittedStudentId: null }] },
       { stage: { $ne: 'admitted' } }
     ]
@@ -5187,7 +5174,7 @@ router.delete('/students/:id', async (req, res) => {
     if (email) {
       cleanup.push((async () => {
         // Same email may still belong to another admission (returning student)
-        const stillStudent = await Student.exists({ email: exactNameRx(email) });
+        const stillStudent = await Student.exists(contactFilter(Student, { email }));
         if (!stillStudent) {
           await User.updateMany(
             { email: exactNameRx(email), createdFrom: 'admitted_student' },
@@ -7908,7 +7895,7 @@ router.post('/auth/login', async (req, res) => {
         let studentId;
         if (mapping.department === 'student') {
           // Returning students have several admissions on one email — use the latest
-          const st = await Student.findOne({ email: new RegExp(`^${escapeRegex(dbUser.email || normalizedEmail)}$`, 'i') }).sort({ createdAt: -1 }).select('studentId');
+          const st = await Student.findOne(contactFilter(Student, { email: dbUser.email || normalizedEmail })).sort({ createdAt: -1 }).select('studentId');
           studentId = st?.studentId;
         }
 
@@ -8685,7 +8672,8 @@ const formatAssessment = (t) => {
 async function recomputeAssessmentScores(studentKeys) {
   const keys = [...new Set(studentKeys.filter(Boolean))];
   if (!keys.length) return;
-  const tests = await TrainerAssessment.find({ $or: keys.map((k) => ({ [`scores.${k}`]: { $exists: true } })) });
+  // Only the scores and totals are needed here — not the questions / rationale text
+  const tests = await TrainerAssessment.find({ $or: keys.map((k) => ({ [`scores.${k}`]: { $exists: true } })) }).select('scores totalMarks').lean();
   for (const key of keys) {
     const pcts = [];
     tests.forEach((t) => {
@@ -11973,7 +11961,7 @@ router.get('/notifications', async (req, res) => {
       if (!sid && isStudent) {
         sid = String(recipientId || '');
         if (!sid && req.user?.email) {
-          const found = await Student.findOne({ email: new RegExp(`^${escapeRegex(String(req.user.email).trim())}$`, 'i') }).select('studentId');
+          const found = await Student.findOne(contactFilter(Student, { email: req.user.email })).select('studentId');
           if (found?.studentId) sid = found.studentId;
         }
       }
@@ -14163,7 +14151,7 @@ async function findPortalStudent({ studentId, email }) {
   }
   if (email) {
     const e = String(email).trim();
-    if (e) return Student.findOne({ email: new RegExp(`^${escapeRegex(e)}$`, 'i') }).sort({ createdAt: -1 });
+    if (e) return Student.findOne(contactFilter(Student, { email: e })).sort({ createdAt: -1 });
   }
   return null;
 }
@@ -14422,7 +14410,10 @@ router.get('/student-portal/me', async (req, res) => {
           { [`records.${st._id}`]: { $exists: true } }
         ]
       }).sort({ date: -1 }).limit(120),
-      TrainerAssessment.find({ $or: [...(batch ? [{ batch }] : []), { [`scores.${key}`]: { $exists: true } }] }).sort({ createdAt: -1 }),
+      // Summary fields only (questions are fetched when a test is opened); questions._id gives the count
+      TrainerAssessment.find({ $or: [...(batch ? [{ batch }] : []), { [`scores.${key}`]: { $exists: true } }] })
+        .select('name type topic date course timeLimit totalMarks passMark trainerName status rationale mode durationMin createdAt scores questions._id')
+        .sort({ createdAt: -1 }),
       batch ? TrainingMaterial.find({ 'assignments.batch': batch }).sort({ createdAt: -1 }) : [],
       TrainerDoubt.find({ studentId: st.studentId }).sort({ createdAt: -1 }),
       StudentSubmission.find({ studentId: st.studentId }).sort({ createdAt: -1 }),
@@ -14948,6 +14939,179 @@ router.post('/student-portal/:id/submissions', async (req, res) => {
     const obj = doc.toObject();
     delete obj.data;
     res.status(201).json(obj);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ==========================================
+// STUDENT DOCUMENTS (Student Portal → My Documents)
+//   Student uploads the file straight to S3 (student-documents/<studentId>/…,
+//   write-only for the browser), then saves it here. The file is opened only
+//   through /file below, after the login check. HR verifies / rejects.
+// ==========================================
+const STUDENT_DOC_TYPES = {
+  photo: { label: 'Passport-size Photo', required: true },
+  aadhaar: { label: 'Aadhaar Card', required: true },
+  sslc: { label: '10th Marksheet', required: true },
+  hsc: { label: '12th Marksheet', required: true },
+  degree: { label: 'Degree / Provisional Certificate', required: true },
+  degree_marksheets: { label: 'Degree Marksheets', required: false },
+  pan: { label: 'PAN Card', required: false },
+  other: { label: 'Other Document', required: false }
+};
+const MAX_STUDENT_DOC_BYTES = 10 * 1024 * 1024;
+const STUDENT_DOC_MIME = /^(application\/pdf|image\/(jpeg|jpg|png|webp|heic|heif))$/i;
+const studentDocPrefix = (sid) => `student-documents/${String(sid).replace(/[^a-zA-Z0-9_-]/g, '_')}/`;
+const studentDocView = (st) => ({
+  types: STUDENT_DOC_TYPES,
+  documents: (st.documents || []).map((d) => {
+    const o = d.toObject ? d.toObject() : d;
+    delete o.storageKey;
+    return o;
+  }).sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt))
+});
+// All required documents verified → tick the handover checklist item
+const syncDocumentsChecklist = (st) => {
+  const verified = new Set((st.documents || []).filter((d) => d.status === 'Verified').map((d) => d.docType));
+  const done = Object.entries(STUDENT_DOC_TYPES).filter(([, t]) => t.required).every(([k]) => verified.has(k));
+  if (!st.checklist) st.checklist = {};
+  st.checklist.documents = done;
+};
+
+router.get('/student-portal/:id/documents', async (req, res) => {
+  try {
+    const st = await findStudentByAnyId(req.params.id);
+    if (!st) return res.status(404).json({ error: 'Student not found' });
+    res.json(studentDocView(st));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Step 1 of an upload: the server picks the S3 key and signs a 15-minute PUT
+// link for it. The browser uploads straight to S3 (no Amplify permission or
+// file size limit on this server), then calls POST /documents (step 2).
+router.post('/student-portal/:id/documents/upload-url', async (req, res) => {
+  try {
+    const st = await findStudentByAnyId(req.params.id);
+    if (!st) return res.status(404).json({ error: 'Student not found' });
+    const docType = String(req.body?.docType || '');
+    const mimeType = String(req.body?.mimeType || '');
+    const fileSize = Number(req.body?.fileSize) || 0;
+    if (!STUDENT_DOC_TYPES[docType]) return res.status(400).json({ error: 'Choose which document this is.' });
+    if (!STUDENT_DOC_MIME.test(mimeType)) return res.status(400).json({ error: 'Upload a PDF or a photo (JPG / PNG).' });
+    if (fileSize > MAX_STUDENT_DOC_BYTES) return res.status(413).json({ error: `This file is ${(fileSize / 1048576).toFixed(1)} MB. The limit is 10 MB per document.` });
+    if (!isS3Configured()) return res.status(503).json({ error: 'File storage is not configured on the server (AWS keys missing).' });
+    const safeName = String(req.body?.fileName || 'document').replace(/[^a-zA-Z0-9._-]/g, '_').slice(-120) || 'document';
+    const storageKey = `${studentDocPrefix(st.studentId)}${docType}/${Date.now()}-${crypto.randomBytes(3).toString('hex')}-${safeName}`;
+    const uploadUrl = presignPutUrl({ key: storageKey, expiresIn: 900 });
+    if (!uploadUrl) return res.status(503).json({ error: 'File storage is not configured on the server (AWS keys missing).' });
+    res.json({ uploadUrl, storageKey });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.post('/student-portal/:id/documents', async (req, res) => {
+  try {
+    const st = await findStudentByAnyId(req.params.id);
+    if (!st) return res.status(404).json({ error: 'Student not found' });
+    const { docType = '', label = '', fileName = '', mimeType = '', storageKey = '' } = req.body || {};
+    const fileSize = Number(req.body?.fileSize) || 0;
+    if (!STUDENT_DOC_TYPES[docType]) return res.status(400).json({ error: 'Choose which document this is.' });
+    if (!storageKey || !String(storageKey).startsWith(studentDocPrefix(st.studentId)) || String(storageKey).includes('..')) {
+      return res.status(400).json({ error: 'The file upload did not finish — please try again.' });
+    }
+    if (!STUDENT_DOC_MIME.test(mimeType)) return res.status(400).json({ error: 'Upload a PDF or a photo (JPG / PNG).' });
+    if (fileSize > MAX_STUDENT_DOC_BYTES) return res.status(413).json({ error: `This file is ${(fileSize / 1048576).toFixed(1)} MB. The limit is 10 MB per document.` });
+    const otherLabel = String(label || '').trim().slice(0, 80);
+    if (docType === 'other' && !otherLabel) return res.status(400).json({ error: 'Type a name for this document (e.g. "Experience letter").' });
+    if ((st.documents || []).length >= 40) return res.status(400).json({ error: 'Too many documents — remove an old one first.' });
+
+    st.documents.push({
+      docType,
+      label: docType === 'other' ? otherLabel : STUDENT_DOC_TYPES[docType].label,
+      fileName: String(fileName).slice(0, 200),
+      mimeType,
+      fileSize,
+      storageKey,
+      status: 'Submitted',
+      uploadedAt: new Date()
+    });
+    syncDocumentsChecklist(st);
+    await st.save();
+    if (st.hrName) {
+      await pushNotification({
+        audience: 'hr', recipientName: st.hrName, type: 'document',
+        title: `${st.name} uploaded a document`,
+        message: `${docType === 'other' ? otherLabel : STUDENT_DOC_TYPES[docType].label} — open the student profile → Documents to verify.`,
+        studentId: st.studentId, createdBy: st.name
+      });
+    }
+    res.status(201).json(studentDocView(st));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.delete('/student-portal/:id/documents/:docId', async (req, res) => {
+  try {
+    const st = await findStudentByAnyId(req.params.id);
+    if (!st) return res.status(404).json({ error: 'Student not found' });
+    const doc = st.documents.id(req.params.docId);
+    if (!doc) return res.status(404).json({ error: 'Document not found' });
+    const isStudent = req.user?.department === 'student';
+    if (isStudent && doc.status === 'Verified') return res.status(409).json({ error: 'This document is already verified by HR, so it cannot be removed. Ask your HR if it needs to change.' });
+    const key = doc.storageKey;
+    doc.deleteOne();
+    syncDocumentsChecklist(st);
+    await st.save();
+    if (key && isS3Configured()) deleteObjectIn(s3Bucket(), key).catch((err) => console.warn('Student document delete from S3 failed:', err.message));
+    res.json(studentDocView(st));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.get('/student-portal/:id/documents/:docId/file', async (req, res) => {
+  try {
+    const st = await findStudentByAnyId(req.params.id);
+    if (!st) return res.status(404).json({ error: 'Student not found' });
+    const doc = st.documents.id(req.params.docId);
+    if (!doc?.storageKey) return res.status(404).json({ error: 'Document not found' });
+    const url = signedUrlForStoredFile({ storageKey: doc.storageKey, expiresIn: 900, download: Boolean(req.query.download), fileName: doc.fileName });
+    if (!url) return res.status(503).json({ error: 'File storage is not configured on the server.' });
+    res.redirect(url);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// HR / Placement verify or reject one document
+router.put('/students/:id/documents/:docId/review', async (req, res) => {
+  try {
+    const st = await findStudentByAnyId(req.params.id);
+    if (!st) return res.status(404).json({ error: 'Student not found' });
+    const doc = st.documents.id(req.params.docId);
+    if (!doc) return res.status(404).json({ error: 'Document not found' });
+    const status = String(req.body?.status || '');
+    if (!['Verified', 'Rejected'].includes(status)) return res.status(400).json({ error: 'status must be Verified or Rejected' });
+    const remark = String(req.body?.remark || '').trim().slice(0, 300);
+    if (status === 'Rejected' && !remark) return res.status(400).json({ error: 'Tell the student why it was rejected (e.g. "Photo is blurred").' });
+    doc.status = status;
+    doc.remark = status === 'Rejected' ? remark : '';
+    doc.reviewedBy = req.user?.name || '';
+    doc.reviewedAt = new Date();
+    syncDocumentsChecklist(st);
+    await st.save();
+    await pushNotification({
+      audience: 'student', recipientId: st.studentId, recipientName: st.name, type: 'document',
+      title: status === 'Verified' ? `${doc.label} verified` : `${doc.label} needs to be uploaded again`,
+      message: status === 'Verified' ? 'HR has verified your document.' : `Reason: ${remark}. Open My Documents to upload it again.`,
+      studentId: st.studentId, createdBy: req.user?.name || 'HR'
+    });
+    res.json(studentDocView(st));
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -15615,6 +15779,52 @@ async function allocateClassZoomMeeting(sess, trainer) {
   throw err;
 }
 
+// ---- Class time window ------------------------------------------------------
+// A trainer can start a batch's class only until its scheduled slot ends
+// (10–11 AM batch → Start Class is closed from 11:00 AM IST). After that the
+// day's class shows as "This batch was not taken". All times are IST.
+const IST_OFFSET_MIN = 330;
+const istNowMinutes = () => { const d = new Date(Date.now() + IST_OFFSET_MIN * 60000); return d.getUTCHours() * 60 + d.getUTCMinutes(); };
+const istTodayStart = () => { const d = new Date(Date.now() + IST_OFFSET_MIN * 60000); d.setUTCHours(0, 0, 0, 0); return new Date(d.getTime() - IST_OFFSET_MIN * 60000); };
+const fmtSlotMin = (m) => { const h = Math.floor(m / 60) % 24; const mm = String(m % 60).padStart(2, '0'); return `${((h + 11) % 12) + 1}:${mm} ${h < 12 ? 'AM' : 'PM'}`; };
+
+async function batchClassWindow(batch, trainerId) {
+  const key = batchMatchKey(batch);
+  let slot = '';
+  const exact = await Batch.findOne({ batchName: batch }).select('scheduledTime').lean();
+  if (exact?.scheduledTime) slot = exact.scheduledTime;
+  if (!slot && trainerId) {
+    const tr = await Trainer.findOne({ trainerId }).select('scheduledClasses').lean();
+    slot = (tr?.scheduledClasses || []).find((c) => batchMatchKey(c.batch || '') === key)?.timeSlot || '';
+  }
+  if (!slot) {
+    const st = await Student.findOne({ batchName: batch, batchTiming: { $nin: ['', null] } }).select('batchTiming').lean();
+    slot = st?.batchTiming || '';
+  }
+  const { startMin, endMin } = parseTimeSlotMinutes(slot);
+  // No readable time slot → never block (old / one-off batches keep working)
+  if (startMin == null || endMin == null || endMin <= startMin) return { slot, state: 'unknown' };
+  const now = istNowMinutes();
+  const takenToday = await LiveClassSession.exists({ batch, startedAt: { $gte: istTodayStart() } });
+  const state = now >= endMin ? (takenToday ? 'completed' : 'not_taken') : now < startMin ? 'upcoming' : 'open';
+  return { slot, startMin, endMin, start: fmtSlotMin(startMin), end: fmtSlotMin(endMin), state, takenToday: Boolean(takenToday) };
+}
+
+const classWindowError = (w) => (w.state === 'not_taken'
+  ? `This batch was not taken today — class time ${w.start} – ${w.end} is over, so the class can no longer be started.`
+  : `Today's class time for this batch (${w.start} – ${w.end}) is over — the class can no longer be started.`);
+
+// Start Class screen asks this to show Start / "This batch was not taken"
+router.get('/trainer/live-class/window', async (req, res) => {
+  try {
+    const batch = String(req.query?.batch || '').trim();
+    if (!batch) return res.status(400).json({ error: 'batch is required' });
+    res.json(await batchClassWindow(batch, sessionTrainerId(req)));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // GET the trainer's live session (with join log)
 router.get('/trainer/live-class', async (req, res) => {
   try {
@@ -15654,6 +15864,12 @@ router.post('/trainer/live-class/start', async (req, res) => {
     // Old Zoom sessions are not resumed — they are closed below and replaced.
     const existing = await LiveClassSession.findOne({ trainerId, batch, isLive: true }).sort({ startedAt: -1 });
     if (existing && isSessionLive(existing) && existing.meetingSource === 'livekit') return res.json(trainerSessionView(existing));
+
+    // Class time is over → no new class for this batch today
+    const win = await batchClassWindow(batch, trainerId);
+    if (win.state === 'not_taken' || win.state === 'completed') {
+      return res.status(403).json({ error: classWindowError(win), code: win.state === 'not_taken' ? 'BATCH_NOT_TAKEN' : 'CLASS_TIME_OVER', window: win });
+    }
 
     // One live class per trainer: close anything else still open
     const stale = await LiveClassSession.find({ trainerId, isLive: true });
@@ -16266,7 +16482,8 @@ router.put('/trainer/assessments/:id/questions', async (req, res) => {
     if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
     const item = await TrainerAssessment.findById(req.params.id);
     if (!item) return res.status(404).json({ error: 'Assessment not found' });
-    if (item.trainerId && !trainerOwnsRecord(req, item)) return res.status(403).json(NOT_YOUR_RECORD);
+    if (item.seriesId && !canManageTestSeries(req)) return res.status(403).json({ error: 'Only the Head of Trainer and Managers can edit Test Series tests.' });
+    if (!item.seriesId && item.trainerId && !trainerOwnsRecord(req, item)) return res.status(403).json(NOT_YOUR_RECORD);
 
     const raw = Array.isArray(req.body?.questions) ? req.body.questions : [];
     if (raw.length > MAX_TEST_QUESTIONS) return res.status(400).json({ error: `A test can have at most ${MAX_TEST_QUESTIONS} questions` });
@@ -16328,7 +16545,7 @@ router.put('/trainer/assessments/:id/questions', async (req, res) => {
           att.correct = correct;
           att.totalMarks = item.totalMarks;
           await att.save();
-          if (att.studentKey) {
+          if (att.studentKey && !item.seriesId) {
             scores[att.studentKey] = score;
             touchedKeys.push(att.studentKey);
           }
@@ -16341,7 +16558,7 @@ router.put('/trainer/assessments/:id/questions', async (req, res) => {
       }
     }
 
-    if (questions.length && existingAttempts.length === 0) {
+    if (questions.length && existingAttempts.length === 0 && !item.seriesId) {
       await notifyBatch(item.batch, {
         type: 'assessment', title: `Online test ready: ${item.name}`,
         message: `${questions.length} questions · ${item.durationMin} min${item.date ? ` · opens ${item.date}` : ''}. Open Materials & Tests to take it.`,
@@ -16432,6 +16649,200 @@ router.post('/trainer/assessments/:id/reallocate', async (req, res) => {
   }
 });
 
+// Fill phone / email lookup keys on records saved before they existed (once, in the background)
+startContactKeyBackfill([Student, StudentLead]);
+
+// ---------- Test Series (course-wide mock / practice tests) ----------
+// Head of Trainer / Managers (and Admin / Leadership) build series; every
+// admitted student whose course matches sees the published ones in the
+// Student Portal → Test Series.
+// Same Head / Manager checks the rest of the Trainers dashboard uses; Team Leads view only
+const canManageTestSeries = (req) => {
+  const u = req.user || {};
+  if (['admin', 'leadership'].includes(u.department) || /admin/i.test(u.role || '')) return true;
+  if (isTrainerTLUser(req) && !isTrainerHeadUser(req)) return false;
+  return isTrainerHeadUser(req) || isTrainerManagerUser(req);
+};
+const seriesForStudent = (series, st) => {
+  const list = (series.courses || []).map(courseMatchKey).filter(Boolean);
+  if (!list.length) return true;
+  const mine = courseMatchKey(st?.course || '');
+  // Exact course, or a variant that starts with it ("CPC" → CPC Fast track, CPC+ED)
+  return Boolean(mine) && list.some((k) => mine === k || mine.startsWith(k));
+};
+const cleanSeriesBody = (b = {}) => {
+  const out = {};
+  if ('name' in b) out.name = String(b.name || '').trim().slice(0, 140);
+  if ('description' in b) out.description = String(b.description || '').trim().slice(0, 2000);
+  if ('courses' in b) out.courses = [...new Set((Array.isArray(b.courses) ? b.courses : []).map((c) => String(c || '').trim()).filter(Boolean))].slice(0, 30);
+  if ('status' in b) out.status = b.status === 'Published' ? 'Published' : 'Draft';
+  return out;
+};
+const seriesTestSummary = (t) => ({
+  id: t._id.toString(), name: t.name, topic: t.topic || '', seriesOrder: t.seriesOrder || 0,
+  questionCount: (t.questions || []).length, totalMarks: t.totalMarks, passMark: t.passMark,
+  durationMin: t.durationMin || minutesOf(t.timeLimit), mode: t.mode, timeLimit: t.timeLimit,
+  // Full test fields for the question builder (staff only)
+  questions: t.questions || []
+});
+
+// Staff: all series with their tests and attempt counts
+router.get('/test-series', async (req, res) => {
+  try {
+    const [series, tests] = await Promise.all([
+      TestSeries.find({}).sort({ createdAt: -1 }).lean(),
+      TrainerAssessment.find({ seriesId: { $ne: '' } }).sort({ seriesOrder: 1, createdAt: 1 })
+    ]);
+    const ids = tests.map((t) => t._id.toString());
+    const counts = ids.length ? await TestAttempt.aggregate([
+      { $match: { assessmentId: { $in: ids } } },
+      { $group: { _id: '$assessmentId', attempts: { $sum: 1 }, submitted: { $sum: { $cond: [{ $eq: ['$status', 'submitted'] }, 1, 0] } }, avg: { $avg: '$score' } } }
+    ]) : [];
+    const byTest = Object.fromEntries(counts.map((c) => [c._id, c]));
+    res.json({
+      canManage: canManageTestSeries(req),
+      series: series.map((s) => ({
+        ...s,
+        id: s._id.toString(),
+        tests: tests.filter((t) => t.seriesId === s._id.toString()).map((t) => {
+          const c = byTest[t._id.toString()] || {};
+          return { ...seriesTestSummary(t), attempts: c.attempts || 0, submitted: c.submitted || 0, avgScore: c.avg != null ? Math.round(c.avg * 10) / 10 : null };
+        })
+      }))
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.post('/test-series', async (req, res) => {
+  try {
+    if (!canManageTestSeries(req)) return res.status(403).json({ error: 'Only the Head of Trainer and Managers can create a test series.' });
+    const body = cleanSeriesBody(req.body);
+    if (!body.name) return res.status(400).json({ error: 'Give the series a name (e.g. "CPC Mock Exam Series").' });
+    const doc = await TestSeries.create({ ...body, status: 'Draft', createdBy: req.user?.name || '' });
+    res.status(201).json({ ...doc.toObject(), id: doc._id.toString(), tests: [] });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.put('/test-series/:id', async (req, res) => {
+  try {
+    if (!canManageTestSeries(req)) return res.status(403).json({ error: 'Only the Head of Trainer and Managers can change a test series.' });
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid series' });
+    const doc = await TestSeries.findById(req.params.id);
+    if (!doc) return res.status(404).json({ error: 'Series not found' });
+    const body = cleanSeriesBody(req.body);
+    if ('name' in body && !body.name) return res.status(400).json({ error: 'The series name cannot be empty.' });
+    if (body.status === 'Published' && doc.status !== 'Published') {
+      const ready = await TrainerAssessment.countDocuments({ seriesId: doc._id.toString(), mode: 'online', 'questions.0': { $exists: true } });
+      if (!ready) return res.status(400).json({ error: 'Add at least one test with questions before publishing.' });
+    }
+    Object.assign(doc, body, { updatedBy: req.user?.name || '' });
+    await doc.save();
+    res.json({ ...doc.toObject(), id: doc._id.toString() });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.delete('/test-series/:id', async (req, res) => {
+  try {
+    if (!canManageTestSeries(req)) return res.status(403).json({ error: 'Only the Head of Trainer and Managers can delete a test series.' });
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid series' });
+    const doc = await TestSeries.findById(req.params.id);
+    if (!doc) return res.status(404).json({ error: 'Series not found' });
+    const testIds = (await TrainerAssessment.find({ seriesId: doc._id.toString() }).select('_id').lean()).map((t) => t._id.toString());
+    if (testIds.length && await TestAttempt.exists({ assessmentId: { $in: testIds } })) {
+      return res.status(409).json({ error: 'Students have already taken tests in this series. Unpublish it (set to Draft) instead of deleting, so their results are kept.' });
+    }
+    await TrainerAssessment.deleteMany({ seriesId: doc._id.toString() });
+    await doc.deleteOne();
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Add a test to a series (questions are added with the online test builder)
+router.post('/test-series/:id/tests', async (req, res) => {
+  try {
+    if (!canManageTestSeries(req)) return res.status(403).json({ error: 'Only the Head of Trainer and Managers can add tests.' });
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid series' });
+    const series = await TestSeries.findById(req.params.id);
+    if (!series) return res.status(404).json({ error: 'Series not found' });
+    const name = String(req.body?.name || '').trim().slice(0, 140);
+    if (!name) return res.status(400).json({ error: 'Give the test a name (e.g. "Mock Test 1").' });
+    const dur = Math.round(Number(req.body?.durationMin) || 60);
+    if (dur < 5 || dur > 300) return res.status(400).json({ error: 'Duration must be between 5 and 300 minutes.' });
+    const count = await TrainerAssessment.countDocuments({ seriesId: series._id.toString() });
+    const test = await TrainerAssessment.create({
+      name, type: 'Mock Test', topic: String(req.body?.topic || '').trim().slice(0, 200),
+      course: (series.courses || []).join(', ').slice(0, 200), batch: '',
+      trainerId: '', trainerName: req.user?.name || '',
+      timeLimit: `${dur} min`, durationMin: dur, totalMarks: 0, passMark: 0,
+      status: 'Active', scores: {}, mode: 'offline', questions: [],
+      seriesId: series._id.toString(), seriesOrder: count + 1
+    });
+    res.status(201).json({ ...seriesTestSummary(test), attempts: 0, submitted: 0, avgScore: null });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.delete('/test-series/:id/tests/:testId', async (req, res) => {
+  try {
+    if (!canManageTestSeries(req)) return res.status(403).json({ error: 'Only the Head of Trainer and Managers can remove tests.' });
+    if (!mongoose.isValidObjectId(req.params.testId)) return res.status(400).json({ error: 'Invalid test' });
+    const test = await TrainerAssessment.findOne({ _id: req.params.testId, seriesId: req.params.id });
+    if (!test) return res.status(404).json({ error: 'Test not found in this series' });
+    if (await TestAttempt.exists({ assessmentId: test._id.toString() })) {
+      return res.status(409).json({ error: 'Students have already taken this test, so it cannot be removed (their results would be lost).' });
+    }
+    await test.deleteOne();
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Student: published series for my course, each test with my progress
+router.get('/student-portal/test-series', async (req, res) => {
+  try {
+    if (req.user?.department !== 'student' || !req.user?.studentId) return res.status(403).json({ error: 'Please sign in with your student account.' });
+    const st = await findStudentByAnyId(req.user.studentId);
+    if (!st) return res.status(404).json({ error: 'Student not found' });
+    const series = (await TestSeries.find({ status: 'Published' }).sort({ createdAt: -1 }).lean()).filter((s) => seriesForStudent(s, st));
+    if (!series.length) return res.json([]);
+    const tests = await TrainerAssessment.find({ seriesId: { $in: series.map((s) => s._id.toString()) }, mode: 'online', 'questions.0': { $exists: true } })
+      .select('name topic seriesId seriesOrder totalMarks passMark durationMin timeLimit questions.marks createdAt')
+      .sort({ seriesOrder: 1, createdAt: 1 }).lean();
+    const attempts = await TestAttempt.find({ studentId: st.studentId, assessmentId: { $in: tests.map((t) => t._id.toString()) } }).lean();
+    const myAtt = Object.fromEntries(attempts.map((a) => [a.assessmentId, a]));
+    res.json(series.map((s) => {
+      const list = tests.filter((t) => t.seriesId === s._id.toString()).map((t) => {
+        const a = myAtt[t._id.toString()];
+        const best = a ? Math.max(a.status === 'submitted' ? (a.score || 0) : 0, ...(a.attemptHistory || []).map((h) => h.score || 0)) : null;
+        const tookIt = a && (a.status === 'submitted' || (a.attemptHistory || []).length);
+        return {
+          id: t._id.toString(), name: t.name, topic: t.topic || '',
+          questionCount: (t.questions || []).length, totalMarks: t.totalMarks, passMark: t.passMark,
+          durationMin: t.durationMin || minutesOf(t.timeLimit),
+          state: !a ? 'not_started' : a.status === 'in_progress' ? 'in_progress' : 'submitted',
+          lastScore: a?.status === 'submitted' ? a.score : null,
+          bestScore: tookIt ? best : null,
+          attemptsTaken: a ? (a.attemptHistory || []).length + (a.status === 'submitted' ? 1 : 0) : 0
+        };
+      });
+      const done = list.filter((t) => t.bestScore != null).length;
+      return { id: s._id.toString(), name: s.name, description: s.description || '', courses: s.courses || [], tests: list, done, total: list.length };
+    }).filter((s) => s.total > 0));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ---------- Online tests: student side ----------
 async function portalStudentOf(req) {
   if (req.user?.department !== 'student' || !req.user?.studentId) return null;
@@ -16444,7 +16855,10 @@ async function loadStudentTest(req, res) {
   if (!mongoose.isValidObjectId(req.params.id)) { res.status(400).json({ error: 'Invalid test' }); return null; }
   const test = await TrainerAssessment.findById(req.params.id);
   if (!test || test.mode !== 'online' || !(test.questions || []).length) { res.status(404).json({ error: 'This online test is not available.' }); return null; }
-  if (!sameBatch(test.batch, studentBatchOf(st))) { res.status(403).json({ error: 'This test is not for your batch.' }); return null; }
+  if (test.seriesId) {
+    const series = mongoose.isValidObjectId(test.seriesId) ? await TestSeries.findById(test.seriesId).lean() : null;
+    if (!series || series.status !== 'Published' || !seriesForStudent(series, st)) { res.status(403).json({ error: 'This test series is not open for your course.' }); return null; }
+  } else if (!sameBatch(test.batch, studentBatchOf(st))) { res.status(403).json({ error: 'This test is not for your batch.' }); return null; }
   return { st, test };
 }
 
@@ -16485,14 +16899,18 @@ async function gradeAttempt(attempt, test, st, { auto = false } = {}) {
   attempt.chapterScores = chapterMap;
   await attempt.save();
 
-  const key = attempt.studentKey || studentKeyOf(st);
-  const fresh = await TrainerAssessment.findById(test._id);
-  const scores = fresh.scores instanceof Map ? Object.fromEntries(fresh.scores) : (fresh.scores || {});
-  scores[key] = score;
-  fresh.scores = scores;
-  if (fresh.status === 'Active') fresh.status = 'Scored';
-  await fresh.save();
-  await recomputeAssessmentScores([key]);
+  // Test Series mocks are practice: the attempt keeps the score, but it does not
+  // go into the batch test average / readiness
+  if (!test.seriesId) {
+    const key = attempt.studentKey || studentKeyOf(st);
+    const fresh = await TrainerAssessment.findById(test._id);
+    const scores = fresh.scores instanceof Map ? Object.fromEntries(fresh.scores) : (fresh.scores || {});
+    scores[key] = score;
+    fresh.scores = scores;
+    if (fresh.status === 'Active') fresh.status = 'Scored';
+    await fresh.save();
+    await recomputeAssessmentScores([key]);
+  }
   await notifyStudent(st.studentId, {
     type: 'score', title: `Score: ${test.name}`,
     message: `You scored ${score}/${test.totalMarks} (${correct} of ${test.questions.length} correct)${auto ? ' — submitted automatically when time ran out' : ''}.`,
@@ -16636,6 +17054,8 @@ router.post('/student-portal/tests/:id/reallocate', async (req, res) => {
     const ctx = await loadStudentTest(req, res);
     if (!ctx) return;
     const { st, test } = ctx;
+    // Students retake Test Series mocks themselves; batch tests are reallocated by the trainer
+    if (!test.seriesId) return res.status(403).json({ error: 'Ask your trainer to reallocate this test if you need to take it again.' });
     const { reason = 'Retake exam to practice weak chapters and improve score' } = req.body || {};
 
     const attempt = await TestAttempt.findOne({ assessmentId: req.params.id, studentId: st.studentId });

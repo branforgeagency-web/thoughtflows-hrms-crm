@@ -24,6 +24,17 @@ import {
 } from 'lucide-react';
 import { updateStudent, deleteStudent } from '../services/api';
 import StudentTimeline from './StudentTimeline';
+import StudentDocuments from './StudentDocuments';
+
+// HR / Placement / Admin / Leadership may verify student documents (the server checks too)
+const canReviewStudentDocs = () => {
+  try {
+    const u = JSON.parse(sessionStorage.getItem('thoughtflows_user') || localStorage.getItem('thoughtflows_user') || 'null') || {};
+    const t = `${u.department || ''} ${u.role || ''}`.toLowerCase();
+    if (/trainer|faculty|training/.test(t) && !/admin/.test(t)) return false;
+    return /admin|leadership|head|manager|director|hr|counsel|admission|advisor|cccp|placement|business/.test(t);
+  } catch (_) { return false; }
+};
 import EditStudentModal from './EditStudentModal';
 import { effectiveStage, autoStage, stageChecks, blockReason, PLACEMENT_EDITORS, ATTENDANCE_MIN, MOCK_PASS } from '../utils/placement';
 
@@ -100,6 +111,7 @@ function StudentProfileModalContent({ isOpen, onClose, student: propStudent, onU
   const TABS = [
     'Overview',
     'Onboarding',
+    'Documents',
     'Course Progress',
     'Exam & Certification',
     'Placement',
@@ -363,6 +375,13 @@ function StudentProfileModalContent({ isOpen, onClose, student: propStudent, onU
             <div className="bg-white rounded-2xl border border-slate-200 p-4">
               <StudentTimeline studentId={student.studentId || student._id || student.id} />
             </div>
+          )}
+
+          {/* ── DOCUMENTS: uploaded by the student from the Student Portal ── */}
+          {activeTab === 'Documents' && (
+            student.studentId
+              ? <StudentDocuments studentId={student.studentId} mode="staff" canReview={canReviewStudentDocs()} />
+              : <div className="bg-white rounded-2xl border border-dashed border-slate-300 p-6 text-center text-xs text-slate-500">This student has no Student ID yet, so there are no portal documents.</div>
           )}
 
           {/* ── TAB 1: OVERVIEW ──────────────────────────────────────────── */}

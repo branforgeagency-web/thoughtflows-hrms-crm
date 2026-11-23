@@ -7,6 +7,7 @@ import LmsMaterialViewer from './LmsMaterialViewer';
 import {
   getLiveClasses,
   startLiveClass,
+  getLiveClassWindow,
   getTrainerClassJoin,
   addLiveClassNote,
   endLiveClass,
@@ -48,6 +49,8 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
   const fullSlotRef = useRef(null);
   const [fullRect, setFullRect] = useState(null);
   const liveMissRef = useRef(0);
+  // Today's time window for the selected batch: open / upcoming / not_taken / completed / unknown
+  const [classWindow, setClassWindow] = useState(null);
 
   const flash = (msg, ms = 3500) => { setToast(msg); setTimeout(() => setToast(''), ms); };
   const liveBatch = live ? batches.find((b) => b.name === live.batch) || null : null;
@@ -81,6 +84,19 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
   }, [trainerId, batches]);
 
   useEffect(() => { refreshLive(); }, [refreshLive]);
+
+  // Re-check the batch's class time every minute so Start Class closes when the slot ends
+  const batchNameForWindow = batch?.name || '';
+  useEffect(() => {
+    if (!batchNameForWindow || live) return undefined;
+    let alive = true;
+    const check = () => getLiveClassWindow(batchNameForWindow).then((w) => { if (alive) setClassWindow(w); }).catch(() => {});
+    setClassWindow(null);
+    check();
+    const t = setInterval(check, 60000);
+    return () => { alive = false; clearInterval(t); };
+  }, [batchNameForWindow, live?.sessionId]);
+  const classTimeOver = classWindow?.state === 'not_taken' || classWindow?.state === 'completed';
   useEffect(() => {
     if (!live) return undefined;
     const poll = setInterval(refreshLive, 15000); // picks up students joining
@@ -124,6 +140,7 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
       setLive(sess);
       flash('✓ Class is live — your batch can now join from the Student Portal');
     } catch (e) {
+      if (e?.response?.data?.window) setClassWindow(e.response.data.window);
       setError(e?.response?.data?.error || e.message);
     } finally {
       setStarting(false);
@@ -256,13 +273,29 @@ export default function ClassSessionRoom({ trainerId, trainerName, batches = [],
             <div className="text-xs text-slate-500 mt-3">Materials for this batch: <b className="text-slate-800">{batchMaterials.length}</b></div>
           </div>
 
-          {error && <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold">⚠ {error}</div>}
-
-          <button onClick={handleStart} disabled={starting}
-            className="w-full py-4 rounded-2xl bg-[#009688] hover:bg-[#00897b] text-white text-sm font-bold flex items-center justify-center gap-2 shadow-md disabled:opacity-60">
-            {starting ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4 fill-current" />}
-            <span>{starting ? 'Opening classroom…' : 'Start Class'}</span>
-          </button>
+          {classTimeOver ? (
+            <div className={`w-full p-5 rounded-2xl border text-center ${classWindow.state === 'not_taken' ? 'bg-rose-50 border-rose-200' : 'bg-slate-50 border-slate-200'}`}>
+              <div className={`text-base font-extrabold ${classWindow.state === 'not_taken' ? 'text-rose-700' : 'text-slate-800'}`}>
+                {classWindow.state === 'not_taken' ? 'This batch was not taken' : "Today's class is over"}
+              </div>
+              <p className="text-xs text-slate-600 mt-1.5">
+                Class time {classWindow.start} – {classWindow.end} has ended
+                {classWindow.state === 'not_taken' ? ' and no class was started, so it can no longer be started today.' : ' — the class can no longer be started again today.'}
+              </p>
+            </div>
+          ) : (
+            <>
+              {error && <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold">⚠ {error}</div>}
+              {classWindow?.state === 'upcoming' && (
+                <div className="text-[11px] text-slate-500 text-center">Class time today: {classWindow.start} – {classWindow.end}. Start Class closes at {classWindow.end}.</div>
+              )}
+              <button onClick={handleStart} disabled={starting}
+                className="w-full py-4 rounded-2xl bg-[#009688] hover:bg-[#00897b] text-white text-sm font-bold flex items-center justify-center gap-2 shadow-md disabled:opacity-60">
+                {starting ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4 fill-current" />}
+                <span>{starting ? 'Opening classroom…' : 'Start Class'}</span>
+              </button>
+            </>
+          )}
         </div>
       ) : (
         <div className="space-y-5">

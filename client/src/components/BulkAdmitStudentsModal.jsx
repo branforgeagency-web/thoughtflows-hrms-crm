@@ -12,7 +12,7 @@ import { createStudentsBulk, notifyDataUpdate } from '../services/api';
  * (duplicate check, Student ID, lead link, receipts, portal login).
  */
 
-const CHUNK = 10;
+const CHUNK = 25; // rows per request (server limit 50); each row now uses indexed lookups
 
 const SHEET_TEMPLATE_HEADERS = [
   'S.NO', 'STUDENT ID', 'NAME', 'CONTACT', 'COURSE', 'HR Name', 'BRANCH', 'MOJ', 'DOJ',
@@ -37,12 +37,20 @@ const monthIndex = (v) => {
 };
 const titleCase = (v) => clean(v).toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
 
-// Same rule as the server: Indian mobile, +91 / 0 prefix allowed
+// Same rule as the server: Indian mobile (+91 / 0 prefix allowed) or a foreign number with country code
 const normalizeMobile = (v) => {
-  let d = String(v || '').replace(/\D/g, '');
-  if (d.length === 12 && d.startsWith('91')) d = d.slice(2);
-  if (d.length === 11 && d.startsWith('0')) d = d.slice(1);
-  return /^[6-9]\d{9}$/.test(d) ? d : '';
+  const raw = String(v || '').trim();
+  let d = raw.replace(/\D/g, '');
+  const intl = /^(\+|00)/.test(raw);
+  if (intl && raw.startsWith('00')) d = d.slice(2);
+  const india = (x) => (/^[6-9]\d{9}$/.test(x) ? x : '');
+  // India: bare 10 digits, 91XXXXXXXXXX, +91..., or 0XXXXXXXXXX → stored as the 10 digits
+  if (d.length === 12 && d.startsWith('91')) return india(d.slice(2));
+  if (intl) return d.length >= 8 && d.length <= 15 && !d.startsWith('0') ? `+${d}` : '';
+  if (d.length === 11 && d.startsWith('0')) return india(d.slice(1));
+  if (d.length === 10) return india(d);
+  // Foreign number typed (or pasted from Excel) without the "+": 11–15 digits incl. country code
+  return d.length >= 11 && d.length <= 15 && !d.startsWith('0') ? `+${d}` : '';
 };
 
 // "02-11-2026", "2/11/2026", "2026-11-02", "Nov 2", "2 Nov", "November 2" → "YYYY-MM-DD"
@@ -220,7 +228,7 @@ function mapRow(cells, colMap, opts, rowNo) {
   const warnings = [];
   if (!payload.name) errors.push('Name missing');
   if (!payload.course) errors.push('Course missing');
-  if (!normalizeMobile(payload.phone)) errors.push(payload.phone ? `Contact ${payload.phone} is not a 10-digit Indian mobile` : 'Contact missing');
+  if (!normalizeMobile(payload.phone)) errors.push(payload.phone ? `Contact ${payload.phone} is not a valid number (10-digit Indian, or foreign with country code)` : 'Contact missing');
   if (courseFee > 0 && paidAmount > courseFee) errors.push(`Paid ₹${paidAmount} is more than fee ₹${courseFee}`);
   if (!batchDate) warnings.push(r.doj ? `DOJ "${r.doj}" not understood — today's date will be used` : 'No DOJ');
   if (!payload.email) warnings.push('No email — no portal login will be created');

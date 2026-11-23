@@ -49,4 +49,7 @@ const trainingMaterialSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Indexes for the dashboard / portal queries that filter and sort on these fields
+trainingMaterialSchema.index({ 'assignments.batch': 1 });
+
 export default mongoose.models.TrainingMaterial || mongoose.model('TrainingMaterial', trainingMaterialSchema);

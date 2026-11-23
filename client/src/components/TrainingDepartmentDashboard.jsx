@@ -56,6 +56,7 @@ import {
 } from 'lucide-react';
 import TrainerBatchDesk from './TrainerBatchDesk';
 import OnlineTestBuilder from './OnlineTestBuilder';
+import TestSeriesManager from './TestSeriesManager';
 import TrainingLibraryMaterials from './TrainingLibraryMaterials';
 import TrainingPlacementPrep from './TrainingPlacementPrep';
 import TrainingMyProfile from './TrainingMyProfile';
@@ -1782,6 +1783,18 @@ export default function TrainingDepartmentDashboard({
                 </button>
 
                 <button
+                  onClick={() => setActiveNav('test_series')}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold transition-all ${
+                    activeNav === 'test_series'
+                      ? 'bg-[#00897b] text-white shadow-md shadow-[#00897b]/30'
+                      : 'text-[#92afb4] hover:text-white hover:bg-[#152a36]'
+                  }`}
+                >
+                  <ListChecks className="w-4 h-4 shrink-0" />
+                  <span>Test Series</span>
+                </button>
+
+                <button
                   onClick={() => setActiveNav('library')}
                   className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold transition-all ${
                     activeNav === 'library'
@@ -1909,6 +1922,7 @@ export default function TrainingDepartmentDashboard({
               {activeNav === 'students' && 'My Students'}
               {activeNav === 'weak_students' && 'Weak Students'}
               {activeNav === 'assessments' && 'Assessment Desk'}
+              {activeNav === 'test_series' && 'Test Series · Mock & Practice Tests'}
               {activeNav === 'library' && 'LMS · PPT & Materials'}
               {activeNav === 'student_desk' && 'Student Submissions & Requests'}
               {activeNav === 'placement' && 'Student Job-Ready Status & Placement Desk'}
@@ -1929,6 +1943,7 @@ export default function TrainingDepartmentDashboard({
               {activeNav === 'students' && 'Allocated students · module-wise'}
               {activeNav === 'weak_students' && 'Auto-flagged drop-out risk · remediation'}
               {activeNav === 'assessments' && 'Weekly tests · mock exams · rationale'}
+              {activeNav === 'test_series' && 'Course-wide mock tests for students'}
               {activeNav === 'library' && 'Coding books · PPTs · LMS'}
               {activeNav === 'student_desk' && 'Assignments, resumes, video intros · mock interview & 1-on-1 requests'}
               {activeNav === 'placement' && "Evaluate 4-pillar readiness: Technical, Assessments, Communication, and Interview Prep · CCCP sync"}
@@ -4744,6 +4759,7 @@ export default function TrainingDepartmentDashboard({
           )}
 
           {/* ================= TAB: ASSESSMENTS ================= */}
+          {activeNav === 'test_series' && <TestSeriesManager />}
           {activeNav === 'assessments' && (() => {
             const scoresOf = (t) => assessmentScores[t.id] || {};
             const hasScores = (t) => Object.keys(scoresOf(t)).length > 0;

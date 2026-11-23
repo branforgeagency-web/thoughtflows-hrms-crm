@@ -177,18 +177,26 @@ export default function StudentRegistrationPage({ onBack }) {
       setErrorMessage("Please enter father's name");
       return;
     }
-    const mobileDigits = (v) => {
-      let d = String(v || '').replace(/\D/g, '');
-      if (d.length === 12 && d.startsWith('91')) d = d.slice(2);
-      if (d.length === 11 && d.startsWith('0')) d = d.slice(1);
-      return d;
+    const normalizeMobile = (v) => {
+      const raw = String(v || '').trim();
+      let d = raw.replace(/\D/g, '');
+      const intl = /^(\+|00)/.test(raw);
+      if (intl && raw.startsWith('00')) d = d.slice(2);
+      const india = (x) => (/^[6-9]\d{9}$/.test(x) ? x : '');
+      // India: bare 10 digits, 91XXXXXXXXXX, +91..., or 0XXXXXXXXXX → stored as the 10 digits
+      if (d.length === 12 && d.startsWith('91')) return india(d.slice(2));
+      if (intl) return d.length >= 8 && d.length <= 15 && !d.startsWith('0') ? `+${d}` : '';
+      if (d.length === 11 && d.startsWith('0')) return india(d.slice(1));
+      if (d.length === 10) return india(d);
+      // Foreign number typed (or pasted from Excel) without the "+": 11–15 digits incl. country code
+      return d.length >= 11 && d.length <= 15 && !d.startsWith('0') ? `+${d}` : '';
     };
-    if (!/^[6-9]\d{9}$/.test(mobileDigits(phone))) {
-      setErrorMessage('Please enter a valid 10-digit mobile number');
+    if (!normalizeMobile(phone)) {
+      setErrorMessage('Please enter a valid mobile number (10-digit Indian, or foreign with country code e.g. +971...)');
       return;
     }
-    if (!sameAsMobile && whatsappNumber.trim() && !/^[6-9]\d{9}$/.test(mobileDigits(whatsappNumber))) {
-      setErrorMessage('Please enter a valid 10-digit WhatsApp number');
+    if (!sameAsMobile && whatsappNumber.trim() && !normalizeMobile(whatsappNumber)) {
+      setErrorMessage('Please enter a valid WhatsApp number (10-digit Indian, or foreign with country code)');
       return;
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {

@@ -13,7 +13,17 @@ const scheduleRetry = (delayMs = 8000) => {
 export const connectDB = async () => {
   try {
     const conn = await mongoose.connect(process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/thoughtflows_db', {
-      serverSelectionTimeoutMS: 8000 // give Atlas/DNS a realistic window before giving up
+      serverSelectionTimeoutMS: 8000, // give Atlas/DNS a realistic window before giving up
+      // Keep a few connections open and warm so the first request after a quiet
+      // spell doesn't wait for a new TLS handshake to Atlas; cap the pool so a
+      // burst of dashboard loads can't exhaust the cluster's connection limit.
+      minPoolSize: 5,
+      maxPoolSize: 40,
+      maxIdleTimeMS: 10 * 60 * 1000,
+      // Compress data between this server and Atlas (big student / lead lists)
+      compressors: ['zlib'],
+      // Fail a stuck query instead of hanging the request forever
+      socketTimeoutMS: 60000
     });
     console.log(`[MongoDB] Connected successfully to ${conn.connection.host}`);
     return true;

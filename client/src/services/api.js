@@ -1938,6 +1938,33 @@ export const createStudentReferral = async (studentId, data) => {
   return res.data;
 };
 
+// ---- Student documents (Student Portal → My Documents; HR verifies) ----
+export const getStudentDocuments = async (studentId) => {
+  const res = await api.get(`/student-portal/${encodeURIComponent(studentId)}/documents`);
+  return res.data;
+};
+export const getStudentDocumentUploadUrl = async (studentId, data) => {
+  const res = await api.post(`/student-portal/${encodeURIComponent(studentId)}/documents/upload-url`, data);
+  return res.data;
+};
+export const addStudentDocument = async (studentId, data) => {
+  const res = await api.post(`/student-portal/${encodeURIComponent(studentId)}/documents`, data);
+  notifyDataUpdate('students');
+  return res.data;
+};
+export const deleteStudentDocument = async (studentId, docId) => {
+  const res = await api.delete(`/student-portal/${encodeURIComponent(studentId)}/documents/${encodeURIComponent(docId)}`);
+  notifyDataUpdate('students');
+  return res.data;
+};
+export const reviewStudentDocument = async (studentId, docId, data) => {
+  const res = await api.put(`/students/${encodeURIComponent(studentId)}/documents/${encodeURIComponent(docId)}/review`, data);
+  notifyDataUpdate('students');
+  return res.data;
+};
+export const studentDocumentFileUrl = (studentId, docId, download = false) =>
+  `${API_BASE}/student-portal/${encodeURIComponent(studentId)}/documents/${encodeURIComponent(docId)}/file${download ? '?download=1' : ''}`;
+
 export const createStudentSubmission = async (studentId, data) => {
   const res = await api.post(`/student-portal/${encodeURIComponent(studentId)}/submissions`, data);
   notifyDataUpdate('student_submissions');
@@ -1983,6 +2010,11 @@ export const getLiveClasses = async (params) => {
 };
 
 // Starts the class: server creates the Zoom meeting on the trainer's Zoom user
+export const getLiveClassWindow = async (batch) => {
+  const res = await api.get('/trainer/live-class/window', { params: { batch } });
+  return res.data;
+};
+
 export const startLiveClass = async (data) => {
   const res = await api.post('/trainer/live-class/start', data);
   notifyDataUpdate('live_class');
@@ -2304,6 +2336,15 @@ export const submitStudentTest = async (id, answers) => {
   notifyDataUpdate('assessments');
   return res.data;
 };
+// ---- Test Series (Head of Trainer manages; students take from the portal) ----
+export const getTestSeriesList = async () => (await api.get('/test-series')).data;
+export const createTestSeries = async (data) => (await api.post('/test-series', data)).data;
+export const updateTestSeries = async (id, data) => (await api.put(`/test-series/${encodeURIComponent(id)}`, data)).data;
+export const deleteTestSeries = async (id) => (await api.delete(`/test-series/${encodeURIComponent(id)}`)).data;
+export const addTestToSeries = async (id, data) => (await api.post(`/test-series/${encodeURIComponent(id)}/tests`, data)).data;
+export const removeTestFromSeries = async (id, testId) => (await api.delete(`/test-series/${encodeURIComponent(id)}/tests/${encodeURIComponent(testId)}`)).data;
+export const getMyTestSeries = async () => (await api.get('/student-portal/test-series')).data;
+
 export const getTestLeaderboard = async (id, params) => {
   const res = await api.get(`/student-portal/tests/${id}/leaderboard`, { params });
   return res.data;

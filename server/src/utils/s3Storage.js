@@ -98,7 +98,7 @@ export function parseS3Url(url = '') {
 
 export function presignGetUrl({ bucket = s3Bucket(), region = s3Region(), key, expiresIn = 3600, host, date = new Date(),
   accessKeyId = process.env.AWS_ACCESS_KEY_ID, secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY, sessionToken = process.env.AWS_SESSION_TOKEN,
-  responseContentDisposition } = {}) {
+  responseContentDisposition, method = 'GET' } = {}) {
   if (!bucket || !key || !accessKeyId || !secretAccessKey) return '';
   const amzDate = date.toISOString().replace(/[:-]|\.\d{3}/g, '');
   const day = amzDate.slice(0, 8);
@@ -115,11 +115,17 @@ export function presignGetUrl({ bucket = s3Bucket(), region = s3Region(), key, e
   if (sessionToken) params['X-Amz-Security-Token'] = sessionToken;
   if (responseContentDisposition) params['response-content-disposition'] = responseContentDisposition;
   const query = Object.keys(params).sort().map((k) => `${rfc3986(k)}=${rfc3986(params[k])}`).join('&');
-  const canonical = ['GET', path, query, `host:${h}\n`, 'host', 'UNSIGNED-PAYLOAD'].join('\n');
+  const canonical = [method, path, query, `host:${h}\n`, 'host', 'UNSIGNED-PAYLOAD'].join('\n');
   const toSign = ['AWS4-HMAC-SHA256', amzDate, scope, sha256hex(canonical)].join('\n');
   const kSigning = hmac(hmac(hmac(hmac(`AWS4${secretAccessKey}`, day), region), 's3'), 'aws4_request');
   const signature = crypto.createHmac('sha256', kSigning).update(toSign, 'utf8').digest('hex');
   return `https://${h}${path}?${query}&X-Amz-Signature=${signature}`;
+}
+
+// Signed upload link: the browser PUTs the file straight to this exact key with
+// the server's credentials (no Amplify / Cognito permission needed).
+export function presignPutUrl({ key, expiresIn = 900 } = {}) {
+  return presignGetUrl({ key, expiresIn, method: 'PUT' });
 }
 
 // Signed link for a stored file given its saved key and/or saved URL. The

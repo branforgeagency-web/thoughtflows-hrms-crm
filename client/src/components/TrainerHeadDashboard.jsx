@@ -6,7 +6,8 @@ import {
   UserPlus as MenuHandoverIcon, CalendarX as MenuLeaveIcon, Presentation as MenuDemoIcon, MessageCircleQuestion as MenuDoubtIcon,
   Laptop as MenuAvailIcon, Link2 as MenuLinkIcon, UserCheck as MenuOneIcon, Clock as MenuShiftIcon,
   Network as MenuMappingIcon, ClipboardCheck as MenuAttendanceIcon, Gauge as MenuUtilIcon, Briefcase as MenuManagersIcon,
-  Building2 as MenuBranchIcon, Layers as MenuBatchIcon, AlertTriangle as MenuWeakIcon, ListChecks as MenuSyllabusIcon, BookOpen as MenuLmsIcon
+  Building2 as MenuBranchIcon, Layers as MenuBatchIcon, AlertTriangle as MenuWeakIcon, ListChecks as MenuSyllabusIcon, BookOpen as MenuLmsIcon,
+  FileQuestion as MenuSeriesIcon
 } from 'lucide-react';
 import SchedulingCalendar from './scheduling/SchedulingCalendar';
 import AvailabilityFinder from './scheduling/AvailabilityFinder';
@@ -100,6 +101,7 @@ import TeamRosterBoard from './TeamRosterBoard';
 import UtilizationDashboard from './UtilizationDashboard';
 import StaffLoginAttendance from './StaffLoginAttendance';
 import TrainingLibraryMaterials from './TrainingLibraryMaterials';
+import TestSeriesManager from './TestSeriesManager';
 import { CreateBatchModal, AutoGroupBatchModal, BatchDetailModal } from './BatchManagementModals';
 import { getCurrentWeekScheduleDays, getWeekRangeString, localDateKey } from '../utils/dateUtils';
 
@@ -1769,6 +1771,7 @@ export default function TrainerHeadDashboard({
       case 'demos': return 'Demo Sessions & Conversion Tracker';
       case 'doubts': return 'Student Doubt Box & Escalations';
       case 'lms_library': return 'LMS · PPT & Course Library';
+      case 'test_series': return 'Test Series · Mock & Practice Tests';
       case 'utilization': return 'Utilization & Hourly Work Planning Dashboard';
       default: return 'Trainer Portal';
     }
@@ -1920,7 +1923,8 @@ export default function TrainerHeadDashboard({
               { id: 'batches', label: 'Batches', icon: MenuBatchIcon, count: scopedBatches.length },
               { id: 'weak_students', label: 'Weak Students', icon: MenuWeakIcon, alert: allWeakStudents.length, alertTone: 'rose' },
               { id: 'syllabus', label: 'Syllabus Progress', icon: MenuSyllabusIcon, count: `${syllabusReport.completionRate}%` },
-              { id: 'lms_library', label: 'LMS Library', icon: MenuLmsIcon, count: materials.length, hint: 'PPTs & materials' }
+              { id: 'lms_library', label: 'LMS Library', icon: MenuLmsIcon, count: materials.length, hint: 'PPTs & materials' },
+              { id: 'test_series', label: 'Test Series', icon: MenuSeriesIcon, hidden: roleType === 'tl', hint: 'Course-wide mock & practice tests' }
             ] }
           ]}
         />
@@ -5276,6 +5280,8 @@ export default function TrainerHeadDashboard({
               </div>
             </div>
           )}
+          {/* ================= SECTION: TEST SERIES (course-wide mock tests) ================= */}
+          {activeTab === 'test_series' && <TestSeriesManager />}
           {/* ================= SECTION: LMS PPT & MATERIAL LIBRARY ================= */}
           {activeTab === 'lms_library' && (
             <TrainingLibraryMaterials

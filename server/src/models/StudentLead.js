@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { addContactKeys } from '../utils/contactKeys.js';
 
 const studentLeadSchema = new mongoose.Schema({
   fullName: {
@@ -223,5 +224,11 @@ studentLeadSchema.index({ counselorAssigned: 1, createdAt: -1 });
 studentLeadSchema.index({ enquiryMonth: 1, createdAt: -1 });
 studentLeadSchema.index({ phone: 1 });
 studentLeadSchema.index({ email: 1 });
+// Indexed phone / email lookup keys (duplicate checks, bulk upload, lead matching)
+addContactKeys(studentLeadSchema);
+// Admission link + allocation desks
+studentLeadSchema.index({ admittedStudentId: 1 });
+studentLeadSchema.index({ allocatedTo: 1, createdAt: -1 });
+studentLeadSchema.index({ updatedAt: -1 });
 
 export default mongoose.models.StudentLead || mongoose.model('StudentLead', studentLeadSchema);

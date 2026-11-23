@@ -447,7 +447,7 @@ function CompleteRegistrationModalContent({
                     setPhone(val);
                     if (sameAsMobile) setWhatsappNumber(val);
                   }}
-                  placeholder="10-digit mobile"
+                  placeholder="10-digit mobile or +country code"
                   className="w-full bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 outline-none focus:border-[#00897b] transition-all font-mono"
                 />
               </div>

@@ -287,4 +287,9 @@ const demoSchema = new mongoose.Schema({
 demoSchema.index({ trainerId: 1, preferredDate: 1, timeSlot: 1 });
 demoSchema.index({ joinCode: 1 }, { sparse: true });
 
+// Indexes for the dashboard / portal queries that filter and sort on these fields
+demoSchema.index({ createdAt: -1 });
+demoSchema.index({ status: 1, preferredDate: 1 });
+demoSchema.index({ email: 1 });
+
 export default mongoose.models.Demo || mongoose.model('Demo', demoSchema);

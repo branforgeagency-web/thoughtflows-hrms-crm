@@ -18,4 +18,9 @@ const callLogSchema = new mongoose.Schema(
 
 callLogSchema.index({ counselorName: 1, date: 1 });
 
+// Indexes for the dashboard / portal queries that filter and sort on these fields
+callLogSchema.index({ leadId: 1, createdAt: -1 });
+callLogSchema.index({ createdAt: -1 });
+callLogSchema.index({ date: 1 });
+
 export default mongoose.models.CallLog || mongoose.model('CallLog', callLogSchema);

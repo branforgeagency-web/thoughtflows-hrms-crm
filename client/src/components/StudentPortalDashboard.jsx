@@ -38,6 +38,8 @@ import {
 import { CalendarClock as ScheduleIcon } from 'lucide-react';
 import StudentSchedule from './scheduling/StudentSchedule';
 import StudentOnlineTest from './StudentOnlineTest';
+import StudentDocuments from './StudentDocuments';
+import StudentTestSeries from './StudentTestSeries';
 import BookNewDemoModal from './BookNewDemoModal';
 import StudentDemoNotice from './StudentDemoNotice';
 import {
@@ -628,6 +630,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
       { id: 'schedule', label: 'My Schedule', icon: ScheduleIcon },
       { id: 'classes', label: 'Classes', icon: Calendar },
       { id: 'lms', label: 'Materials & Tests', icon: BookOpen },
+      { id: 'test-series', label: 'Test Series', icon: Award },
       { id: 'trainers', label: 'My Trainer', icon: Users }
     ] },
     { category: 'CAREER', items: [
@@ -637,6 +640,7 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
     { category: 'ACCOUNT', items: [
       { id: 'payments', label: 'Payments', icon: CreditCard },
       { id: 'admission', label: 'Admission Details', icon: FileText },
+      { id: 'documents', label: 'My Documents', icon: Upload },
       { id: 'help', label: 'Help', icon: HelpCircle },
       { id: 'profile', label: 'My Profile', icon: User }
     ] }
@@ -3305,11 +3309,23 @@ export default function StudentPortalDashboard({ onClose, currentUser, onLogout 
           {activeNav === 'schedule' && <StudentSchedule onJoinBatchClass={handleOpenLiveClass} />}
           {activeNav === 'classes' && renderClasses()}
           {activeNav === 'lms' && renderLms()}
+          {activeNav === 'test-series' && (
+            <div className="space-y-5">
+              <PageHeader title="Test Series" sub="Mock & practice tests for your course — take them any time and retake to improve" />
+              <StudentTestSeries onOpenTest={setTestId} refreshKey={testId ? 'open' : 'closed'} />
+            </div>
+          )}
           {activeNav === 'trainers' && renderTrainers()}
           {activeNav === 'placement-prep' && renderPlacementPrep()}
           {activeNav === 'certification' && renderCertification()}
           {activeNav === 'payments' && renderPayments()}
           {activeNav === 'admission' && renderAdmission()}
+          {activeNav === 'documents' && (
+            <div className="space-y-5">
+              <PageHeader title="My Documents" sub="Upload your ID, photo and certificates — your HR verifies each one" />
+              <StudentDocuments studentId={st.studentId} mode="student" />
+            </div>
+          )}
           {activeNav === 'help' && renderHelp()}
           {activeNav === 'profile' && renderProfile()}
         </div>

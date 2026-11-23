@@ -54,7 +54,7 @@ export function signMaterialViewToken(user, materialId) {
 }
 const MATERIAL_HTML5_ROUTE = /^\/training\/materials\/([^/]+)\/html5\/([^/]+)\/.+$/;
 
-const FILE_ROUTES = [/^\/recordings\/[^/]+\/audio$/, /^\/training\/materials\/[^/]+\/file$/, /^\/student-portal\/submissions\/[^/]+\/file$/];
+const FILE_ROUTES = [/^\/recordings\/[^/]+\/audio$/, /^\/training\/materials\/[^/]+\/file$/, /^\/student-portal\/submissions\/[^/]+\/file$/, /^\/student-portal\/[^/]+\/documents\/[^/]+\/file$/];
 
 // ---------------------------------------------------------------------------
 // Passwords
@@ -156,6 +156,11 @@ const STAFF_RULES = [
   ['DELETE', /^\/training\/materials\/[^/]+$/, ['training']],
   ['POST', /^\/training\/materials\/([^/]+\/html5\/convert|html5\/convert-all)$/, ['training']],
   ['PUT', /^\/student-portal\/submissions\/[^/]+\/review$/, ['training']],
+  // Test Series — Head of Trainer / Managers manage (leader check is in the routes)
+  ['*', /^\/test-series(\/|$)/, ['training']],
+  // Student documents: HR / Placement verify; HR may remove a wrong upload
+  ['PUT', /^\/students\/[^/]+\/documents\/[^/]+\/review$/, ['hr', 'cccp']],
+  ['DELETE', /^\/student-portal\/[^/]+\/documents\/[^/]+$/, ['hr']],
   // Syllabus tracker, batch announcements, online tests, class recordings
   ['*', /^\/training\/(syllabus|announcements)(\/|$)/, ['training']],
   ['PUT', /^\/trainer\/assessments\/[^/]+\/questions$/, ['training']],
@@ -238,6 +243,11 @@ const STUDENT_RULES = [
   ['GET', /^\/students\/next-id$/],
   ['GET', /^\/student-portal\/me$/, (req, u) => { req.query.studentId = u.studentId || ''; req.query.email = u.email || ''; }],
   ['PUT', /^\/student-portal\/([^/]+)\/profile$/, 'own'],
+  // My Documents — own record only
+  ['GET', /^\/student-portal\/([^/]+)\/documents$/, 'own'],
+  ['POST', /^\/student-portal\/([^/]+)\/documents(\/upload-url)?$/, 'own'],
+  ['DELETE', /^\/student-portal\/([^/]+)\/documents\/[^/]+$/, 'own'],
+  ['GET', /^\/student-portal\/([^/]+)\/documents\/[^/]+\/file$/, 'own'],
   ['POST', /^\/student-portal\/([^/]+)\/(referrals|submissions|requests|feedback)$/, 'own'],
   ['POST', /^\/auth\/file-token$/],
   // Own notification bell (the route pins the query to the student's own id / batch)
@@ -255,8 +265,10 @@ const STUDENT_RULES = [
   ['GET', /^\/demos\/[^/]+\/zoom-join$/, (req, u) => { req.query.as = 'student'; req.query.email = u.email; }],
   ['POST', /^\/zoom-signature$/, (req) => { req.body = { ...(req.body || {}), role: 0 }; }],
   // Online tests and doubt follow-ups — the routes pin everything to the signed-in student
+  ['GET', /^\/student-portal\/test-series$/],
+  ['GET', /^\/student-portal\/tests\/[^/]+\/leaderboard$/],
   ['GET', /^\/student-portal\/tests\/[^/]+$/],
-  ['POST', /^\/student-portal\/tests\/[^/]+\/(start|save|submit)$/],
+  ['POST', /^\/student-portal\/tests\/[^/]+\/(start|save|submit|reallocate)$/],
   ['POST', /^\/student-portal\/doubts\/[^/]+\/(followup|resolve)$/],
   // Attendance minutes while in a live class (was missing: every heartbeat was refused)
   ['POST', /^\/student-portal\/live-class\/heartbeat$/, (req, u) => { req.body = { ...(req.body || {}), studentId: u.studentId || req.body?.studentId, email: u.email || req.body?.email }; }],

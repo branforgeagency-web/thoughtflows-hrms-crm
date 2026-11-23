@@ -50,4 +50,8 @@ const trainerDoubtSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Indexes for the dashboard / portal queries that filter and sort on these fields
+trainerDoubtSchema.index({ studentId: 1, createdAt: -1 });
+trainerDoubtSchema.index({ trainerId: 1, status: 1 });
+
 export default mongoose.models.TrainerDoubt || mongoose.model('TrainerDoubt', trainerDoubtSchema);

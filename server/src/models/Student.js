@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import { derivePlacementFields } from '../constants/placement.js';
+import { addContactKeys } from '../utils/contactKeys.js';
 
 const studentSchema = new mongoose.Schema({
   studentId: {
@@ -422,6 +423,25 @@ const studentSchema = new mongoose.Schema({
     type: [String],
     default: []
   },
+  // Documents the student uploads from the Student Portal (My Documents).
+  // Files live in S3 under student-documents/<studentId>/ (private — opened only
+  // through the API); HR verifies or rejects each one.
+  documents: {
+    type: [{
+      docType: { type: String, default: 'other' },
+      label: { type: String, default: '' },
+      fileName: { type: String, default: '' },
+      mimeType: { type: String, default: '' },
+      fileSize: { type: Number, default: 0 },
+      storageKey: { type: String, default: '' },
+      status: { type: String, enum: ['Submitted', 'Verified', 'Rejected'], default: 'Submitted' },
+      remark: { type: String, default: '' },
+      uploadedAt: { type: Date, default: Date.now },
+      reviewedBy: { type: String, default: '' },
+      reviewedAt: { type: Date, default: null }
+    }],
+    default: []
+  },
   certificates: {
     type: [Object],
     default: []
@@ -501,5 +521,11 @@ studentSchema.index({ hrName: 1, createdAt: -1 });
 studentSchema.index({ trainerId: 1, createdAt: -1 });
 studentSchema.index({ handoverStatus: 1, createdAt: -1 });
 studentSchema.index({ phone: 1 });
+// Indexed phone / email lookup keys (duplicate checks, bulk upload, portal login)
+addContactKeys(studentSchema);
+// Hot filters: batch pages / tests / live classes, lead link, trainer desks
+studentSchema.index({ batchName: 1 });
+studentSchema.index({ leadId: 1 });
+studentSchema.index({ email: 1 });
 
 export default mongoose.models.Student || mongoose.model('Student', studentSchema);
