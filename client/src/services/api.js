@@ -687,6 +687,13 @@ export const createStudent = async (studentData) => {
   return res.data;
 };
 
+// Bulk admission upload — rows already mapped from the sheet. Returns
+// { created, failed, results: [{ rowNo, ok, studentId, error, studentLogin }] }.
+export const createStudentsBulk = async (students) => {
+  const res = await api.post('/students/bulk', { students });
+  return res.data;
+};
+
 // Check for duplicate student/lead registration by phone or email
 export const checkDuplicateStudent = async (params) => {
   const res = await api.get('/students/check-duplicate', { params });

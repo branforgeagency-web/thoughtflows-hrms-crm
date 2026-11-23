@@ -4343,7 +4343,8 @@ async function buildDuplicateInfo({ matchedStudent, matchedLead, digits, mail, f
   };
 }
 
-async function checkDuplicateRegistration({ phone, whatsappNumber, email, leadId = '', excludeStudentId = '' }) {
+async function checkDuplicateRegistration({ phone, whatsappNumber, email, leadId = '', excludeStudentId = '', excludeLeadIds = [] }) {
+  const skipLeadIds = new Set([leadId, ...(excludeLeadIds || [])].filter(Boolean).map(String));
   const digits = phoneDigits(phone || whatsappNumber);
   const mail = String(email || '').trim().toLowerCase();
 
@@ -4388,7 +4389,7 @@ async function checkDuplicateRegistration({ phone, whatsappNumber, email, leadId
 
   const existingLeads = await StudentLead.find({ $or: leadQueries }).sort({ createdAt: -1 });
   const matchedLead = existingLeads.find((l) => {
-    if (leadId && String(l._id) === String(leadId)) return false;
+    if (skipLeadIds.has(String(l._id))) return false;
     const lPhone = phoneDigits(l.phone);
     const lWa = phoneDigits(l.whatsappNumber);
     const lMail = String(l.email || '').trim().toLowerCase();
@@ -4405,10 +4406,13 @@ async function checkDuplicateRegistration({ phone, whatsappNumber, email, leadId
   return buildDuplicateInfo({ matchedStudent, matchedLead, digits, mail });
 }
 
-router.post('/students', async (req, res) => {
+// One admission — shared by POST /students (single) and POST /students/bulk.
+// Returns { status, json } instead of writing to res, so the bulk route can
+// run it once per sheet row and collect each row's outcome.
+async function admitStudentRecord(req, rawBody) {
   try {
     const staff = isStaffCaller(req);
-    const body = req.body || {};
+    const body = rawBody || {};
     let payload;
     if (staff) {
       payload = stripFields({ ...body }, STUDENT_SYSTEM_FIELDS);
@@ -4427,21 +4431,29 @@ router.post('/students', async (req, res) => {
         if (hrUser) payload.hrName = hrUser.name;
       }
     }
-    if (!String(payload.name || '').trim()) return res.status(400).json({ error: 'Student name is required.' });
-    if (!String(payload.course || '').trim()) return res.status(400).json({ error: 'Course is required.' });
+    if (!String(payload.name || '').trim()) return __admitResult(400, { error: 'Student name is required.' });
+    if (!String(payload.course || '').trim()) return __admitResult(400, { error: 'Course is required.' });
     const contactErr = validateStudentContact(payload, { requirePhone: true });
-    if (contactErr) return res.status(400).json({ error: contactErr });
+    if (contactErr) return __admitResult(400, { error: contactErr });
     if (payload.registeredAt) {
       const d = new Date(payload.registeredAt);
       payload.registeredAt = isNaN(d.getTime()) ? new Date() : d;
     }
 
     // Check for duplicate registration by mobile number and/or email ID
+    // Bulk upload: other open pipeline copies of the same enquiry (same
+    // phone / email) move to Admitted with the main lead, so they are not
+    // a "duplicate" of this admission.
+    const sameContactLeadIds = staff && Array.isArray(body.sameContactLeadIds)
+      ? body.sameContactLeadIds.map(String).filter((id) => mongoose.isValidObjectId(id)).slice(0, 10)
+      : [];
+    delete payload.sameContactLeadIds;
     const dup = await checkDuplicateRegistration({
       phone: payload.phone,
       whatsappNumber: payload.whatsappNumber,
       email: payload.email,
-      leadId: payload.leadId
+      leadId: payload.leadId,
+      excludeLeadIds: sameContactLeadIds
     });
     if (dup) {
       // A returning student (already admitted) joining a DIFFERENT course is a
@@ -4450,8 +4462,8 @@ router.post('/students', async (req, res) => {
       const sameCourse = String(prev.course || '').trim().toLowerCase() === String(payload.course || '').trim().toLowerCase();
       const returning = staff && prev.type === 'Admitted Student' && !sameCourse;
       if (!returning) {
-        if (!staff) return res.status(409).json({ ...publicDuplicateInfo(dup), duplicate: publicDuplicateInfo(dup) });
-        return res.status(409).json({
+        if (!staff) return __admitResult(409, { ...publicDuplicateInfo(dup), duplicate: publicDuplicateInfo(dup) });
+        return __admitResult(409, {
           error: dup.error,
           isDuplicate: true,
           duplicate: dup
@@ -4482,7 +4494,7 @@ router.post('/students', async (req, res) => {
     if (lead?.admittedStudentId) {
       // Admitting the same lead twice is a mistake; a matching phone on an old,
       // already-admitted lead is just a returning student taking another course.
-      if (payload.leadId) return res.status(409).json({ error: `${lead.fullName || 'This lead'} is already admitted as ${lead.admittedStudentId}` });
+      if (payload.leadId) return __admitResult(409, { error: `${lead.fullName || 'This lead'} is already admitted as ${lead.admittedStudentId}` });
       lead = null;
     }
     if (lead) {
@@ -4521,7 +4533,7 @@ router.post('/students', async (req, res) => {
     payload.courseFee = Math.max(0, Number(payload.courseFee) || 0);
     payload.paidAmount = Math.max(0, Number(payload.paidAmount) || 0);
     if (payload.courseFee > 0 && payload.paidAmount > payload.courseFee) {
-      return res.status(400).json({ error: `Amount paid (₹${payload.paidAmount.toLocaleString('en-IN')}) is more than the course fee (₹${payload.courseFee.toLocaleString('en-IN')}).` });
+      return __admitResult(400, { error: `Amount paid (₹${payload.paidAmount.toLocaleString('en-IN')}) is more than the course fee (₹${payload.courseFee.toLocaleString('en-IN')}).` });
     }
     applyFeeTotals(payload);
 
@@ -4539,6 +4551,28 @@ router.post('/students', async (req, res) => {
       paymentStatus: payload.paidAmount > 0
     };
     payload.handoverStatus = 'Pending Handover';
+    // Bulk upload: each sheet instalment (amount / mode / transaction ID / date)
+    // becomes its own receipt, so the fee ledger matches the sheet.
+    const installments = staff && Array.isArray(body.installments)
+      ? body.installments.filter((x) => Number(x?.amount) > 0).slice(0, 6)
+      : [];
+    delete payload.installments;
+    if (installments.length && !(payload.receipts || []).length) {
+      payload.receipts = installments.map((x, i) => {
+        const receiptNo = `RC-${payload.studentId}-${String(i + 1).padStart(2, '0')}`;
+        return {
+          id: receiptNo,
+          receiptNo,
+          label: i === 0 ? 'Admission payment' : `Instalment ${i + 1}`,
+          amount: Number(x.amount),
+          mode: String(x.mode || payload.paymentMethod || '').slice(0, 60),
+          reference: String(x.reference || '').slice(0, 120),
+          date: String(x.date || todayStr()).slice(0, 10),
+          recordedBy: req.user?.name || '',
+          at: new Date()
+        };
+      });
+    }
     // First payment taken at admission → opening receipt, so the ledger adds up
     if (Number(payload.paidAmount) > 0 && !(payload.receipts || []).length) {
       const receiptNo = `RC-${payload.studentId}-01`;
@@ -4571,10 +4605,11 @@ router.post('/students', async (req, res) => {
           mode: payload.mode,
           date: payload.batchDate || payload.registeredAt || new Date()
         });
-        if (payload.receipts?.[0]?.receiptNo) {
-          const rn = `RC-${payload.studentId}-01`;
-          payload.receipts[0] = { ...payload.receipts[0], id: rn, receiptNo: rn };
-        }
+        (payload.receipts || []).forEach((r, i) => {
+          if (!r?.receiptNo) return;
+          const rn = `RC-${payload.studentId}-${String(i + 1).padStart(2, '0')}`;
+          payload.receipts[i] = { ...r, id: rn, receiptNo: rn };
+        });
       }
     }
 
@@ -4585,6 +4620,12 @@ router.post('/students', async (req, res) => {
       if (!lead.counselorAssigned && newStudent.hrName) lead.counselorAssigned = newStudent.hrName;
       await lead.save();
       await creditReferralReward(lead);
+      if (sameContactLeadIds.length) {
+        await StudentLead.updateMany(
+          { _id: { $in: sameContactLeadIds.filter((id) => id !== String(lead._id)) }, $or: [{ admittedStudentId: { $exists: false } }, { admittedStudentId: '' }, { admittedStudentId: null }] },
+          { $set: { stage: 'admitted', status: 'completed', admittedStudentId: newStudent.studentId } }
+        );
+      }
     } else {
       // Auto-create an admitted lead record so the admission is ALWAYS tracked in Pipeline & Follow-ups!
       lead = new StudentLead({
@@ -4645,17 +4686,117 @@ router.post('/students', async (req, res) => {
       }
     }
 
-    if (staff) return res.status(201).json({ ...newStudent.toObject(), studentLogin });
+    if (staff) return __admitResult(201, { ...newStudent.toObject(), studentLogin });
     // Self-registration: the login is created, but its password is handed over
     // by the HR counsellor (Reset login) — never shown to whoever typed the email.
     const o = newStudent.toObject();
-    return res.status(201).json({
+    return __admitResult(201, {
       _id: o._id, studentId: o.studentId, name: o.name, course: o.course, mode: o.mode,
       branch: o.branch, batchTiming: o.batchTiming, hrName: o.hrName,
       studentLogin: studentLogin ? { email: studentLogin.email, created: Boolean(studentLogin.created) } : null
     });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    return { status: 400, json: { error: err.message } };
+  }
+}
+const __admitResult = (status, json) => ({ status, json });
+
+router.post('/students', async (req, res) => {
+  const r = await admitStudentRecord(req, req.body);
+  res.status(r.status).json(r.json);
+});
+
+
+// Open (not yet admitted) pipeline leads with this row's phone / WhatsApp /
+// email — furthest-along stage first, then most recently updated.
+const LEAD_STAGE_RANK = { fee_followup: 5, demo_attended: 4, demo_booked: 3, contacted: 2, new: 1 };
+async function findOpenLeadsByContact(row) {
+  const digits = [row.phone, row.whatsappNumber].map(phoneDigits).filter((d) => d.length === 10);
+  const mail = String(row.email || '').trim().toLowerCase();
+  const or = [];
+  [...new Set(digits)].forEach((d) => {
+    const rx = new RegExp(`${d.slice(-4).split('').join('\\D*')}\\D*$`);
+    or.push({ phone: rx }, { whatsappNumber: rx });
+  });
+  if (mail) or.push({ email: exactNameRx(mail) });
+  if (!or.length) return [];
+  const candidates = await StudentLead.find({
+    $and: [
+      { $or: or },
+      { $or: [{ admittedStudentId: { $exists: false } }, { admittedStudentId: '' }, { admittedStudentId: null }] },
+      { stage: { $ne: 'admitted' } }
+    ]
+  }).sort({ updatedAt: -1 }).limit(20);
+  const want = new Set(digits);
+  return candidates
+    .filter((l) => want.has(phoneDigits(l.phone)) || want.has(phoneDigits(l.whatsappNumber))
+      || (mail && String(l.email || '').trim().toLowerCase() === mail))
+    .sort((a, b) => (LEAD_STAGE_RANK[b.stage] || 0) - (LEAD_STAGE_RANK[a.stage] || 0));
+}
+
+// Bulk admission upload (Admitted Students → Bulk Upload). Each row goes
+// through exactly the same admission logic as a single walk-in: duplicate
+// check, Student ID, lead link, fee receipts and portal login. Rows run one
+// after another (so a repeat phone later in the same sheet is caught as a
+// duplicate); the client sends the sheet in small chunks to stay well under
+// the host's request timeout.
+router.post('/students/bulk', async (req, res) => {
+  try {
+    if (!isStaffCaller(req)) return res.status(403).json({ error: 'Sign in as staff to bulk upload admissions.' });
+    const rows = Array.isArray(req.body?.students) ? req.body.students : [];
+    if (!rows.length) return res.status(400).json({ error: 'No students in the upload.' });
+    if (rows.length > 50) return res.status(400).json({ error: 'Send at most 50 students per request.' });
+
+    // Sheet HR names ("SRUTHI GANESAN", "vinodini ") → the staff member's real name
+    const hrNames = [...new Set(rows.map((r) => String(r?.hrName || '').trim()).filter(Boolean))];
+    const hrMap = new Map();
+    for (const n of hrNames) {
+      const u = await User.findOne({ name: exactNameRx(n), role: { $not: /student|scholar/i } }).select('name').lean();
+      if (u) hrMap.set(n.toLowerCase(), u.name);
+    }
+
+    const results = [];
+    for (let i = 0; i < rows.length; i++) {
+      const row = { ...(rows[i] || {}) };
+      const rowNo = row.rowNo || i + 1;
+      delete row.rowNo;
+      const hr = String(row.hrName || '').trim();
+      if (hr) row.hrName = hrMap.get(hr.toLowerCase()) || hr;
+      // Already in Follow-ups / Pipeline (same phone or email, not yet
+      // admitted)? Admit against that lead so it moves to Admitted instead
+      // of the row being rejected as a duplicate.
+      delete row.leadId;
+      delete row.sameContactLeadIds;
+      const openLeads = await findOpenLeadsByContact(row);
+      const fromLead = openLeads[0] || null;
+      if (fromLead) {
+        row.leadId = String(fromLead._id);
+        row.sameContactLeadIds = openLeads.slice(1).map((l) => String(l._id));
+      }
+      const r = await admitStudentRecord(req, row);
+      if (r.status === 201) {
+        const s = r.json;
+        results.push({
+          rowNo, ok: true, studentId: s.studentId, name: s.name, phone: s.phone, hrName: s.hrName,
+          studentLogin: s.studentLogin || null,
+          fromPipeline: fromLead ? {
+            stage: fromLead.stage || '',
+            counsellor: fromLead.counselorAssigned || fromLead.allocatedTo || '',
+            copies: openLeads.length
+          } : null
+        });
+      } else {
+        results.push({
+          rowNo, ok: false, name: row.name || '', phone: row.phone || '',
+          duplicate: r.status === 409,
+          error: r.json?.error || 'Could not admit this row'
+        });
+      }
+    }
+    const created = results.filter((r) => r.ok).length;
+    res.json({ created, failed: results.length - created, results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

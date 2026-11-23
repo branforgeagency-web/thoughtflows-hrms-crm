@@ -25,6 +25,7 @@ import {
 import StudentProfileModal from './StudentProfileModal';
 import CompleteRegistrationModal from './CompleteRegistrationModal';
 import EditStudentModal from './EditStudentModal';
+import BulkAdmitStudentsModal from './BulkAdmitStudentsModal';
 import PaginationBar from './PaginationBar';
 
 import { getStudents, createStudent, updateStudent, deleteStudent, resetStudentLogin, onDataUpdate } from '../services/api';
@@ -63,6 +64,7 @@ export default function HrAdmittedStudentsCrm({
   const [toastMessage, setToastMessage] = useState(null);
   const [copiedLink, setCopiedLink] = useState(false);
   const [showCompleteRegModal, setShowCompleteRegModal] = useState(false);
+  const [showBulkAdmit, setShowBulkAdmit] = useState(false);
   const [completeRegInitialData, setCompleteRegInitialData] = useState(null);
   const [selectedStudent, setSelectedStudent] = useState(null);
   const [editingStudent, setEditingStudent] = useState(null);
@@ -360,6 +362,15 @@ export default function HrAdmittedStudentsCrm({
           >
             <span>✨</span>
             <span>+ Add New Student (Walk-In)</span>
+          </button>
+
+          <button
+            onClick={() => setShowBulkAdmit(true)}
+            title="Upload admitted students from the branch admission sheet (paste from Google Sheets or CSV)"
+            className="flex items-center gap-1.5 bg-white hover:bg-teal-50 text-slate-900 font-bold text-xs px-3.5 py-2 rounded-xl transition-all shadow-xs cursor-pointer"
+          >
+            <UserPlus className="w-3.5 h-3.5 text-slate-700" />
+            <span>Bulk Upload</span>
           </button>
 
           <button
@@ -922,6 +933,20 @@ export default function HrAdmittedStudentsCrm({
             setStudents(prev => prev.filter(s => (s._id || s.id || s.studentId) !== targetId));
             showToast('✓ Admitted student removed');
             if (onRefreshStudents) onRefreshStudents();
+          }}
+        />
+      )}
+
+      {/* Bulk admission upload */}
+      {showBulkAdmit && (
+        <BulkAdmitStudentsModal
+          isOpen={showBulkAdmit}
+          currentUser={currentUser}
+          onClose={() => setShowBulkAdmit(false)}
+          onDone={(results) => {
+            const n = results.filter((r) => r.ok).length;
+            if (onRefreshStudents) onRefreshStudents(); else fetchStandaloneStudents(localPage);
+            showToast(`✓ Bulk upload: ${n} student${n === 1 ? '' : 's'} admitted`);
           }}
         />
       )}
