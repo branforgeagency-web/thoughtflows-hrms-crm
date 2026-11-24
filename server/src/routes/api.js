@@ -3967,24 +3967,17 @@ async function studentOverviewStats(query) {
   return out;
 }
 
-router.get('/students', async (req, res) => {
-  try {
-    await ensureStaffNamesLoaded();
-    const { statusGroup, search, trainerId, handoverStatus } = req.query;
-    const hrName = isScopedHr(req) ? req.user?.name : req.query.hrName;
-    const isBM = isScopedBranchManager(req);
-    const requestedBranch = (req.query.branch && req.query.branch !== 'all') ? branchShort(req.query.branch) : '';
-    const isLeadershipOrHead = isTrainerHeadUser(req) || isHrLeaderUser(req) || ['admin', 'leadership'].includes(req.user?.department) || ['Admin', 'Super Admin'].includes(req.user?.role);
-    const userBranch = isBM 
-      ? getBranchManagerBranch(req) 
-      : (requestedBranch || (!isLeadershipOrHead && !isTrainerTLUser(req) && !isTrainerManagerUser(req) && !isIndividualTrainerUser(req) ? branchShort(req.user?.branch) : ''));
-
-    const andConditions = [];
-    if (trainerId) andConditions.push({ trainerId });
-    if (handoverStatus) andConditions.push({ handoverStatus });
-    if (statusGroup && statusGroup !== 'all') {
-      andConditions.push({ statusGroup });
-    }
+// Who may see which admitted students (role scope + the desk's branch / HR pick).
+// Shared by GET /students and GET /students/filter-options so both see the same rows.
+async function studentRoleScope(req, q = req.query) {
+  const hrName = isScopedHr(req) ? req.user?.name : q.hrName;
+  const isBM = isScopedBranchManager(req);
+  const requestedBranch = (q.branch && q.branch !== 'all') ? branchShort(q.branch) : '';
+  const isLeadershipOrHead = isTrainerHeadUser(req) || isHrLeaderUser(req) || ['admin', 'leadership'].includes(req.user?.department) || ['Admin', 'Super Admin'].includes(req.user?.role);
+  const userBranch = isBM 
+    ? getBranchManagerBranch(req) 
+    : (requestedBranch || (!isLeadershipOrHead && !isTrainerTLUser(req) && !isTrainerManagerUser(req) && !isIndividualTrainerUser(req) ? branchShort(req.user?.branch) : ''));
+  const andConditions = [];
 
     // Role-based scoping for Trainer Department roles
     if (isIndividualTrainerUser(req)) {
@@ -4005,35 +3998,127 @@ router.get('/students', async (req, res) => {
 
     if (isBM && userBranch) {
       // Branch Head / Business Lead: students admitted by their branch's HRs
-      andConditions.push(await branchStudentQuery(userBranch, req.query.hrName));
+      andConditions.push(await branchStudentQuery(userBranch, q.hrName));
     } else if (req.hrTeamNames) {
-      andConditions.push(ownerAnyQuery(pickTeamNames(req.hrTeamNames, req.query.hrName), STUDENT_OWNER_FIELDS, BRANCH_FIELDS_STUDENT));
+      andConditions.push(ownerAnyQuery(pickTeamNames(req.hrTeamNames, q.hrName), STUDENT_OWNER_FIELDS, BRANCH_FIELDS_STUDENT));
     } else if (isScopedHr(req)) {
       const counselor = req.user?.name || req.user?.userName;
       if (counselor) {
         andConditions.push(ownerQueryWithBranch(counselor, req.user?.branch || '', STUDENT_OWNER_FIELDS, BRANCH_FIELDS_STUDENT));
       }
+    } else if (hrName && hrName !== 'all' && requestedBranch && !/^all/i.test(requestedBranch)) {
+      // Department Head filtering one branch + one of its HRs — same rule as the Branch Head
+      andConditions.push(await branchStudentQuery(requestedBranch, hrName));
     } else if (hrName && hrName !== 'all') {
-      andConditions.push(ownerQueryWithBranch(hrName, req.query.branch || '', STUDENT_OWNER_FIELDS, BRANCH_FIELDS_STUDENT));
+      andConditions.push(ownerQueryWithBranch(hrName, q.branch || '', STUDENT_OWNER_FIELDS, BRANCH_FIELDS_STUDENT));
     } else if (userBranch && !/^all/i.test(userBranch)) {
       // Admin / Department Head opening one branch's desk — same rule as the Branch Head
       andConditions.push(await branchStudentQuery(userBranch));
     }
+  return { andConditions, isBM, userBranch, isLeadershipOrHead };
+}
+
+// Exact (case-insensitive) match on one field; "A,B" matches either value
+const anyOfValues = (field, raw) => {
+  const vals = String(raw || '').split(',').map((v) => v.trim()).filter((v) => v && v !== 'all');
+  if (!vals.length) return null;
+  return { [field]: { $in: vals.map((v) => new RegExp(`^\\s*${escapeRegex(v)}\\s*$`, 'i')) } };
+};
+const studentNum = (f) => ({ $convert: { input: f, to: 'double', onError: 0, onNull: 0 } });
+const STUDENT_FEE_PENDING = {
+  $or: [
+    { feeStatus: /pending/i },
+    { pendingBalance: { $gt: 0 } },
+    { $and: [
+      { $or: [{ pendingBalance: { $exists: false } }, { pendingBalance: null }] },
+      { $expr: { $gt: [{ $subtract: [studentNum('$courseFee'), studentNum('$paidAmount')] }, 0] } }
+    ] }
+  ]
+};
+// Start of a YYYY-MM-DD day in IST, as a UTC Date
+const istDayStart = (ymd) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ymd || ''));
+  return m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]) - 330 * 60000) : null;
+};
+
+// Dropdown / date filters of the Admitted Students table (all optional)
+function studentTableFilters(q) {
+  const conds = [];
+  ['course', 'mode', 'batchTiming', 'source', 'certified', 'examStatus', 'placementStatus'].forEach((f) => {
+    const c = anyOfValues(f, q[f]);
+    if (c) conds.push(c);
+  });
+  if (q.feeFilter === 'pending') conds.push(STUDENT_FEE_PENDING);
+  if (q.feeFilter === 'cleared') conds.push({ $nor: [STUDENT_FEE_PENDING] });
+  const from = istDayStart(q.dateFrom);
+  const to = istDayStart(q.dateTo);
+  if (from || to) {
+    const range = {};
+    if (from) range.$gte = from;
+    if (to) range.$lt = new Date(to.getTime() + 86400000);
+    conds.push({ createdAt: range });
+  }
+  return conds;
+}
+
+// The overview cards double as filters ("view"); kept apart so card counts stay totals
+function studentViewFilter(view) {
+  const ist = new Date(Date.now() + 330 * 60000);
+  const monthStart = new Date(Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), 1) - 330 * 60000);
+  const obDone = { $expr: { $let: {
+    vars: { m: { $regexFind: { input: { $toString: { $ifNull: ['$onboardStatus', ''] } }, regex: /^(\d+)\s*\/\s*(\d+)/ } } },
+    in: { $and: [{ $ne: ['$$m', null] }, { $eq: [{ $arrayElemAt: ['$$m.captures', 0] }, { $arrayElemAt: ['$$m.captures', 1] }] }] }
+  } } };
+  switch (view) {
+    case 'in_course': case 'placed': case 'on_hold': return { statusGroup: view };
+    case 'admitted_month': return { createdAt: { $gte: monthStart } };
+    case 'onboarding_done': return obDone;
+    case 'onboarding_progress': return { $nor: [obDone] };
+    case 'interviewing': return { placementStatus: /interview/i };
+    case 'fee_pending': return STUDENT_FEE_PENDING;
+    default: return null;
+  }
+}
+
+router.get('/students', async (req, res) => {
+  try {
+    await ensureStaffNamesLoaded();
+    const { statusGroup, search, trainerId, handoverStatus } = req.query;
+
+    const andConditions = [];
+    if (trainerId) andConditions.push({ trainerId });
+    if (handoverStatus) andConditions.push({ handoverStatus });
+    if (statusGroup && statusGroup !== 'all') {
+      andConditions.push({ statusGroup });
+    }
+    const scope = await studentRoleScope(req);
+    andConditions.push(...scope.andConditions);
+    andConditions.push(...studentTableFilters(req.query));
 
     if (search) {
+      const sRx = { $regex: escapeRegex(String(search).trim()), $options: 'i' };
       andConditions.push({
         $or: [
-          { name: { $regex: escapeRegex(String(search).trim()), $options: 'i' } },
-          { studentId: { $regex: escapeRegex(String(search).trim()), $options: 'i' } },
-          { phone: { $regex: escapeRegex(String(search).trim()), $options: 'i' } },
-          { course: { $regex: escapeRegex(String(search).trim()), $options: 'i' } },
-          { hrName: { $regex: escapeRegex(String(search).trim()), $options: 'i' } },
-          { branch: { $regex: escapeRegex(String(search).trim()), $options: 'i' } },
-          { location: { $regex: escapeRegex(String(search).trim()), $options: 'i' } }
+          { name: sRx },
+          { studentId: sRx },
+          { phone: sRx },
+          { whatsappNumber: sRx },
+          { email: sRx },
+          { course: sRx },
+          { hrName: sRx },
+          { branch: sRx },
+          { location: sRx },
+          { paymentReference: sRx },
+          { 'receipts.reference': sRx },
+          { 'receipts.receiptNo': sRx }
         ]
       });
     }
 
+    // Card totals ignore the card picked; the table rows honour it
+    const statsQuery = andConditions.length > 0 ? { $and: [...andConditions] } : {};
+    const viewCond = studentViewFilter(req.query.view);
+    if (viewCond) andConditions.push(viewCond);
     const query = andConditions.length > 0 ? { $and: andConditions } : {};
     const hasPagination = req.query.page !== undefined || req.query.limit !== undefined;
     const pageNum = Math.max(1, parseInt(req.query.page, 10) || 1);
@@ -4088,7 +4173,7 @@ router.get('/students', async (req, res) => {
     const resultList = await formatStudentsForUser(students);
     if (hasPagination) {
       // Totals for the overview cards over ALL matching students, not just this page
-      const stats = req.query.withStats === 'true' ? await studentOverviewStats(query) : undefined;
+      const stats = req.query.withStats === 'true' ? await studentOverviewStats(statsQuery) : undefined;
       return res.json({
         students: resultList,
         stats,
@@ -4099,6 +4184,61 @@ router.get('/students', async (req, res) => {
       });
     }
     res.json(resultList);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Options for the Admitted Students filter bar, limited to what this user may see.
+// canFilterBranch / canFilterHr say which of those two dropdowns to show.
+// Must stay ABOVE /students/:id.
+router.get('/students/filter-options', async (req, res) => {
+  try {
+    await ensureStaffNamesLoaded();
+    const scope = await studentRoleScope(req, { branch: req.query.branch });
+    const base = scope.andConditions.length ? { $and: scope.andConditions } : {};
+    const scopedHr = isScopedHr(req);
+    const canFilterBranch = !scopedHr && !scope.isBM && !req.hrTeamNames && scope.isLeadershipOrHead;
+    const canFilterHr = !scopedHr;
+
+    const clean = (arr) => {
+      const seen = new Map();
+      (arr || []).forEach((v) => {
+        const t = String(v ?? '').replace(/\s+/g, ' ').trim();
+        if (t && !seen.has(t.toLowerCase())) seen.set(t.toLowerCase(), t);
+      });
+      return [...seen.values()].sort((a, b) => a.localeCompare(b));
+    };
+
+    const [courses, modes, batchTimings, sources, certified, examStatus, placementStatus] = await Promise.all(
+      ['course', 'mode', 'batchTiming', 'source', 'certified', 'examStatus', 'placementStatus'].map((f) => Student.distinct(f, base))
+    );
+
+    let branches = [];
+    if (canFilterBranch) branches = clean((await branchList()).map((b) => b.name));
+
+    let hrs = [];
+    if (canFilterHr) {
+      if (scope.isBM && scope.userBranch) hrs = await branchStudentOwnerNames(scope.userBranch);
+      else if (req.hrTeamNames) hrs = req.hrTeamNames;
+      else if (scope.userBranch && !/^all/i.test(scope.userBranch)) hrs = await branchStudentOwnerNames(scope.userBranch);
+      else hrs = await allBranchStaffNames();
+      hrs = clean(hrs);
+    }
+
+    res.json({
+      canFilterBranch,
+      canFilterHr,
+      branches,
+      hrs,
+      courses: clean(courses),
+      modes: clean(modes),
+      batchTimings: clean(batchTimings),
+      sources: clean(sources),
+      certified: clean(certified),
+      examStatus: clean(examStatus),
+      placementStatus: clean(placementStatus)
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -5640,6 +5780,36 @@ router.get('/leads', async (req, res) => {
       { $match: baseQuery },
       { $group: { _id: '$stage', count: { $sum: 1 } } }
     ]);
+
+    // Board view (?perStage=N): the newest N leads of EVERY stage, so one busy
+    // stage (e.g. hundreds of just-admitted students) can't crowd the others off
+    const perStage = Math.min(300, Math.max(0, parseInt(req.query.perStage, 10) || 0));
+    if (perStage) {
+      const SID = { admittedStudentId: { $nin: [null, ''] } };
+      const NO_SID = { admittedStudentId: { $in: [null, ''] } };
+      const KNOWN = ['new', 'contacted', 'demo_booked', 'demo_attended', 'fee_followup', 'done', 'admitted', 'not_mentioned'];
+      const buckets = [
+        SID,
+        { $and: [NO_SID, { $or: [{ stage: 'new' }, { stage: { $in: [null, ''] } }] }] },
+        ...KNOWN.filter((k) => k !== 'new').map((k) => ({ $and: [NO_SID, { stage: k }] })),
+        { $and: [NO_SID, { stage: { $nin: [...KNOWN, null, ''] } }] }
+      ];
+      const withQuery = (b) => (Object.keys(query).length ? { $and: [query, b] } : b);
+      const [lists, totalCount, stageCounts] = await Promise.all([
+        Promise.all(buckets.map((b) => StudentLead.find(withQuery(b)).select('-whatsappMessages').sort({ createdAt: -1 }).limit(perStage).lean())),
+        StudentLead.countDocuments(query),
+        stageAggPromise
+      ]);
+      stageCounts.forEach((row) => {
+        const match = stages.find((s) => s.key === row._id);
+        if (match) match.count = row.count;
+      });
+      const seen = new Set();
+      const leads = lists.flat()
+        .filter((l) => { const k = String(l._id); if (seen.has(k)) return false; seen.add(k); return true; })
+        .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+      return res.json({ leads, stages, totalCount, page: 1, limit: leads.length, totalPages: 1, perStage });
+    }
 
     if (hasPagination) {
       const [leads, totalCount, stageCounts] = await Promise.all([

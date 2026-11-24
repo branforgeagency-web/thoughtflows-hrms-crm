@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Share2, 
   UserPlus, 
@@ -20,7 +20,9 @@ import {
   BookOpen,
   Briefcase,
   Edit2,
-  Trash2
+  Trash2,
+  Filter,
+  X
 } from 'lucide-react';
 import StudentProfileModal from './StudentProfileModal';
 import CompleteRegistrationModal from './CompleteRegistrationModal';
@@ -28,10 +30,34 @@ import EditStudentModal from './EditStudentModal';
 import BulkAdmitStudentsModal from './BulkAdmitStudentsModal';
 import PaginationBar from './PaginationBar';
 
-import { getStudents, createStudent, updateStudent, deleteStudent, resetStudentLogin, onDataUpdate } from '../services/api';
+import { getStudents, getStudentFilterOptions, createStudent, updateStudent, deleteStudent, resetStudentLogin, onDataUpdate } from '../services/api';
 import { getCurrentMonthYear, getCurrentMonthName, localDateKey } from '../utils/dateUtils';
 import { copyToClipboard } from '../utils/clipboard';
 import { redirectToWhatsAppWeb } from '../utils/whatsapp';
+
+function FilterSelect({ label, k, options, allLabel = 'All', value, onChange }) {
+  const on = Boolean(value);
+  return (
+    <label className="flex flex-col gap-1 min-w-0">
+      <span className="text-[9.5px] font-extrabold uppercase tracking-wider text-slate-500">{label}</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(k, e.target.value)}
+        className={`w-full bg-white border rounded-lg px-2 py-1.5 text-[11px] font-semibold outline-none focus:border-[#00897b] transition-all cursor-pointer ${on ? 'border-[#00897b] text-[#00695c] bg-teal-50/60' : 'border-slate-200 text-slate-700'}`}
+      >
+        <option value="">{allLabel}</option>
+        {/* keep a picked value visible even if it is not in the current list */}
+        {on && !(options || []).some((v) => (typeof v === 'string' ? v : v.value) === value) && (
+          <option value={value}>{value}</option>
+        )}
+        {(options || []).map((v) => {
+          const opt = typeof v === 'string' ? { value: v, label: v } : v;
+          return <option key={opt.value} value={opt.value}>{opt.label}</option>;
+        })}
+      </select>
+    </label>
+  );
+}
 
 export default function HrAdmittedStudentsCrm({
   students: propStudents,
@@ -45,7 +71,10 @@ export default function HrAdmittedStudentsCrm({
   limit: propLimit = 50,
   totalStats: propTotalStats,
   onLimitChange,
-  onPageChange
+  onPageChange,
+  onFiltersChange,
+  lockedBranch = '',
+  lockedHr = false
 }) {
   // Show new / reset portal credentials in the persistent card owned by the HR dashboard
   const shareLogin = (st, login) => {
@@ -79,6 +108,31 @@ export default function HrAdmittedStudentsCrm({
   const [localTotalCount, setLocalTotalCount] = useState(0);
   const [localStats, setLocalStats] = useState(null);
 
+  // ---- Table filters (branch, HR, course, ...) — applied on the server so they
+  // cover every page, not just the rows currently loaded
+  const EMPTY_FILTERS = {
+    branch: '', hrName: '', course: '', mode: '', batchTiming: '', source: '',
+    feeFilter: '', certified: '', placementStatus: '', examStatus: '', dateFrom: '', dateTo: ''
+  };
+  const [filters, setFilters] = useState(EMPTY_FILTERS);
+  const [filterOptions, setFilterOptions] = useState(null);
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const serverFiltering = Boolean(onFiltersChange) || propStudents === undefined;
+  const standaloneParamsRef = useRef({});
+  const setFilter = (key, value) => setFilters((cur) => ({
+    ...cur,
+    [key]: value,
+    // a different branch has different HRs
+    ...(key === 'branch' ? { hrName: '' } : {})
+  }));
+  const activeFilterCount = Object.values(filters).filter(Boolean).length;
+  const clearAllFilters = () => { setFilters(EMPTY_FILTERS); setSearchQuery(''); setActiveTabFilter('all'); };
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(searchQuery.trim()), 350);
+    return () => clearTimeout(t);
+  }, [searchQuery]);
+
   const handleConfirmDeleteStudent = async () => {
     if (!deletingStudent) return;
     setIsDeleting(true);
@@ -100,6 +154,7 @@ export default function HrAdmittedStudentsCrm({
   const fetchStandaloneStudents = (targetPage = localPage) => {
     const params = {
       ...(currentUser?.name ? { hrName: currentUser.name } : {}),
+      ...standaloneParamsRef.current,
       page: targetPage,
       limit: propLimit,
       withStats: 'true'
@@ -138,6 +193,42 @@ export default function HrAdmittedStudentsCrm({
     });
     return () => unsub();
   }, [onRefreshStudents, currentUser?.name, localPage]);
+
+  // Send filters / search / card pick to the server whenever they change
+  const firstFilterRun = useRef(true);
+  useEffect(() => {
+    const params = {};
+    Object.entries(filters).forEach(([k, v]) => {
+      if (!v) return;
+      if (k === 'branch' && lockedBranch) return;
+      if (k === 'hrName' && lockedHr) return;
+      params[k] = v;
+    });
+    if (debouncedSearch) params.search = debouncedSearch;
+    if (activeTabFilter && activeTabFilter !== 'all') params.view = activeTabFilter;
+    if (firstFilterRun.current) {
+      firstFilterRun.current = false;
+      if (!Object.keys(params).length) return; // first load already done by the parent
+    }
+    if (onFiltersChange) {
+      onFiltersChange(params);
+    } else if (propStudents === undefined) {
+      standaloneParamsRef.current = params;
+      if (localPage !== 1) setLocalPage(1);
+      else fetchStandaloneStudents(1);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters, debouncedSearch, activeTabFilter, lockedBranch, lockedHr]);
+
+  // Dropdown values (only what this user may see; HRs follow the chosen branch)
+  useEffect(() => {
+    let alive = true;
+    const branch = lockedBranch || filters.branch;
+    getStudentFilterOptions(branch ? { branch } : {})
+      .then((o) => { if (alive) setFilterOptions(o || null); })
+      .catch((err) => console.error('Filter options failed:', err));
+    return () => { alive = false; };
+  }, [lockedBranch, filters.branch, currentUser?.name]);
 
   const showToast = (msg) => {
     setToastMessage(msg);
@@ -200,7 +291,7 @@ export default function HrAdmittedStudentsCrm({
   };
 
   // Filter students (Supports Name, ID, Phone, Course, Email, and Txn ID / Receipt No)
-  const filteredStudents = students.filter(s => {
+  const filteredStudents = serverFiltering ? students : students.filter(s => {
     // Filters from the overview cards
     if (activeTabFilter === 'admitted_month') {
       const created = s.createdAt ? new Date(s.createdAt) : null;
@@ -497,7 +588,7 @@ export default function HrAdmittedStudentsCrm({
       {CARD_FILTER_LABELS[activeTabFilter] && (
         <div className="flex items-center gap-2 text-xs">
           <span className="px-3 py-1.5 rounded-full bg-[#00897b] text-white font-bold">
-            Showing: {CARD_FILTER_LABELS[activeTabFilter]} · {filteredStudents.length}
+            Showing: {CARD_FILTER_LABELS[activeTabFilter]} · {serverFiltering ? (propTotalCount ?? localTotalCount) : filteredStudents.length}
           </span>
           <button type="button" onClick={() => setActiveTabFilter('all')} className="text-slate-500 hover:text-slate-800 font-semibold underline cursor-pointer">Clear</button>
         </div>
@@ -598,6 +689,55 @@ export default function HrAdmittedStudentsCrm({
           />
         </div>
       </div>
+
+      {/* Filter bar — branch, HR, course and more (server-side, all pages) */}
+      {(() => {
+        const o = filterOptions || {};
+        const selCls = (on) => `w-full bg-white border rounded-lg px-2 py-1.5 text-[11px] font-semibold outline-none focus:border-[#00897b] transition-all cursor-pointer ${on ? 'border-[#00897b] text-[#00695c] bg-teal-50/60' : 'border-slate-200 text-slate-700'}`;
+        const showBranch = o.canFilterBranch && !lockedBranch;
+        const showHr = o.canFilterHr && !lockedHr;
+        return (
+          <div className="bg-white border border-slate-200/90 rounded-2xl shadow-xs p-3 sm:p-4 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-xs font-extrabold text-slate-800">
+                <Filter className="w-3.5 h-3.5 text-[#00897b]" />
+                <span>Filters</span>
+                {lockedBranch && (
+                  <span className="text-[10px] font-semibold text-slate-500">· {lockedBranch} branch</span>
+                )}
+                {activeFilterCount > 0 && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-[#00897b] text-white font-bold">{activeFilterCount} on</span>
+                )}
+              </div>
+              {(activeFilterCount > 0 || searchQuery || activeTabFilter !== 'all') && (
+                <button type="button" onClick={clearAllFilters} className="flex items-center gap-1 text-[11px] font-bold text-rose-600 hover:text-rose-700 cursor-pointer">
+                  <X className="w-3 h-3" /> Clear all
+                </button>
+              )}
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 gap-2.5">
+              {showBranch && <FilterSelect value={filters.branch} onChange={setFilter} label="Branch" k="branch" options={o.branches} allLabel="All branches" />}
+              {showHr && <FilterSelect value={filters.hrName} onChange={setFilter} label="HR" k="hrName" options={o.hrs} allLabel="All HRs" />}
+              <FilterSelect value={filters.course} onChange={setFilter} label="Course" k="course" options={o.courses} allLabel="All courses" />
+              <FilterSelect value={filters.mode} onChange={setFilter} label="Mode" k="mode" options={o.modes} allLabel="Online & Classroom" />
+              <FilterSelect value={filters.batchTiming} onChange={setFilter} label="Batch Timing" k="batchTiming" options={o.batchTimings} allLabel="All timings" />
+              <FilterSelect value={filters.source} onChange={setFilter} label="Mode of Source" k="source" options={o.sources} allLabel="All sources" />
+              <FilterSelect value={filters.feeFilter} onChange={setFilter} label="Fee" k="feeFilter" options={[{ value: 'pending', label: 'Fee pending' }, { value: 'cleared', label: 'Fully paid' }]} allLabel="All" />
+              <FilterSelect value={filters.certified} onChange={setFilter} label="Certified" k="certified" options={o.certified} allLabel="All" />
+              <FilterSelect value={filters.placementStatus} onChange={setFilter} label="Placement" k="placementStatus" options={o.placementStatus} allLabel="All" />
+              <FilterSelect value={filters.examStatus} onChange={setFilter} label="Exam" k="examStatus" options={o.examStatus} allLabel="All" />
+              <label className="flex flex-col gap-1 min-w-0">
+                <span className="text-[9.5px] font-extrabold uppercase tracking-wider text-slate-500">Admitted from</span>
+                <input type="date" value={filters.dateFrom} max={filters.dateTo || undefined} onChange={(e) => setFilter('dateFrom', e.target.value)} className={selCls(Boolean(filters.dateFrom))} />
+              </label>
+              <label className="flex flex-col gap-1 min-w-0">
+                <span className="text-[9.5px] font-extrabold uppercase tracking-wider text-slate-500">Admitted to</span>
+                <input type="date" value={filters.dateTo} min={filters.dateFrom || undefined} onChange={(e) => setFilter('dateTo', e.target.value)} className={selCls(Boolean(filters.dateTo))} />
+              </label>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* CRM Student Records Data Table */}
       <div className="bg-white border border-slate-200/90 rounded-2xl shadow-xs overflow-hidden">
@@ -917,6 +1057,16 @@ export default function HrAdmittedStudentsCrm({
                   </td>
                 </tr>
               ))}
+              {filteredStudents.length === 0 && (
+                <tr>
+                  <td colSpan={18} className="py-10 text-center text-xs text-slate-500 font-semibold">
+                    No students match these filters.
+                    {(activeFilterCount > 0 || searchQuery || activeTabFilter !== 'all') && (
+                      <button type="button" onClick={clearAllFilters} className="ml-2 text-[#00897b] underline font-bold cursor-pointer">Clear filters</button>
+                    )}
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>

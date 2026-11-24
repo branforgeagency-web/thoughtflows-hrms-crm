@@ -294,7 +294,8 @@ export default function HrPipelineView({
         enquiryMonth: monthFilter !== 'all' ? monthFilter : undefined,
         search: debouncedSearch || undefined,
         page: isTable ? localPage : 1,
-        limit: isTable ? propLimit : 200
+        limit: isTable ? propLimit : 200,
+        ...(isTable ? {} : { perStage: 80 }) // board: newest leads of every stage
       };
       getLeads(params)
         .then(res => {

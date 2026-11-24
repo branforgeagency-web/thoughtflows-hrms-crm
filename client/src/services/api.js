@@ -681,6 +681,12 @@ export const getStudents = async (params) => {
   return res.data;
 };
 
+// Dropdown values for the Admitted Students filter bar (scoped to the signed-in user)
+export const getStudentFilterOptions = async (params = {}) => {
+  const res = await api.get('/students/filter-options', { params });
+  return res.data;
+};
+
 export const createStudent = async (studentData) => {
   const res = await api.post('/students', studentData);
   notifyDataUpdate('students');

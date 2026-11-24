@@ -443,6 +443,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   const [leadsTableLimit, setLeadsTableLimit] = useState(10);
   const [admitted, setAdmitted] = useState({ rows: [], page: 1, limit: 10, totalCount: 0, totalPages: 1, stats: null });
   const LEADS_BOARD_LIMIT = 200;
+  const LEADS_PER_STAGE = 80; // board: up to 80 newest leads in each stage
   
   // Local daily calls cache for instant reactivity when calling through modal
   // Today's calls come from the server call log (works across devices / browsers)
@@ -613,6 +614,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   // Admitted Students table: its own server page (same scope as the main student list)
   const admittedSeqRef = React.useRef(0);
   const admittedRef = React.useRef({ page: 1, limit: 10 });
+  const admittedFiltersRef = React.useRef({}); // branch / HR / course ... picked in the table's filter bar
   const loadAdmitted = async (page = admittedRef.current.page, limit = admittedRef.current.limit) => {
     const seq = ++admittedSeqRef.current;
     admittedRef.current = { page, limit };
@@ -620,8 +622,12 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     const shouldFilterOnServer = counselorFilter && !scopeKind && (!isElevatedUser || scopeMode === 'mine');
     const deskBranch = viewScope?.branch || (scopeKind === 'branch' ? currentUser?.branch : '') || '';
     const branchParam = scopeKind === 'branch' && deskBranch ? { branch: deskBranch } : {};
+    // Table filters never widen the desk's own scope: a fixed branch / own-HR view wins
+    const tableFilters = { ...admittedFiltersRef.current };
+    if (branchParam.branch) delete tableFilters.branch;
+    if (shouldFilterOnServer) delete tableFilters.hrName;
     try {
-      const res = await getStudents({ ...(shouldFilterOnServer ? { hrName: counselorFilter } : {}), ...branchParam, page, limit, withStats: 'true' });
+      const res = await getStudents({ ...tableFilters, ...(shouldFilterOnServer ? { hrName: counselorFilter } : {}), ...branchParam, page, limit, withStats: 'true' });
       if (seq !== admittedSeqRef.current) return;
       const rows = Array.isArray(res) ? res : (Array.isArray(res?.students) ? res.students : []);
       setAdmitted({
@@ -656,6 +662,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, scopeKind, scopeMode, viewScope?.branch, currentUser?.name]);
 
+  const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
   const loadSeqRef = React.useRef(0);
   const loadAllData = async (silent = false, overrides = {}) => {
     // Only the newest load may write to state — an older, slower response
@@ -680,7 +687,9 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         ...branchParam,
         ...(shouldFilterOnServer && !activeLeadFilters.counselor ? { counselor: counselorFilter } : {}),
         page: targetLeadsMode === 'table' ? targetLeadsPage : 1,
-        limit: targetLeadsLimit
+        limit: targetLeadsLimit,
+        // Board views: newest leads of every stage, not just the newest overall
+        ...(targetLeadsMode === 'table' ? {} : { perStage: LEADS_PER_STAGE })
       };
       Object.keys(leadParams).forEach((k) => {
         if (leadParams[k] === '' || leadParams[k] === 'all' || leadParams[k] === undefined) {
@@ -703,10 +712,11 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         ...branchParam,
         ...(shouldFilterOnServer ? { counselor: counselorFilter } : {}),
         page: 1,
-        limit: LEADS_BOARD_LIMIT
+        limit: LEADS_BOARD_LIMIT,
+        perStage: LEADS_PER_STAGE
       };
-      const { page: _dp, limit: _dl, ...deskCountParams } = deskLeadParams;
-      const { page: _p, limit: _l, ...countParams } = leadParams;
+      const { page: _dp, limit: _dl, perStage: _dps, ...deskCountParams } = deskLeadParams;
+      const { page: _p, limit: _l, perStage: _ps, ...countParams } = leadParams;
       const pipelineHasFilters = Object.keys(activeLeadFilters).some((k) => !['', 'all', undefined].includes(activeLeadFilters[k]));
       const pipelineSameAsDesk = JSON.stringify(leadParams) === JSON.stringify(deskLeadParams);
       getHrLeadCounts(Object.keys(deskCountParams).length ? deskCountParams : undefined)
@@ -728,30 +738,50 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         .catch(() => null)
         .then((closureRes) => applyTodayClosure(closureRes, dKey, counselorFilter));
 
-      const [stRes, ldRes, dmRes] = await Promise.all([
+      // Each list is applied on its own: one slow / failed request (students,
+      // demos) must never leave the lead board empty. A failed lead read is
+      // retried once, and on a second failure the board keeps what it had.
+      const withRetry = (fn) => fn().catch(() => sleepMs(1200).then(fn));
+      const [stR, ldR, dmR] = await Promise.allSettled([
         getStudents({ ...(shouldFilterOnServer ? { hrName: counselorFilter } : {}), ...branchParam, page: targetStudentsPage, limit: PAGE_LIMIT, withStats: 'true' }),
-        getLeads(deskLeadParams),
+        withRetry(() => getLeads(deskLeadParams)),
         getDemos(shouldFilterOnServer ? { counselor: counselorFilter, ...branchParam } : (branchParam.branch ? branchParam : undefined))
       ]);
       if (loadSeq !== loadSeqRef.current) return;
-      const stList = Array.isArray(stRes) ? stRes : (Array.isArray(stRes?.students) ? stRes.students : []);
-      setStudents(stList);
-      setStudentsTotalCount(typeof stRes?.totalCount === 'number' ? stRes.totalCount : stList.length);
-      setStudentsTotalPages(stRes?.totalPages || 1);
-      setStudentsStats(stRes?.stats || null);
 
-      const ldList = ldRes?.leads || [];
-      setLeads(ldList);
-      // Pipeline's own page (only fetched when it differs from the desk list)
-      const pipeRes = pipelineSameAsDesk ? ldRes : await getLeads(leadParams).catch(() => null);
-      if (loadSeq !== loadSeqRef.current) return;
-      const pipeList = pipeRes?.leads || [];
-      setPipelineLeads(pipelineSameAsDesk ? null : pipeList);
-      setPipelineFiltered(pipelineHasFilters);
-      setLeadsTotalCount(typeof pipeRes?.totalCount === 'number' ? pipeRes.totalCount : pipeList.length);
-      setLeadsTotalPages(pipeRes?.totalPages || 1);
+      if (stR.status === 'fulfilled') {
+        const stRes = stR.value;
+        const stList = Array.isArray(stRes) ? stRes : (Array.isArray(stRes?.students) ? stRes.students : []);
+        setStudents(stList);
+        setStudentsTotalCount(typeof stRes?.totalCount === 'number' ? stRes.totalCount : stList.length);
+        setStudentsTotalPages(stRes?.totalPages || 1);
+        setStudentsStats(stRes?.stats || null);
+      } else {
+        console.error('Students load failed:', stR.reason);
+      }
 
-      setDemos(Array.isArray(dmRes) ? dmRes : []);
+      if (ldR.status === 'fulfilled') {
+        const ldRes = ldR.value;
+        const ldList = Array.isArray(ldRes) ? ldRes : (Array.isArray(ldRes?.leads) ? ldRes.leads : null);
+        if (ldList) setLeads(ldList);
+        // Pipeline's own page (only fetched when it differs from the desk list)
+        let pipeRes = ldRes;
+        if (!pipelineSameAsDesk) {
+          pipeRes = await withRetry(() => getLeads(leadParams)).catch((e) => { console.error('Pipeline leads load failed:', e); return null; });
+          if (loadSeq !== loadSeqRef.current) return;
+        }
+        if (pipeRes) {
+          const pipeList = Array.isArray(pipeRes) ? pipeRes : (pipeRes?.leads || []);
+          setPipelineLeads(pipelineSameAsDesk ? null : pipeList);
+          setPipelineFiltered(pipelineHasFilters);
+          setLeadsTotalCount(typeof pipeRes?.totalCount === 'number' ? pipeRes.totalCount : pipeList.length);
+          setLeadsTotalPages(pipeRes?.totalPages || 1);
+        }
+      } else {
+        console.error('Leads load failed (keeping the current board):', ldR.reason);
+      }
+
+      if (dmR.status === 'fulfilled') setDemos(Array.isArray(dmR.value) ? dmR.value : []);
       setLoading(false);
     } catch (err) {
       console.error('Error fetching HR CRM live data:', err);
@@ -2145,6 +2175,9 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             limit={admitted.limit}
             onPageChange={(nextPage) => loadAdmitted(nextPage, admitted.limit)}
             onLimitChange={(n) => loadAdmitted(1, n)}
+            onFiltersChange={(f) => { admittedFiltersRef.current = f || {}; loadAdmitted(1, admitted.limit); }}
+            lockedBranch={scopeKind === 'branch' ? (viewScope?.branch || currentUser?.branch || '') : ''}
+            lockedHr={Boolean(currentUser?.name?.trim() && !scopeKind && (!isElevatedUser || scopeMode === 'mine'))}
           />
         ) : activeTab === 'Call Recordings' ? (
           <HrCallRecordingsTable
