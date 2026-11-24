@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import TeamRosterBoard from './TeamRosterBoard';
-import { getTeam, onDataUpdate } from '../services/api';
+import { getTeamRoster, onDataUpdate } from '../services/api';
 
 // HR weekly roster editor, shown inside "My Schedule" for the HR Department Head
 // (every HR, TL & manager) and the Branch Head (their own branch only).
@@ -14,8 +14,8 @@ export default function HrWeeklyRoster({ canEdit = false, scopeKind = 'all', sco
 
   const load = useCallback(async () => {
     const [hr, lead] = await Promise.all([
-      getTeam({ departmentCode: 'DEP-HR-001' }).catch(() => []),
-      getTeam({ departmentCode: 'LEAD' }).catch(() => [])
+      getTeamRoster({ departmentCode: 'DEP-HR-001' }).catch(() => []),
+      getTeamRoster({ departmentCode: 'LEAD' }).catch(() => [])
     ]);
     let rows = [
       ...(Array.isArray(hr) ? hr : []),

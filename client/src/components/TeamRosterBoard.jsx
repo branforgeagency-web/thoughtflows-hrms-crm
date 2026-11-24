@@ -19,7 +19,7 @@ import {
   SlidersHorizontal,
   Grid
 } from 'lucide-react';
-import { getTeam, setTeamMemberShift, onDataUpdate, getTrainerSettings, getLeaderLeaves } from '../services/api';
+import { getTeamRoster, setTeamMemberShift, onDataUpdate, getTrainerSettings, getLeaderLeaves } from '../services/api';
 import { getCurrentWeekScheduleDays, localDateKey, getMonthDays, getMonthWeeks } from '../utils/dateUtils';
 
 export default function TeamRosterBoard({ 
@@ -138,7 +138,7 @@ export default function TeamRosterBoard({
   // Load team members from DB
   const loadMembers = async () => {
     try {
-      const data = await getTeam({ departmentCode });
+      const data = await getTeamRoster({ departmentCode });
       if (Array.isArray(data)) {
         const allowSet = Array.isArray(allowedNames) && allowedNames.length
           ? new Set(allowedNames.map(n => String(n || '').trim().toLowerCase()))

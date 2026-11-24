@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { localDateKey, getCurrentWeekScheduleDays, getWeekRangeString } from '../utils/dateUtils';
 import { AlertTriangle, CalendarOff, Trash2, Lock } from 'lucide-react';
 import { parseSlotToRange, minutesToLabel, evaluateDemoSlot } from '../utils/slotUtils';
-import { addTrainerLeave, deleteTrainerLeave, getTeam, onDataUpdate } from '../services/api';
+import { addTrainerLeave, deleteTrainerLeave, getTeamRoster, onDataUpdate } from '../services/api';
 
 // Shift, scheduled classes and demo-notification eligibility — all read from
 // the trainer's roster record (admin: Trainer Settings) and real demo bookings.
@@ -24,7 +24,7 @@ export default function TrainingShiftAvailability({ trainer, demos = [], batches
     if (!trainerName) return undefined;
     const loadRoster = async () => {
       try {
-        const tData = await getTeam({ departmentCode: 'ACAD' }).catch(() => []);
+        const tData = await getTeamRoster({ departmentCode: 'ACAD' }).catch(() => []);
         if (Array.isArray(tData) && tData.length > 0) {
           const uFirst = trainerName.split(' ')[0].toLowerCase();
           const exact = tData.find((m) => (m.name || '').toLowerCase() === trainerName.toLowerCase());

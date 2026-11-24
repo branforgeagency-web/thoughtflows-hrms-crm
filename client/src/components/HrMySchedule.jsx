@@ -14,7 +14,7 @@ import {
   ChevronDown,
   Lock
 } from 'lucide-react';
-import { createApproval, getApprovals, getTeam, onDataUpdate } from '../services/api';
+import { createApproval, getApprovals, getTeamRoster, onDataUpdate } from '../services/api';
 import { getCurrentWeekScheduleDays, getWeekRangeString } from '../utils/dateUtils';
 
 export default function HrMySchedule({
@@ -78,8 +78,8 @@ export default function HrMySchedule({
         // mine=1: the server matches the signed-in account, so own leaves always show
         getApprovals({ mine: 1, ...(userName ? { requestedBy: userName } : {}) }).catch(() => []),
         Promise.all([
-          getTeam({ departmentCode: 'DEP-HR-001' }).catch(() => []),
-          getTeam({ departmentCode: 'LEAD' }).catch(() => [])
+          getTeamRoster({ departmentCode: 'DEP-HR-001' }).catch(() => []),
+          getTeamRoster({ departmentCode: 'LEAD' }).catch(() => [])
         ]).then(([hr, lead]) => [...(Array.isArray(hr) ? hr : []), ...(Array.isArray(lead) ? lead : [])])
       ]);
 

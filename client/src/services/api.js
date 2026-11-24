@@ -1516,6 +1516,13 @@ export const getTeam = async (params) => {
   return res.data;
 };
 
+// Light roster list: names, roles, branches, shifts and schedules only — no
+// lead/student workload metrics. Use this for roster & schedule screens.
+export const getTeamRoster = async (params) => {
+  const res = await api.get('/leadership/team', { params: { ...(params || {}), lite: 1 } });
+  return res.data;
+};
+
 // `update` is a shift name, or { shift, weeklySchedule, available, name }
 export const setTeamMemberShift = async (id, update) => {
   const body = update && typeof update === 'object' ? update : { shift: update };

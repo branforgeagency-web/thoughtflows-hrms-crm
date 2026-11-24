@@ -2400,24 +2400,34 @@ async function syncTeamFromUsers(force = false) {
 //              quality = average student rating (1–5) as a percentage
 async function teamMetrics(members) {
   const today = todayStr();
+  // Only load the collections this set of members actually needs: an HR-only
+  // team never touches students/doubts/feedback, a Training-only team never
+  // loads the (large) leads collection.
+  const hasAcad = members.some((m) => m.departmentCode === 'ACAD');
+  const hasOthers = members.some((m) => m.departmentCode !== 'ACAD');
   const [leads, students, doubts, feedback] = await Promise.all([
-    StudentLead.find().select('counselorAssigned allocatedTo spokenBy branch location stage followUpDate callCount').lean(),
-    Student.find().select('trainerName syllabusCompleted').lean(),
-    TrainerDoubt.find({ status: { $ne: 'Replied' } }).select('trainerName').lean(),
-    ClassFeedback.aggregate([{ $group: { _id: { $toLower: '$trainerName' }, avg: { $avg: '$rating' }, count: { $sum: 1 } } }])
+    hasOthers ? StudentLead.find().select('counselorAssigned allocatedTo spokenBy branch location stage followUpDate callCount').lean() : [],
+    hasAcad ? Student.find().select('trainerName syllabusCompleted').lean() : [],
+    hasAcad ? TrainerDoubt.find({ status: { $ne: 'Replied' } }).select('trainerName').lean() : [],
+    hasAcad ? ClassFeedback.aggregate([{ $group: { _id: { $toLower: '$trainerName' }, avg: { $avg: '$rating' }, count: { $sum: 1 } } }]) : []
   ]);
   const rating = new Map(feedback.map((f) => [normName(f._id), f]));
+  // Group once instead of scanning every student/doubt for every trainer
+  const studentsByTrainer = new Map();
+  students.forEach((s) => { const k = normName(s.trainerName); if (!studentsByTrainer.has(k)) studentsByTrainer.set(k, []); studentsByTrainer.get(k).push(s); });
+  const doubtsByTrainer = new Map();
+  doubts.forEach((d) => { const k = normName(d.trainerName); doubtsByTrainer.set(k, (doubtsByTrainer.get(k) || 0) + 1); });
   return members.map((m) => {
     const name = normName(m.name);
     const base = typeof m.toObject === 'function' ? m.toObject() : m;
     if (m.departmentCode === 'ACAD') {
-      const mine = students.filter((s) => normName(s.trainerName) === name);
+      const mine = studentsByTrainer.get(name) || [];
       const fb = rating.get(name);
       return {
         ...base,
         assigned: mine.length,
         completed: mine.filter((s) => s.syllabusCompleted).length,
-        pending: doubts.filter((d) => normName(d.trainerName) === name).length,
+        pending: doubtsByTrainer.get(name) || 0,
         quality: fb ? Math.round((fb.avg / 5) * 100) : null,
         qualityBasis: fb ? `Avg student rating ${fb.avg.toFixed(1)}/5 (${fb.count})` : 'No student ratings yet',
         workLabel: { assigned: 'students', completed: 'syllabus done', pending: 'open doubts' }
@@ -2446,11 +2456,17 @@ router.get('/leadership/team', async (req, res) => {
     const effectiveBranch = isBM ? req.user.branch : (branchName || req.query.branch);
     const query = departmentCode ? deptCodeQuery(departmentCode) : {};
     if (effectiveBranch) query.branchName = new RegExp(escapeRegex(branchShort(effectiveBranch)), 'i');
-    let team = await TeamMember.find(query).sort({ name: 1 });
+    // ?lite=1 — roster/schedule pages only need names, shifts and schedules,
+    // not the lead/student workload metrics (which scan whole collections).
+    const lite = ['1', 'true'].includes(String(req.query.lite || '').toLowerCase());
+    let team = lite
+      ? await TeamMember.find(query).select('-__v').sort({ name: 1 }).lean()
+      : await TeamMember.find(query).sort({ name: 1 });
     if (isBM) {
       const heads = await deptHeadNameSet();
       team = team.filter((m) => !isDeptHeadRole(m.role) && !heads.has(normName(m.name)));
     }
+    if (lite) return res.json(team);
     const withMetrics = await teamMetrics(team);
     withMetrics.sort((a, b) => (b.quality ?? -1) - (a.quality ?? -1));
     res.json(withMetrics);

@@ -161,6 +161,13 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
   // Handover action: HR hands over student to Head of Trainer.
   // Head of Trainer will subsequently assign the student to their respective trainer & batch.
   const studentKey = (s) => s?._id || s?.studentId;
+  // Match one student only. Never compare fields that may be missing on both
+  // records (undefined === undefined would match every student in the list).
+  const isSameStudent = (a, b) => {
+    const ka = String(studentKey(a) || '');
+    const kb = String(studentKey(b) || '');
+    return Boolean(ka) && ka === kb;
+  };
 
   const openHandover = (stu) => {
     const studentBranch = stu.branch || stu.location || stu.leadBranch || '';
@@ -185,7 +192,7 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
         branch: studentBranch,
         handedOverBy: currentUser?.name || currentUser?.userName || 'HR'
       });
-      setStudents(prev => prev.map(s => (studentKey(s) === studentKey(assigning) ? { ...s, ...updated } : s)));
+      setStudents(prev => prev.map(s => (isSameStudent(s, assigning) ? { ...s, ...updated } : s)));
       if (onRefreshStudents) onRefreshStudents();
       showToast(`✓ ${assigning.name} handed over to ${assignForm.headOfTrainer || 'Department Head of Training'} (${assignForm.headOfTrainerBranch || studentBranch || 'Branch'})`);
       setAssigning(null);
@@ -212,7 +219,7 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
       status: newStatus
     };
     setEditingStudent(updatedStudent);
-    setStudents(prev => prev.map(s => (s._id === updatedStudent._id || s.studentId === updatedStudent.studentId || s.id === updatedStudent.id) ? updatedStudent : s));
+    setStudents(prev => prev.map(s => (isSameStudent(s, updatedStudent) ? updatedStudent : s)));
 
     try {
       await updateStudent(editingStudent._id || editingStudent.studentId || editingStudent.id, {
@@ -239,7 +246,7 @@ export default function HrHandoverDesk({ students: propStudents, onRefreshStuden
       status: 'Ready'
     };
     setEditingStudent(updatedStudent);
-    setStudents(prev => prev.map(s => (s._id === updatedStudent._id || s.studentId === updatedStudent.studentId || s.id === updatedStudent.id) ? updatedStudent : s));
+    setStudents(prev => prev.map(s => (isSameStudent(s, updatedStudent) ? updatedStudent : s)));
 
     try {
       await updateStudent(editingStudent._id || editingStudent.studentId || editingStudent.id, {
