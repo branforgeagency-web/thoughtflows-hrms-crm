@@ -1429,7 +1429,7 @@ export default function AdminManagementDashboard({
           return (
             <div className="space-y-5">
               {/* Table Top Controls & Create Account Button */}
-              <div className="bg-white rounded-3xl p-5 sm:p-6 border border-slate-200/90 shadow-2xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="bg-white rounded-3xl p-5 sm:p-6 border border-slate-200/90 shadow-2xs flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                 <div>
                   <div className="flex items-center gap-2.5 flex-wrap">
                     <span className="text-xl" role="img" aria-label="user">
@@ -1448,7 +1448,7 @@ export default function AdminManagementDashboard({
                 </div>
 
                 {/* Toolbar: Search, Role Filter, and + Create Account Button */}
-                <div className="flex items-center gap-2.5 flex-wrap sm:flex-nowrap">
+                <div className="flex items-center gap-2.5 flex-wrap sm:flex-nowrap shrink-0">
                   {/* Search Bar */}
                   <div className="relative min-w-[200px] flex-1 sm:flex-initial">
                     <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -1460,7 +1460,7 @@ export default function AdminManagementDashboard({
                         setUserSearchQuery(e.target.value);
                         setUserPage(1);
                       }}
-                      className="w-full pl-8 pr-3 py-2 rounded-xl border border-slate-200 bg-slate-50/50 hover:bg-white focus:bg-white text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-blue-500 shadow-2xs font-medium transition-all"
+                      className="w-full h-10 pl-8 pr-8 py-2 rounded-xl border border-slate-200 bg-slate-50/50 hover:bg-white focus:bg-white text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-blue-500 shadow-2xs font-medium transition-all"
                     />
                     {userSearchQuery && (
                       <button
@@ -1477,21 +1477,24 @@ export default function AdminManagementDashboard({
                   </div>
 
                   {/* Role Filter */}
-                  <select
-                    value={userRoleFilter}
-                    onChange={(e) => {
-                      setUserRoleFilter(e.target.value);
-                      setUserPage(1);
-                    }}
-                    className="px-3 py-2 rounded-xl border border-slate-200 bg-slate-50/50 hover:bg-white text-xs text-slate-800 focus:outline-none focus:border-blue-500 shadow-2xs font-medium cursor-pointer transition-all"
-                  >
-                    <option value="All">All Roles ({users.length})</option>
-                    {ACADEMY_ROLES.map((r) => (
-                      <option key={r} value={r}>
-                        {r}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="relative shrink-0">
+                    <select
+                      value={userRoleFilter}
+                      onChange={(e) => {
+                        setUserRoleFilter(e.target.value);
+                        setUserPage(1);
+                      }}
+                      className="h-10 pl-3.5 pr-8 rounded-xl border border-slate-200 bg-slate-50/50 hover:bg-white text-xs text-slate-800 focus:outline-none focus:border-blue-500 shadow-2xs font-medium cursor-pointer transition-all appearance-none"
+                    >
+                      <option value="All">All Roles ({users.length})</option>
+                      {ACADEMY_ROLES.map((r) => (
+                        <option key={r} value={r}>
+                          {r}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none stroke-[2.5]" />
+                  </div>
 
                   {/* The User-Requested "Create Account" Button */}
                   <button
@@ -1500,7 +1503,7 @@ export default function AdminManagementDashboard({
                       setIsRoleDropdownOpen(false);
                       setShowAddUserModal(true);
                     }}
-                    className="px-4 sm:px-5 py-2.5 rounded-xl bg-[#1d63ed] hover:bg-blue-700 text-white font-extrabold text-xs shadow-md hover:shadow-lg transition-all flex items-center gap-2 cursor-pointer active:scale-95 shrink-0"
+                    className="h-10 px-4 sm:px-5 rounded-xl bg-[#1d63ed] hover:bg-blue-700 text-white font-extrabold text-xs shadow-md hover:shadow-lg transition-all flex items-center gap-2 cursor-pointer active:scale-95 shrink-0"
                     title="Open Create User Account popup modal"
                   >
                     <UserPlus className="w-4 h-4" />
@@ -1719,7 +1722,7 @@ export default function AdminManagementDashboard({
                   </div>
 
                   {/* Pagination Controls */}
-                  <div className="flex items-center gap-2 flex-wrap justify-center">
+                  <div className="flex items-center gap-2.5 flex-wrap sm:flex-nowrap justify-center sm:justify-end">
                     <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-slate-200 shadow-2xs">
                       <button
                         type="button"
@@ -1734,20 +1737,44 @@ export default function AdminManagementDashboard({
                         ‹ Prev
                       </button>
 
-                      {Array.from({ length: totalPages }, (_, i) => i + 1).map((pg) => (
-                        <button
-                          key={pg}
-                          type="button"
-                          onClick={() => setUserPage(pg)}
-                          className={`w-7 h-7 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                            pg === currentPage
-                              ? 'bg-[#1d63ed] text-white shadow-xs font-extrabold'
-                              : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-                          }`}
-                        >
-                          {pg}
-                        </button>
-                      ))}
+                      {(() => {
+                        const getPages = () => {
+                          if (totalPages <= 7) {
+                            return Array.from({ length: totalPages }, (_, i) => i + 1);
+                          }
+                          if (currentPage <= 4) {
+                            return [1, 2, 3, 4, 5, '...', totalPages];
+                          }
+                          if (currentPage >= totalPages - 3) {
+                            return [1, '...', totalPages - 4, totalPages - 3, totalPages - 2, totalPages - 1, totalPages];
+                          }
+                          return [1, '...', currentPage - 1, currentPage, currentPage + 1, '...', totalPages];
+                        };
+
+                        return getPages().map((pg, idx) =>
+                          pg === '...' ? (
+                            <span
+                              key={`ellipsis-${idx}`}
+                              className="w-7 h-7 flex items-center justify-center text-xs font-bold text-slate-400 select-none"
+                            >
+                              …
+                            </span>
+                          ) : (
+                            <button
+                              key={pg}
+                              type="button"
+                              onClick={() => setUserPage(pg)}
+                              className={`w-7 h-7 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                                pg === currentPage
+                                  ? 'bg-[#1d63ed] text-white shadow-xs font-extrabold'
+                                  : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                              }`}
+                            >
+                              {pg}
+                            </button>
+                          )
+                        );
+                      })()}
 
                       <button
                         type="button"
@@ -1769,7 +1796,7 @@ export default function AdminManagementDashboard({
                         setIsRoleDropdownOpen(false);
                         setShowAddUserModal(true);
                       }}
-                      className="text-xs font-extrabold text-blue-600 hover:text-blue-800 flex items-center gap-1 cursor-pointer bg-white border border-slate-200 px-3 py-2 rounded-xl shadow-2xs hover:bg-blue-50 transition-colors shrink-0"
+                      className="h-[38px] px-3.5 rounded-xl text-xs font-extrabold text-[#1d63ed] hover:text-blue-700 flex items-center gap-1.5 cursor-pointer bg-white border border-slate-200 shadow-2xs hover:bg-blue-50/70 transition-colors shrink-0"
                     >
                       <UserPlus className="w-3.5 h-3.5" /> + Create Account
                     </button>

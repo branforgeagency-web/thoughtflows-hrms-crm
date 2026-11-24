@@ -32,7 +32,8 @@ export default function HrCallRecordingsTable({ currentUser, students = [], allS
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [totalCount, setTotalCount] = useState(0);
-  const PAGE_LIMIT = 50;
+  const [pageLimit, setPageLimit] = useState(10);
+  const pageRef = React.useRef({ page: 1, limit: 10 });
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedOutcomeFilter, setSelectedOutcomeFilter] = useState('ALL');
   const [toastMsg, setToastMsg] = useState(null);
@@ -67,10 +68,10 @@ export default function HrCallRecordingsTable({ currentUser, students = [], allS
   const activeStudents = (students && students.length > 0) ? students : (allStudents && allStudents.length > 0 ? allStudents : internalStudents);
   const activeLeads = (leads && leads.length > 0) ? leads : internalLeads;
 
-  const loadRecordings = async (targetPage = page) => {
+  const loadRecordings = async (targetPage = page, targetLimit = pageLimit) => {
     try {
       setLoading(true);
-      const data = await getRecordings({ page: targetPage, limit: PAGE_LIMIT });
+      const data = await getRecordings({ page: targetPage, limit: targetLimit });
       if (Array.isArray(data)) {
         setRecordings(data);
         setTotalCount(data.length);
@@ -90,10 +91,13 @@ export default function HrCallRecordingsTable({ currentUser, students = [], allS
   };
 
   useEffect(() => {
-    loadRecordings(page);
+    pageRef.current = { page, limit: pageLimit };
+    loadRecordings(page, pageLimit);
+  }, [page, pageLimit]);
+  useEffect(() => {
     const unsub = onDataUpdate((entity) => {
       if (entity === 'recordings' || entity === 'leads') {
-        loadRecordings(page);
+        loadRecordings(pageRef.current.page, pageRef.current.limit);
       }
     });
     return unsub;
@@ -519,10 +523,11 @@ export default function HrCallRecordingsTable({ currentUser, students = [], allS
         page={page}
         totalPages={totalPages}
         totalCount={totalCount}
-        limit={PAGE_LIMIT}
+        limit={pageLimit}
         loading={loading}
         itemLabel="recordings"
         onPageChange={(nextPage) => setPage(nextPage)}
+        onLimitChange={(n) => { setPage(1); setPageLimit(n); }}
       />
     </div>
   );

@@ -10,6 +10,8 @@ export default function PaginationBar({
   totalCount = 0,
   limit = 50,
   onPageChange,
+  onLimitChange,               // when given, shows a "Rows" picker (10 / 25 / 50)
+  limitOptions = [10, 25, 50],
   loading = false,
   itemLabel = 'records'
 }) {
@@ -26,6 +28,19 @@ export default function PaginationBar({
         <span className="font-bold text-slate-900">{totalCount.toLocaleString()}</span> {itemLabel}
       </div>
       <div className="flex items-center gap-2">
+        {onLimitChange && (
+          <label className="inline-flex items-center gap-1.5 text-slate-500 font-semibold mr-1">
+            Rows
+            <select
+              value={limit}
+              disabled={loading}
+              onChange={(e) => onLimitChange(Number(e.target.value))}
+              className="px-2 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-800 font-bold focus:outline-none focus:border-teal-500"
+            >
+              {[...new Set([...limitOptions, limit])].sort((a, b) => a - b).map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </label>
+        )}
         <button
           type="button"
           disabled={loading || page <= 1}

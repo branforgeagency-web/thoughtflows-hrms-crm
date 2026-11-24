@@ -86,6 +86,12 @@ export default function StudentTestSeries({ onOpenTest, refreshKey = 0 }) {
                   </span>
                 )}
               </div>
+              {(t.openDate || t.closeDate) && (
+                <div className={`text-[11px] font-semibold ${t.availability === 'open' ? 'text-slate-500' : t.availability === 'upcoming' ? 'text-amber-700' : 'text-rose-600'}`}>
+                  {t.availability === 'upcoming' ? `Opens ${t.openDate.replace('T', ' ')}` : t.availability === 'closed' ? `Closed on ${t.closeDate.replace('T', ' ')}` : t.closeDate ? `Open till ${t.closeDate.replace('T', ' ')}` : ''}
+                </div>
+              )}
+              {t.taken && t.resultHidden && <div className="text-[11px] text-slate-500">Submitted · result not published yet</div>}
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-600">
                 <span className="inline-flex items-center gap-1"><FileQuestion className="w-3.5 h-3.5 text-slate-400" />{t.questionCount} questions</span>
                 <span className="inline-flex items-center gap-1"><Clock className="w-3.5 h-3.5 text-slate-400" />{t.durationMin} min</span>
@@ -93,13 +99,16 @@ export default function StudentTestSeries({ onOpenTest, refreshKey = 0 }) {
                 {t.attemptsTaken > 0 && <span>{t.attemptsTaken} attempt{t.attemptsTaken === 1 ? '' : 's'}</span>}
               </div>
               <button type="button" onClick={() => onOpenTest?.(t.id)}
-                className={`mt-auto w-full py-2.5 rounded-xl text-xs font-bold inline-flex items-center justify-center gap-1.5 ${
+                disabled={t.state === 'not_started' && t.availability !== 'open'}
+                className={`mt-auto disabled:opacity-50 disabled:cursor-not-allowed w-full py-2.5 rounded-xl text-xs font-bold inline-flex items-center justify-center gap-1.5 ${
                   t.state === 'in_progress' ? 'bg-amber-500 hover:bg-amber-600 text-white'
                     : t.state === 'submitted' ? 'bg-white border border-slate-200 text-slate-800 hover:bg-slate-50'
                       : 'bg-[#009688] hover:bg-[#00897b] text-white'}`}>
                 {t.state === 'in_progress' ? <><PlayCircle className="w-4 h-4" />Continue test</>
-                  : t.state === 'submitted' ? <><RotateCcw className="w-4 h-4" />View result · retake</>
-                    : <><PlayCircle className="w-4 h-4" />Start test</>}
+                  : t.state === 'submitted' ? <><RotateCcw className="w-4 h-4" />{t.resultHidden ? 'View submission' : t.availability === 'open' ? 'View result · retake' : 'View result'}</>
+                    : t.availability === 'upcoming' ? <><Clock className="w-4 h-4" />Not open yet</>
+                      : t.availability === 'closed' ? <>Closed</>
+                        : <><PlayCircle className="w-4 h-4" />Start test</>}
               </button>
             </div>
           );

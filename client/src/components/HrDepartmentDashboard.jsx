@@ -431,9 +431,12 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   const [hrLeadCounts, setHrLeadCounts] = useState(null);
   const [studentsPage, setStudentsPage] = useState(1);
   const [studentsTotalCount, setStudentsTotalCount] = useState(0);
+  const [studentsStats, setStudentsStats] = useState(null); // overview card totals (all pages)
   const [studentsTotalPages, setStudentsTotalPages] = useState(1);
   const PAGE_LIMIT = 50;
-  const LEADS_TABLE_LIMIT = 25;
+  // Tables show 10 rows by default; the Rows picker under each table switches to 25 / 50
+  const [leadsTableLimit, setLeadsTableLimit] = useState(10);
+  const [admitted, setAdmitted] = useState({ rows: [], page: 1, limit: 10, totalCount: 0, totalPages: 1, stats: null });
   const LEADS_BOARD_LIMIT = 200;
   
   // Local daily calls cache for instant reactivity when calling through modal
@@ -602,6 +605,37 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     }
   };
 
+  // Admitted Students table: its own server page (same scope as the main student list)
+  const admittedSeqRef = React.useRef(0);
+  const admittedRef = React.useRef({ page: 1, limit: 10 });
+  const loadAdmitted = async (page = admittedRef.current.page, limit = admittedRef.current.limit) => {
+    const seq = ++admittedSeqRef.current;
+    admittedRef.current = { page, limit };
+    const counselorFilter = currentUser?.name?.trim();
+    const shouldFilterOnServer = counselorFilter && !scopeKind && (!isElevatedUser || scopeMode === 'mine');
+    const deskBranch = viewScope?.branch || (scopeKind === 'branch' ? currentUser?.branch : '') || '';
+    const branchParam = scopeKind === 'branch' && deskBranch ? { branch: deskBranch } : {};
+    try {
+      const res = await getStudents({ ...(shouldFilterOnServer ? { hrName: counselorFilter } : {}), ...branchParam, page, limit, withStats: 'true' });
+      if (seq !== admittedSeqRef.current) return;
+      const rows = Array.isArray(res) ? res : (Array.isArray(res?.students) ? res.students : []);
+      setAdmitted({
+        rows, page, limit,
+        totalCount: typeof res?.totalCount === 'number' ? res.totalCount : rows.length,
+        totalPages: res?.totalPages || 1,
+        stats: res?.stats || null
+      });
+    } catch (e) {
+      console.error('Admitted students load failed:', e);
+    }
+  };
+
+  // (Re)load the Admitted Students table when it is opened or the desk scope changes
+  useEffect(() => {
+    if (activeTab === 'Admitted Students') loadAdmitted(1, admittedRef.current.limit);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, scopeKind, scopeMode, viewScope?.branch, currentUser?.name]);
+
   const loadSeqRef = React.useRef(0);
   const loadAllData = async (silent = false, overrides = {}) => {
     // Only the newest load may write to state — an older, slower response
@@ -615,7 +649,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       const targetStudentsPage = overrides.studentsPage ?? studentsPage;
       const targetLeadsPage = overrides.leadsPage ?? leadsPage;
       const targetLeadsMode = overrides.leadsViewMode ?? leadsViewMode;
-      const targetLeadsLimit = targetLeadsMode === 'table' ? LEADS_TABLE_LIMIT : LEADS_BOARD_LIMIT;
+      const targetLeadsLimit = targetLeadsMode === 'table' ? (overrides.leadsTableLimit ?? leadsTableLimit) : LEADS_BOARD_LIMIT;
       const activeLeadFilters = overrides.leadFilters ?? leadFilters;
       // Branch Head desk: always ask for this branch only (the server also pins
       // a Branch Head to their own branch; this covers Admin opening the desk)
@@ -655,7 +689,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         .then((closureRes) => applyTodayClosure(closureRes, dKey, counselorFilter));
 
       const [stRes, ldRes, dmRes] = await Promise.all([
-        getStudents({ ...(shouldFilterOnServer ? { hrName: counselorFilter } : {}), ...branchParam, page: targetStudentsPage, limit: PAGE_LIMIT }),
+        getStudents({ ...(shouldFilterOnServer ? { hrName: counselorFilter } : {}), ...branchParam, page: targetStudentsPage, limit: PAGE_LIMIT, withStats: 'true' }),
         getLeads(leadParams),
         getDemos(shouldFilterOnServer ? { counselor: counselorFilter, ...branchParam } : (branchParam.branch ? branchParam : undefined))
       ]);
@@ -664,6 +698,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       setStudents(stList);
       setStudentsTotalCount(typeof stRes?.totalCount === 'number' ? stRes.totalCount : stList.length);
       setStudentsTotalPages(stRes?.totalPages || 1);
+      setStudentsStats(stRes?.stats || null);
 
       const ldList = ldRes?.leads || [];
       setLeads(ldList);
@@ -2044,19 +2079,18 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
           <HrMyTargets currentUser={currentUser} students={scopedStudents} scopeKind={scopeKind} branch={viewScope?.branch || (scopeKind === 'branch' ? currentUser?.branch : '') || ''} />
         ) : activeTab === 'Admitted Students' ? (
           <HrAdmittedStudentsCrm 
-            students={scopedStudents} 
-            onRefreshStudents={loadAllData} 
+            students={admitted.rows} 
+            onRefreshStudents={() => { loadAllData(true); loadAdmitted(); }} 
             currentUser={currentUser} 
             onStudentLogin={setStudentLogin}
             onCallStudent={(st) => openCallFor(st, true)}
-            page={studentsPage}
-            totalPages={studentsTotalPages}
-            totalCount={studentsTotalCount}
-            limit={PAGE_LIMIT}
-            onPageChange={(nextPage) => {
-              setStudentsPage(nextPage);
-              loadAllData(false, { studentsPage: nextPage });
-            }}
+            page={admitted.page}
+            totalPages={admitted.totalPages}
+            totalCount={admitted.totalCount}
+            totalStats={admitted.stats || studentsStats}
+            limit={admitted.limit}
+            onPageChange={(nextPage) => loadAdmitted(nextPage, admitted.limit)}
+            onLimitChange={(n) => loadAdmitted(1, n)}
           />
         ) : activeTab === 'Call Recordings' ? (
           <HrCallRecordingsTable
@@ -2087,11 +2121,16 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             page={leadsPage}
             totalPages={leadsTotalPages}
             totalCount={leadsTotalCount}
-            limit={LEADS_TABLE_LIMIT}
+            limit={leadsTableLimit}
             scopeBranch={scopeKind === 'branch' ? (viewScope?.branch || currentUser?.branch || '') : ''}
             onPageChange={(nextPage) => {
               setLeadsPage(nextPage);
               loadAllData(false, { leadsPage: nextPage, leadsViewMode: 'table' });
+            }}
+            onLimitChange={(n) => {
+              setLeadsTableLimit(n);
+              setLeadsPage(1);
+              loadAllData(true, { leadsPage: 1, leadsViewMode: 'table', leadsTableLimit: n });
             }}
             onFilterChange={(nextFilters) => {
               setLeadFilters(nextFilters);

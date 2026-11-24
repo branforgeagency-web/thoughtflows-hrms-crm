@@ -178,6 +178,7 @@ export default function HrPipelineView({
   totalCount: propTotalCount,
   limit: propLimit = 25,
   onPageChange,
+  onLimitChange,
   onFilterChange,
   onViewModeChange,
   scopeBranch = ''       // Branch Head desk: HR & branch lists limited to this branch
@@ -2068,6 +2069,7 @@ export default function HrPipelineView({
             if (onPageChange) onPageChange(nextPage);
             else setLocalPage(nextPage);
           }}
+          onLimitChange={onLimitChange}
         />
       )}
     </div>

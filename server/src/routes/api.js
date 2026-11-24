@@ -3924,6 +3924,48 @@ const findLeadForAdmission = (p) => findLeadByContact({ leadId: p.leadId, email:
 // ==========================================
 // REAL ADMITTED STUDENTS API
 // ==========================================
+// Admitted Students overview cards: counts over every student the query matches
+// (same rules the cards used on the loaded page: month = IST calendar month,
+// onboarding done = "n / n", fee pending = balance > 0 or fee status "pending").
+async function studentOverviewStats(query) {
+  const ist = new Date(Date.now() + 330 * 60000);
+  const monthStart = new Date(Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), 1) - 330 * 60000);
+  const num = (f) => ({ $convert: { input: f, to: 'double', onError: null, onNull: null } });
+  const [r] = await Student.aggregate([
+    { $match: query },
+    { $project: {
+      statusGroup: 1,
+      thisMonth: { $gte: ['$createdAt', monthStart] },
+      ob: { $regexFind: { input: { $toString: { $ifNull: ['$onboardStatus', ''] } }, regex: /^(\d+)\s*\/\s*(\d+)/ } },
+      interviewing: { $regexMatch: { input: { $toString: { $ifNull: ['$placementStatus', ''] } }, regex: /interview/i } },
+      feeWord: { $regexMatch: { input: { $toString: { $ifNull: ['$feeStatus', ''] } }, regex: /pending/i } },
+      pend: num('$pendingBalance'),
+      fee: { $ifNull: [num('$courseFee'), 0] },
+      paid: { $ifNull: [num('$paidAmount'), 0] }
+    } },
+    { $project: {
+      statusGroup: 1, thisMonth: 1, interviewing: 1,
+      obDone: { $and: [{ $ne: ['$ob', null] }, { $eq: [{ $arrayElemAt: ['$ob.captures', 0] }, { $arrayElemAt: ['$ob.captures', 1] }] }] },
+      feePending: { $or: ['$feeWord', { $gt: [{ $ifNull: ['$pend', { $max: [0, { $subtract: ['$fee', '$paid'] }] }] }, 0] }] }
+    } },
+    { $group: {
+      _id: null,
+      total: { $sum: 1 },
+      admittedThisMonth: { $sum: { $cond: ['$thisMonth', 1, 0] } },
+      onboardingDone: { $sum: { $cond: ['$obDone', 1, 0] } },
+      inCourse: { $sum: { $cond: [{ $eq: ['$statusGroup', 'in_course'] }, 1, 0] } },
+      placed: { $sum: { $cond: [{ $eq: ['$statusGroup', 'placed'] }, 1, 0] } },
+      onHold: { $sum: { $cond: [{ $eq: ['$statusGroup', 'on_hold'] }, 1, 0] } },
+      interviewing: { $sum: { $cond: ['$interviewing', 1, 0] } },
+      feePending: { $sum: { $cond: ['$feePending', 1, 0] } }
+    } }
+  ]);
+  const out = r || { total: 0, admittedThisMonth: 0, onboardingDone: 0, inCourse: 0, placed: 0, onHold: 0, interviewing: 0, feePending: 0 };
+  delete out._id;
+  out.onboardingInProgress = out.total - out.onboardingDone;
+  return out;
+}
+
 router.get('/students', async (req, res) => {
   try {
     await ensureStaffNamesLoaded();
@@ -4044,8 +4086,11 @@ router.get('/students', async (req, res) => {
 
     const resultList = await formatStudentsForUser(students);
     if (hasPagination) {
+      // Totals for the overview cards over ALL matching students, not just this page
+      const stats = req.query.withStats === 'true' ? await studentOverviewStats(query) : undefined;
       return res.json({
         students: resultList,
+        stats,
         totalCount,
         page: pageNum,
         limit: limitNum,
@@ -16492,6 +16537,132 @@ router.delete('/training/announcements/:id', async (req, res) => {
   }
 });
 
+// ---------- Online tests: shared question cleaning / saving ----------
+// Questions can hold formatted HTML from the question editor (bold, lists,
+// tables, small inline images). Strip anything executable; the browser also
+// whitelists tags when it renders.
+const safeHtml = (v, max) => String(v || '')
+  .replace(/<\s*(script|style|iframe|object|embed|link|meta|form|input|button|textarea|select)\b[\s\S]*?(<\s*\/\s*\1\s*>|$)/gi, '')
+  .replace(/<\s*\/?\s*(script|style|iframe|object|embed|link|meta|form|input|button|textarea|select)\b[^>]*>/gi, '')
+  .replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+  .replace(/(href|src)\s*=\s*("|')\s*(javascript|vbscript):[^"']*\2/gi, '$1="#"')
+  .trim()
+  .slice(0, max);
+const htmlText = (v) => String(v || '')
+  .replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|li|tr|h\d)>/gi, '\n').replace(/<[^>]+>/g, ' ')
+  .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+  .replace(/[ \t]+/g, ' ').replace(/\n\s*\n+/g, '\n').trim();
+const hasContent = (v) => Boolean(htmlText(v)) || /<img\b/i.test(String(v || ''));
+const QUESTION_HTML_MAX = 400000; // room for a compressed image or two
+const QUESTION_DIFFICULTY = ['Easy', 'Medium', 'Hard'];
+
+function cleanQuestionList(raw, oldQuestions = []) {
+  if (raw.length > MAX_TEST_QUESTIONS) return { error: `A test can have at most ${MAX_TEST_QUESTIONS} questions` };
+  const oldById = Object.fromEntries((oldQuestions || []).map((q) => [String(q._id), q]));
+  const num = (v, min, max) => { const n = Number(v); return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n * 100) / 100)) : 0; };
+  const questions = [];
+  for (const [i, q] of raw.entries()) {
+    const text = safeHtml(q?.q, QUESTION_HTML_MAX);
+    const options = (Array.isArray(q?.options) ? q.options : []).map((o) => safeHtml(o, QUESTION_HTML_MAX));
+    const answer = Number(q?.answer);
+    if (!hasContent(text)) return { error: `Question ${i + 1}: the question text is empty` };
+    if (options.length < 2 || options.length > 6 || options.some((o) => !hasContent(o))) return { error: `Question ${i + 1}: give 2–6 options and fill every option` };
+    if (!Number.isInteger(answer) || answer < 0 || answer >= options.length) return { error: `Question ${i + 1}: pick the correct option` };
+    const rationale = safeHtml(q?.rationale, QUESTION_HTML_MAX);
+    const old = q?._id ? oldById[String(q._id)] : null;
+    const out = {
+      q: text,
+      options,
+      answer,
+      marks: Math.min(20, Math.max(1, Math.round(Number(q?.marks) || 1))),
+      chapter: String(q?.chapter || '').trim().slice(0, 200),
+      rationale,
+      audioRationaleUrl: String(q?.audioRationaleUrl || '').trim(),
+      // read aloud by the student's audio rationale player: plain text only
+      audioRationaleText: htmlText(q?.audioRationaleText || rationale).slice(0, 3000),
+      qType: q?.qType === 'True/False' ? 'True/False' : 'MCQ',
+      negMarks: num(q?.negMarks, 0, 20),
+      bonusMarks: num(q?.bonusMarks, 0, 20),
+      topic: String(q?.topic || '').trim().slice(0, 200),
+      subject: String(q?.subject || '').trim().slice(0, 200),
+      language: String(q?.language || 'English').trim().slice(0, 40) || 'English',
+      hint: String(q?.hint || '').trim().slice(0, 1000),
+      difficulty: QUESTION_DIFFICULTY.includes(q?.difficulty) ? q.difficulty : '',
+      font: String(q?.font || '').trim().slice(0, 60),
+      passage: safeHtml(q?.passage, QUESTION_HTML_MAX),
+      instruction: safeHtml(q?.instruction, QUESTION_HTML_MAX),
+      // Reports stay with the question unless staff mark them resolved
+      reports: q?.resolveReports ? [] : (old?.reports || [])
+    };
+    if (q?._id && mongoose.isValidObjectId(q._id)) out._id = q._id;
+    questions.push(out);
+  }
+  return { questions };
+}
+
+// Save a cleaned question list on a test: totals, pass mark, duration, and
+// re-grade submitted attempts. removedIndex keeps saved answers lined up when
+// one question is deleted from the middle of a test students have taken.
+async function applyTestQuestions(item, questions, { passMark, durationMin, removedIndex = -1 } = {}) {
+  const oldTotal = Number(item.totalMarks) || 0;
+  item.questions = questions;
+  item.mode = questions.length ? 'online' : 'offline';
+  if (questions.length) {
+    const total = questions.reduce((a, q) => a + q.marks, 0);
+    const askedPass = Number(passMark);
+    item.passMark = Number.isFinite(askedPass) && askedPass > 0 && askedPass <= total
+      ? Math.round(askedPass)
+      : Math.min(total, Math.max(1, Math.round(((Number(item.passMark) || 0) / (oldTotal || total)) * total) || Math.ceil(total * 0.7)));
+    item.totalMarks = total;
+  }
+  const dur = Number(durationMin);
+  if (Number.isFinite(dur) && dur >= 5 && dur <= 300) {
+    item.durationMin = Math.round(dur);
+    item.timeLimit = `${item.durationMin} min`;
+  } else if (!item.durationMin) {
+    item.durationMin = minutesOf(item.timeLimit);
+  }
+  await item.save();
+
+  // When questions are edited / corrected, re-grade existing attempts automatically
+  const existingAttempts = await TestAttempt.find({ assessmentId: item._id.toString() });
+  if (existingAttempts.length > 0) {
+    const scores = item.scores instanceof Map ? Object.fromEntries(item.scores) : (item.scores || {});
+    const touchedKeys = [];
+    for (const att of existingAttempts) {
+      if (removedIndex >= 0 && Array.isArray(att.answers)) {
+        att.answers = att.answers.filter((_, k) => k !== removedIndex);
+        att.markModified?.('answers');
+      }
+      if (att.status === 'submitted') {
+        const { score, correct } = scoreAnswers(item.questions, att.answers);
+        att.score = score;
+        att.correct = correct;
+        att.totalMarks = item.totalMarks;
+        if (att.studentKey && !item.seriesId) {
+          scores[att.studentKey] = score;
+          touchedKeys.push(att.studentKey);
+        }
+      }
+      if (att.status === 'submitted' || removedIndex >= 0) await att.save();
+    }
+    item.scores = scores;
+    await item.save();
+    if (touchedKeys.length > 0) {
+      await recomputeAssessmentScores(touchedKeys).catch(() => {});
+    }
+  }
+
+  if (questions.length && existingAttempts.length === 0 && !item.seriesId) {
+    await notifyBatch(item.batch, {
+      type: 'assessment', title: `Online test ready: ${item.name}`,
+      message: `${questions.length} questions · ${item.durationMin} min${item.date ? ` · opens ${item.date}` : ''}. Open Materials & Tests to take it.`,
+      createdBy: item.trainerName || ''
+    });
+  }
+  return item;
+}
+
 // ---------- Online tests: trainer side ----------
 router.put('/trainer/assessments/:id/questions', async (req, res) => {
   try {
@@ -16502,85 +16673,9 @@ router.put('/trainer/assessments/:id/questions', async (req, res) => {
     if (!item.seriesId && item.trainerId && !trainerOwnsRecord(req, item)) return res.status(403).json(NOT_YOUR_RECORD);
 
     const raw = Array.isArray(req.body?.questions) ? req.body.questions : [];
-    if (raw.length > MAX_TEST_QUESTIONS) return res.status(400).json({ error: `A test can have at most ${MAX_TEST_QUESTIONS} questions` });
-    const questions = [];
-    for (const [i, q] of raw.entries()) {
-      const text = String(q?.q || '').trim();
-      const options = (Array.isArray(q?.options) ? q.options : []).map((o) => String(o || '').trim());
-      const answer = Number(q?.answer);
-      if (!text) return res.status(400).json({ error: `Question ${i + 1}: the question text is empty` });
-      if (options.length < 2 || options.length > 6 || options.some((o) => !o)) return res.status(400).json({ error: `Question ${i + 1}: give 2–6 options and fill every option` });
-      if (!Number.isInteger(answer) || answer < 0 || answer >= options.length) return res.status(400).json({ error: `Question ${i + 1}: pick the correct option` });
-      questions.push({
-        q: text.slice(0, 3000),
-        options: options.map((o) => o.slice(0, 600)),
-        answer,
-        marks: Math.min(20, Math.max(1, Math.round(Number(q?.marks) || 1))),
-        chapter: String(q?.chapter || '').trim().slice(0, 200),
-        rationale: String(q?.rationale || '').trim().slice(0, 3000),
-        audioRationaleUrl: String(q?.audioRationaleUrl || '').trim(),
-        audioRationaleText: String(q?.audioRationaleText || q?.rationale || '').trim().slice(0, 3000)
-      });
-    }
-    const oldTotal = Number(item.totalMarks) || 0;
-    item.questions = questions;
-    item.mode = questions.length ? 'online' : 'offline';
-    if (questions.length) {
-      const total = questions.reduce((a, q) => a + q.marks, 0);
-      const askedPass = Number(req.body?.passMark);
-      item.passMark = Number.isFinite(askedPass) && askedPass > 0 && askedPass <= total
-        ? Math.round(askedPass)
-        : Math.min(total, Math.max(1, Math.round(((Number(item.passMark) || 0) / (oldTotal || total)) * total) || Math.ceil(total * 0.7)));
-      item.totalMarks = total;
-    }
-    const dur = Number(req.body?.durationMin);
-    if (Number.isFinite(dur) && dur >= 5 && dur <= 300) {
-      item.durationMin = Math.round(dur);
-      item.timeLimit = `${item.durationMin} min`;
-    } else if (!item.durationMin) {
-      item.durationMin = minutesOf(item.timeLimit);
-    }
-    await item.save();
-
-    // Editor Access: When trainer edits/corrects questions, automatically re-grade existing attempts
-    const existingAttempts = await TestAttempt.find({ assessmentId: item._id.toString() });
-    if (existingAttempts.length > 0) {
-      const scores = item.scores instanceof Map ? Object.fromEntries(item.scores) : (item.scores || {});
-      const touchedKeys = [];
-      for (const att of existingAttempts) {
-        if (att.status === 'submitted') {
-          let score = 0;
-          let correct = 0;
-          item.questions.forEach((q, idx) => {
-            if (att.answers?.[idx] === q.answer) {
-              score += q.marks || 1;
-              correct += 1;
-            }
-          });
-          att.score = score;
-          att.correct = correct;
-          att.totalMarks = item.totalMarks;
-          await att.save();
-          if (att.studentKey && !item.seriesId) {
-            scores[att.studentKey] = score;
-            touchedKeys.push(att.studentKey);
-          }
-        }
-      }
-      item.scores = scores;
-      await item.save();
-      if (touchedKeys.length > 0) {
-        await recomputeAssessmentScores(touchedKeys).catch(() => {});
-      }
-    }
-
-    if (questions.length && existingAttempts.length === 0 && !item.seriesId) {
-      await notifyBatch(item.batch, {
-        type: 'assessment', title: `Online test ready: ${item.name}`,
-        message: `${questions.length} questions · ${item.durationMin} min${item.date ? ` · opens ${item.date}` : ''}. Open Materials & Tests to take it.`,
-        createdBy: item.trainerName || ''
-      });
-    }
+    const cleaned = cleanQuestionList(raw, item.questions);
+    if (cleaned.error) return res.status(400).json({ error: cleaned.error });
+    await applyTestQuestions(item, cleaned.questions, { passMark: req.body?.passMark, durationMin: req.body?.durationMin });
     res.json(formatAssessment(item));
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -16694,8 +16789,27 @@ const cleanSeriesBody = (b = {}) => {
   if ('status' in b) out.status = b.status === 'Published' ? 'Published' : 'Draft';
   return out;
 };
+// Test window times are IST "YYYY-MM-DDTHH:mm" strings (a date alone = whole day)
+const istNowStr = () => new Date(Date.now() + 330 * 60000).toISOString().slice(0, 16);
+const windowStart = (d) => (d ? (d.length <= 10 ? `${d}T00:00` : d) : '');
+const windowEnd = (d) => (d ? (d.length <= 10 ? `${d}T23:59` : d) : '');
+const seriesTestWindow = (t) => {
+  const now = istNowStr();
+  if (t.openDate && windowStart(t.openDate) > now) return 'upcoming';
+  if (t.closeDate && windowEnd(t.closeDate) < now) return 'closed';
+  return 'open';
+};
+const newTestCode = () => `TST${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+const cleanWindowDate = (v) => {
+  const d = String(v || '').trim();
+  return /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?$/.test(d) ? d : '';
+};
 const seriesTestSummary = (t) => ({
   id: t._id.toString(), name: t.name, topic: t.topic || '', seriesOrder: t.seriesOrder || 0,
+  testCode: t.testCode || '', openDate: t.openDate || '', closeDate: t.closeDate || '',
+  status: t.status === 'Inactive' ? 'Inactive' : 'Active', publishResult: t.publishResult !== false,
+  reportedCount: (t.questions || []).filter((q) => (q.reports || []).length).length,
+  createdAt: t.createdAt,
   questionCount: (t.questions || []).length, totalMarks: t.totalMarks, passMark: t.passMark,
   durationMin: t.durationMin || minutesOf(t.timeLimit), mode: t.mode, timeLimit: t.timeLimit,
   // Full test fields for the question builder (staff only)
@@ -16705,10 +16819,16 @@ const seriesTestSummary = (t) => ({
 // Staff: all series with their tests and attempt counts
 router.get('/test-series', async (req, res) => {
   try {
+    // Staff only: this list carries the answer keys
+    if (req.user?.department === 'student') return res.status(403).json({ error: 'Not available in the Student Portal.' });
     const [series, tests] = await Promise.all([
       TestSeries.find({}).sort({ createdAt: -1 }).lean(),
       TrainerAssessment.find({ seriesId: { $ne: '' } }).sort({ seriesOrder: 1, createdAt: 1 })
     ]);
+    for (const t of tests.filter((x) => !x.testCode)) {
+      t.testCode = newTestCode();
+      await TrainerAssessment.updateOne({ _id: t._id }, { $set: { testCode: t.testCode } });
+    }
     const ids = tests.map((t) => t._id.toString());
     const counts = ids.length ? await TestAttempt.aggregate([
       { $match: { assessmentId: { $in: ids } } },
@@ -16799,9 +16919,85 @@ router.post('/test-series/:id/tests', async (req, res) => {
       trainerId: '', trainerName: req.user?.name || '',
       timeLimit: `${dur} min`, durationMin: dur, totalMarks: 0, passMark: 0,
       status: 'Active', scores: {}, mode: 'offline', questions: [],
-      seriesId: series._id.toString(), seriesOrder: count + 1
+      seriesId: series._id.toString(), seriesOrder: count + 1,
+      testCode: newTestCode(), openDate: cleanWindowDate(req.body?.openDate), closeDate: cleanWindowDate(req.body?.closeDate),
+      publishResult: req.body?.publishResult !== false
     });
     res.status(201).json({ ...seriesTestSummary(test), attempts: 0, submitted: 0, avgScore: null });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Edit a test's details: name, duration, open / close window, status, publish result, move to another series
+router.put('/test-series/:id/tests/:testId', async (req, res) => {
+  try {
+    if (!canManageTestSeries(req)) return res.status(403).json({ error: 'Only the Head of Trainer and Managers can change tests.' });
+    if (!mongoose.isValidObjectId(req.params.testId)) return res.status(400).json({ error: 'Invalid test' });
+    const test = await TrainerAssessment.findOne({ _id: req.params.testId, seriesId: req.params.id });
+    if (!test) return res.status(404).json({ error: 'Test not found in this series' });
+    const b = req.body || {};
+    if ('name' in b) {
+      const name = String(b.name || '').trim().slice(0, 140);
+      if (!name) return res.status(400).json({ error: 'The test name cannot be empty.' });
+      test.name = name;
+    }
+    if ('durationMin' in b) {
+      const dur = Math.round(Number(b.durationMin) || 0);
+      if (dur < 5 || dur > 300) return res.status(400).json({ error: 'Duration must be between 5 and 300 minutes.' });
+      test.durationMin = dur;
+      test.timeLimit = `${dur} min`;
+    }
+    if ('openDate' in b) test.openDate = cleanWindowDate(b.openDate);
+    if ('closeDate' in b) test.closeDate = cleanWindowDate(b.closeDate);
+    if (test.openDate && test.closeDate && windowEnd(test.closeDate) < windowStart(test.openDate)) {
+      return res.status(400).json({ error: 'The close date must be after the open date.' });
+    }
+    if ('status' in b) test.status = b.status === 'Inactive' ? 'Inactive' : 'Active';
+    if ('publishResult' in b) test.publishResult = Boolean(b.publishResult);
+    if ('topic' in b) test.topic = String(b.topic || '').trim().slice(0, 200);
+    if (b.moveToSeriesId && b.moveToSeriesId !== test.seriesId) {
+      if (!mongoose.isValidObjectId(b.moveToSeriesId)) return res.status(400).json({ error: 'Invalid course / series' });
+      const target = await TestSeries.findById(b.moveToSeriesId);
+      if (!target) return res.status(404).json({ error: 'Course / series not found' });
+      test.seriesId = target._id.toString();
+      test.course = (target.courses || []).join(', ').slice(0, 200);
+      test.seriesOrder = (await TrainerAssessment.countDocuments({ seriesId: test.seriesId })) + 1;
+    }
+    if (!test.testCode) test.testCode = newTestCode();
+    await test.save();
+    res.json(seriesTestSummary(test));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Send: notify every admitted student of the series' courses that this test is ready
+router.post('/test-series/:id/tests/:testId/notify', async (req, res) => {
+  try {
+    if (!canManageTestSeries(req)) return res.status(403).json({ error: 'Only the Head of Trainer and Managers can notify students.' });
+    if (!mongoose.isValidObjectId(req.params.id) || !mongoose.isValidObjectId(req.params.testId)) return res.status(400).json({ error: 'Invalid test' });
+    const [series, test] = await Promise.all([
+      TestSeries.findById(req.params.id).lean(),
+      TrainerAssessment.findOne({ _id: req.params.testId, seriesId: req.params.id }).lean()
+    ]);
+    if (!series || !test) return res.status(404).json({ error: 'Test not found in this series' });
+    if (series.status !== 'Published') return res.status(400).json({ error: `Publish "${series.name}" first — students can't see a Draft series.` });
+    if (test.status === 'Inactive') return res.status(400).json({ error: 'This test is Inactive. Activate it before notifying students.' });
+    if (!(test.questions || []).length) return res.status(400).json({ error: 'Add questions to this test before notifying students.' });
+    const students = (await Student.find({ studentId: { $nin: [null, ''] } }).select('studentId name course').lean())
+      .filter((st) => seriesForStudent(series, st));
+    const win = test.openDate ? ` · opens ${test.openDate.replace('T', ' ')}` : '';
+    const close = test.closeDate ? ` · closes ${test.closeDate.replace('T', ' ')}` : '';
+    if (students.length) {
+      await Notification.insertMany(students.map((st) => ({
+        audience: 'student', recipientId: String(st.studentId), studentId: String(st.studentId), recipientName: st.name || '',
+        type: 'assessment', title: `New test: ${test.name}`,
+        message: `${series.name} · ${(test.questions || []).length} questions · ${test.durationMin || minutesOf(test.timeLimit)} min${win}${close}. Open Test Series in your portal to take it.`,
+        createdBy: req.user?.name || ''
+      })), { ordered: false });
+    }
+    res.json({ success: true, notified: students.length });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -16823,6 +17019,199 @@ router.delete('/test-series/:id/tests/:testId', async (req, res) => {
   }
 });
 
+
+// ---------- Question bank (every Test Series question in one list) ----------
+// Questions live inside their test (TrainerAssessment.questions) so the online
+// test engine keeps working unchanged; this list unwinds them across all tests,
+// filtered and paged on the server so it stays quick with 19,000+ questions.
+async function loadBankTest(req, res, id) {
+  if (!canManageTestSeries(req)) { res.status(403).json({ error: 'Only the Head of Trainer and Managers can change questions.' }); return null; }
+  if (!mongoose.isValidObjectId(id)) { res.status(400).json({ error: 'Select a test' }); return null; }
+  const test = await TrainerAssessment.findById(id);
+  if (!test || !test.seriesId) { res.status(404).json({ error: 'Test not found' }); return null; }
+  return test;
+}
+const plainQuestions = (test) => (test.questions || []).map((q) => (typeof q.toObject === 'function' ? q.toObject() : { ...q }));
+
+router.get('/question-bank/meta', async (req, res) => {
+  try {
+    if (req.user?.department === 'student') return res.status(403).json({ error: 'Not available in the Student Portal.' });
+    const [series, tests, subjects] = await Promise.all([
+      TestSeries.find({}).select('name').lean(),
+      TrainerAssessment.find({ seriesId: { $nin: ['', null] } }).select('name testCode seriesId createdAt questions._id').sort({ createdAt: -1 }).lean(),
+      TrainerAssessment.aggregate([
+        { $match: { seriesId: { $nin: ['', null] } } },
+        { $project: { 'questions.subject': 1, 'questions.topic': 1, 'questions.language': 1 } },
+        { $unwind: '$questions' },
+        { $group: { _id: { $ifNull: ['$questions.subject', ''] }, topics: { $addToSet: { $ifNull: ['$questions.topic', ''] } }, languages: { $addToSet: { $ifNull: ['$questions.language', 'English'] } } } }
+      ])
+    ]);
+    const seriesName = Object.fromEntries(series.map((s) => [s._id.toString(), s.name]));
+    const subjectMap = {};
+    const languages = new Set(['English']);
+    subjects.forEach((g) => {
+      if (g._id) subjectMap[g._id] = (g.topics || []).filter(Boolean).sort();
+      (g.languages || []).forEach((l) => l && languages.add(l));
+    });
+    res.json({
+      canManage: canManageTestSeries(req),
+      tests: tests.map((t) => ({ id: t._id.toString(), name: t.name, testCode: t.testCode || '', seriesId: t.seriesId, seriesName: seriesName[t.seriesId] || '', questionCount: (t.questions || []).length })),
+      subjects: subjectMap,
+      languages: [...languages].sort()
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.get('/question-bank', async (req, res) => {
+  try {
+    if (req.user?.department === 'student') return res.status(403).json({ error: 'Not available in the Student Portal.' });
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 10));
+    const base = { seriesId: { $nin: ['', null] } };
+    if (req.query.testId) {
+      if (!mongoose.isValidObjectId(req.query.testId)) return res.status(400).json({ error: 'Invalid test' });
+      base._id = new mongoose.Types.ObjectId(String(req.query.testId));
+    }
+    const qm = {};
+    const str = (v) => String(v || '').trim();
+    if (str(req.query.subject)) qm['questions.subject'] = str(req.query.subject);
+    if (str(req.query.topic)) qm['questions.topic'] = str(req.query.topic);
+    if (str(req.query.difficulty)) qm['questions.difficulty'] = str(req.query.difficulty);
+    if (req.query.qType === 'True/False') qm['questions.qType'] = 'True/False';
+    else if (req.query.qType === 'MCQ') qm['questions.qType'] = { $ne: 'True/False' };
+    const lang = str(req.query.language);
+    if (lang) qm['questions.language'] = lang === 'English' ? { $in: ['English', '', null] } : lang;
+    if (req.query.reported === 'true') qm['questions.reports.0'] = { $exists: true };
+    const search = str(req.query.search).slice(0, 100);
+    if (search) {
+      const rx = { $regex: escapeRegex(search), $options: 'i' };
+      qm.$or = [{ 'questions.q': rx }, { 'questions.options': rx }, { 'questions.rationale': rx }, { 'questions.topic': rx }, { 'questions.subject': rx }];
+    }
+    const [out] = await TrainerAssessment.aggregate([
+      { $match: base },
+      { $sort: { createdAt: -1 } },
+      { $project: { name: 1, testCode: 1, seriesId: 1, questions: 1 } },
+      { $unwind: { path: '$questions', includeArrayIndex: 'idx' } },
+      ...(Object.keys(qm).length ? [{ $match: qm }] : []),
+      { $facet: { total: [{ $count: 'n' }], rows: [{ $skip: (page - 1) * limit }, { $limit: limit }] } }
+    ]).allowDiskUse(true);
+    const seriesIds = [...new Set((out?.rows || []).map((r) => r.seriesId))].filter((id) => mongoose.isValidObjectId(id));
+    const seriesName = Object.fromEntries((await TestSeries.find({ _id: { $in: seriesIds } }).select('name').lean()).map((s) => [s._id.toString(), s.name]));
+    res.json({
+      total: out?.total?.[0]?.n || 0,
+      page, limit,
+      rows: (out?.rows || []).map((r) => ({
+        testId: r._id.toString(), testName: r.name, testCode: r.testCode || '', seriesName: seriesName[r.seriesId] || '',
+        index: r.idx, question: { ...r.questions, _id: String(r.questions._id) }
+      }))
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Add one question ({ question }) or many ({ questions }) to the end of a test
+router.post('/question-bank/:testId', async (req, res) => {
+  try {
+    const test = await loadBankTest(req, res, req.params.testId);
+    if (!test) return;
+    const incoming = Array.isArray(req.body?.questions) ? req.body.questions : req.body?.question ? [req.body.question] : [];
+    if (!incoming.length) return res.status(400).json({ error: 'No question to add' });
+    const before = plainQuestions(test);
+    const cleaned = cleanQuestionList([...before, ...incoming.map(({ _id, ...q }) => q)], test.questions);
+    if (cleaned.error) return res.status(400).json({ error: cleaned.error.replace(/^Question (\d+)/, (m, n) => `Question ${Number(n) > before.length ? `${Number(n) - before.length} (new)` : n}`) });
+    await applyTestQuestions(test, cleaned.questions);
+    res.status(201).json({ success: true, added: incoming.length, questionCount: test.questions.length });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Edit one question; { question, testId } with another testId moves it there
+router.put('/question-bank/:testId/:qid', async (req, res) => {
+  try {
+    const test = await loadBankTest(req, res, req.params.testId);
+    if (!test) return;
+    const list = plainQuestions(test);
+    const idx = list.findIndex((q) => String(q._id) === String(req.params.qid));
+    if (idx < 0) return res.status(404).json({ error: 'Question not found in this test' });
+    const incoming = { ...(req.body?.question || {}), _id: list[idx]._id };
+    const target = String(req.body?.testId || test._id);
+    if (target !== test._id.toString()) {
+      const dest = await loadBankTest(req, res, target);
+      if (!dest) return;
+      if (await TestAttempt.exists({ assessmentId: test._id.toString() })) {
+        return res.status(409).json({ error: 'Students have already taken this test, so its questions cannot be moved out. Copy it into the other test instead (add it there as a new question).' });
+      }
+      const { _id, reports, ...moved } = incoming;
+      const destClean = cleanQuestionList([...plainQuestions(dest), moved], dest.questions);
+      if (destClean.error) return res.status(400).json({ error: destClean.error });
+      const srcClean = cleanQuestionList(list.filter((_, k) => k !== idx), test.questions);
+      if (srcClean.error) return res.status(400).json({ error: srcClean.error });
+      await applyTestQuestions(dest, destClean.questions);
+      await applyTestQuestions(test, srcClean.questions, { removedIndex: idx });
+      return res.json({ success: true, moved: true });
+    }
+    list[idx] = incoming;
+    const cleaned = cleanQuestionList(list, test.questions);
+    if (cleaned.error) return res.status(400).json({ error: cleaned.error });
+    await applyTestQuestions(test, cleaned.questions);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.delete('/question-bank/:testId/:qid', async (req, res) => {
+  try {
+    const test = await loadBankTest(req, res, req.params.testId);
+    if (!test) return;
+    const list = plainQuestions(test);
+    const idx = list.findIndex((q) => String(q._id) === String(req.params.qid));
+    if (idx < 0) return res.status(404).json({ error: 'Question not found in this test' });
+    const cleaned = cleanQuestionList(list.filter((_, k) => k !== idx), test.questions);
+    if (cleaned.error) return res.status(400).json({ error: cleaned.error });
+    await applyTestQuestions(test, cleaned.questions, { removedIndex: idx });
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Same +marks / -negative marks for every question of a test
+router.post('/question-bank/:testId/marking', async (req, res) => {
+  try {
+    const test = await loadBankTest(req, res, req.params.testId);
+    if (!test) return;
+    const marks = Number(req.body?.marks);
+    const negMarks = Number(req.body?.negMarks);
+    if (!Number.isFinite(marks) || marks < 1 || marks > 20) return res.status(400).json({ error: 'Marks must be 1–20' });
+    if (!Number.isFinite(negMarks) || negMarks < 0 || negMarks > 20) return res.status(400).json({ error: 'Negative marks must be 0–20' });
+    const cleaned = cleanQuestionList(plainQuestions(test).map((q) => ({ ...q, marks, negMarks })), test.questions);
+    if (cleaned.error) return res.status(400).json({ error: cleaned.error });
+    await applyTestQuestions(test, cleaned.questions);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.post('/question-bank/:testId/:qid/resolve', async (req, res) => {
+  try {
+    const test = await loadBankTest(req, res, req.params.testId);
+    if (!test) return;
+    const q = (test.questions || []).find((x) => String(x._id) === String(req.params.qid));
+    if (!q) return res.status(404).json({ error: 'Question not found in this test' });
+    q.reports = [];
+    await test.save();
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 // Student: published series for my course, each test with my progress
 router.get('/student-portal/test-series', async (req, res) => {
   try {
@@ -16831,8 +17220,8 @@ router.get('/student-portal/test-series', async (req, res) => {
     if (!st) return res.status(404).json({ error: 'Student not found' });
     const series = (await TestSeries.find({ status: 'Published' }).sort({ createdAt: -1 }).lean()).filter((s) => seriesForStudent(s, st));
     if (!series.length) return res.json([]);
-    const tests = await TrainerAssessment.find({ seriesId: { $in: series.map((s) => s._id.toString()) }, mode: 'online', 'questions.0': { $exists: true } })
-      .select('name topic seriesId seriesOrder totalMarks passMark durationMin timeLimit questions.marks createdAt')
+    const tests = await TrainerAssessment.find({ seriesId: { $in: series.map((s) => s._id.toString()) }, mode: 'online', status: { $ne: 'Inactive' }, 'questions.0': { $exists: true } })
+      .select('name topic seriesId seriesOrder totalMarks passMark durationMin timeLimit questions.marks createdAt openDate closeDate publishResult status')
       .sort({ seriesOrder: 1, createdAt: 1 }).lean();
     const attempts = await TestAttempt.find({ studentId: st.studentId, assessmentId: { $in: tests.map((t) => t._id.toString()) } }).lean();
     const myAtt = Object.fromEntries(attempts.map((a) => [a.assessmentId, a]));
@@ -16841,17 +17230,20 @@ router.get('/student-portal/test-series', async (req, res) => {
         const a = myAtt[t._id.toString()];
         const best = a ? Math.max(a.status === 'submitted' ? (a.score || 0) : 0, ...(a.attemptHistory || []).map((h) => h.score || 0)) : null;
         const tookIt = a && (a.status === 'submitted' || (a.attemptHistory || []).length);
+        const hidden = t.publishResult === false;
         return {
+          availability: seriesTestWindow(t), openDate: t.openDate || '', closeDate: t.closeDate || '', resultHidden: hidden,
           id: t._id.toString(), name: t.name, topic: t.topic || '',
           questionCount: (t.questions || []).length, totalMarks: t.totalMarks, passMark: t.passMark,
           durationMin: t.durationMin || minutesOf(t.timeLimit),
           state: !a ? 'not_started' : a.status === 'in_progress' ? 'in_progress' : 'submitted',
-          lastScore: a?.status === 'submitted' ? a.score : null,
-          bestScore: tookIt ? best : null,
+          lastScore: !hidden && a?.status === 'submitted' ? a.score : null,
+          bestScore: tookIt && !hidden ? best : null,
+          taken: Boolean(tookIt),
           attemptsTaken: a ? (a.attemptHistory || []).length + (a.status === 'submitted' ? 1 : 0) : 0
         };
       });
-      const done = list.filter((t) => t.bestScore != null).length;
+      const done = list.filter((t) => t.taken).length;
       return { id: s._id.toString(), name: s.name, description: s.description || '', courses: s.courses || [], tests: list, done, total: list.length };
     }).filter((s) => s.total > 0));
   } catch (e) {
@@ -16874,6 +17266,7 @@ async function loadStudentTest(req, res) {
   if (test.seriesId) {
     const series = mongoose.isValidObjectId(test.seriesId) ? await TestSeries.findById(test.seriesId).lean() : null;
     if (!series || series.status !== 'Published' || !seriesForStudent(series, st)) { res.status(403).json({ error: 'This test series is not open for your course.' }); return null; }
+    if (test.status === 'Inactive') { res.status(404).json({ error: 'This test is not available right now.' }); return null; }
   } else if (!sameBatch(test.batch, studentBatchOf(st))) { res.status(403).json({ error: 'This test is not for your batch.' }); return null; }
   return { st, test };
 }
@@ -16883,13 +17276,28 @@ const cleanAnswers = (answers, test) => (test.questions || []).map((q, i) => {
   return Number.isInteger(a) && a >= 0 && a < q.options.length ? a : -1;
 });
 
+// Score a set of answers: +marks for a correct answer, -negMarks for a wrong
+// one (unanswered = 0). A question with bonusMarks > 0 gives everyone those
+// marks whatever they answered (used for a wrong / disputed question).
+function scoreAnswers(questions, answers) {
+  let score = 0;
+  let correct = 0;
+  (questions || []).forEach((q, i) => {
+    const a = Array.isArray(answers) ? answers[i] : -1;
+    const right = a === q.answer;
+    if (right) correct += 1;
+    if ((Number(q.bonusMarks) || 0) > 0) score += Number(q.bonusMarks);
+    else if (right) score += q.marks || 1;
+    else if (Number.isInteger(a) && a >= 0) score -= Number(q.negMarks) || 0;
+  });
+  return { score: Math.max(0, Math.round(score * 100) / 100), correct };
+}
+
 // Grade, store the score on the test (same place a trainer's manual score
 // goes) and refresh the student's test average & readiness
 async function gradeAttempt(attempt, test, st, { auto = false } = {}) {
   const answers = cleanAnswers(attempt.answers, test);
-  let score = 0;
-  let correct = 0;
-  test.questions.forEach((q, i) => { if (answers[i] === q.answer) { score += q.marks || 1; correct += 1; } });
+  const { score, correct } = scoreAnswers(test.questions, answers);
   attempt.answers = answers;
   attempt.score = score;
   attempt.correct = correct;
@@ -16958,15 +17366,26 @@ function studentTestView(test, attempt, st) {
     opensToday: !test.date || test.date <= todayStr(),
     alreadyScored: !attempt && Object.prototype.hasOwnProperty.call(test.scores instanceof Map ? Object.fromEntries(test.scores) : (test.scores || {}), studentKeyOf(st)),
     attemptIteration: attempt?.attemptIteration || 1,
-    reallocated: Boolean(attempt?.reallocated)
+    reallocated: Boolean(attempt?.reallocated),
+    isSeries: Boolean(test.seriesId),
+    openDate: test.openDate || '', closeDate: test.closeDate || '',
+    availability: test.seriesId ? seriesTestWindow(test) : 'open'
   };
   if (!attempt) return { ...base, state: 'not_started' };
   if (attempt.status === 'in_progress') {
     return {
       ...base, state: 'in_progress', endsAt: attempt.endsAt, serverNow: new Date(),
       answers: cleanAnswers(attempt.answers, test),
-      questions: test.questions.map((q) => ({ q: q.q, options: q.options, marks: q.marks, chapter: q.chapter || '' }))
+      questions: test.questions.map((q) => ({
+        q: q.q, options: q.options, marks: q.marks, chapter: q.chapter || '',
+        negMarks: q.negMarks || 0, hint: q.hint || '', qType: q.qType || 'MCQ', topic: q.topic || '',
+        passage: q.passage || '', instruction: q.instruction || '', font: q.font || ''
+      }))
     };
+  }
+  // Results not published yet: confirm the submission only
+  if (test.seriesId && test.publishResult === false) {
+    return { ...base, state: 'submitted', resultHidden: true, submittedAt: attempt.submittedAt, autoSubmitted: attempt.autoSubmitted };
   }
 
   // AAPC-style chapter breakdown calculation
@@ -17011,7 +17430,9 @@ function studentTestView(test, attempt, st) {
       chapter: q.chapter || '',
       rationale: q.rationale || test.rationale || '',
       audioRationaleUrl: q.audioRationaleUrl || '',
-      audioRationaleText: q.audioRationaleText || q.rationale || test.rationale || ''
+      audioRationaleText: q.audioRationaleText || q.rationale || test.rationale || '',
+      negMarks: q.negMarks || 0, bonusMarks: q.bonusMarks || 0, hint: q.hint || '',
+      passage: q.passage || '', instruction: q.instruction || '', font: q.font || ''
     }))
   };
 }
@@ -17019,8 +17440,11 @@ function studentTestView(test, attempt, st) {
 // Leaderboard endpoint for mock exams and practice exams
 router.get('/student-portal/tests/:id/leaderboard', async (req, res) => {
   try {
-    const test = await TrainerAssessment.findById(req.params.id).select('name topic totalMarks passMark batch mode type');
+    const test = await TrainerAssessment.findById(req.params.id).select('name topic totalMarks passMark batch mode type seriesId publishResult');
     if (!test) return res.status(404).json({ error: 'Assessment not found' });
+    if (req.user?.department === 'student' && test.seriesId && test.publishResult === false) {
+      return res.status(403).json({ error: 'Results for this test are not published yet.' });
+    }
     const currentStudentId = req.query.studentId || req.user?.studentId || '';
 
     const attempts = await TestAttempt.find({ assessmentId: req.params.id, status: 'submitted' })
@@ -17072,6 +17496,7 @@ router.post('/student-portal/tests/:id/reallocate', async (req, res) => {
     const { st, test } = ctx;
     // Students retake Test Series mocks themselves; batch tests are reallocated by the trainer
     if (!test.seriesId) return res.status(403).json({ error: 'Ask your trainer to reallocate this test if you need to take it again.' });
+    if (seriesTestWindow(test) !== 'open') return res.status(409).json({ error: 'This test is not open for attempts right now.' });
     const { reason = 'Retake exam to practice weak chapters and improve score' } = req.body || {};
 
     const attempt = await TestAttempt.findOne({ assessmentId: req.params.id, studentId: st.studentId });
@@ -17126,6 +17551,26 @@ router.post('/student-portal/tests/:id/reallocate', async (req, res) => {
   }
 });
 
+// Student flags a wrong / unclear question (shows in Test Series → Questions → Reported)
+router.post('/student-portal/tests/:id/report', async (req, res) => {
+  try {
+    const ctx = await loadStudentTest(req, res);
+    if (!ctx) return;
+    const { st, test } = ctx;
+    const idx = Number(req.body?.index);
+    const reason = String(req.body?.reason || '').trim().slice(0, 500);
+    if (!Number.isInteger(idx) || idx < 0 || idx >= test.questions.length) return res.status(400).json({ error: 'Invalid question' });
+    if (!reason) return res.status(400).json({ error: 'Tell us what is wrong with this question.' });
+    const q = test.questions[idx];
+    q.reports = (q.reports || []).filter((r) => r.studentId !== st.studentId);
+    q.reports.push({ studentId: st.studentId, studentName: st.name, reason, at: new Date() });
+    await test.save();
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 router.get('/student-portal/tests/:id', async (req, res) => {
   try {
     const ctx = await loadStudentTest(req, res);
@@ -17144,6 +17589,11 @@ router.post('/student-portal/tests/:id/start', async (req, res) => {
     if (!ctx) return;
     const { st, test } = ctx;
     let attempt = await TestAttempt.findOne({ assessmentId: req.params.id, studentId: st.studentId });
+    if (!attempt || (test.seriesId && attempt.status === 'submitted')) {
+      const win = test.seriesId ? seriesTestWindow(test) : 'open';
+      if (win === 'upcoming') return res.status(409).json({ error: `This test opens on ${test.openDate.replace('T', ' ')}.` });
+      if (win === 'closed' && !attempt) return res.status(409).json({ error: `This test closed on ${test.closeDate.replace('T', ' ')}.` });
+    }
     if (!attempt) {
       if (test.date && test.date > todayStr()) return res.status(409).json({ error: `This test opens on ${test.date}.` });
       const view = studentTestView(test, null, st);

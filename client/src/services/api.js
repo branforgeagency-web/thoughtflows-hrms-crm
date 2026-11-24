@@ -2351,6 +2351,16 @@ export const deleteTestSeries = async (id) => (await api.delete(`/test-series/${
 export const addTestToSeries = async (id, data) => (await api.post(`/test-series/${encodeURIComponent(id)}/tests`, data)).data;
 export const removeTestFromSeries = async (id, testId) => (await api.delete(`/test-series/${encodeURIComponent(id)}/tests/${encodeURIComponent(testId)}`)).data;
 export const getMyTestSeries = async () => (await api.get('/student-portal/test-series')).data;
+export const updateSeriesTest = async (id, testId, data) => (await api.put(`/test-series/${encodeURIComponent(id)}/tests/${encodeURIComponent(testId)}`, data)).data;
+export const notifySeriesTest = async (id, testId) => (await api.post(`/test-series/${encodeURIComponent(id)}/tests/${encodeURIComponent(testId)}/notify`)).data;
+export const getQuestionBankMeta = async () => (await api.get('/question-bank/meta')).data;
+export const getQuestionBank = async (params) => (await api.get('/question-bank', { params })).data;
+export const addBankQuestions = async (testId, body) => (await api.post(`/question-bank/${encodeURIComponent(testId)}`, body)).data;
+export const updateBankQuestion = async (testId, qid, body) => (await api.put(`/question-bank/${encodeURIComponent(testId)}/${encodeURIComponent(qid)}`, body)).data;
+export const deleteBankQuestion = async (testId, qid) => (await api.delete(`/question-bank/${encodeURIComponent(testId)}/${encodeURIComponent(qid)}`)).data;
+export const setBankMarking = async (testId, body) => (await api.post(`/question-bank/${encodeURIComponent(testId)}/marking`, body)).data;
+export const resolveBankQuestion = async (testId, qid) => (await api.post(`/question-bank/${encodeURIComponent(testId)}/${encodeURIComponent(qid)}/resolve`)).data;
+export const reportTestQuestion = async (testId, index, reason) => (await api.post(`/student-portal/tests/${encodeURIComponent(testId)}/report`, { index, reason })).data;
 
 export const getTestLeaderboard = async (id, params) => {
   const res = await api.get(`/student-portal/tests/${id}/leaderboard`, { params });

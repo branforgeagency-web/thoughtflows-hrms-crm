@@ -1,0 +1,1642 @@
+diff -ruN a/client/src/components/OnlineTestBuilder.jsx b/client/src/components/OnlineTestBuilder.jsx
+--- a/client/src/components/OnlineTestBuilder.jsx	2026-11-24 10:43:10.902362363 +0530
++++ b/client/src/components/OnlineTestBuilder.jsx	2026-11-24 10:43:10.906333859 +0530
+@@ -76,6 +76,8 @@
+   const [questions, setQuestions] = useState(() => (
+     test.questions?.length
+       ? test.questions.map((q) => ({
++          // keep question-bank fields (_id, negative / bonus marks, topic, hint…) on save
++          ...q,
+           q: q.q || '',
+           options: [...(q.options || ['', '', '', ''])],
+           answer: typeof q.answer === 'number' ? q.answer : 0,
+diff -ruN a/client/src/components/StudentOnlineTest.jsx b/client/src/components/StudentOnlineTest.jsx
+--- a/client/src/components/StudentOnlineTest.jsx	2026-11-24 10:43:10.902571214 +0530
++++ b/client/src/components/StudentOnlineTest.jsx	2026-11-24 10:43:10.906401581 +0530
+@@ -13,7 +13,9 @@
+   Layers,
+   Sparkles,
+   HelpCircle,
+-  Award
++  Award,
++  Flag,
++  Lightbulb
+ } from 'lucide-react';
+ import {
+   getStudentTest,
+@@ -21,7 +23,8 @@
+   saveStudentTestAnswers,
+   submitStudentTest,
+   getTestLeaderboard,
+-  reallocateStudentTest
++  reallocateStudentTest,
++  reportTestQuestion
+ } from '../services/api';
+ 
+ // Student side of an online MCQ test. The server owns the clock (endsAt) and
+@@ -35,6 +38,19 @@
+ 
+ export default function StudentOnlineTest({ testId, onClose, onFinished }) {
+   const [view, setView] = useState(null);
++  const [hintOpen, setHintOpen] = useState(-1);
++  const [reportedIdx, setReportedIdx] = useState([]);
++  const reportQuestion = async (index) => {
++    const reason = window.prompt(`What is wrong with question ${index + 1}? (e.g. wrong answer key, typo, two correct options)`);
++    if (reason === null) return;
++    if (!reason.trim()) { window.alert('Please type what is wrong so the trainer can fix it.'); return; }
++    try {
++      await reportTestQuestion(testId, index, reason.trim());
++      setReportedIdx((list) => [...new Set([...list, index])]);
++    } catch (e) {
++      window.alert(errOf(e, 'Could not send the report.'));
++    }
++  };
+   const [answers, setAnswers] = useState([]);
+   const [current, setCurrent] = useState(0);
+   const [error, setError] = useState('');
+@@ -263,6 +279,10 @@
+                 <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-3">Your trainer has already entered a score for this test.</p>
+               ) : !view.opensToday ? (
+                 <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-3">This test opens on {view.date}.</p>
++              ) : view.availability === 'upcoming' ? (
++                <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-3">This test opens on {String(view.openDate).replace('T', ' at ')}.</p>
++              ) : view.availability === 'closed' ? (
++                <p className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-xl p-3">This test closed on {String(view.closeDate).replace('T', ' at ')}.</p>
+               ) : (
+                 <button onClick={begin} disabled={busy} className="w-full py-3 rounded-2xl bg-[#0d9488] hover:bg-[#0f766e] text-white font-bold text-sm cursor-pointer disabled:opacity-50">{busy ? 'Starting…' : 'Start test'}</button>
+               )}
+@@ -290,7 +310,7 @@
+                           </span>
+                         )}
+                       </div>
+-                      <span>{q.marks} mark{q.marks > 1 ? 's' : ''}</span>
++                      <span>+{q.marks} mark{q.marks > 1 ? 's' : ''}{q.negMarks ? <span className="text-rose-500"> · −{q.negMarks} if wrong</span> : null}</span>
+                     </div>
+                     <p className="text-sm text-slate-900 font-semibold whitespace-pre-line">{q.q}</p>
+                     <div className="mt-4 space-y-2">
+@@ -301,6 +321,19 @@
+                         </button>
+                       ))}
+                     </div>
++                    <div className="mt-3 flex items-center justify-between gap-2 flex-wrap">
++                      {q.hint ? (
++                        <button type="button" onClick={() => setHintOpen(hintOpen === current ? -1 : current)} className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-700 cursor-pointer">
++                          <Lightbulb className="w-3.5 h-3.5" />{hintOpen === current ? 'Hide hint' : 'Show hint'}
++                        </button>
++                      ) : <span />}
++                      {view.isSeries && (
++                        reportedIdx.includes(current)
++                          ? <span className="text-[11px] font-bold text-emerald-700">✓ Reported — thank you</span>
++                          : <button type="button" onClick={() => reportQuestion(current)} className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-400 hover:text-rose-600 cursor-pointer"><Flag className="w-3.5 h-3.5" />Report question</button>
++                      )}
++                    </div>
++                    {q.hint && hintOpen === current && <div className="mt-2 text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-xl p-3">💡 {q.hint}</div>}
+                   </div>
+                 );
+               })()}
+@@ -314,8 +347,17 @@
+             </div>
+           )}
+ 
++          {/* STATE: SUBMITTED, RESULTS NOT PUBLISHED YET */}
++          {view?.state === 'submitted' && view.resultHidden && (
++            <div className="max-w-md mx-auto text-center space-y-3 py-10">
++              <CheckCircle2 className="w-12 h-12 text-emerald-600 mx-auto" />
++              <h4 className="text-lg font-black text-slate-900">Test submitted</h4>
++              <p className="text-xs text-slate-600">Your answers are saved{view.autoSubmitted ? ' (submitted automatically when time ran out)' : ''}. Your score, answers and solutions will appear here once the training team publishes the results.</p>
++            </div>
++          )}
++
+           {/* STATE: SUBMITTED (RESULT & REVIEW) */}
+-          {view?.state === 'submitted' && (
++          {view?.state === 'submitted' && !view.resultHidden && (
+             <div className="space-y-5">
+               {/* Score Banner with Reallocation / Retake Option */}
+               <div className={`rounded-3xl p-5 sm:p-6 text-center border relative overflow-hidden ${view.score >= view.passMark ? 'bg-emerald-50/70 border-emerald-200' : 'bg-rose-50/70 border-rose-200'}`}>
+@@ -332,7 +374,7 @@
+                 <div className="mt-4 pt-3 border-t border-slate-200/60 flex items-center justify-center gap-3 flex-wrap">
+                   <button
+                     onClick={handleRetake}
+-                    disabled={busy}
++                    disabled={busy || (view.isSeries && view.availability !== 'open')}
+                     className="px-4 py-2 rounded-full text-xs font-bold bg-white text-slate-800 border border-slate-200 hover:bg-slate-50 transition shadow-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                     title="Start a new reallocated attempt for this exam"
+                   >
+@@ -423,6 +465,10 @@
+                               }`}>
+                                 {isCorrect ? '✓ Correct' : '✕ Incorrect'}
+                               </span>
++                              {q.bonusMarks > 0 && <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-100 text-sky-800">+{q.bonusMarks} bonus</span>}
++                              {view.isSeries && (reportedIdx.includes(i)
++                                ? <span className="text-[10px] font-bold text-emerald-700">✓ Reported</span>
++                                : <button type="button" onClick={() => reportQuestion(i)} title="Report a wrong / unclear question" className="p-1 rounded text-slate-400 hover:text-rose-600 cursor-pointer"><Flag className="w-3.5 h-3.5" /></button>)}
+                             </div>
+                           </div>
+ 
+diff -ruN a/client/src/components/StudentTestSeries.jsx b/client/src/components/StudentTestSeries.jsx
+--- a/client/src/components/StudentTestSeries.jsx	2026-11-24 10:43:10.902507104 +0530
++++ b/client/src/components/StudentTestSeries.jsx	2026-11-24 10:43:10.906381635 +0530
+@@ -86,6 +86,12 @@
+                   </span>
+                 )}
+               </div>
++              {(t.openDate || t.closeDate) && (
++                <div className={`text-[11px] font-semibold ${t.availability === 'open' ? 'text-slate-500' : t.availability === 'upcoming' ? 'text-amber-700' : 'text-rose-600'}`}>
++                  {t.availability === 'upcoming' ? `Opens ${t.openDate.replace('T', ' ')}` : t.availability === 'closed' ? `Closed on ${t.closeDate.replace('T', ' ')}` : t.closeDate ? `Open till ${t.closeDate.replace('T', ' ')}` : ''}
++                </div>
++              )}
++              {t.taken && t.resultHidden && <div className="text-[11px] text-slate-500">Submitted · result not published yet</div>}
+               <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-600">
+                 <span className="inline-flex items-center gap-1"><FileQuestion className="w-3.5 h-3.5 text-slate-400" />{t.questionCount} questions</span>
+                 <span className="inline-flex items-center gap-1"><Clock className="w-3.5 h-3.5 text-slate-400" />{t.durationMin} min</span>
+@@ -93,13 +99,16 @@
+                 {t.attemptsTaken > 0 && <span>{t.attemptsTaken} attempt{t.attemptsTaken === 1 ? '' : 's'}</span>}
+               </div>
+               <button type="button" onClick={() => onOpenTest?.(t.id)}
+-                className={`mt-auto w-full py-2.5 rounded-xl text-xs font-bold inline-flex items-center justify-center gap-1.5 ${
++                disabled={t.state === 'not_started' && t.availability !== 'open'}
++                className={`mt-auto disabled:opacity-50 disabled:cursor-not-allowed w-full py-2.5 rounded-xl text-xs font-bold inline-flex items-center justify-center gap-1.5 ${
+                   t.state === 'in_progress' ? 'bg-amber-500 hover:bg-amber-600 text-white'
+                     : t.state === 'submitted' ? 'bg-white border border-slate-200 text-slate-800 hover:bg-slate-50'
+                       : 'bg-[#009688] hover:bg-[#00897b] text-white'}`}>
+                 {t.state === 'in_progress' ? <><PlayCircle className="w-4 h-4" />Continue test</>
+-                  : t.state === 'submitted' ? <><RotateCcw className="w-4 h-4" />View result · retake</>
+-                    : <><PlayCircle className="w-4 h-4" />Start test</>}
++                  : t.state === 'submitted' ? <><RotateCcw className="w-4 h-4" />{t.resultHidden ? 'View submission' : t.availability === 'open' ? 'View result · retake' : 'View result'}</>
++                    : t.availability === 'upcoming' ? <><Clock className="w-4 h-4" />Not open yet</>
++                      : t.availability === 'closed' ? <>Closed</>
++                        : <><PlayCircle className="w-4 h-4" />Start test</>}
+               </button>
+             </div>
+           );
+diff -ruN a/client/src/components/TestQuestionBank.jsx b/client/src/components/TestQuestionBank.jsx
+--- a/client/src/components/TestQuestionBank.jsx	1970-01-01 05:30:00.000000000 +0530
++++ b/client/src/components/TestQuestionBank.jsx	2026-11-24 10:43:10.906054196 +0530
+@@ -0,0 +1,437 @@
++import React, { useEffect, useMemo, useState } from 'react';
++import { ArrowLeft, Plus, Pencil, Trash2, Upload, X, Flag, CheckCircle2, AlertCircle, Search, SlidersHorizontal } from 'lucide-react';
++import { saveTestQuestions } from '../services/api';
++import { AAPC_CHAPTERS } from './OnlineTestBuilder';
++
++// Test Series → Questions: the question bank of one test, laid out like the
++// online test panel (question, options, ANS, marks +x/-y, solution, topic,
++// subject, type, bonus marks, hint). Every change saves the whole list through
++// the same endpoint the online test builder uses, so submitted attempts are
++// re-graded automatically.
++const LETTERS = 'abcdef';
++const LANGUAGES = ['English', 'Tamil', 'Hindi', 'Telugu', 'Malayalam', 'Kannada'];
++const errOf = (e) => e?.response?.data?.error || e?.message || 'Something went wrong';
++const numOr = (v, d) => (v === '' || v == null || !Number.isFinite(Number(v)) ? d : Number(v));
++
++const blankQ = (defaults = {}) => ({
++  q: '', options: ['', '', '', ''], answer: 0, marks: 1, negMarks: 0, bonusMarks: 0,
++  qType: 'MCQ', topic: '', subject: '', language: 'English', hint: '', rationale: '', chapter: '',
++  ...defaults
++});
++
++// Paste / .txt import. Works with the panel's own layout:
++//   1. The phalanx is a:
++//   a. Ligament
++//   b. Tendon
++//   c. Bone
++//   d. Muscle
++//   ANS: c
++//   Solution: A phalanx is a digital bone …
++// Also accepts "A) …" options and a * after the correct option.
++export function parseQuestionText(text, defaults = {}) {
++  const out = [];
++  let cur = null;
++  let mode = 'q'; // q → opts → done, or sol (solution text, may run over several lines)
++  const push = () => {
++    if (cur && cur.q.trim() && cur.options.length >= 2) {
++      if (cur.answer < 0 || cur.answer >= cur.options.length) cur.answer = 0;
++      if (cur.options.length === 2 && cur.options.every((o) => /^(true|false)$/i.test(o))) cur.qType = 'True/False';
++      out.push(cur);
++    }
++    cur = null;
++  };
++  const start = (q) => { push(); cur = { ...blankQ(defaults), q, options: [], answer: -1 }; mode = 'q'; };
++  String(text || '').split(/\r?\n/).forEach((raw) => {
++    const line = raw.trim();
++    if (!line) { if (mode === 'sol') mode = 'done'; return; }
++    const ans = line.match(/^ans(?:wer)?\s*[:.-]\s*\(?([a-fA-F])\)?\s*$/i);
++    const sol = line.match(/^(?:solution|rationale|explanation)\s*[:.-]?\s*(.*)$/i);
++    const hint = line.match(/^hint\s*[:.-]\s*(.*)$/i);
++    const marks = line.match(/^marks?\s*[:.-]\s*\+?\s*([\d.]+)\s*(?:,\s*-\s*([\d.]+))?/i);
++    const opt = line.match(/^\(?([a-fA-F])[).:-]\s+(.+)$/);
++    const num = line.match(/^(?:q(?:uestion)?\s*)?\d+\s*[).:-]\s*(.+)$/i);
++    if (cur && ans) { cur.answer = 'abcdef'.indexOf(ans[1].toLowerCase()); mode = 'done'; return; }
++    if (cur && sol) { cur.rationale = sol[1].trim(); mode = 'sol'; return; }
++    if (cur && hint) { cur.hint = hint[1].trim(); mode = 'done'; return; }
++    if (cur && marks) { cur.marks = Number(marks[1]) || 1; if (marks[2]) cur.negMarks = Number(marks[2]) || 0; mode = 'done'; return; }
++    if (cur && opt && (mode === 'q' || mode === 'opts')) {
++      let o = opt[2].trim();
++      if (/\*\s*$/.test(o)) { cur.answer = cur.options.length; o = o.replace(/\s*\*\s*$/, ''); }
++      cur.options.push(o);
++      mode = 'opts';
++      return;
++    }
++    if (num) { start(num[1].trim()); return; }
++    if (!cur || mode === 'done' || mode === 'opts') { start(line); return; }
++    if (mode === 'sol') cur.rationale = `${cur.rationale} ${line}`.trim();
++    else cur.q = `${cur.q}\n${line}`;
++  });
++  push();
++  return out;
++}
++
++function QuestionForm({ initial, onCancel, onSave, saving }) {
++  const [f, setF] = useState(() => ({ ...blankQ(), ...initial, options: [...(initial?.options || ['', '', '', ''])] }));
++  const set = (patch) => setF((x) => ({ ...x, ...patch }));
++  const inp = 'mt-1 w-full px-3 py-2 rounded-lg border border-slate-300 text-sm focus:outline-none focus:border-sky-500';
++  const setType = (qType) => set(qType === 'True/False'
++    ? { qType, options: ['True', 'False'], answer: Math.min(f.answer, 1) }
++    : { qType, options: f.qType === 'True/False' ? ['', '', '', ''] : f.options });
++  const editOpt = (j, v) => set({ options: f.options.map((o, k) => (k === j ? v : o)) });
++  const removeOpt = (j) => {
++    if (f.options.length <= 2) return;
++    set({ options: f.options.filter((_, k) => k !== j), answer: f.answer === j ? 0 : f.answer > j ? f.answer - 1 : f.answer });
++  };
++  const problem = !f.q.trim() ? 'Type the question.'
++    : f.options.some((o) => !String(o).trim()) ? 'Fill every option (or remove the empty one).'
++      : null;
++  return (
++    <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center p-4 overflow-y-auto" onClick={onCancel}>
++      <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl my-8" onClick={(e) => e.stopPropagation()}>
++        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200">
++          <h3 className="text-base font-bold text-slate-900">{initial?._isNew ? 'Add Question' : 'Edit Question'}</h3>
++          <button type="button" onClick={onCancel} className="p-1 rounded hover:bg-slate-100"><X className="w-4 h-4" /></button>
++        </div>
++        <div className="p-5 space-y-4">
++          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
++            <label className="block">
++              <span className="text-xs font-bold text-slate-600">Question type</span>
++              <select value={f.qType} onChange={(e) => setType(e.target.value)} className={inp}>
++                <option value="MCQ">MCQ</option>
++                <option value="True/False">True / False</option>
++              </select>
++            </label>
++            <label className="block">
++              <span className="text-xs font-bold text-slate-600">Language</span>
++              <select value={f.language} onChange={(e) => set({ language: e.target.value })} className={inp}>
++                {LANGUAGES.map((l) => <option key={l}>{l}</option>)}
++              </select>
++            </label>
++            <label className="block">
++              <span className="text-xs font-bold text-slate-600">Subject</span>
++              <input value={f.subject} onChange={(e) => set({ subject: e.target.value })} placeholder="e.g. MOCK TEST" className={inp} />
++            </label>
++            <label className="block">
++              <span className="text-xs font-bold text-slate-600">Topic</span>
++              <input value={f.topic} onChange={(e) => set({ topic: e.target.value })} placeholder="e.g. Anatomy" className={inp} />
++            </label>
++          </div>
++
++          <label className="block">
++            <span className="text-xs font-bold text-slate-600">Question *</span>
++            <textarea value={f.q} onChange={(e) => set({ q: e.target.value })} rows={3} className={inp} placeholder="The phalanx is a:" />
++          </label>
++
++          <div>
++            <span className="text-xs font-bold text-slate-600">Options — tick the correct answer *</span>
++            <div className="mt-1 space-y-2">
++              {f.options.map((o, j) => (
++                <div key={j} className="flex items-center gap-2">
++                  <input type="radio" name="ans" checked={f.answer === j} onChange={() => set({ answer: j })} className="w-4 h-4 accent-emerald-600" />
++                  <span className="w-5 text-sm font-bold text-slate-500">{LETTERS[j]}.</span>
++                  <input value={o} disabled={f.qType === 'True/False'} onChange={(e) => editOpt(j, e.target.value)}
++                    className={`flex-1 px-3 py-2 rounded-lg border text-sm ${f.answer === j ? 'border-emerald-400 bg-emerald-50' : 'border-slate-300'}`} />
++                  {f.qType !== 'True/False' && f.options.length > 2 && (
++                    <button type="button" onClick={() => removeOpt(j)} className="p-1.5 text-slate-400 hover:text-rose-600"><X className="w-4 h-4" /></button>
++                  )}
++                </div>
++              ))}
++              {f.qType !== 'True/False' && f.options.length < 6 && (
++                <button type="button" onClick={() => set({ options: [...f.options, ''] })} className="text-xs font-bold text-sky-700 hover:underline">+ Add option</button>
++              )}
++            </div>
++          </div>
++
++          <div className="grid grid-cols-3 gap-3">
++            <label className="block">
++              <span className="text-xs font-bold text-slate-600">Marks (+)</span>
++              <input type="number" min={1} max={20} value={f.marks} onChange={(e) => set({ marks: e.target.value })} className={inp} />
++            </label>
++            <label className="block">
++              <span className="text-xs font-bold text-slate-600">Negative marks (−)</span>
++              <input type="number" min={0} max={20} step="0.25" value={f.negMarks} onChange={(e) => set({ negMarks: e.target.value })} className={inp} />
++            </label>
++            <label className="block">
++              <span className="text-xs font-bold text-slate-600">Bonus marks</span>
++              <input type="number" min={0} max={20} step="0.25" value={f.bonusMarks} onChange={(e) => set({ bonusMarks: e.target.value })} className={inp} />
++            </label>
++          </div>
++          <p className="-mt-2 text-[11px] text-slate-500">Negative marks are taken off for a wrong answer (skipped = 0). Bonus marks &gt; 0 give <b>every</b> student those marks for this question whatever they answered — use it for a wrong or disputed question.</p>
++
++          <label className="block">
++            <span className="text-xs font-bold text-slate-600">Solution (shown after the result is published)</span>
++            <textarea value={f.rationale} onChange={(e) => set({ rationale: e.target.value })} rows={3} className={inp} placeholder="A phalanx (plural: phalanges) is a digital bone…" />
++          </label>
++          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
++            <label className="block">
++              <span className="text-xs font-bold text-slate-600">Hint (students can open it during the test)</span>
++              <input value={f.hint} onChange={(e) => set({ hint: e.target.value })} className={inp} placeholder="Optional" />
++            </label>
++            <label className="block">
++              <span className="text-xs font-bold text-slate-600">AAPC chapter (score report)</span>
++              <select value={f.chapter} onChange={(e) => set({ chapter: e.target.value })} className={inp}>
++                <option value="">— none —</option>
++                {AAPC_CHAPTERS.map((c) => <option key={c}>{c}</option>)}
++              </select>
++            </label>
++          </div>
++        </div>
++        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-slate-200">
++          {problem && <span className="mr-auto text-xs text-rose-600 font-semibold">{problem}</span>}
++          <button type="button" onClick={onCancel} className="px-4 py-2 rounded-lg text-sm font-semibold text-slate-600 hover:bg-slate-100">Cancel</button>
++          <button type="button" disabled={saving || Boolean(problem)} onClick={() => onSave(f)}
++            className="px-4 py-2 rounded-lg text-sm font-bold bg-sky-600 hover:bg-sky-700 text-white disabled:opacity-50">{saving ? 'Saving…' : 'Save question'}</button>
++        </div>
++      </div>
++    </div>
++  );
++}
++
++function ImportModal({ test, onCancel, onImport, saving }) {
++  const [text, setText] = useState('');
++  const [d, setD] = useState({ marks: 1, negMarks: 0, subject: test.topic || '', topic: '', language: 'English' });
++  const defaults = { marks: numOr(d.marks, 1), negMarks: numOr(d.negMarks, 0), subject: d.subject, topic: d.topic, language: d.language };
++  const parsed = useMemo(() => parseQuestionText(text, defaults), [text, d]); // eslint-disable-line react-hooks/exhaustive-deps
++  const inp = 'mt-1 w-full px-2.5 py-1.5 rounded-lg border border-slate-300 text-sm';
++  const readFile = (file) => { if (!file) return; const r = new FileReader(); r.onload = () => setText(String(r.result || '')); r.readAsText(file); };
++  return (
++    <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center p-4 overflow-y-auto" onClick={onCancel}>
++      <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl my-8" onClick={(e) => e.stopPropagation()}>
++        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200">
++          <h3 className="text-base font-bold text-slate-900">Import Questions</h3>
++          <button type="button" onClick={onCancel} className="p-1 rounded hover:bg-slate-100"><X className="w-4 h-4" /></button>
++        </div>
++        <div className="p-5 space-y-3">
++          <div className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg p-3">
++            Paste questions (or upload a .txt file) in this format — one after another:
++            <pre className="mt-2 text-[11px] text-slate-700 whitespace-pre-wrap">{`1. The phalanx is a:
++a. Ligament
++b. Tendon
++c. Bone
++d. Muscle
++ANS: c
++Solution: A phalanx (plural: phalanges) is a digital bone found in the fingers and toes.`}</pre>
++            <div className="mt-1 text-slate-500">Optional lines per question: <code>Marks: +1, -0.25</code> and <code>Hint: …</code>. A * after an option also marks it correct.</div>
++          </div>
++          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
++            <label className="block text-xs font-bold text-slate-600">Marks +<input type="number" value={d.marks} onChange={(e) => setD({ ...d, marks: e.target.value })} className={inp} /></label>
++            <label className="block text-xs font-bold text-slate-600">Negative −<input type="number" step="0.25" value={d.negMarks} onChange={(e) => setD({ ...d, negMarks: e.target.value })} className={inp} /></label>
++            <label className="block text-xs font-bold text-slate-600">Subject<input value={d.subject} onChange={(e) => setD({ ...d, subject: e.target.value })} className={inp} /></label>
++            <label className="block text-xs font-bold text-slate-600">Topic<input value={d.topic} onChange={(e) => setD({ ...d, topic: e.target.value })} className={inp} /></label>
++            <label className="block text-xs font-bold text-slate-600">Language
++              <select value={d.language} onChange={(e) => setD({ ...d, language: e.target.value })} className={inp}>{LANGUAGES.map((l) => <option key={l}>{l}</option>)}</select>
++            </label>
++          </div>
++          <textarea value={text} onChange={(e) => setText(e.target.value)} rows={12} placeholder="Paste questions here…"
++            className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm font-mono" />
++          <div className="flex items-center justify-between">
++            <label className="inline-flex items-center gap-1.5 text-xs font-bold text-sky-700 cursor-pointer">
++              <Upload className="w-4 h-4" />Upload .txt
++              <input type="file" accept=".txt,text/plain" className="hidden" onChange={(e) => readFile(e.target.files?.[0])} />
++            </label>
++            <span className={`text-xs font-bold ${parsed.length ? 'text-emerald-700' : 'text-slate-400'}`}>{parsed.length} question{parsed.length === 1 ? '' : 's'} recognised</span>
++          </div>
++        </div>
++        <div className="flex justify-end gap-2 px-5 py-3 border-t border-slate-200">
++          <button type="button" onClick={onCancel} className="px-4 py-2 rounded-lg text-sm font-semibold text-slate-600 hover:bg-slate-100">Cancel</button>
++          <button type="button" disabled={saving || !parsed.length} onClick={() => onImport(parsed)}
++            className="px-4 py-2 rounded-lg text-sm font-bold bg-sky-600 hover:bg-sky-700 text-white disabled:opacity-50">{saving ? 'Importing…' : `Add ${parsed.length} question${parsed.length === 1 ? '' : 's'}`}</button>
++        </div>
++      </div>
++    </div>
++  );
++}
++
++export default function TestQuestionBank({ test, canManage, onBack, onSaved }) {
++  const [questions, setQuestions] = useState(test.questions || []);
++  const [qType, setQType] = useState('');
++  const [language, setLanguage] = useState('English');
++  const [search, setSearch] = useState('');
++  const [reportedOnly, setReportedOnly] = useState(false);
++  const [editing, setEditing] = useState(null); // { index, q }
++  const [importing, setImporting] = useState(false);
++  const [scheme, setScheme] = useState(null); // { marks, negMarks }
++  const [saving, setSaving] = useState(false);
++  const [error, setError] = useState('');
++  const [toast, setToast] = useState('');
++
++  useEffect(() => { setQuestions(test.questions || []); }, [test]);
++
++  const languages = useMemo(() => [...new Set([...LANGUAGES, ...questions.map((q) => q.language || 'English')])], [questions]);
++  const rows = useMemo(() => {
++    const s = search.trim().toLowerCase();
++    return questions.map((q, index) => ({ q, index })).filter(({ q }) => (!qType || (q.qType || 'MCQ') === qType)
++      && (!language || (q.language || 'English') === language)
++      && (!reportedOnly || (q.reports || []).length)
++      && (!s || [q.q, q.topic, q.subject, q.rationale, ...(q.options || [])].some((v) => String(v || '').toLowerCase().includes(s))));
++  }, [questions, qType, language, search, reportedOnly]);
++  const totalMarks = questions.reduce((a, q) => a + (Number(q.marks) || 1), 0);
++  const reported = questions.filter((q) => (q.reports || []).length).length;
++
++  const persist = async (list, msg) => {
++    setSaving(true);
++    setError('');
++    try {
++      await saveTestQuestions(test.id, {
++        questions: list.map((q) => ({
++          ...q,
++          options: (q.options || []).map((o) => String(o).trim()),
++          marks: Math.max(1, Math.round(numOr(q.marks, 1))),
++          negMarks: numOr(q.negMarks, 0),
++          bonusMarks: numOr(q.bonusMarks, 0)
++        }))
++      });
++      setQuestions(list);
++      setToast(msg);
++      setTimeout(() => setToast(''), 3000);
++      onSaved?.();
++      return true;
++    } catch (e) {
++      setError(errOf(e));
++      return false;
++    } finally {
++      setSaving(false);
++    }
++  };
++
++  const saveOne = async (f) => {
++    const { _isNew, ...q } = f;
++    const list = editing.index < 0 ? [...questions, q] : questions.map((x, i) => (i === editing.index ? q : x));
++    if (await persist(list, _isNew ? '✓ Question added' : '✓ Question saved')) setEditing(null);
++  };
++  const remove = (index) => {
++    if (!window.confirm(`Delete question ${index + 1}?`)) return;
++    persist(questions.filter((_, i) => i !== index), 'Question deleted');
++  };
++  const resolve = (index) => persist(questions.map((q, i) => (i === index ? { ...q, resolveReports: true, reports: [] } : q)), '✓ Reports marked resolved');
++  const importMany = async (list) => { if (await persist([...questions, ...list], `✓ ${list.length} questions imported`)) setImporting(false); };
++  const applyScheme = async () => {
++    const marks = numOr(scheme.marks, 1);
++    const negMarks = numOr(scheme.negMarks, 0);
++    if (await persist(questions.map((q) => ({ ...q, marks, negMarks })), `✓ Every question now +${marks}, -${negMarks}`)) setScheme(null);
++  };
++
++  return (
++    <div className="space-y-4 max-w-[1400px]">
++      {toast && <div className="fixed bottom-5 right-5 z-50 p-3 rounded-xl bg-slate-900 text-white text-xs font-semibold shadow-lg">{toast}</div>}
++
++      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
++        <div className="flex items-center gap-3">
++          <button type="button" onClick={onBack} className="p-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-50"><ArrowLeft className="w-4 h-4" /></button>
++          <div>
++            <h2 className="text-xl font-normal text-slate-800">{test.name} <span className="text-sm text-slate-400 font-mono">{test.testCode}</span></h2>
++            <div className="text-xs text-slate-500">{test.seriesName} · {questions.length} Questions · {totalMarks} marks · {test.durationMin} min{reported ? <span className="ml-2 font-bold text-rose-600">{reported} reported</span> : null}</div>
++          </div>
++        </div>
++        {canManage && (
++          <div className="flex items-center gap-2">
++            <button type="button" onClick={() => setScheme({ marks: 1, negMarks: 0 })} disabled={!questions.length}
++              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"><SlidersHorizontal className="w-4 h-4" />Marking</button>
++            <button type="button" onClick={() => setImporting(true)}
++              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50"><Upload className="w-4 h-4" />Import</button>
++            <button type="button" onClick={() => setEditing({ index: -1, q: { ...blankQ({ subject: test.topic || '', language: language || 'English' }), _isNew: true } })}
++              className="inline-flex items-center gap-1 px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-sm font-bold"><Plus className="w-4 h-4" />Add Question</button>
++          </div>
++        )}
++      </div>
++
++      {error && <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold flex gap-2"><AlertCircle className="w-4 h-4 flex-shrink-0" />{error}<button type="button" className="ml-auto" onClick={() => setError('')}><X className="w-3.5 h-3.5" /></button></div>}
++
++      {scheme && (
++        <div className="bg-white rounded-lg border border-sky-200 p-4 flex flex-wrap items-end gap-3">
++          <div className="text-sm font-bold text-slate-800 w-full">Set marks for all {questions.length} questions</div>
++          <label className="text-xs font-bold text-slate-600">Marks +<input type="number" min={1} value={scheme.marks} onChange={(e) => setScheme({ ...scheme, marks: e.target.value })} className="block mt-1 w-24 px-2.5 py-1.5 rounded-lg border border-slate-300 text-sm" /></label>
++          <label className="text-xs font-bold text-slate-600">Negative −<input type="number" min={0} step="0.25" value={scheme.negMarks} onChange={(e) => setScheme({ ...scheme, negMarks: e.target.value })} className="block mt-1 w-24 px-2.5 py-1.5 rounded-lg border border-slate-300 text-sm" /></label>
++          <button type="button" disabled={saving} onClick={applyScheme} className="px-4 py-2 rounded-lg bg-sky-600 text-white text-sm font-bold disabled:opacity-50">Apply</button>
++          <button type="button" onClick={() => setScheme(null)} className="px-3 py-2 rounded-lg text-sm text-slate-600 hover:bg-slate-100">Cancel</button>
++        </div>
++      )}
++
++      <div className="bg-white rounded-lg border border-slate-200 shadow-sm">
++        <div className="px-4 py-5 flex flex-wrap items-center gap-4">
++          <select value={qType} onChange={(e) => setQType(e.target.value)} className="px-3 py-2.5 rounded-lg border border-slate-300 text-sm w-60">
++            <option value="">Question Type</option>
++            <option value="MCQ">MCQ</option>
++            <option value="True/False">True / False</option>
++          </select>
++          <select value={language} onChange={(e) => setLanguage(e.target.value)} className="px-3 py-2.5 rounded-lg border border-slate-300 text-sm w-60">
++            <option value="">All languages</option>
++            {languages.map((l) => <option key={l}>{l}</option>)}
++          </select>
++          <div className="relative">
++            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
++            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search" className="pl-9 pr-3 py-2.5 rounded-lg border border-slate-300 text-sm w-72" />
++          </div>
++          <label className="inline-flex items-center gap-2 text-sm text-slate-700">
++            <input type="checkbox" checked={reportedOnly} onChange={(e) => setReportedOnly(e.target.checked)} />Show Reported Questions Only
++          </label>
++        </div>
++
++        <div className="px-4 pb-4 overflow-x-auto">
++          <table className="w-full text-sm text-slate-800 border border-slate-200">
++            <thead>
++              <tr className="text-left font-bold border-b border-slate-200">
++                <th className="p-3 border-r border-slate-200 w-10">#</th>
++                <th className="p-3 border-r border-slate-200">Question Details</th>
++                <th className="p-3 border-r border-slate-200">Topic</th>
++                <th className="p-3 border-r border-slate-200">Subject</th>
++                <th className="p-3 border-r border-slate-200">Question Type</th>
++                <th className="p-3 border-r border-slate-200">Bonus Marks</th>
++                <th className="p-3 border-r border-slate-200">Hint</th>
++                <th className="p-3">More</th>
++              </tr>
++            </thead>
++            <tbody>
++              {rows.length === 0 && (
++                <tr><td colSpan={8} className="p-10 text-center text-slate-500">
++                  {questions.length ? 'No question matches these filters.' : 'No questions yet — click Add Question or Import to paste them in.'}
++                </td></tr>
++              )}
++              {rows.map(({ q, index }, i) => (
++                <tr key={q._id || `n${index}`} className={`border-b border-slate-200 align-top ${i % 2 ? 'bg-white' : 'bg-slate-50/70'}`}>
++                  <td className="p-3 border-r border-slate-200 font-bold">{index + 1}</td>
++                  <td className="p-3 border-r border-slate-200 min-w-[380px]">
++                    <div className="whitespace-pre-line">{q.q}</div>
++                    <div className="mt-2 space-y-2 pl-8">
++                      {(q.options || []).map((o, j) => <div key={j}>{LETTERS[j]}. {o}</div>)}
++                    </div>
++                    <div className="mt-3"><b>ANS:</b> {LETTERS[q.answer] ?? '—'}</div>
++                    <div className="mt-2"><b>Marks :</b> +{q.marks || 1}, -{q.negMarks || 0}</div>
++                    {q.rationale && <div className="mt-2"><b>Solution :</b><div className="whitespace-pre-line">{q.rationale}</div></div>}
++                    {(q.reports || []).length > 0 && (
++                      <div className="mt-3 p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-xs">
++                        <div className="flex items-center justify-between gap-2 font-bold text-rose-700">
++                          <span className="inline-flex items-center gap-1"><Flag className="w-3.5 h-3.5" />Reported by {q.reports.length} student{q.reports.length === 1 ? '' : 's'}</span>
++                          {canManage && <button type="button" disabled={saving} onClick={() => resolve(index)} className="inline-flex items-center gap-1 px-2 py-1 rounded bg-white border border-rose-200 text-rose-700 hover:bg-rose-100"><CheckCircle2 className="w-3.5 h-3.5" />Mark resolved</button>}
++                        </div>
++                        <ul className="mt-1.5 space-y-1 text-rose-900">
++                          {q.reports.map((r, k) => <li key={k}>“{r.reason}” — {r.studentName || r.studentId}{r.at ? `, ${new Date(r.at).toLocaleDateString('en-IN')}` : ''}</li>)}
++                        </ul>
++                      </div>
++                    )}
++                  </td>
++                  <td className="p-3 border-r border-slate-200">{q.topic}{q.chapter && <div className="text-[11px] text-slate-400 mt-1">{q.chapter}</div>}</td>
++                  <td className="p-3 border-r border-slate-200">{q.subject}</td>
++                  <td className="p-3 border-r border-slate-200">{q.qType || 'MCQ'}</td>
++                  <td className="p-3 border-r border-slate-200">{q.bonusMarks || 0}</td>
++                  <td className="p-3 border-r border-slate-200 max-w-[180px] text-xs">{q.hint || '—'}</td>
++                  <td className="p-3">
++                    {canManage && (
++                      <div className="flex gap-1.5">
++                        <button type="button" onClick={() => setEditing({ index, q })} title="Edit" className="p-2 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white"><Pencil className="w-4 h-4" /></button>
++                        <button type="button" disabled={saving} onClick={() => remove(index)} title="Delete" className="p-2 rounded-md bg-rose-600 hover:bg-rose-700 text-white"><Trash2 className="w-4 h-4" /></button>
++                      </div>
++                    )}
++                  </td>
++                </tr>
++              ))}
++            </tbody>
++          </table>
++        </div>
++      </div>
++
++      {editing && <QuestionForm initial={editing.q} saving={saving} onCancel={() => setEditing(null)} onSave={saveOne} />}
++      {importing && <ImportModal test={test} saving={saving} onCancel={() => setImporting(false)} onImport={importMany} />}
++    </div>
++  );
++}
+diff -ruN a/client/src/components/TestSeriesManager.jsx b/client/src/components/TestSeriesManager.jsx
+--- a/client/src/components/TestSeriesManager.jsx	2026-11-24 10:43:10.902648515 +0530
++++ b/client/src/components/TestSeriesManager.jsx	2026-11-24 10:43:10.906536341 +0530
+@@ -1,23 +1,47 @@
+-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+-import { Plus, Trash2, RefreshCw, ListChecks, Eye, EyeOff, Pencil, Users, Clock, AlertCircle, ChevronDown, ChevronUp, X } from 'lucide-react';
++import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
++import {
++  Plus, Trash2, RefreshCw, ListChecks, Eye, EyeOff, Pencil, AlertCircle, X, Search, Send, ChevronDown,
++  FileQuestion, BarChart3, Power, BookOpen, Flag, ChevronLeft, ChevronRight
++} from 'lucide-react';
+ import {
+   getTestSeriesList,
+   createTestSeries,
+   updateTestSeries,
+   deleteTestSeries,
+   addTestToSeries,
+-  removeTestFromSeries
++  removeTestFromSeries,
++  updateSeriesTest,
++  notifySeriesTest
+ } from '../services/api';
+ import { ALL_COURSES } from '../constants/courses';
+ import OnlineTestBuilder from './OnlineTestBuilder';
++import TestQuestionBank from './TestQuestionBank';
+ 
+ // Test Series — course-wide mock / practice tests (Head of Trainer & Managers).
+-//   1. Create a series and pick the courses it is for (blank = all students)
+-//   2. Add tests and fill each one's questions in the online test builder
+-//   3. Publish → every admitted student of those courses sees it in
+-//      Student Portal → Test Series and can take / retake the tests.
++//   Test List  : every test of every course / series in one table (ID, dates,
++//                status, publish result, actions) — like the online test panel
++//   Questions  : question bank of one test (options, answer, marks, solution…)
++//   Courses    : the series themselves (e.g. "CPPM Vol 1"), which courses see
++//                them, and Publish / Draft
+ const COURSE_CODES = [...new Set(ALL_COURSES.map((c) => c.code))];
+ 
++const fmtWindow = (d) => {
++  if (!d) return 'NA';
++  const [date, time] = d.split('T');
++  const [y, m, day] = date.split('-');
++  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
++  let out = `${Number(day)} ${months[Number(m) - 1] || ''} ${y}`;
++  if (time) {
++    const [hh, mm] = time.split(':').map(Number);
++    out += `, ${((hh + 11) % 12) + 1}:${String(mm).padStart(2, '0')} ${hh >= 12 ? 'PM' : 'AM'}`;
++  }
++  return out;
++};
++
++const Pill = ({ tone, children }) => (
++  <span className={`inline-block px-2.5 py-1 rounded-full text-xs font-semibold ${tone === 'green' ? 'bg-emerald-50 text-emerald-700' : tone === 'red' ? 'bg-rose-50 text-rose-700' : tone === 'amber' ? 'bg-amber-50 text-amber-700' : 'bg-slate-100 text-slate-600'}`}>{children}</span>
++);
++
+ function SeriesForm({ initial, onCancel, onSave, saving }) {
+   const [name, setName] = useState(initial?.name || '');
+   const [description, setDescription] = useState(initial?.description || '');
+@@ -28,12 +52,12 @@
+     <div className="bg-white rounded-2xl border border-teal-200 p-4 sm:p-5 space-y-3">
+       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+         <label className="block">
+-          <span className="text-[11px] font-bold text-slate-600">Series name *</span>
+-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. CPC Mock Exam Series"
++          <span className="text-[11px] font-bold text-slate-600">Course name *</span>
++          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. CPPM Vol 1"
+             className="mt-1 w-full px-3 py-2 rounded-xl border border-slate-200 text-sm" />
+         </label>
+         <label className="block">
+-          <span className="text-[11px] font-bold text-slate-600">For courses</span>
++          <span className="text-[11px] font-bold text-slate-600">For student courses</span>
+           <div className="mt-1 flex gap-2">
+             <input list="ts-course-codes" value={pick} onChange={(e) => setPick(e.target.value)}
+               onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addCourse(pick); } }}
+@@ -63,25 +87,111 @@
+         <button type="button" onClick={onCancel} className="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100">Cancel</button>
+         <button type="button" disabled={saving || !name.trim()} onClick={() => onSave({ name: name.trim(), description, courses })}
+           className="px-4 py-2 rounded-xl text-xs font-bold bg-[#009688] hover:bg-[#00897b] text-white disabled:opacity-50">
+-          {saving ? 'Saving…' : initial ? 'Save changes' : 'Create series'}
++          {saving ? 'Saving…' : initial ? 'Save changes' : 'Create course'}
+         </button>
+       </div>
+     </div>
+   );
+ }
+ 
++// Add / edit one test: course (series), name, duration, open / close window, status, publish result
++function TestForm({ series, initial, defaultSeriesId, onCancel, onSave, saving }) {
++  const [f, setF] = useState(() => ({
++    seriesId: initial?.seriesId || defaultSeriesId || series[0]?.id || '',
++    name: initial?.name || '',
++    topic: initial?.topic || '',
++    durationMin: initial?.durationMin || 60,
++    openDate: initial?.openDate || '',
++    closeDate: initial?.closeDate || '',
++    status: initial?.status || 'Active',
++    publishResult: initial ? initial.publishResult !== false : true
++  }));
++  const set = (patch) => setF((x) => ({ ...x, ...patch }));
++  const inp = 'mt-1 w-full px-3 py-2 rounded-lg border border-slate-300 text-sm focus:outline-none focus:border-sky-500';
++  return (
++    <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center p-4 overflow-y-auto" onClick={onCancel}>
++      <div className="bg-white rounded-xl shadow-xl w-full max-w-xl mt-10" onClick={(e) => e.stopPropagation()}>
++        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200">
++          <h3 className="text-base font-bold text-slate-900">{initial ? 'Edit Test' : 'Add Test'}</h3>
++          <button type="button" onClick={onCancel} className="p-1 rounded hover:bg-slate-100"><X className="w-4 h-4" /></button>
++        </div>
++        <div className="p-5 grid grid-cols-1 sm:grid-cols-2 gap-4">
++          <label className="block sm:col-span-2">
++            <span className="text-xs font-bold text-slate-600">Course *</span>
++            <select value={f.seriesId} onChange={(e) => set({ seriesId: e.target.value })} className={inp}>
++              {series.map((s) => <option key={s.id} value={s.id}>{s.name}{s.status !== 'Published' ? ' (Draft)' : ''}</option>)}
++            </select>
++          </label>
++          <label className="block sm:col-span-2">
++            <span className="text-xs font-bold text-slate-600">Test name *</span>
++            <input value={f.name} onChange={(e) => set({ name: e.target.value })} placeholder="e.g. Mock Test 7" className={inp} />
++          </label>
++          <label className="block">
++            <span className="text-xs font-bold text-slate-600">Topic / subject</span>
++            <input value={f.topic} onChange={(e) => set({ topic: e.target.value })} placeholder="e.g. Medical Office Accounting" className={inp} />
++          </label>
++          <label className="block">
++            <span className="text-xs font-bold text-slate-600">Duration (minutes) *</span>
++            <input type="number" min={5} max={300} value={f.durationMin} onChange={(e) => set({ durationMin: e.target.value })} className={inp} />
++          </label>
++          <label className="block">
++            <span className="text-xs font-bold text-slate-600">Open date</span>
++            <input type="datetime-local" value={f.openDate} onChange={(e) => set({ openDate: e.target.value })} className={inp} />
++          </label>
++          <label className="block">
++            <span className="text-xs font-bold text-slate-600">Close date</span>
++            <input type="datetime-local" value={f.closeDate} onChange={(e) => set({ closeDate: e.target.value })} className={inp} />
++          </label>
++          <p className="sm:col-span-2 -mt-2 text-[11px] text-slate-500">Leave the dates empty (NA) to keep the test open all the time. Times are IST.</p>
++          <label className="block">
++            <span className="text-xs font-bold text-slate-600">Status</span>
++            <select value={f.status} onChange={(e) => set({ status: e.target.value })} className={inp}>
++              <option value="Active">Active</option>
++              <option value="Inactive">Inactive (hidden from students)</option>
++            </select>
++          </label>
++          <label className="block">
++            <span className="text-xs font-bold text-slate-600">Publish result</span>
++            <select value={f.publishResult ? 'yes' : 'no'} onChange={(e) => set({ publishResult: e.target.value === 'yes' })} className={inp}>
++              <option value="yes">Yes — show score & answers after submit</option>
++              <option value="no">No — hold results for now</option>
++            </select>
++          </label>
++        </div>
++        <div className="flex justify-end gap-2 px-5 py-3 border-t border-slate-200">
++          <button type="button" onClick={onCancel} className="px-4 py-2 rounded-lg text-sm font-semibold text-slate-600 hover:bg-slate-100">Cancel</button>
++          <button type="button" disabled={saving || !f.name.trim() || !f.seriesId} onClick={() => onSave(f)}
++            className="px-4 py-2 rounded-lg text-sm font-bold bg-sky-600 hover:bg-sky-700 text-white disabled:opacity-50">
++            {saving ? 'Saving…' : initial ? 'Save changes' : 'Add test'}
++          </button>
++        </div>
++      </div>
++    </div>
++  );
++}
++
+ export default function TestSeriesManager() {
+   const [series, setSeries] = useState([]);
+   const [canManage, setCanManage] = useState(false);
+   const [loading, setLoading] = useState(true);
+   const [error, setError] = useState('');
+   const [toast, setToast] = useState('');
+-  const [creating, setCreating] = useState(false);
+-  const [editingId, setEditingId] = useState('');
+   const [saving, setSaving] = useState(false);
+-  const [openId, setOpenId] = useState('');
+-  const [newTest, setNewTest] = useState({ name: '', durationMin: 60 });
++  const [tab, setTab] = useState('tests'); // tests | courses
++  // Test list
++  const [search, setSearch] = useState('');
++  const [pageSize, setPageSize] = useState(10);
++  const [page, setPage] = useState(1);
++  const [courseFilter, setCourseFilter] = useState('');
++  const [selected, setSelected] = useState([]);
++  const [menuId, setMenuId] = useState('');
++  const [testForm, setTestForm] = useState(null); // { initial? }
+   const [builderTest, setBuilderTest] = useState(null);
++  const [bankTestId, setBankTestId] = useState('');
++  // Courses (series)
++  const [creating, setCreating] = useState(false);
++  const [editingId, setEditingId] = useState('');
++  const menuRef = useRef(null);
+ 
+   const flash = (m) => { setToast(m); setTimeout(() => setToast(''), 3500); };
+   const errOf = (e) => e?.response?.data?.error || e.message;
+@@ -100,18 +210,19 @@
+   }, []);
+   useEffect(() => { load(); }, [load]);
+ 
+-  const stats = useMemo(() => ({
+-    published: series.filter((s) => s.status === 'Published').length,
+-    tests: series.reduce((a, s) => a + s.tests.length, 0),
+-    attempts: series.reduce((a, s) => a + s.tests.reduce((b, t) => b + (t.submitted || 0), 0), 0)
+-  }), [series]);
++  useEffect(() => {
++    if (!menuId) return undefined;
++    const close = (e) => { if (menuRef.current && !menuRef.current.contains(e.target)) setMenuId(''); };
++    document.addEventListener('mousedown', close);
++    return () => document.removeEventListener('mousedown', close);
++  }, [menuId]);
+ 
+   const run = async (fn, okMsg) => {
+     setSaving(true);
+     setError('');
+     try {
+-      await fn();
+-      if (okMsg) flash(okMsg);
++      const out = await fn();
++      if (okMsg) flash(typeof okMsg === 'function' ? okMsg(out) : okMsg);
+       await load();
+       return true;
+     } catch (e) {
+@@ -122,146 +233,305 @@
+     }
+   };
+ 
+-  const handleCreate = async (body) => {
++  // Every test of every series, newest first (like the test panel list)
++  const allTests = useMemo(() => series.flatMap((s) => s.tests.map((t) => ({ ...t, seriesId: s.id, seriesName: s.name, seriesStatus: s.status })))
++    .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)), [series]);
++
++  const filtered = useMemo(() => {
++    const q = search.trim().toLowerCase();
++    return allTests.filter((t) => (!courseFilter || t.seriesId === courseFilter)
++      && (!q || [t.name, t.testCode, t.seriesName, t.topic].some((v) => String(v || '').toLowerCase().includes(q))));
++  }, [allTests, search, courseFilter]);
++  const pages = Math.max(1, Math.ceil(filtered.length / pageSize));
++  const curPage = Math.min(page, pages);
++  const rows = filtered.slice((curPage - 1) * pageSize, curPage * pageSize);
++  useEffect(() => { setPage(1); }, [search, courseFilter, pageSize]);
++
++  const bankTest = allTests.find((t) => t.id === bankTestId);
++
++  // ----- test actions -----
++  const saveTest = async (f) => {
++    const initial = testForm?.initial;
++    const body = {
++      name: f.name.trim(), topic: f.topic, durationMin: Number(f.durationMin) || 60,
++      openDate: f.openDate, closeDate: f.closeDate, status: f.status, publishResult: f.publishResult
++    };
++    if (initial) {
++      const ok = await run(() => updateSeriesTest(initial.seriesId, initial.id, { ...body, moveToSeriesId: f.seriesId !== initial.seriesId ? f.seriesId : undefined }), '✓ Test updated');
++      if (ok) setTestForm(null);
++      return;
++    }
+     let created = null;
+-    const ok = await run(async () => { created = await createTestSeries(body); }, '✓ Series created — now add tests to it');
+-    if (ok) { setCreating(false); if (created?.id) setOpenId(created.id); }
++    const ok = await run(async () => {
++      created = await addTestToSeries(f.seriesId, body);
++      // status / window are saved on create too, but status Inactive needs the update route
++      if (created?.id && f.status === 'Inactive') await updateSeriesTest(f.seriesId, created.id, { status: 'Inactive' });
++    }, '✓ Test added — now add its questions');
++    if (ok) {
++      setTestForm(null);
++      if (created?.id) setBankTestId(created.id);
++    }
+   };
+-  const handleEdit = async (id, body) => { if (await run(() => updateTestSeries(id, body), '✓ Series updated')) setEditingId(''); };
++  const patchTest = (t, patch, msg) => run(() => updateSeriesTest(t.seriesId, t.id, patch), msg);
++  const deleteTest = (t) => {
++    if (!window.confirm(`Delete "${t.name}" (${t.testCode})? This cannot be undone.`)) return;
++    run(() => removeTestFromSeries(t.seriesId, t.id), 'Test deleted');
++  };
++  const sendTest = (t) => {
++    if (!window.confirm(`Notify all students of "${t.seriesName}" that "${t.name}" is ready?`)) return;
++    run(() => notifySeriesTest(t.seriesId, t.id), (out) => `✓ Sent to ${out?.notified || 0} student${out?.notified === 1 ? '' : 's'}`);
++  };
++  const bulk = async (patch, label) => {
++    const list = allTests.filter((t) => selected.includes(t.id));
++    if (!list.length) return;
++    if (patch === 'delete') {
++      if (!window.confirm(`Delete ${list.length} selected test${list.length === 1 ? '' : 's'}? Tests students have already taken are kept.`)) return;
++    }
++    let failed = 0;
++    setSaving(true);
++    for (const t of list) {
++      try {
++        if (patch === 'delete') await removeTestFromSeries(t.seriesId, t.id);
++        else await updateSeriesTest(t.seriesId, t.id, patch);
++      } catch (_) { failed += 1; }
++    }
++    setSaving(false);
++    setSelected([]);
++    flash(`${label}: ${list.length - failed} done${failed ? ` · ${failed} skipped (already taken by students)` : ''}`);
++    load();
++  };
++
++  // ----- series (course) actions -----
++  const handleCreate = async (body) => { if (await run(() => createTestSeries(body), '✓ Course created — add tests to it from Test List')) setCreating(false); };
++  const handleEdit = async (id, body) => { if (await run(() => updateTestSeries(id, body), '✓ Course updated')) setEditingId(''); };
+   const togglePublish = (s) => run(
+     () => updateTestSeries(s.id, { status: s.status === 'Published' ? 'Draft' : 'Published' }),
+-    s.status === 'Published' ? 'Series hidden from students (Draft)' : '✓ Published — students of these courses can see it now'
++    s.status === 'Published' ? 'Course hidden from students (Draft)' : '✓ Published — students of these courses can see it now'
+   );
+-  const handleDelete = (s) => {
++  const handleDeleteSeries = (s) => {
+     if (!window.confirm(`Delete "${s.name}" and all its tests? This cannot be undone.`)) return;
+-    run(() => deleteTestSeries(s.id), 'Series deleted');
+-  };
+-  const handleAddTest = async (s) => {
+-    if (!newTest.name.trim()) return setError('Give the test a name, e.g. "Mock Test 1".');
+-    let created = null;
+-    const ok = await run(async () => { created = await addTestToSeries(s.id, { name: newTest.name.trim(), durationMin: Number(newTest.durationMin) || 60 }); }, '✓ Test added — add its questions now');
+-    if (ok) {
+-      setNewTest({ name: '', durationMin: 60 });
+-      if (created) setBuilderTest(created);
+-    }
+-  };
+-  const handleRemoveTest = (s, t) => {
+-    if (!window.confirm(`Remove "${t.name}" from ${s.name}?`)) return;
+-    run(() => removeTestFromSeries(s.id, t.id), 'Test removed');
++    run(() => deleteTestSeries(s.id), 'Course deleted');
+   };
+ 
+-  if (loading) return <div className="py-12 text-center text-xs text-slate-500"><RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-[#0d9488]" />Loading test series…</div>;
++  if (loading) return <div className="py-12 text-center text-xs text-slate-500"><RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-sky-600" />Loading tests…</div>;
++
++  if (bankTest) {
++    return (
++      <TestQuestionBank
++        test={bankTest}
++        canManage={canManage}
++        onBack={() => { setBankTestId(''); load(); }}
++        onSaved={load}
++      />
++    );
++  }
++
++  const allOnPage = rows.length > 0 && rows.every((t) => selected.includes(t.id));
+ 
+   return (
+-    <div className="space-y-4 max-w-[1200px]">
+-      {toast && <div className="p-3 rounded-xl bg-slate-900 text-white text-xs font-semibold">{toast}</div>}
++    <div className="space-y-4 max-w-[1400px]">
++      {toast && <div className="fixed bottom-5 right-5 z-50 p-3 rounded-xl bg-slate-900 text-white text-xs font-semibold shadow-lg">{toast}</div>}
+ 
+-      <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+-        <div>
+-          <h2 className="text-base font-extrabold text-slate-900">Test Series</h2>
+-          <p className="text-xs text-slate-500 mt-0.5">Mock & practice tests for a whole course — every admitted student of that course sees published series in their portal and can retake them. Scores here don't change batch test averages.</p>
+-        </div>
+-        <div className="flex items-center gap-2 flex-shrink-0">
+-          <span className="px-2.5 py-1 rounded-full bg-slate-100 text-[11px] font-bold text-slate-700">{stats.published}/{series.length} published</span>
+-          <span className="px-2.5 py-1 rounded-full bg-slate-100 text-[11px] font-bold text-slate-700">{stats.tests} tests</span>
+-          <span className="px-2.5 py-1 rounded-full bg-teal-50 text-[11px] font-bold text-teal-700">{stats.attempts} attempts</span>
+-          {canManage && !creating && (
+-            <button type="button" onClick={() => setCreating(true)} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#009688] hover:bg-[#00897b] text-white text-xs font-bold">
+-              <Plus className="w-4 h-4" />New series
+-            </button>
+-          )}
++      <div className="flex items-center justify-between">
++        <h2 className="text-2xl font-normal text-slate-800">Tests</h2>
++        <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
++          {[{ id: 'tests', label: 'Test List' }, { id: 'courses', label: `Courses (${series.length})` }].map((x) => (
++            <button key={x.id} type="button" onClick={() => setTab(x.id)}
++              className={`px-3 py-1.5 rounded-md text-xs font-bold ${tab === x.id ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>{x.label}</button>
++          ))}
+         </div>
+       </div>
+ 
+-      {error && <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold flex gap-2"><AlertCircle className="w-4 h-4 flex-shrink-0" />{error}</div>}
+-      {!canManage && <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-xs">View only — the Head of Trainer and Managers create and edit test series.</div>}
+-
+-      {creating && <SeriesForm onCancel={() => setCreating(false)} onSave={handleCreate} saving={saving} />}
++      {error && <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold flex gap-2"><AlertCircle className="w-4 h-4 flex-shrink-0" />{error}<button type="button" className="ml-auto" onClick={() => setError('')}><X className="w-3.5 h-3.5" /></button></div>}
++      {!canManage && <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-xs">View only — the Head of Trainer and Managers add and edit tests.</div>}
+ 
+-      {series.length === 0 && !creating && (
+-        <div className="bg-white rounded-2xl border border-dashed border-slate-300 p-10 text-center">
+-          <ListChecks className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+-          <div className="text-sm font-bold text-slate-700">No test series yet</div>
+-          <p className="text-xs text-slate-500 mt-1">Create one, e.g. "CPC Mock Exam Series", add Mock Test 1, 2, 3… and publish it.</p>
+-        </div>
+-      )}
+-
+-      {series.map((s) => {
+-        const open = openId === s.id;
+-        const ready = s.tests.filter((t) => t.questionCount > 0).length;
+-        if (editingId === s.id) return <SeriesForm key={s.id} initial={s} onCancel={() => setEditingId('')} onSave={(b) => handleEdit(s.id, b)} saving={saving} />;
+-        return (
+-          <div key={s.id} className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+-            <div className="p-4 flex flex-col sm:flex-row sm:items-center gap-3 cursor-pointer hover:bg-slate-50" onClick={() => setOpenId(open ? '' : s.id)}>
+-              <div className="flex-1 min-w-0">
+-                <div className="flex items-center gap-2 flex-wrap">
+-                  <span className="text-sm font-extrabold text-slate-900">{s.name}</span>
+-                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${s.status === 'Published' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-600 border-slate-200'}`}>{s.status}</span>
+-                </div>
+-                <div className="text-[11px] text-slate-500 mt-0.5">
+-                  {(s.courses || []).length ? s.courses.join(', ') : 'All students'} · {s.tests.length} test{s.tests.length === 1 ? '' : 's'} ({ready} with questions)
+-                </div>
++      {tab === 'tests' && (
++        <div className="bg-white rounded-lg border border-slate-200 shadow-sm">
++          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-4 py-3 border-b border-slate-200">
++            <h3 className="text-base font-bold text-slate-900">Test List</h3>
++            <div className="flex items-center gap-2">
++              <div className="relative">
++                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
++                <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search Test"
++                  className="pl-9 pr-3 py-2 w-56 rounded-lg border border-slate-300 text-sm focus:outline-none focus:border-sky-500" />
+               </div>
+               {canManage && (
+-                <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+-                  <button type="button" disabled={saving} onClick={() => togglePublish(s)}
+-                    className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold ${s.status === 'Published' ? 'bg-white border border-slate-200 text-slate-700' : 'bg-emerald-600 text-white'}`}>
+-                    {s.status === 'Published' ? <><EyeOff className="w-3.5 h-3.5" />Unpublish</> : <><Eye className="w-3.5 h-3.5" />Publish</>}
+-                  </button>
+-                  <button type="button" onClick={() => setEditingId(s.id)} title="Edit" className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100"><Pencil className="w-3.5 h-3.5" /></button>
+-                  <button type="button" onClick={() => handleDelete(s)} title="Delete" className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50"><Trash2 className="w-3.5 h-3.5" /></button>
+-                </div>
++                <button type="button" disabled={!series.length}
++                  onClick={() => setTestForm({ initial: null })}
++                  title={series.length ? '' : 'Create a course first (Courses tab)'}
++                  className="inline-flex items-center gap-1 px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-sm font-bold disabled:opacity-50">
++                  <Plus className="w-4 h-4" />Add
++                </button>
+               )}
+-              {open ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+             </div>
++          </div>
++
++          <div className="px-4 py-4 flex flex-wrap items-center gap-x-6 gap-y-3">
++            <label className="flex items-center gap-3 text-sm font-bold text-slate-700">Show
++              <select value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))} className="px-3 py-2 rounded-lg border border-slate-300 text-sm font-normal w-24">
++                {[10, 25, 50, 100].map((n) => <option key={n} value={n}>{n}</option>)}
++              </select>
++            </label>
++            <label className="flex items-center gap-3 text-sm font-bold text-slate-700">Course
++              <select value={courseFilter} onChange={(e) => setCourseFilter(e.target.value)} className="px-3 py-2 rounded-lg border border-slate-300 text-sm font-normal w-72">
++                <option value="">All Courses</option>
++                {series.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
++              </select>
++            </label>
++            {canManage && selected.length > 0 && (
++              <div className="flex flex-wrap items-center gap-1.5 ml-auto">
++                <span className="text-xs font-bold text-slate-600 mr-1">{selected.length} selected</span>
++                <button type="button" disabled={saving} onClick={() => bulk({ status: 'Active' }, 'Activated')} className="px-2.5 py-1.5 rounded-md text-xs font-bold bg-emerald-50 text-emerald-700 hover:bg-emerald-100">Activate</button>
++                <button type="button" disabled={saving} onClick={() => bulk({ status: 'Inactive' }, 'Deactivated')} className="px-2.5 py-1.5 rounded-md text-xs font-bold bg-slate-100 text-slate-700 hover:bg-slate-200">Deactivate</button>
++                <button type="button" disabled={saving} onClick={() => bulk({ publishResult: true }, 'Results published')} className="px-2.5 py-1.5 rounded-md text-xs font-bold bg-sky-50 text-sky-700 hover:bg-sky-100">Publish result</button>
++                <button type="button" disabled={saving} onClick={() => bulk({ publishResult: false }, 'Results hidden')} className="px-2.5 py-1.5 rounded-md text-xs font-bold bg-amber-50 text-amber-700 hover:bg-amber-100">Hide result</button>
++                <button type="button" disabled={saving} onClick={() => bulk('delete', 'Deleted')} className="px-2.5 py-1.5 rounded-md text-xs font-bold bg-rose-50 text-rose-700 hover:bg-rose-100">Delete</button>
++              </div>
++            )}
++          </div>
+ 
+-            {open && (
+-              <div className="border-t border-slate-100 p-4 space-y-2 bg-slate-50/50">
+-                {s.description && <p className="text-xs text-slate-600 mb-2">{s.description}</p>}
+-                {s.tests.length === 0 && <div className="text-xs text-slate-500">No tests in this series yet.</div>}
+-                {s.tests.map((t, i) => (
+-                  <div key={t.id} className="flex flex-col sm:flex-row sm:items-center gap-2 p-3 rounded-xl bg-white border border-slate-200">
+-                    <div className="flex-1 min-w-0">
+-                      <div className="text-xs font-bold text-slate-900">{i + 1}. {t.name}</div>
+-                      <div className="text-[11px] text-slate-500 flex flex-wrap gap-x-3">
+-                        {t.questionCount > 0
+-                          ? <span>{t.questionCount} questions · {t.totalMarks} marks · pass {t.passMark}</span>
+-                          : <span className="text-amber-700 font-semibold">No questions yet — students can't see it</span>}
+-                        <span className="inline-flex items-center gap-1"><Clock className="w-3 h-3" />{t.durationMin} min</span>
+-                        <span className="inline-flex items-center gap-1"><Users className="w-3 h-3" />{t.submitted} attempt{t.submitted === 1 ? '' : 's'}{t.avgScore != null ? ` · avg ${t.avgScore}/${t.totalMarks}` : ''}</span>
++          <div className="px-4 pb-4 overflow-x-auto">
++            <table className="w-full text-sm text-slate-800">
++              <thead>
++                <tr className="bg-slate-50 text-left font-bold text-slate-800 border-b border-slate-200">
++                  <th className="p-3 w-8"><input type="checkbox" checked={allOnPage} onChange={(e) => setSelected(e.target.checked ? [...new Set([...selected, ...rows.map((t) => t.id)])] : selected.filter((id) => !rows.some((t) => t.id === id)))} /></th>
++                  <th className="p-3 w-8">#</th>
++                  <th className="p-3">Test ID</th>
++                  <th className="p-3">Test Name</th>
++                  <th className="p-3">Course</th>
++                  <th className="p-3">Open Date</th>
++                  <th className="p-3">Close Date</th>
++                  <th className="p-3">Status</th>
++                  <th className="p-3">Publish Result</th>
++                  <th className="p-3">More</th>
++                </tr>
++              </thead>
++              <tbody>
++                {rows.length === 0 && (
++                  <tr><td colSpan={10} className="p-10 text-center text-slate-500">
++                    <ListChecks className="w-8 h-8 text-slate-300 mx-auto mb-2" />
++                    {allTests.length ? 'No test matches your search.' : series.length ? 'No tests yet — click Add to create Mock Test 1.' : 'Create a course first in the Courses tab (e.g. "CPPM Vol 1"), then add tests to it.'}
++                  </td></tr>
++                )}
++                {rows.map((t, i) => (
++                  <tr key={t.id} className={`border-b border-slate-100 align-top ${i % 2 ? 'bg-slate-50/70' : 'bg-white'}`}>
++                    <td className="p-3"><input type="checkbox" checked={selected.includes(t.id)} onChange={(e) => setSelected(e.target.checked ? [...selected, t.id] : selected.filter((x) => x !== t.id))} /></td>
++                    <td className="p-3 font-bold">{(curPage - 1) * pageSize + i + 1}</td>
++                    <td className="p-3 font-mono text-[13px]">{t.testCode || '—'}</td>
++                    <td className="p-3 min-w-[220px]">
++                      <button type="button" onClick={() => setBankTestId(t.id)} className="text-left hover:text-sky-700">{t.name}</button>
++                      <div className="text-slate-600">{t.questionCount} Questions{t.reportedCount ? <span className="ml-2 inline-flex items-center gap-0.5 text-[11px] font-bold text-rose-600"><Flag className="w-3 h-3" />{t.reportedCount} reported</span> : null}</div>
++                      <div className="text-[11px] text-slate-400">{t.durationMin} min · {t.totalMarks || 0} marks{t.submitted ? ` · ${t.submitted} attempt${t.submitted === 1 ? '' : 's'}` : ''}</div>
++                    </td>
++                    <td className="p-3">{t.seriesName}{t.seriesStatus !== 'Published' && <div className="text-[11px] text-amber-600 font-semibold">Draft course</div>}</td>
++                    <td className="p-3 whitespace-nowrap">{fmtWindow(t.openDate)}</td>
++                    <td className="p-3 whitespace-nowrap">{fmtWindow(t.closeDate)}</td>
++                    <td className="p-3"><Pill tone={t.status === 'Active' ? 'green' : 'gray'}>{t.status}</Pill></td>
++                    <td className="p-3"><Pill tone={t.publishResult ? 'green' : 'amber'}>{t.publishResult ? 'Yes' : 'No'}</Pill></td>
++                    <td className="p-3">
++                      <div className="flex items-center gap-2 relative" ref={menuId === t.id ? menuRef : null}>
++                        <button type="button" onClick={() => setMenuId(menuId === t.id ? '' : t.id)}
++                          className="inline-flex items-center gap-1 px-3 py-2 rounded-md bg-amber-500 hover:bg-amber-600 text-white text-xs font-semibold">
++                          <ChevronDown className="w-3 h-3" />Action
++                        </button>
++                        {canManage && (
++                          <button type="button" disabled={saving} onClick={() => sendTest(t)} title="Notify students"
++                            className="p-2 rounded-md bg-sky-600 hover:bg-sky-700 text-white"><Send className="w-4 h-4" /></button>
++                        )}
++                        {menuId === t.id && (
++                          <div className="absolute right-0 top-10 z-30 w-52 bg-white border border-slate-200 rounded-lg shadow-lg py-1 text-sm">
++                            {[
++                              { label: canManage ? 'Questions' : 'View questions', icon: FileQuestion, on: () => setBankTestId(t.id) },
++                              canManage && { label: 'Edit test', icon: Pencil, on: () => setTestForm({ initial: t }) },
++                              { label: 'Results & attempts', icon: BarChart3, on: () => setBuilderTest(t) },
++                              canManage && { label: t.status === 'Active' ? 'Deactivate' : 'Activate', icon: Power, on: () => patchTest(t, { status: t.status === 'Active' ? 'Inactive' : 'Active' }, t.status === 'Active' ? 'Test deactivated — hidden from students' : '✓ Test active') },
++                              canManage && { label: t.publishResult ? 'Hide result' : 'Publish result', icon: t.publishResult ? EyeOff : Eye, on: () => patchTest(t, { publishResult: !t.publishResult }, t.publishResult ? 'Results hidden from students' : '✓ Results published to students') },
++                              canManage && { label: 'Delete', icon: Trash2, on: () => deleteTest(t), danger: true }
++                            ].filter(Boolean).map((m) => {
++                              const Icon = m.icon;
++                              return (
++                                <button key={m.label} type="button" onClick={() => { setMenuId(''); m.on(); }}
++                                  className={`w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-slate-50 ${m.danger ? 'text-rose-600' : 'text-slate-700'}`}>
++                                  <Icon className="w-4 h-4" />{m.label}
++                                </button>
++                              );
++                            })}
++                          </div>
++                        )}
+                       </div>
+-                    </div>
+-                    <div className="flex items-center gap-1.5">
+-                      <button type="button" onClick={() => setBuilderTest(t)}
+-                        className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold bg-[#0f212d] text-white hover:bg-[#172b38]">
+-                        {canManage ? (t.questionCount ? 'Edit questions · results' : 'Add questions') : 'View results'}
+-                      </button>
+-                      {canManage && (
+-                        <button type="button" onClick={() => handleRemoveTest(s, t)} title="Remove test" className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50"><Trash2 className="w-3.5 h-3.5" /></button>
+-                      )}
+-                    </div>
+-                  </div>
++                    </td>
++                  </tr>
+                 ))}
+-                {canManage && (
+-                  <div className="flex flex-col sm:flex-row gap-2 pt-2">
+-                    <input value={newTest.name} onChange={(e) => setNewTest({ ...newTest, name: e.target.value })}
+-                      onKeyDown={(e) => { if (e.key === 'Enter') handleAddTest(s); }}
+-                      placeholder={`e.g. Mock Test ${s.tests.length + 1}`} className="flex-1 px-3 py-2 rounded-xl border border-slate-200 text-xs bg-white" />
+-                    <label className="flex items-center gap-1.5 text-[11px] text-slate-600">
+-                      <input type="number" min={5} max={300} value={newTest.durationMin} onChange={(e) => setNewTest({ ...newTest, durationMin: e.target.value })}
+-                        className="w-20 px-2 py-2 rounded-xl border border-slate-200 text-xs bg-white" />min
+-                    </label>
+-                    <button type="button" disabled={saving} onClick={() => handleAddTest(s)}
+-                      className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-[#009688] hover:bg-[#00897b] text-white text-xs font-bold disabled:opacity-50">
+-                      <Plus className="w-3.5 h-3.5" />Add test
+-                    </button>
+-                  </div>
+-                )}
++              </tbody>
++            </table>
++          </div>
++
++          {filtered.length > 0 && (
++            <div className="flex items-center justify-between px-4 py-3 border-t border-slate-200 text-xs text-slate-600">
++              <span>Showing {(curPage - 1) * pageSize + 1} to {Math.min(curPage * pageSize, filtered.length)} of {filtered.length} tests</span>
++              <div className="flex items-center gap-1">
++                <button type="button" disabled={curPage <= 1} onClick={() => setPage(curPage - 1)} className="p-1.5 rounded border border-slate-200 disabled:opacity-40"><ChevronLeft className="w-4 h-4" /></button>
++                <span className="px-2 font-bold">{curPage} / {pages}</span>
++                <button type="button" disabled={curPage >= pages} onClick={() => setPage(curPage + 1)} className="p-1.5 rounded border border-slate-200 disabled:opacity-40"><ChevronRight className="w-4 h-4" /></button>
+               </div>
++            </div>
++          )}
++        </div>
++      )}
++
++      {tab === 'courses' && (
++        <div className="space-y-3">
++          <div className="bg-white rounded-lg border border-slate-200 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
++            <p className="text-xs text-slate-500">A course groups tests (e.g. "CPPM Vol 1", "Certification Mastery"). Pick which student courses see it, then Publish. Students only see Published courses with Active tests.</p>
++            {canManage && !creating && (
++              <button type="button" onClick={() => setCreating(true)} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold flex-shrink-0">
++                <Plus className="w-4 h-4" />New course
++              </button>
+             )}
+           </div>
+-        );
+-      })}
++          {creating && <SeriesForm onCancel={() => setCreating(false)} onSave={handleCreate} saving={saving} />}
++          {series.length === 0 && !creating && (
++            <div className="bg-white rounded-lg border border-dashed border-slate-300 p-10 text-center">
++              <BookOpen className="w-8 h-8 text-slate-300 mx-auto mb-2" />
++              <div className="text-sm font-bold text-slate-700">No courses yet</div>
++            </div>
++          )}
++          {series.map((s) => (editingId === s.id
++            ? <SeriesForm key={s.id} initial={s} onCancel={() => setEditingId('')} onSave={(b) => handleEdit(s.id, b)} saving={saving} />
++            : (
++              <div key={s.id} className="bg-white rounded-lg border border-slate-200 p-4 flex flex-col sm:flex-row sm:items-center gap-3">
++                <div className="flex-1 min-w-0">
++                  <div className="flex items-center gap-2 flex-wrap">
++                    <span className="text-sm font-bold text-slate-900">{s.name}</span>
++                    <Pill tone={s.status === 'Published' ? 'green' : 'gray'}>{s.status}</Pill>
++                  </div>
++                  <div className="text-xs text-slate-500 mt-0.5">
++                    For: {(s.courses || []).length ? s.courses.join(', ') : 'All admitted students'} · {s.tests.length} test{s.tests.length === 1 ? '' : 's'}
++                  </div>
++                  {s.description && <div className="text-xs text-slate-600 mt-1">{s.description}</div>}
++                </div>
++                <div className="flex items-center gap-1.5">
++                  <button type="button" onClick={() => { setCourseFilter(s.id); setTab('tests'); }} className="px-2.5 py-1.5 rounded-md text-xs font-bold bg-slate-100 text-slate-700 hover:bg-slate-200">View tests</button>
++                  {canManage && (
++                    <>
++                      <button type="button" disabled={saving} onClick={() => togglePublish(s)}
++                        className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-bold ${s.status === 'Published' ? 'bg-white border border-slate-200 text-slate-700' : 'bg-emerald-600 text-white'}`}>
++                        {s.status === 'Published' ? <><EyeOff className="w-3.5 h-3.5" />Unpublish</> : <><Eye className="w-3.5 h-3.5" />Publish</>}
++                      </button>
++                      <button type="button" onClick={() => setEditingId(s.id)} title="Edit" className="p-1.5 rounded-md text-slate-500 hover:bg-slate-100"><Pencil className="w-3.5 h-3.5" /></button>
++                      <button type="button" onClick={() => handleDeleteSeries(s)} title="Delete" className="p-1.5 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50"><Trash2 className="w-3.5 h-3.5" /></button>
++                    </>
++                  )}
++                </div>
++              </div>
++            )))}
++        </div>
++      )}
++
++      {testForm && (
++        <TestForm series={series} initial={testForm.initial} defaultSeriesId={courseFilter}
++          onCancel={() => setTestForm(null)} onSave={saveTest} saving={saving} />
++      )}
+ 
+       {builderTest && (
+         <OnlineTestBuilder
+diff -ruN a/client/src/services/api.js b/client/src/services/api.js
+--- a/client/src/services/api.js	2026-11-24 10:43:10.902738242 +0530
++++ b/client/src/services/api.js	2026-11-24 10:43:10.906631668 +0530
+@@ -2351,6 +2351,9 @@
+ export const addTestToSeries = async (id, data) => (await api.post(`/test-series/${encodeURIComponent(id)}/tests`, data)).data;
+ export const removeTestFromSeries = async (id, testId) => (await api.delete(`/test-series/${encodeURIComponent(id)}/tests/${encodeURIComponent(testId)}`)).data;
+ export const getMyTestSeries = async () => (await api.get('/student-portal/test-series')).data;
++export const updateSeriesTest = async (id, testId, data) => (await api.put(`/test-series/${encodeURIComponent(id)}/tests/${encodeURIComponent(testId)}`, data)).data;
++export const notifySeriesTest = async (id, testId) => (await api.post(`/test-series/${encodeURIComponent(id)}/tests/${encodeURIComponent(testId)}/notify`)).data;
++export const reportTestQuestion = async (testId, index, reason) => (await api.post(`/student-portal/tests/${encodeURIComponent(testId)}/report`, { index, reason })).data;
+ 
+ export const getTestLeaderboard = async (id, params) => {
+   const res = await api.get(`/student-portal/tests/${id}/leaderboard`, { params });
+diff -ruN a/server/src/models/TrainerAssessment.js b/server/src/models/TrainerAssessment.js
+--- a/server/src/models/TrainerAssessment.js	2026-11-24 10:43:10.903804524 +0530
++++ b/server/src/models/TrainerAssessment.js	2026-11-24 10:43:10.907758139 +0530
+@@ -81,7 +81,20 @@
+       chapter: { type: String, default: '' },
+       rationale: { type: String, default: '' },
+       audioRationaleUrl: { type: String, default: '' },
+-      audioRationaleText: { type: String, default: '' }
++      audioRationaleText: { type: String, default: '' },
++      // Question-bank fields (Test Series → Questions)
++      qType: { type: String, default: 'MCQ' }, // MCQ | True/False
++      negMarks: { type: Number, default: 0 }, // deducted for a wrong answer (unanswered = 0)
++      bonusMarks: { type: Number, default: 0 }, // > 0: everyone gets these marks for this question
++      topic: { type: String, default: '' },
++      subject: { type: String, default: '' },
++      language: { type: String, default: 'English' },
++      hint: { type: String, default: '' },
++      // Students flag a wrong / unclear question from the test screen
++      reports: {
++        type: [{ studentId: String, studentName: String, reason: String, at: { type: Date, default: Date.now } }],
++        default: []
++      }
+     }],
+     default: []
+   }
+diff -ruN a/server/src/routes/api.js b/server/src/routes/api.js
+--- a/server/src/routes/api.js	2026-11-24 10:43:10.903062091 +0530
++++ b/server/src/routes/api.js	2026-11-24 10:43:10.906996683 +0530
+@@ -16504,6 +16504,8 @@
+     const raw = Array.isArray(req.body?.questions) ? req.body.questions : [];
+     if (raw.length > MAX_TEST_QUESTIONS) return res.status(400).json({ error: `A test can have at most ${MAX_TEST_QUESTIONS} questions` });
+     const questions = [];
++    const oldById = Object.fromEntries((item.questions || []).map((q) => [String(q._id), q]));
++    const num = (v, min, max) => { const n = Number(v); return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n * 100) / 100)) : 0; };
+     for (const [i, q] of raw.entries()) {
+       const text = String(q?.q || '').trim();
+       const options = (Array.isArray(q?.options) ? q.options : []).map((o) => String(o || '').trim());
+@@ -16519,8 +16521,18 @@
+         chapter: String(q?.chapter || '').trim().slice(0, 200),
+         rationale: String(q?.rationale || '').trim().slice(0, 3000),
+         audioRationaleUrl: String(q?.audioRationaleUrl || '').trim(),
+-        audioRationaleText: String(q?.audioRationaleText || q?.rationale || '').trim().slice(0, 3000)
++        audioRationaleText: String(q?.audioRationaleText || q?.rationale || '').trim().slice(0, 3000),
++        qType: q?.qType === 'True/False' ? 'True/False' : 'MCQ',
++        negMarks: num(q?.negMarks, 0, 20),
++        bonusMarks: num(q?.bonusMarks, 0, 20),
++        topic: String(q?.topic || '').trim().slice(0, 200),
++        subject: String(q?.subject || '').trim().slice(0, 200),
++        language: String(q?.language || 'English').trim().slice(0, 40) || 'English',
++        hint: String(q?.hint || '').trim().slice(0, 1000),
++        // Reports stay with the question unless staff mark them resolved
++        reports: q?.resolveReports ? [] : ((q?._id && oldById[String(q._id)]?.reports) || [])
+       });
++      if (q?._id && mongoose.isValidObjectId(q._id)) questions[questions.length - 1]._id = q._id;
+     }
+     const oldTotal = Number(item.totalMarks) || 0;
+     item.questions = questions;
+@@ -16549,14 +16561,7 @@
+       const touchedKeys = [];
+       for (const att of existingAttempts) {
+         if (att.status === 'submitted') {
+-          let score = 0;
+-          let correct = 0;
+-          item.questions.forEach((q, idx) => {
+-            if (att.answers?.[idx] === q.answer) {
+-              score += q.marks || 1;
+-              correct += 1;
+-            }
+-          });
++          const { score, correct } = scoreAnswers(item.questions, att.answers);
+           att.score = score;
+           att.correct = correct;
+           att.totalMarks = item.totalMarks;
+@@ -16694,8 +16699,27 @@
+   if ('status' in b) out.status = b.status === 'Published' ? 'Published' : 'Draft';
+   return out;
+ };
++// Test window times are IST "YYYY-MM-DDTHH:mm" strings (a date alone = whole day)
++const istNowStr = () => new Date(Date.now() + 330 * 60000).toISOString().slice(0, 16);
++const windowStart = (d) => (d ? (d.length <= 10 ? `${d}T00:00` : d) : '');
++const windowEnd = (d) => (d ? (d.length <= 10 ? `${d}T23:59` : d) : '');
++const seriesTestWindow = (t) => {
++  const now = istNowStr();
++  if (t.openDate && windowStart(t.openDate) > now) return 'upcoming';
++  if (t.closeDate && windowEnd(t.closeDate) < now) return 'closed';
++  return 'open';
++};
++const newTestCode = () => `TST${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
++const cleanWindowDate = (v) => {
++  const d = String(v || '').trim();
++  return /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?$/.test(d) ? d : '';
++};
+ const seriesTestSummary = (t) => ({
+   id: t._id.toString(), name: t.name, topic: t.topic || '', seriesOrder: t.seriesOrder || 0,
++  testCode: t.testCode || '', openDate: t.openDate || '', closeDate: t.closeDate || '',
++  status: t.status === 'Inactive' ? 'Inactive' : 'Active', publishResult: t.publishResult !== false,
++  reportedCount: (t.questions || []).filter((q) => (q.reports || []).length).length,
++  createdAt: t.createdAt,
+   questionCount: (t.questions || []).length, totalMarks: t.totalMarks, passMark: t.passMark,
+   durationMin: t.durationMin || minutesOf(t.timeLimit), mode: t.mode, timeLimit: t.timeLimit,
+   // Full test fields for the question builder (staff only)
+@@ -16709,6 +16733,10 @@
+       TestSeries.find({}).sort({ createdAt: -1 }).lean(),
+       TrainerAssessment.find({ seriesId: { $ne: '' } }).sort({ seriesOrder: 1, createdAt: 1 })
+     ]);
++    for (const t of tests.filter((x) => !x.testCode)) {
++      t.testCode = newTestCode();
++      await TrainerAssessment.updateOne({ _id: t._id }, { $set: { testCode: t.testCode } });
++    }
+     const ids = tests.map((t) => t._id.toString());
+     const counts = ids.length ? await TestAttempt.aggregate([
+       { $match: { assessmentId: { $in: ids } } },
+@@ -16799,7 +16827,9 @@
+       trainerId: '', trainerName: req.user?.name || '',
+       timeLimit: `${dur} min`, durationMin: dur, totalMarks: 0, passMark: 0,
+       status: 'Active', scores: {}, mode: 'offline', questions: [],
+-      seriesId: series._id.toString(), seriesOrder: count + 1
++      seriesId: series._id.toString(), seriesOrder: count + 1,
++      testCode: newTestCode(), openDate: cleanWindowDate(req.body?.openDate), closeDate: cleanWindowDate(req.body?.closeDate),
++      publishResult: req.body?.publishResult !== false
+     });
+     res.status(201).json({ ...seriesTestSummary(test), attempts: 0, submitted: 0, avgScore: null });
+   } catch (e) {
+@@ -16807,6 +16837,80 @@
+   }
+ });
+ 
++// Edit a test's details: name, duration, open / close window, status, publish result, move to another series
++router.put('/test-series/:id/tests/:testId', async (req, res) => {
++  try {
++    if (!canManageTestSeries(req)) return res.status(403).json({ error: 'Only the Head of Trainer and Managers can change tests.' });
++    if (!mongoose.isValidObjectId(req.params.testId)) return res.status(400).json({ error: 'Invalid test' });
++    const test = await TrainerAssessment.findOne({ _id: req.params.testId, seriesId: req.params.id });
++    if (!test) return res.status(404).json({ error: 'Test not found in this series' });
++    const b = req.body || {};
++    if ('name' in b) {
++      const name = String(b.name || '').trim().slice(0, 140);
++      if (!name) return res.status(400).json({ error: 'The test name cannot be empty.' });
++      test.name = name;
++    }
++    if ('durationMin' in b) {
++      const dur = Math.round(Number(b.durationMin) || 0);
++      if (dur < 5 || dur > 300) return res.status(400).json({ error: 'Duration must be between 5 and 300 minutes.' });
++      test.durationMin = dur;
++      test.timeLimit = `${dur} min`;
++    }
++    if ('openDate' in b) test.openDate = cleanWindowDate(b.openDate);
++    if ('closeDate' in b) test.closeDate = cleanWindowDate(b.closeDate);
++    if (test.openDate && test.closeDate && windowEnd(test.closeDate) < windowStart(test.openDate)) {
++      return res.status(400).json({ error: 'The close date must be after the open date.' });
++    }
++    if ('status' in b) test.status = b.status === 'Inactive' ? 'Inactive' : 'Active';
++    if ('publishResult' in b) test.publishResult = Boolean(b.publishResult);
++    if ('topic' in b) test.topic = String(b.topic || '').trim().slice(0, 200);
++    if (b.moveToSeriesId && b.moveToSeriesId !== test.seriesId) {
++      if (!mongoose.isValidObjectId(b.moveToSeriesId)) return res.status(400).json({ error: 'Invalid course / series' });
++      const target = await TestSeries.findById(b.moveToSeriesId);
++      if (!target) return res.status(404).json({ error: 'Course / series not found' });
++      test.seriesId = target._id.toString();
++      test.course = (target.courses || []).join(', ').slice(0, 200);
++      test.seriesOrder = (await TrainerAssessment.countDocuments({ seriesId: test.seriesId })) + 1;
++    }
++    if (!test.testCode) test.testCode = newTestCode();
++    await test.save();
++    res.json(seriesTestSummary(test));
++  } catch (e) {
++    res.status(400).json({ error: e.message });
++  }
++});
++
++// Send: notify every admitted student of the series' courses that this test is ready
++router.post('/test-series/:id/tests/:testId/notify', async (req, res) => {
++  try {
++    if (!canManageTestSeries(req)) return res.status(403).json({ error: 'Only the Head of Trainer and Managers can notify students.' });
++    if (!mongoose.isValidObjectId(req.params.id) || !mongoose.isValidObjectId(req.params.testId)) return res.status(400).json({ error: 'Invalid test' });
++    const [series, test] = await Promise.all([
++      TestSeries.findById(req.params.id).lean(),
++      TrainerAssessment.findOne({ _id: req.params.testId, seriesId: req.params.id }).lean()
++    ]);
++    if (!series || !test) return res.status(404).json({ error: 'Test not found in this series' });
++    if (series.status !== 'Published') return res.status(400).json({ error: `Publish "${series.name}" first — students can't see a Draft series.` });
++    if (test.status === 'Inactive') return res.status(400).json({ error: 'This test is Inactive. Activate it before notifying students.' });
++    if (!(test.questions || []).length) return res.status(400).json({ error: 'Add questions to this test before notifying students.' });
++    const students = (await Student.find({ studentId: { $nin: [null, ''] } }).select('studentId name course').lean())
++      .filter((st) => seriesForStudent(series, st));
++    const win = test.openDate ? ` · opens ${test.openDate.replace('T', ' ')}` : '';
++    const close = test.closeDate ? ` · closes ${test.closeDate.replace('T', ' ')}` : '';
++    if (students.length) {
++      await Notification.insertMany(students.map((st) => ({
++        audience: 'student', recipientId: String(st.studentId), studentId: String(st.studentId), recipientName: st.name || '',
++        type: 'assessment', title: `New test: ${test.name}`,
++        message: `${series.name} · ${(test.questions || []).length} questions · ${test.durationMin || minutesOf(test.timeLimit)} min${win}${close}. Open Test Series in your portal to take it.`,
++        createdBy: req.user?.name || ''
++      })), { ordered: false });
++    }
++    res.json({ success: true, notified: students.length });
++  } catch (e) {
++    res.status(400).json({ error: e.message });
++  }
++});
++
+ router.delete('/test-series/:id/tests/:testId', async (req, res) => {
+   try {
+     if (!canManageTestSeries(req)) return res.status(403).json({ error: 'Only the Head of Trainer and Managers can remove tests.' });
+@@ -16831,8 +16935,8 @@
+     if (!st) return res.status(404).json({ error: 'Student not found' });
+     const series = (await TestSeries.find({ status: 'Published' }).sort({ createdAt: -1 }).lean()).filter((s) => seriesForStudent(s, st));
+     if (!series.length) return res.json([]);
+-    const tests = await TrainerAssessment.find({ seriesId: { $in: series.map((s) => s._id.toString()) }, mode: 'online', 'questions.0': { $exists: true } })
+-      .select('name topic seriesId seriesOrder totalMarks passMark durationMin timeLimit questions.marks createdAt')
++    const tests = await TrainerAssessment.find({ seriesId: { $in: series.map((s) => s._id.toString()) }, mode: 'online', status: { $ne: 'Inactive' }, 'questions.0': { $exists: true } })
++      .select('name topic seriesId seriesOrder totalMarks passMark durationMin timeLimit questions.marks createdAt openDate closeDate publishResult status')
+       .sort({ seriesOrder: 1, createdAt: 1 }).lean();
+     const attempts = await TestAttempt.find({ studentId: st.studentId, assessmentId: { $in: tests.map((t) => t._id.toString()) } }).lean();
+     const myAtt = Object.fromEntries(attempts.map((a) => [a.assessmentId, a]));
+@@ -16841,17 +16945,20 @@
+         const a = myAtt[t._id.toString()];
+         const best = a ? Math.max(a.status === 'submitted' ? (a.score || 0) : 0, ...(a.attemptHistory || []).map((h) => h.score || 0)) : null;
+         const tookIt = a && (a.status === 'submitted' || (a.attemptHistory || []).length);
++        const hidden = t.publishResult === false;
+         return {
++          availability: seriesTestWindow(t), openDate: t.openDate || '', closeDate: t.closeDate || '', resultHidden: hidden,
+           id: t._id.toString(), name: t.name, topic: t.topic || '',
+           questionCount: (t.questions || []).length, totalMarks: t.totalMarks, passMark: t.passMark,
+           durationMin: t.durationMin || minutesOf(t.timeLimit),
+           state: !a ? 'not_started' : a.status === 'in_progress' ? 'in_progress' : 'submitted',
+-          lastScore: a?.status === 'submitted' ? a.score : null,
+-          bestScore: tookIt ? best : null,
++          lastScore: !hidden && a?.status === 'submitted' ? a.score : null,
++          bestScore: tookIt && !hidden ? best : null,
++          taken: Boolean(tookIt),
+           attemptsTaken: a ? (a.attemptHistory || []).length + (a.status === 'submitted' ? 1 : 0) : 0
+         };
+       });
+-      const done = list.filter((t) => t.bestScore != null).length;
++      const done = list.filter((t) => t.taken).length;
+       return { id: s._id.toString(), name: s.name, description: s.description || '', courses: s.courses || [], tests: list, done, total: list.length };
+     }).filter((s) => s.total > 0));
+   } catch (e) {
+@@ -16874,6 +16981,7 @@
+   if (test.seriesId) {
+     const series = mongoose.isValidObjectId(test.seriesId) ? await TestSeries.findById(test.seriesId).lean() : null;
+     if (!series || series.status !== 'Published' || !seriesForStudent(series, st)) { res.status(403).json({ error: 'This test series is not open for your course.' }); return null; }
++    if (test.status === 'Inactive') { res.status(404).json({ error: 'This test is not available right now.' }); return null; }
+   } else if (!sameBatch(test.batch, studentBatchOf(st))) { res.status(403).json({ error: 'This test is not for your batch.' }); return null; }
+   return { st, test };
+ }
+@@ -16883,13 +16991,28 @@
+   return Number.isInteger(a) && a >= 0 && a < q.options.length ? a : -1;
+ });
+ 
++// Score a set of answers: +marks for a correct answer, -negMarks for a wrong
++// one (unanswered = 0). A question with bonusMarks > 0 gives everyone those
++// marks whatever they answered (used for a wrong / disputed question).
++function scoreAnswers(questions, answers) {
++  let score = 0;
++  let correct = 0;
++  (questions || []).forEach((q, i) => {
++    const a = Array.isArray(answers) ? answers[i] : -1;
++    const right = a === q.answer;
++    if (right) correct += 1;
++    if ((Number(q.bonusMarks) || 0) > 0) score += Number(q.bonusMarks);
++    else if (right) score += q.marks || 1;
++    else if (Number.isInteger(a) && a >= 0) score -= Number(q.negMarks) || 0;
++  });
++  return { score: Math.max(0, Math.round(score * 100) / 100), correct };
++}
++
+ // Grade, store the score on the test (same place a trainer's manual score
+ // goes) and refresh the student's test average & readiness
+ async function gradeAttempt(attempt, test, st, { auto = false } = {}) {
+   const answers = cleanAnswers(attempt.answers, test);
+-  let score = 0;
+-  let correct = 0;
+-  test.questions.forEach((q, i) => { if (answers[i] === q.answer) { score += q.marks || 1; correct += 1; } });
++  const { score, correct } = scoreAnswers(test.questions, answers);
+   attempt.answers = answers;
+   attempt.score = score;
+   attempt.correct = correct;
+@@ -16958,16 +17081,26 @@
+     opensToday: !test.date || test.date <= todayStr(),
+     alreadyScored: !attempt && Object.prototype.hasOwnProperty.call(test.scores instanceof Map ? Object.fromEntries(test.scores) : (test.scores || {}), studentKeyOf(st)),
+     attemptIteration: attempt?.attemptIteration || 1,
+-    reallocated: Boolean(attempt?.reallocated)
++    reallocated: Boolean(attempt?.reallocated),
++    isSeries: Boolean(test.seriesId),
++    openDate: test.openDate || '', closeDate: test.closeDate || '',
++    availability: test.seriesId ? seriesTestWindow(test) : 'open'
+   };
+   if (!attempt) return { ...base, state: 'not_started' };
+   if (attempt.status === 'in_progress') {
+     return {
+       ...base, state: 'in_progress', endsAt: attempt.endsAt, serverNow: new Date(),
+       answers: cleanAnswers(attempt.answers, test),
+-      questions: test.questions.map((q) => ({ q: q.q, options: q.options, marks: q.marks, chapter: q.chapter || '' }))
++      questions: test.questions.map((q) => ({
++        q: q.q, options: q.options, marks: q.marks, chapter: q.chapter || '',
++        negMarks: q.negMarks || 0, hint: q.hint || '', qType: q.qType || 'MCQ', topic: q.topic || ''
++      }))
+     };
+   }
++  // Results not published yet: confirm the submission only
++  if (test.seriesId && test.publishResult === false) {
++    return { ...base, state: 'submitted', resultHidden: true, submittedAt: attempt.submittedAt, autoSubmitted: attempt.autoSubmitted };
++  }
+ 
+   // AAPC-style chapter breakdown calculation
+   const chapterMap = {};
+@@ -17011,7 +17144,8 @@
+       chapter: q.chapter || '',
+       rationale: q.rationale || test.rationale || '',
+       audioRationaleUrl: q.audioRationaleUrl || '',
+-      audioRationaleText: q.audioRationaleText || q.rationale || test.rationale || ''
++      audioRationaleText: q.audioRationaleText || q.rationale || test.rationale || '',
++      negMarks: q.negMarks || 0, bonusMarks: q.bonusMarks || 0, hint: q.hint || ''
+     }))
+   };
+ }
+@@ -17019,8 +17153,11 @@
+ // Leaderboard endpoint for mock exams and practice exams
+ router.get('/student-portal/tests/:id/leaderboard', async (req, res) => {
+   try {
+-    const test = await TrainerAssessment.findById(req.params.id).select('name topic totalMarks passMark batch mode type');
++    const test = await TrainerAssessment.findById(req.params.id).select('name topic totalMarks passMark batch mode type seriesId publishResult');
+     if (!test) return res.status(404).json({ error: 'Assessment not found' });
++    if (req.user?.department === 'student' && test.seriesId && test.publishResult === false) {
++      return res.status(403).json({ error: 'Results for this test are not published yet.' });
++    }
+     const currentStudentId = req.query.studentId || req.user?.studentId || '';
+ 
+     const attempts = await TestAttempt.find({ assessmentId: req.params.id, status: 'submitted' })
+@@ -17072,6 +17209,7 @@
+     const { st, test } = ctx;
+     // Students retake Test Series mocks themselves; batch tests are reallocated by the trainer
+     if (!test.seriesId) return res.status(403).json({ error: 'Ask your trainer to reallocate this test if you need to take it again.' });
++    if (seriesTestWindow(test) !== 'open') return res.status(409).json({ error: 'This test is not open for attempts right now.' });
+     const { reason = 'Retake exam to practice weak chapters and improve score' } = req.body || {};
+ 
+     const attempt = await TestAttempt.findOne({ assessmentId: req.params.id, studentId: st.studentId });
+@@ -17126,6 +17264,26 @@
+   }
+ });
+ 
++// Student flags a wrong / unclear question (shows in Test Series → Questions → Reported)
++router.post('/student-portal/tests/:id/report', async (req, res) => {
++  try {
++    const ctx = await loadStudentTest(req, res);
++    if (!ctx) return;
++    const { st, test } = ctx;
++    const idx = Number(req.body?.index);
++    const reason = String(req.body?.reason || '').trim().slice(0, 500);
++    if (!Number.isInteger(idx) || idx < 0 || idx >= test.questions.length) return res.status(400).json({ error: 'Invalid question' });
++    if (!reason) return res.status(400).json({ error: 'Tell us what is wrong with this question.' });
++    const q = test.questions[idx];
++    q.reports = (q.reports || []).filter((r) => r.studentId !== st.studentId);
++    q.reports.push({ studentId: st.studentId, studentName: st.name, reason, at: new Date() });
++    await test.save();
++    res.json({ success: true });
++  } catch (e) {
++    res.status(400).json({ error: e.message });
++  }
++});
++
+ router.get('/student-portal/tests/:id', async (req, res) => {
+   try {
+     const ctx = await loadStudentTest(req, res);
+@@ -17144,6 +17302,11 @@
+     if (!ctx) return;
+     const { st, test } = ctx;
+     let attempt = await TestAttempt.findOne({ assessmentId: req.params.id, studentId: st.studentId });
++    if (!attempt || (test.seriesId && attempt.status === 'submitted')) {
++      const win = test.seriesId ? seriesTestWindow(test) : 'open';
++      if (win === 'upcoming') return res.status(409).json({ error: `This test opens on ${test.openDate.replace('T', ' ')}.` });
++      if (win === 'closed' && !attempt) return res.status(409).json({ error: `This test closed on ${test.closeDate.replace('T', ' ')}.` });
++    }
+     if (!attempt) {
+       if (test.date && test.date > todayStr()) return res.status(409).json({ error: `This test opens on ${test.date}.` });
+       const view = studentTestView(test, null, st);

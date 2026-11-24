@@ -1914,7 +1914,7 @@ export default function TrainingDepartmentDashboard({
               {activeNav === 'session_room' && 'Class Session Room'}
               {activeNav === 'my_calendar' && 'My Calendar'}
               {activeNav === 'batch_desk' && 'Syllabus & Announcements'}
-              {activeNav === 'attendance' && 'Daily Student Attendance'}
+              {activeNav === 'attendance' && 'Attendance'}
               {activeNav === 'demos' && 'Demos'}
               {activeNav === 'doubts' && 'Student Doubt Box'}
               {(activeNav === 'scorecard' || activeNav === 'incentives') && 'My Scorecard & Incentive Ledger'}
@@ -1936,6 +1936,7 @@ export default function TrainingDepartmentDashboard({
               {activeNav === 'session_room' && 'Run a live session'}
               {activeNav === 'my_calendar' && 'Your classes, demos and 1:1 sessions'}
               {activeNav === 'batch_desk' && 'Syllabus tracker · batch announcements · class recordings'}
+              {activeNav === 'attendance' && `My login attendance & my students' daily attendance · ${trainerBranch}`}
               {activeNav === 'demos' && 'HR–allocated demos'}
               {activeNav === 'doubts' && 'SLA–tracked'}
               {(activeNav === 'scorecard' || activeNav === 'incentives') && 'Action score · variable pay · cash events · monthly take'}
@@ -1950,7 +1951,7 @@ export default function TrainingDepartmentDashboard({
               {activeNav === 'profile' && `${trainerName} · ${trainerId} · ${trainerRole} · ${trainerBranch}`}
               {activeNav === 'skills' && 'L1 Assistant · L2 Regular · L3 Senior · L4 Lead. You can be allocated to a subject only at L2 or above.'}
               {activeNav === 'shift' && `${trainerShift} · Max load protection`}
-              {activeNav !== 'home' && activeNav !== 'allocation' && activeNav !== 'session_room' && activeNav !== 'batch_desk' && activeNav !== 'demos' && activeNav !== 'doubts' && activeNav !== 'scorecard' && activeNav !== 'incentives' && activeNav !== 'batches' && activeNav !== 'students' && activeNav !== 'weak_students' && activeNav !== 'assessments' && activeNav !== 'library' && activeNav !== 'placement' && activeNav !== 'profile' && activeNav !== 'skills' && activeNav !== 'shift' && `Thoughtflows Medical Coding Academy · ${trainerBranch}`}
+              {activeNav !== 'home' && activeNav !== 'attendance' && activeNav !== 'allocation' && activeNav !== 'session_room' && activeNav !== 'batch_desk' && activeNav !== 'demos' && activeNav !== 'doubts' && activeNav !== 'scorecard' && activeNav !== 'incentives' && activeNav !== 'batches' && activeNav !== 'students' && activeNav !== 'weak_students' && activeNav !== 'assessments' && activeNav !== 'library' && activeNav !== 'placement' && activeNav !== 'profile' && activeNav !== 'skills' && activeNav !== 'shift' && `Thoughtflows Medical Coding Academy · ${trainerBranch}`}
             </p>
           </div>
 
@@ -2233,7 +2234,7 @@ export default function TrainingDepartmentDashboard({
         )}
 
         {/* VIEW CONTAINER */}
-        <div className="p-6 max-w-[1400px] w-full mx-auto space-y-6 flex-1">
+        <div className="p-6 max-w-[1400px] w-full mx-auto flex flex-col gap-6 flex-1">
 
           {/* Class Session Room — kept mounted here regardless of which tab
               is active, so the live Zoom connection survives the trainer
@@ -3017,11 +3018,11 @@ export default function TrainingDepartmentDashboard({
                 </div>
               )}
 
-              <div className="bg-white rounded-3xl p-7 border border-slate-200/90 shadow-sm space-y-4">
-                <div className="flex items-center justify-between flex-wrap gap-3">
+              <div className="bg-white rounded-2xl p-6 border border-slate-200/90 shadow-xs space-y-4">
+                <div className="flex items-center justify-between flex-wrap gap-3 pb-2 border-b border-slate-100">
                   <div className="flex items-center gap-2.5">
                     <div className="w-5 h-5 rounded-md bg-[#22c55e] text-white flex items-center justify-center text-xs font-black shadow-sm">✓</div>
-                    <h2 className="text-base font-bold text-slate-900 tracking-tight">Live Attendance · {new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</h2>
+                    <h3 className="text-base font-black text-slate-900">Student Attendance · {new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</h3>
                   </div>
                   <div className="flex items-center gap-2">
                     {batches.length > 1 && (

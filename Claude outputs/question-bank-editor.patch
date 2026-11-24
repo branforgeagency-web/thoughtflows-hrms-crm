@@ -1,0 +1,1815 @@
+diff -ruN a/client/src/components/OnlineTestBuilder.jsx b/client/src/components/OnlineTestBuilder.jsx
+--- a/client/src/components/OnlineTestBuilder.jsx	2026-11-24 11:00:19.417373244 +0530
++++ b/client/src/components/OnlineTestBuilder.jsx	2026-11-24 11:00:19.420884559 +0530
+@@ -71,8 +71,8 @@
+   }).filter(Boolean);
+ }
+ 
+-export default function OnlineTestBuilder({ test, onClose, onSaved }) {
+-  const [tab, setTab] = useState('questions');
++export default function OnlineTestBuilder({ test, onClose, onSaved, initialTab = 'questions' }) {
++  const [tab, setTab] = useState(initialTab);
+   const [questions, setQuestions] = useState(() => (
+     test.questions?.length
+       ? test.questions.map((q) => ({
+diff -ruN a/client/src/components/QuestionEditor.jsx b/client/src/components/QuestionEditor.jsx
+--- a/client/src/components/QuestionEditor.jsx	1970-01-01 05:30:00.000000000 +0530
++++ b/client/src/components/QuestionEditor.jsx	2026-11-24 11:00:19.421170487 +0530
+@@ -0,0 +1,282 @@
++import React, { useMemo, useState } from 'react';
++import { ArrowLeft, AlertCircle, Save } from 'lucide-react';
++import RichEditor from './RichEditor';
++import { AAPC_CHAPTERS } from './OnlineTestBuilder';
++import { addBankQuestions, updateBankQuestion } from '../services/api';
++
++// Add New Questions [Question Bank] — full page, laid out like the online test
++// panel: question options / basic details / marks / "More" switches on the
++// left, the question and options A–D (E) in rich-text editors on the right.
++export const LANGUAGES = ['English', 'Tamil', 'Hindi', 'Telugu', 'Malayalam', 'Kannada'];
++const QUESTION_FONTS = ['ARIAL', 'Calibri', 'Georgia', 'Times New Roman', 'Verdana', 'Noto Sans Tamil'];
++const LETTERS = 'ABCDEF';
++const errOf = (e) => e?.response?.data?.error || e?.message || 'Could not save the question';
++const isBlank = (html) => !String(html || '').replace(/<(?!img)[^>]+>/gi, '').replace(/&nbsp;/g, '').trim();
++
++const fresh = (defaults = {}) => ({
++  q: '', options: ['', '', '', ''], answer: -1, marks: 1, negMarks: 0, bonusMarks: 0,
++  qType: 'MCQ', topic: '', subject: '', language: 'English', hint: '', rationale: '', chapter: '',
++  difficulty: '', font: '', passage: '', instruction: '',
++  ...defaults
++});
++
++const Label = ({ children }) => <div className="text-[11px] font-bold text-slate-700 mb-1">{children}</div>;
++const inp = 'w-full px-2.5 py-1.5 rounded border border-slate-300 text-xs bg-white focus:outline-none focus:border-sky-500';
++
++// Pick from existing values or type a new one
++function PickOrType({ value, options, onChange, placeholder, disabled }) {
++  const [typing, setTyping] = useState(false);
++  const known = options.includes(value) || !value;
++  if (typing || !known) {
++    return (
++      <div className="flex gap-1">
++        <input autoFocus={typing} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className={inp} />
++        {options.length > 0 && <button type="button" onClick={() => { setTyping(false); onChange(''); }} className="px-2 text-[11px] text-sky-700 font-bold">List</button>}
++      </div>
++    );
++  }
++  return (
++    <select value={value} disabled={disabled} onChange={(e) => { if (e.target.value === '__new') { setTyping(true); onChange(''); } else onChange(e.target.value); }} className={inp}>
++      <option value="">{disabled ? 'First Select the Subject' : 'Select'}</option>
++      {options.map((o) => <option key={o} value={o}>{o}</option>)}
++      {!disabled && <option value="__new">+ Add new…</option>}
++    </select>
++  );
++}
++
++export default function QuestionEditor({ meta, initial, testId: initialTestId, onCancel, onSaved }) {
++  const editing = Boolean(initial?.question?._id);
++  const start = initial?.question || null;
++  const [testId, setTestId] = useState(initial?.testId || initialTestId || '');
++  const [f, setF] = useState(() => (start
++    ? { ...fresh(), ...start, options: [...(start.options || [])], answer: typeof start.answer === 'number' ? start.answer : -1 }
++    : fresh(initial?.defaults)));
++  const [more, setMore] = useState(() => ({
++    passage: Boolean(start?.passage),
++    instruction: Boolean(start?.instruction),
++    solution: start ? Boolean(start.rationale) : true,
++    optionE: (start?.options || []).length > 4
++  }));
++  const [saving, setSaving] = useState(false);
++  const [error, setError] = useState('');
++  const [savedCount, setSavedCount] = useState(0);
++  const set = (patch) => setF((x) => ({ ...x, ...patch }));
++
++  const subjects = useMemo(() => Object.keys(meta?.subjects || {}).sort(), [meta]);
++  const topics = (meta?.subjects || {})[f.subject] || [];
++  const tests = meta?.tests || [];
++
++  const setType = (qType) => {
++    if (qType === 'True/False') set({ qType, options: ['True', 'False'], answer: f.answer > 1 ? -1 : f.answer });
++    else set({ qType, options: f.qType === 'True/False' ? ['', '', '', ...(more.optionE ? [''] : [])] : f.options });
++  };
++  const toggleE = (on) => {
++    setMore((m) => ({ ...m, optionE: on }));
++    if (f.qType === 'True/False') return;
++    if (on && f.options.length < 5) set({ options: [...f.options, ''] });
++    if (!on && f.options.length > 4) set({ options: f.options.slice(0, 4), answer: f.answer >= 4 ? -1 : f.answer });
++  };
++  const setOpt = (j, v) => setF((x) => ({ ...x, options: x.options.map((o, k) => (k === j ? v : o)) }));
++
++  const problem = !testId ? 'Select the test this question belongs to.'
++    : isBlank(f.q) ? 'Type your question.'
++      : f.options.some(isBlank) ? 'Fill every option.'
++        : f.answer < 0 ? 'Tick the correct option.'
++          : !(Number(f.marks) >= 1) ? 'Give +VE marks (1 or more).'
++            : null;
++
++  const save = async (addAnother) => {
++    if (problem) { setError(problem); return; }
++    setSaving(true);
++    setError('');
++    const question = {
++      ...f,
++      passage: more.passage ? f.passage : '',
++      instruction: more.instruction ? f.instruction : '',
++      rationale: more.solution ? f.rationale : '',
++      marks: Number(f.marks) || 1,
++      negMarks: Number(f.negMarks) || 0,
++      bonusMarks: Number(f.bonusMarks) || 0
++    };
++    try {
++      if (editing) await updateBankQuestion(initial.testId, start._id, { question, testId });
++      else await addBankQuestions(testId, { question });
++      onSaved?.();
++      if (addAnother && !editing) {
++        // keep the settings, clear the content
++        setF(fresh({ subject: f.subject, topic: f.topic, language: f.language, qType: f.qType, font: f.font, difficulty: f.difficulty, marks: f.marks, negMarks: f.negMarks, chapter: f.chapter, passage: more.passage ? f.passage : '', options: f.qType === 'True/False' ? ['True', 'False'] : Array(more.optionE ? 5 : 4).fill('') }));
++        setSavedCount((n) => n + 1);
++        window.scrollTo({ top: 0, behavior: 'smooth' });
++      } else {
++        onCancel?.();
++      }
++    } catch (e) {
++      setError(errOf(e));
++    } finally {
++      setSaving(false);
++    }
++  };
++
++  const fontFamily = f.font ? (f.font === 'ARIAL' ? 'Arial' : f.font) : '';
++
++  return (
++    <div className="space-y-3 max-w-[1600px]">
++      <div className="flex items-center justify-between gap-3">
++        <div className="flex items-center gap-2">
++          <button type="button" onClick={onCancel} className="p-1.5 rounded border border-slate-200 bg-white hover:bg-slate-50"><ArrowLeft className="w-4 h-4" /></button>
++          <h2 className="text-lg text-slate-800">{editing ? 'Edit Question' : 'Add New Questions'}<span className="text-slate-500">[Question Bank]</span></h2>
++        </div>
++        <div className="flex items-center gap-2">
++          {savedCount > 0 && <span className="text-xs font-bold text-emerald-700">✓ {savedCount} saved</span>}
++          <button type="button" onClick={onCancel} className="px-3 py-2 rounded text-sm font-semibold text-slate-600 hover:bg-slate-100">Cancel</button>
++          {!editing && <button type="button" disabled={saving} onClick={() => save(true)} className="px-3 py-2 rounded border border-sky-600 text-sky-700 text-sm font-bold hover:bg-sky-50 disabled:opacity-50">Save & Add Another</button>}
++          <button type="button" disabled={saving} onClick={() => save(false)} className="inline-flex items-center gap-1.5 px-4 py-2 rounded bg-sky-600 hover:bg-sky-700 text-white text-sm font-bold disabled:opacity-50">
++            <Save className="w-4 h-4" />{saving ? 'Saving…' : 'Save'}
++          </button>
++        </div>
++      </div>
++      {error && <div className="p-2.5 rounded bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold flex gap-2"><AlertCircle className="w-4 h-4 flex-shrink-0" />{error}</div>}
++
++      <div className="grid grid-cols-1 lg:grid-cols-[340px_1fr] gap-4 items-start">
++        {/* LEFT: options */}
++        <div className="bg-white rounded border border-slate-200 p-3.5 space-y-3 lg:sticky lg:top-2">
++          <div className="text-xs font-semibold text-slate-700 pb-2 border-b border-slate-200">Question Options</div>
++          <div>
++            <Label>Test *</Label>
++            <select value={testId} onChange={(e) => setTestId(e.target.value)} className={inp}>
++              <option value="">Select Test</option>
++              {tests.map((t) => <option key={t.id} value={t.id}>{t.name}{t.seriesName ? ` — ${t.seriesName}` : ''}{t.testCode ? ` (${t.testCode})` : ''}</option>)}
++            </select>
++          </div>
++          <div>
++            <Label>Language</Label>
++            <select value={f.language} onChange={(e) => set({ language: e.target.value })} className={inp}>
++              {[...new Set([...LANGUAGES, ...(meta?.languages || [])])].map((l) => <option key={l}>{l}</option>)}
++            </select>
++          </div>
++          <div>
++            <Label>Question Type:</Label>
++            <select value={f.qType} onChange={(e) => setType(e.target.value)} className={inp}>
++              <option value="MCQ">MCQ Single Ans (MCQ)</option>
++              <option value="True/False">True / False (TF)</option>
++            </select>
++          </div>
++          <div>
++            <Label>Font</Label>
++            <select value={f.font} onChange={(e) => set({ font: e.target.value })} className={inp}>
++              <option value="">Default</option>
++              {QUESTION_FONTS.map((x) => <option key={x}>{x}</option>)}
++            </select>
++          </div>
++
++          <div className="text-xs font-semibold text-slate-700 pt-2 pb-2 border-b border-slate-200">Basic Details</div>
++          <div>
++            <Label>Hint</Label>
++            <input value={f.hint} onChange={(e) => set({ hint: e.target.value })} className={inp} placeholder="e.g. DOCQ" />
++          </div>
++          <div>
++            <Label>Subject:</Label>
++            <PickOrType value={f.subject} options={subjects} onChange={(v) => set({ subject: v, topic: '' })} placeholder="New subject, e.g. MOCK TEST" />
++          </div>
++          <div>
++            <Label>Topic:</Label>
++            <PickOrType value={f.topic} options={topics} disabled={!f.subject} onChange={(v) => set({ topic: v })} placeholder="New topic, e.g. Anatomy" />
++          </div>
++          <div>
++            <Label>Difficulty Level</Label>
++            <select value={f.difficulty} onChange={(e) => set({ difficulty: e.target.value })} className={inp}>
++              <option value="">Select Difficulty Level</option>
++              {['Easy', 'Medium', 'Hard'].map((d) => <option key={d}>{d}</option>)}
++            </select>
++          </div>
++          <div>
++            <Label>AAPC chapter (score report)</Label>
++            <select value={f.chapter} onChange={(e) => set({ chapter: e.target.value })} className={inp}>
++              <option value="">— none —</option>
++              {AAPC_CHAPTERS.map((c) => <option key={c}>{c}</option>)}
++            </select>
++          </div>
++          <div>
++            <Label>Marks</Label>
++            <div className="grid grid-cols-2 gap-2">
++              <input type="number" min={1} max={20} value={f.marks} onChange={(e) => set({ marks: e.target.value })} placeholder="+VE" title="+VE marks for a correct answer" className={inp} />
++              <input type="number" min={0} max={20} step="0.25" value={f.negMarks} onChange={(e) => set({ negMarks: e.target.value })} placeholder="-VE" title="-VE marks for a wrong answer" className={inp} />
++            </div>
++            <div className="flex justify-between text-[10px] text-slate-400 mt-0.5"><span>+VE (correct)</span><span>-VE (wrong)</span></div>
++          </div>
++          <div>
++            <Label>Bonus Marks</Label>
++            <input type="number" min={0} max={20} step="0.25" value={f.bonusMarks} onChange={(e) => set({ bonusMarks: e.target.value })} className={inp} />
++            <div className="text-[10px] text-slate-400 mt-0.5">More than 0 = every student gets these marks (for a wrong / disputed question)</div>
++          </div>
++
++          <div className="text-xs font-semibold text-slate-700 pt-2 pb-2 border-b border-slate-200">More</div>
++          {[
++            { k: 'passage', l: 'Have Passage ?' },
++            { k: 'instruction', l: 'Have Instruction Part ?' },
++            { k: 'solution', l: 'Have Solution ?' },
++            { k: 'optionE', l: 'Have Option "E" ?', hide: f.qType === 'True/False' }
++          ].filter((x) => !x.hide).map((x) => (
++            <label key={x.k} className="flex items-center gap-3 pl-6 text-[11px] font-bold text-slate-700 cursor-pointer">
++              <input type="checkbox" checked={more[x.k]} onChange={(e) => (x.k === 'optionE' ? toggleE(e.target.checked) : setMore((m) => ({ ...m, [x.k]: e.target.checked })))} />
++              {x.l}
++            </label>
++          ))}
++        </div>
++
++        {/* RIGHT: content */}
++        <div className="bg-white rounded border border-slate-200">
++          <div className="border-b border-slate-200 px-3 pt-2">
++            <span className="inline-block px-3 py-1.5 text-[11px] border border-b-white border-slate-200 rounded-t -mb-px bg-white">{f.language || 'English'}</span>
++          </div>
++          <div className="p-4 space-y-5">
++            {more.instruction && (
++              <div>
++                <div className="text-xs font-bold text-slate-800 mb-1">Instruction</div>
++                <RichEditor value={f.instruction} onChange={(v) => set({ instruction: v })} minHeight={70} fontFamily={fontFamily} placeholder="e.g. Read the passage and answer the question that follows" />
++              </div>
++            )}
++            {more.passage && (
++              <div>
++                <div className="text-xs font-bold text-slate-800 mb-1">Passage</div>
++                <RichEditor value={f.passage} onChange={(v) => set({ passage: v })} minHeight={120} fontFamily={fontFamily} placeholder="Paste the case / passage here" />
++              </div>
++            )}
++            <div>
++              <div className="text-xs font-bold text-slate-800 mb-1">Type your Question</div>
++              <RichEditor value={f.q} onChange={(v) => set({ q: v })} minHeight={110} fontFamily={fontFamily} />
++            </div>
++
++            <div className="border-t border-slate-200 pt-3">
++              <div className="grid grid-cols-[110px_1fr] gap-3 text-[11px] font-semibold text-slate-600 mb-1">
++                <div className="text-center">CORRECT</div><div>QUESTION OPTION</div>
++              </div>
++              <div className="space-y-4">
++                {f.options.map((o, j) => (
++                  <div key={`${f.qType}-${j}`} className="grid grid-cols-[110px_1fr] gap-3 items-start border-b border-slate-100 pb-4 last:border-0">
++                    <label className="block border border-slate-200 rounded overflow-hidden cursor-pointer">
++                      <div className={`text-center text-xs font-bold py-1.5 ${f.answer === j ? 'bg-emerald-700' : 'bg-emerald-600'} text-white`}>{LETTERS[j]}</div>
++                      <div className={`py-2 flex justify-center ${f.answer === j ? 'bg-emerald-50' : 'bg-white'}`}>
++                        <input type="radio" name="correct" checked={f.answer === j} onChange={() => set({ answer: j })} className="w-4 h-4 accent-emerald-600" />
++                      </div>
++                    </label>
++                    {f.qType === 'True/False'
++                      ? <div className="px-3 py-2.5 border border-slate-300 rounded text-sm bg-slate-50">{o}</div>
++                      : <RichEditor value={o} onChange={(v) => setOpt(j, v)} minHeight={60} fontFamily={fontFamily} />}
++                  </div>
++                ))}
++              </div>
++            </div>
++
++            {more.solution && (
++              <div className="border-t border-slate-200 pt-3">
++                <div className="text-xs font-bold text-slate-800 mb-1">Solution</div>
++                <RichEditor value={f.rationale} onChange={(v) => set({ rationale: v })} minHeight={90} fontFamily={fontFamily} placeholder="Shown to students with the result" />
++              </div>
++            )}
++          </div>
++        </div>
++      </div>
++    </div>
++  );
++}
+diff -ruN a/client/src/components/RichEditor.jsx b/client/src/components/RichEditor.jsx
+--- a/client/src/components/RichEditor.jsx	1970-01-01 05:30:00.000000000 +0530
++++ b/client/src/components/RichEditor.jsx	2026-11-24 11:00:19.421154694 +0530
+@@ -0,0 +1,252 @@
++import React, { useEffect, useRef, useState } from 'react';
++import {
++  Undo2, Redo2, RemoveFormatting, Link2, Unlink, Image as ImageIcon, Table, Minus, Omega, Maximize2, Minimize2, Code2,
++  Bold, Italic, Underline, Strikethrough, Subscript, Superscript, ListOrdered, List, IndentDecrease, IndentIncrease, Quote,
++  AlignLeft, AlignCenter, AlignRight, AlignJustify, Palette
++} from 'lucide-react';
++import { sanitizeHtml } from './RichText';
++
++// Small rich-text editor for questions, options and solutions (CKEditor-style
++// toolbar, no extra packages). Value in / onChange out is HTML. Pasted Word /
++// web content is cleaned; images are shrunk in the browser (max 900 px, JPEG)
++// and kept inside the question so they never expire like a storage link.
++const SYMBOLS = ['±', '×', '÷', '°', 'µ', '≤', '≥', '≠', '≈', '∞', '√', 'π', 'Ω', 'α', 'β', 'γ', 'δ', 'Δ', 'λ', 'σ', '∑', '½', '¼', '¾', '²', '³', '→', '←', '↑', '↓', '•', '©', '®', '™', '₹', '€', '£', '§', '¶', '✓', '✗'];
++const FONTS = ['Arial', 'Calibri', 'Georgia', 'Times New Roman', 'Verdana', 'Tahoma', 'Courier New', 'Noto Sans Tamil', 'Latha', 'Nirmala UI'];
++const SIZES = [{ v: '2', l: 'Small' }, { v: '3', l: 'Normal' }, { v: '4', l: 'Large' }, { v: '5', l: 'X-Large' }, { v: '6', l: 'Huge' }];
++const FORMATS = [{ v: 'p', l: 'Paragraph' }, { v: 'h2', l: 'Heading 1' }, { v: 'h3', l: 'Heading 2' }, { v: 'h4', l: 'Heading 3' }, { v: 'pre', l: 'Formatted' }];
++const COLORS = ['#000000', '#475569', '#dc2626', '#ea580c', '#ca8a04', '#16a34a', '#0d9488', '#2563eb', '#7c3aed', '#db2777'];
++const MAX_IMAGE_BYTES = 250 * 1024;
++
++const isEmptyHtml = (html) => {
++  const s = String(html || '').trim();
++  if (!s) return true;
++  if (/<img\b|<table\b|<hr\b/i.test(s)) return false;
++  return !s.replace(/<[^>]+>/g, '').replace(/&nbsp;/g, '').trim();
++};
++
++// Resize + compress an image file to a data URL
++export function compressImage(file, maxSide = 900) {
++  return new Promise((resolve, reject) => {
++    if (!file || !/^image\//.test(file.type)) { reject(new Error('Choose an image file (PNG, JPG, GIF, WEBP).')); return; }
++    const reader = new FileReader();
++    reader.onerror = () => reject(new Error('Could not read the image.'));
++    reader.onload = () => {
++      const img = new window.Image();
++      img.onerror = () => reject(new Error('Could not open the image.'));
++      img.onload = () => {
++        const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
++        const canvas = document.createElement('canvas');
++        canvas.width = Math.max(1, Math.round(img.width * scale));
++        canvas.height = Math.max(1, Math.round(img.height * scale));
++        const ctx = canvas.getContext('2d');
++        ctx.fillStyle = '#ffffff';
++        ctx.fillRect(0, 0, canvas.width, canvas.height);
++        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
++        let q = 0.82;
++        let url = canvas.toDataURL('image/jpeg', q);
++        while (url.length * 0.75 > MAX_IMAGE_BYTES && q > 0.4) { q -= 0.12; url = canvas.toDataURL('image/jpeg', q); }
++        if (url.length * 0.75 > MAX_IMAGE_BYTES) { reject(new Error('This image is too large even after shrinking. Crop it and try again.')); return; }
++        resolve(url);
++      };
++      img.src = reader.result;
++    };
++    reader.readAsDataURL(file);
++  });
++}
++
++function Btn({ title, onClick, active, children }) {
++  return (
++    <button type="button" title={title} onMouseDown={(e) => e.preventDefault()} onClick={onClick}
++      className={`p-1 rounded text-slate-600 hover:bg-slate-200 ${active ? 'bg-slate-200 text-slate-900' : ''}`}>
++      {children}
++    </button>
++  );
++}
++const Sep = () => <span className="w-px h-4 bg-slate-300 mx-0.5" />;
++
++export default function RichEditor({ value, onChange, minHeight = 110, placeholder = '', fontFamily = '' }) {
++  const ref = useRef(null);
++  const lastHtml = useRef(null);
++  const savedRange = useRef(null);
++  const fileRef = useRef(null);
++  const [source, setSource] = useState(false);
++  const [max, setMax] = useState(false);
++  const [popup, setPopup] = useState(''); // symbols | colors
++  const [err, setErr] = useState('');
++
++  // Load outside value changes (open another question, Save & add another)
++  useEffect(() => {
++    if (source || !ref.current) return;
++    const v = String(value || '');
++    if (v !== lastHtml.current) {
++      ref.current.innerHTML = v && !/<[a-z][\s\S]*>/i.test(v) ? v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/\n/g, '<br>') : sanitizeHtml(v);
++      lastHtml.current = v;
++    }
++  }, [value, source]);
++
++  const emit = () => {
++    const html = ref.current ? ref.current.innerHTML : '';
++    const out = isEmptyHtml(html) ? '' : html;
++    lastHtml.current = out;
++    onChange?.(out);
++  };
++  const saveSel = () => {
++    const sel = window.getSelection();
++    if (sel && sel.rangeCount && ref.current?.contains(sel.anchorNode)) savedRange.current = sel.getRangeAt(0).cloneRange();
++  };
++  const restoreSel = () => {
++    ref.current?.focus();
++    const sel = window.getSelection();
++    if (savedRange.current && sel) { sel.removeAllRanges(); sel.addRange(savedRange.current); }
++  };
++  const exec = (cmd, arg = null) => {
++    if (source) return;
++    ref.current?.focus();
++    document.execCommand(cmd, false, arg);
++    emit();
++  };
++  const insertHtml = (html) => { restoreSel(); document.execCommand('insertHTML', false, html); emit(); };
++
++  const addImageFile = async (file) => {
++    setErr('');
++    try {
++      const url = await compressImage(file);
++      insertHtml(`<img src="${url}" alt="">`);
++    } catch (e) {
++      setErr(e.message);
++    }
++  };
++  const onPaste = (e) => {
++    const files = [...(e.clipboardData?.files || [])].filter((f) => /^image\//.test(f.type));
++    if (files.length) { e.preventDefault(); saveSel(); files.forEach(addImageFile); return; }
++    const html = e.clipboardData?.getData('text/html');
++    if (html) {
++      e.preventDefault();
++      // Word adds lots of markup: keep the formatting, drop classes / comments / scripts
++      document.execCommand('insertHTML', false, sanitizeHtml(html.replace(/<!--[\s\S]*?-->/g, '')));
++      emit();
++    }
++  };
++  const addLink = () => {
++    saveSel();
++    const url = window.prompt('Link address (https://…)', 'https://');
++    if (!url || !/^(https?:|mailto:)/i.test(url.trim())) return;
++    restoreSel();
++    exec('createLink', url.trim());
++  };
++  const addTable = () => {
++    saveSel();
++    const spec = window.prompt('Table size — rows x columns', '3x3');
++    const m = String(spec || '').match(/(\d+)\s*[x×*,]\s*(\d+)/i);
++    if (!m) return;
++    const rows = Math.min(20, Number(m[1]) || 1);
++    const cols = Math.min(10, Number(m[2]) || 1);
++    const cell = '<td style="border: 1px solid #94a3b8; padding: 4px 8px">&nbsp;</td>';
++    insertHtml(`<table style="border-collapse: collapse; width: 100%">${Array.from({ length: rows }, () => `<tr>${cell.repeat(cols)}</tr>`).join('')}</table><p><br></p>`);
++  };
++  const toggleSource = () => {
++    if (source) {
++      setSource(false); // effect reloads the edited HTML into the editor
++      lastHtml.current = null;
++    } else {
++      emit();
++      setSource(true);
++    }
++  };
++
++  const wrapCls = max ? 'fixed inset-0 z-[70] bg-white flex flex-col' : 'border border-slate-300 rounded';
++  const sel = 'text-[11px] bg-transparent border-l border-slate-300 pl-1 pr-0.5 py-0.5 text-slate-600 focus:outline-none';
++  return (
++    <div className={wrapCls}>
++      <div className="bg-slate-50 border-b border-slate-300 px-1.5 py-1 space-y-1 relative">
++        <div className="flex flex-wrap items-center gap-0.5">
++          <Btn title="Undo" onClick={() => exec('undo')}><Undo2 className="w-3.5 h-3.5" /></Btn>
++          <Btn title="Redo" onClick={() => exec('redo')}><Redo2 className="w-3.5 h-3.5" /></Btn>
++          <Sep />
++          <Btn title="Remove format" onClick={() => exec('removeFormat')}><RemoveFormatting className="w-3.5 h-3.5" /></Btn>
++          <Btn title="Link" onClick={addLink}><Link2 className="w-3.5 h-3.5" /></Btn>
++          <Btn title="Remove link" onClick={() => exec('unlink')}><Unlink className="w-3.5 h-3.5" /></Btn>
++          <Sep />
++          <Btn title="Image (upload, or paste a screenshot)" onClick={() => { saveSel(); fileRef.current?.click(); }}><ImageIcon className="w-3.5 h-3.5" /></Btn>
++          <Btn title="Table" onClick={addTable}><Table className="w-3.5 h-3.5" /></Btn>
++          <Btn title="Horizontal line" onClick={() => exec('insertHorizontalRule')}><Minus className="w-3.5 h-3.5" /></Btn>
++          <Btn title="Special character" active={popup === 'symbols'} onClick={() => { saveSel(); setPopup(popup === 'symbols' ? '' : 'symbols'); }}><Omega className="w-3.5 h-3.5" /></Btn>
++          <Btn title="Text colour" active={popup === 'colors'} onClick={() => { saveSel(); setPopup(popup === 'colors' ? '' : 'colors'); }}><Palette className="w-3.5 h-3.5" /></Btn>
++          <Sep />
++          <Btn title={max ? 'Exit full screen' : 'Full screen'} onClick={() => setMax(!max)}>{max ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}</Btn>
++          <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={toggleSource}
++            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] ${source ? 'bg-slate-200 text-slate-900' : 'text-slate-600 hover:bg-slate-200'}`}>
++            <Code2 className="w-3.5 h-3.5" />Source
++          </button>
++        </div>
++        <div className="flex flex-wrap items-center gap-0.5">
++          <Btn title="Bold" onClick={() => exec('bold')}><Bold className="w-3.5 h-3.5" /></Btn>
++          <Btn title="Italic" onClick={() => exec('italic')}><Italic className="w-3.5 h-3.5" /></Btn>
++          <Btn title="Underline" onClick={() => exec('underline')}><Underline className="w-3.5 h-3.5" /></Btn>
++          <Btn title="Strike" onClick={() => exec('strikeThrough')}><Strikethrough className="w-3.5 h-3.5" /></Btn>
++          <Btn title="Subscript" onClick={() => exec('subscript')}><Subscript className="w-3.5 h-3.5" /></Btn>
++          <Btn title="Superscript" onClick={() => exec('superscript')}><Superscript className="w-3.5 h-3.5" /></Btn>
++          <Sep />
++          <Btn title="Numbered list" onClick={() => exec('insertOrderedList')}><ListOrdered className="w-3.5 h-3.5" /></Btn>
++          <Btn title="Bulleted list" onClick={() => exec('insertUnorderedList')}><List className="w-3.5 h-3.5" /></Btn>
++          <Btn title="Decrease indent" onClick={() => exec('outdent')}><IndentDecrease className="w-3.5 h-3.5" /></Btn>
++          <Btn title="Increase indent" onClick={() => exec('indent')}><IndentIncrease className="w-3.5 h-3.5" /></Btn>
++          <Btn title="Quote" onClick={() => exec('formatBlock', 'blockquote')}><Quote className="w-3.5 h-3.5" /></Btn>
++          <Sep />
++          <Btn title="Align left" onClick={() => exec('justifyLeft')}><AlignLeft className="w-3.5 h-3.5" /></Btn>
++          <Btn title="Centre" onClick={() => exec('justifyCenter')}><AlignCenter className="w-3.5 h-3.5" /></Btn>
++          <Btn title="Align right" onClick={() => exec('justifyRight')}><AlignRight className="w-3.5 h-3.5" /></Btn>
++          <Btn title="Justify" onClick={() => exec('justifyFull')}><AlignJustify className="w-3.5 h-3.5" /></Btn>
++          <select className={sel} value="" onMouseDown={saveSel} onChange={(e) => { restoreSel(); exec('formatBlock', e.target.value); }}>
++            <option value="" disabled>Format</option>
++            {FORMATS.map((f) => <option key={f.v} value={f.v}>{f.l}</option>)}
++          </select>
++          <select className={sel} value="" onMouseDown={saveSel} onChange={(e) => { restoreSel(); exec('fontName', e.target.value); }}>
++            <option value="" disabled>Font</option>
++            {FONTS.map((f) => <option key={f} value={f}>{f}</option>)}
++          </select>
++          <select className={sel} value="" onMouseDown={saveSel} onChange={(e) => { restoreSel(); exec('fontSize', e.target.value); }}>
++            <option value="" disabled>Size</option>
++            {SIZES.map((f) => <option key={f.v} value={f.v}>{f.l}</option>)}
++          </select>
++        </div>
++        {popup === 'symbols' && (
++          <div className="absolute z-20 left-2 top-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg p-2 grid grid-cols-10 gap-1 w-80">
++            {SYMBOLS.map((c) => (
++              <button key={c} type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => { setPopup(''); insertHtml(c); }}
++                className="w-7 h-7 rounded border border-slate-200 hover:bg-sky-50 text-sm">{c}</button>
++            ))}
++          </div>
++        )}
++        {popup === 'colors' && (
++          <div className="absolute z-20 left-24 top-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg p-2 flex gap-1">
++            {COLORS.map((c) => (
++              <button key={c} type="button" title={c} onMouseDown={(e) => e.preventDefault()} onClick={() => { setPopup(''); restoreSel(); exec('foreColor', c); }}
++                className="w-6 h-6 rounded border border-slate-300" style={{ background: c }} />
++            ))}
++          </div>
++        )}
++      </div>
++      {source ? (
++        <textarea value={value || ''} onChange={(e) => { lastHtml.current = null; onChange?.(e.target.value); }}
++          className={`w-full p-3 font-mono text-xs focus:outline-none ${max ? 'flex-1' : ''}`} style={{ minHeight }} />
++      ) : (
++        <div
++          ref={ref}
++          contentEditable
++          suppressContentEditableWarning
++          data-placeholder={placeholder}
++          onInput={emit}
++          onBlur={() => { saveSel(); emit(); }}
++          onKeyUp={saveSel}
++          onMouseUp={saveSel}
++          onPaste={onPaste}
++          className={`tf-rich tf-editor p-3 text-sm text-slate-900 focus:outline-none overflow-auto ${max ? 'flex-1' : ''}`}
++          style={{ minHeight, fontFamily: fontFamily || undefined }}
++        />
++      )}
++      {err && <div className="px-3 py-1.5 text-xs text-rose-600 bg-rose-50 border-t border-rose-200">{err}</div>}
++      <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) addImageFile(f); }} />
++    </div>
++  );
++}
+diff -ruN a/client/src/components/RichText.jsx b/client/src/components/RichText.jsx
+--- a/client/src/components/RichText.jsx	1970-01-01 05:30:00.000000000 +0530
++++ b/client/src/components/RichText.jsx	2026-11-24 11:00:19.421141645 +0530
+@@ -0,0 +1,70 @@
++import React, { useMemo } from 'react';
++
++// Shows question / option / solution text written in the question editor.
++// Old questions are plain text (shown with their line breaks); new ones are
++// HTML. HTML is cleaned in the browser with a whitelist before it is shown,
++// so nothing executable from a pasted document can run.
++const TAGS = new Set(['b', 'strong', 'i', 'em', 'u', 's', 'strike', 'del', 'sub', 'sup', 'p', 'br', 'div', 'span', 'ul', 'ol', 'li',
++  'blockquote', 'table', 'thead', 'tbody', 'tfoot', 'tr', 'td', 'th', 'caption', 'img', 'a', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
++  'font', 'hr', 'pre', 'code', 'small', 'big', 'mark', 'center']);
++const ATTRS = new Set(['style', 'href', 'src', 'alt', 'title', 'colspan', 'rowspan', 'face', 'size', 'color', 'align', 'width', 'height', 'border', 'cellpadding', 'cellspacing']);
++const STYLES = new Set(['color', 'background-color', 'font-family', 'font-size', 'font-weight', 'font-style', 'text-align', 'text-decoration',
++  'text-decoration-line', 'width', 'height', 'max-width', 'border', 'border-collapse', 'padding', 'margin-left', 'vertical-align', 'line-height']);
++
++export const looksLikeHtml = (v) => /<\/?[a-z][\s\S]*?>/i.test(String(v || ''));
++
++export function sanitizeHtml(html) {
++  if (typeof window === 'undefined' || !window.DOMParser) return '';
++  const doc = new window.DOMParser().parseFromString(`<div>${String(html || '')}</div>`, 'text/html');
++  const root = doc.body.firstChild;
++  const clean = (node) => {
++    [...node.childNodes].forEach((child) => {
++      if (child.nodeType === 8) { child.remove(); return; } // comments
++      if (child.nodeType !== 1) return;
++      const tag = child.tagName.toLowerCase();
++      if (!TAGS.has(tag)) {
++        if (['script', 'style', 'iframe', 'object', 'embed', 'noscript', 'template', 'svg', 'math'].includes(tag)) { child.remove(); return; }
++        clean(child);
++        child.replaceWith(...child.childNodes); // keep the text, drop the tag
++        return;
++      }
++      [...child.attributes].forEach((a) => {
++        const name = a.name.toLowerCase();
++        if (!ATTRS.has(name)) { child.removeAttribute(a.name); return; }
++        if (name === 'href' && !/^(https?:|mailto:|#)/i.test(a.value.trim())) child.removeAttribute(a.name);
++        if (name === 'src' && !/^(https:|data:image\/(png|jpe?g|gif|webp);)/i.test(a.value.trim())) child.removeAttribute(a.name);
++        if (name === 'style') {
++          const kept = a.value.split(';').map((d) => d.trim()).filter((d) => {
++            const [prop, ...rest] = d.split(':');
++            const val = rest.join(':');
++            return prop && STYLES.has(prop.trim().toLowerCase()) && !/url\(|expression|javascript/i.test(val);
++          });
++          if (kept.length) child.setAttribute('style', kept.join('; '));
++          else child.removeAttribute('style');
++        }
++      });
++      if (tag === 'a') { child.setAttribute('target', '_blank'); child.setAttribute('rel', 'noopener noreferrer'); }
++      if (tag === 'img') child.setAttribute('style', `${child.getAttribute('style') || ''}; max-width: 100%; height: auto`.replace(/^; /, ''));
++      clean(child);
++    });
++  };
++  clean(root);
++  return root.innerHTML;
++}
++
++// Plain text of a question (search, previews, confirm dialogs)
++export function htmlToText(v) {
++  const s = String(v || '');
++  if (!looksLikeHtml(s)) return s;
++  if (typeof window === 'undefined' || !window.DOMParser) return s.replace(/<[^>]+>/g, ' ');
++  const doc = new window.DOMParser().parseFromString(s.replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|li)>/gi, '\n'), 'text/html');
++  return (doc.body.textContent || '').replace(/[ \t]+/g, ' ').replace(/\n\s*\n+/g, '\n').trim();
++}
++
++export default function RichText({ html, className = '', as: Tag = 'div', style }) {
++  const value = String(html || '');
++  const isHtml = looksLikeHtml(value);
++  const clean = useMemo(() => (isHtml ? sanitizeHtml(value) : ''), [value, isHtml]);
++  if (!isHtml) return <Tag className={`whitespace-pre-line ${className}`} style={style}>{value}</Tag>;
++  return <Tag className={`tf-rich ${className}`} style={style} dangerouslySetInnerHTML={{ __html: clean }} />;
++}
+diff -ruN a/client/src/components/StudentOnlineTest.jsx b/client/src/components/StudentOnlineTest.jsx
+--- a/client/src/components/StudentOnlineTest.jsx	2026-11-24 11:00:19.417553586 +0530
++++ b/client/src/components/StudentOnlineTest.jsx	2026-11-24 11:00:19.421026604 +0530
+@@ -26,6 +26,9 @@
+   reallocateStudentTest,
+   reportTestQuestion
+ } from '../services/api';
++import RichText, { htmlToText } from './RichText';
++
++const fontOf = (q) => (q?.font ? { fontFamily: q.font === 'ARIAL' ? 'Arial' : q.font } : undefined);
+ 
+ // Student side of an online MCQ test. The server owns the clock (endsAt) and
+ // the grading; answers are autosaved so a dropped connection loses nothing.
+@@ -212,8 +215,8 @@
+       return;
+     }
+     const correctLetter = LETTERS[q.answer] || '';
+-    const correctText = q.options?.[q.answer] || '';
+-    const explanation = q.audioRationaleText || q.rationale || 'Review course reference materials for full guidance.';
++    const correctText = htmlToText(q.options?.[q.answer] || '');
++    const explanation = htmlToText(q.audioRationaleText || q.rationale || '') || 'Review course reference materials for full guidance.';
+     const toSpeak = `Explanation for Question ${index + 1}. The correct answer is option ${correctLetter}, ${correctText}. Rationale: ${explanation}`;
+ 
+     const utterance = new SpeechSynthesisUtterance(toSpeak);
+@@ -312,12 +315,14 @@
+                       </div>
+                       <span>+{q.marks} mark{q.marks > 1 ? 's' : ''}{q.negMarks ? <span className="text-rose-500"> · −{q.negMarks} if wrong</span> : null}</span>
+                     </div>
+-                    <p className="text-sm text-slate-900 font-semibold whitespace-pre-line">{q.q}</p>
++                    {q.instruction && <RichText html={q.instruction} className="text-xs text-slate-600 italic mb-2" style={fontOf(q)} />}
++                    {q.passage && <RichText html={q.passage} className="text-sm text-slate-800 bg-slate-50 border border-slate-200 rounded-xl p-3 mb-3 max-h-72 overflow-y-auto" style={fontOf(q)} />}
++                    <RichText html={q.q} className="text-sm text-slate-900 font-semibold" style={fontOf(q)} />
+                     <div className="mt-4 space-y-2">
+                       {q.options.map((o, j) => (
+                         <button key={j} onClick={() => choose(current, j)} className={`w-full text-left px-4 py-3 rounded-xl border text-sm flex items-start gap-3 transition cursor-pointer ${answers[current] === j ? 'bg-indigo-50 border-[#483ec7] text-slate-900' : 'bg-white border-slate-200 hover:border-slate-300 text-slate-700'}`}>
+                           <span className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 ${answers[current] === j ? 'bg-[#483ec7] text-white' : 'bg-slate-100 text-slate-500'}`}>{LETTERS[j]}</span>
+-                          <span>{o}</span>
++                          <RichText html={o} as="span" style={fontOf(q)} />
+                         </button>
+                       ))}
+                     </div>
+@@ -451,8 +456,12 @@
+                           }`}
+                         >
+                           <div className="flex items-start justify-between gap-3 mb-2">
+-                            <div className="font-bold text-slate-900 whitespace-pre-line flex-1">
+-                              {i + 1}. {q.q}
++                            <div className="font-bold text-slate-900 flex-1 flex gap-1" style={fontOf(q)}>
++                              <span>{i + 1}.</span>
++                              <div className="flex-1">
++                                {q.passage && <RichText html={q.passage} className="font-normal text-slate-700 bg-slate-50 border border-slate-200 rounded-lg p-2 mb-2" />}
++                                <RichText html={q.q} />
++                              </div>
+                             </div>
+                             <div className="flex items-center gap-1.5 shrink-0">
+                               {q.chapter && (
+@@ -485,7 +494,7 @@
+                                     : 'text-slate-600'
+                                 }`}
+                               >
+-                                <span>{LETTERS[j]}. {o}</span>
++                                <span className="flex gap-1"><span>{LETTERS[j]}.</span><RichText html={o} as="span" /></span>
+                                 {j === q.answer && <span className="text-[10px] font-bold text-emerald-700">✓ Correct Choice</span>}
+                                 {j === q.yours && j !== q.answer && <span className="text-[10px] font-bold text-rose-600">Your Choice</span>}
+                               </div>
+@@ -512,9 +521,7 @@
+                                 <span>{isPlaying ? 'Playing Audio (Stop)' : 'Listen to Audio Rationale'}</span>
+                               </button>
+                             </div>
+-                            <p className="text-[11.5px] text-slate-700 leading-relaxed whitespace-pre-line">
+-                              {q.rationale || 'The correct option aligns with standard medical coding guidelines and anatomical references.'}
+-                            </p>
++                            <RichText html={q.rationale || 'The correct option aligns with standard medical coding guidelines and anatomical references.'} className="text-[11.5px] text-slate-700 leading-relaxed" />
+                           </div>
+                         </div>
+                       );
+diff -ruN a/client/src/components/TestQuestionBank.jsx b/client/src/components/TestQuestionBank.jsx
+--- a/client/src/components/TestQuestionBank.jsx	2026-11-24 11:00:19.417153998 +0530
++++ b/client/src/components/TestQuestionBank.jsx	2026-11-24 11:00:19.420828245 +0530
+@@ -1,15 +1,16 @@
+-import React, { useEffect, useMemo, useState } from 'react';
+-import { ArrowLeft, Plus, Pencil, Trash2, Upload, X, Flag, CheckCircle2, AlertCircle, Search, SlidersHorizontal } from 'lucide-react';
+-import { saveTestQuestions } from '../services/api';
+-import { AAPC_CHAPTERS } from './OnlineTestBuilder';
+-
+-// Test Series → Questions: the question bank of one test, laid out like the
+-// online test panel (question, options, ANS, marks +x/-y, solution, topic,
+-// subject, type, bonus marks, hint). Every change saves the whole list through
+-// the same endpoint the online test builder uses, so submitted attempts are
+-// re-graded automatically.
++import React, { useCallback, useEffect, useMemo, useState } from 'react';
++import { ArrowLeft, Plus, Pencil, Trash2, Upload, X, Flag, CheckCircle2, AlertCircle, Search, SlidersHorizontal, ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react';
++import {
++  getQuestionBankMeta, getQuestionBank, addBankQuestions, deleteBankQuestion, setBankMarking, resolveBankQuestion
++} from '../services/api';
++import RichText, { htmlToText } from './RichText';
++import QuestionEditor, { LANGUAGES } from './QuestionEditor';
++
++// Question Bank: every Test Series question in one list (paged on the server,
++// so 19,000+ questions stay quick), filtered by test, subject, topic, type,
++// language, text and reported. Add / Edit open the full-page question editor.
++// fixedTestId + onBack: opened from Test List → Action → Questions.
+ const LETTERS = 'abcdef';
+-const LANGUAGES = ['English', 'Tamil', 'Hindi', 'Telugu', 'Malayalam', 'Kannada'];
+ const errOf = (e) => e?.response?.data?.error || e?.message || 'Something went wrong';
+ const numOr = (v, d) => (v === '' || v == null || !Number.isFinite(Number(v)) ? d : Number(v));
+ 
+@@ -27,7 +28,7 @@
+ //   d. Muscle
+ //   ANS: c
+ //   Solution: A phalanx is a digital bone …
+-// Also accepts "A) …" options and a * after the correct option.
++// Also accepts "A) …" options, a * after the correct option, "Marks: +1, -0.25" and "Hint: …".
+ export function parseQuestionText(text, defaults = {}) {
+   const out = [];
+   let cur = null;
+@@ -70,126 +71,10 @@
+   return out;
+ }
+ 
+-function QuestionForm({ initial, onCancel, onSave, saving }) {
+-  const [f, setF] = useState(() => ({ ...blankQ(), ...initial, options: [...(initial?.options || ['', '', '', ''])] }));
+-  const set = (patch) => setF((x) => ({ ...x, ...patch }));
+-  const inp = 'mt-1 w-full px-3 py-2 rounded-lg border border-slate-300 text-sm focus:outline-none focus:border-sky-500';
+-  const setType = (qType) => set(qType === 'True/False'
+-    ? { qType, options: ['True', 'False'], answer: Math.min(f.answer, 1) }
+-    : { qType, options: f.qType === 'True/False' ? ['', '', '', ''] : f.options });
+-  const editOpt = (j, v) => set({ options: f.options.map((o, k) => (k === j ? v : o)) });
+-  const removeOpt = (j) => {
+-    if (f.options.length <= 2) return;
+-    set({ options: f.options.filter((_, k) => k !== j), answer: f.answer === j ? 0 : f.answer > j ? f.answer - 1 : f.answer });
+-  };
+-  const problem = !f.q.trim() ? 'Type the question.'
+-    : f.options.some((o) => !String(o).trim()) ? 'Fill every option (or remove the empty one).'
+-      : null;
+-  return (
+-    <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center p-4 overflow-y-auto" onClick={onCancel}>
+-      <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl my-8" onClick={(e) => e.stopPropagation()}>
+-        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200">
+-          <h3 className="text-base font-bold text-slate-900">{initial?._isNew ? 'Add Question' : 'Edit Question'}</h3>
+-          <button type="button" onClick={onCancel} className="p-1 rounded hover:bg-slate-100"><X className="w-4 h-4" /></button>
+-        </div>
+-        <div className="p-5 space-y-4">
+-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+-            <label className="block">
+-              <span className="text-xs font-bold text-slate-600">Question type</span>
+-              <select value={f.qType} onChange={(e) => setType(e.target.value)} className={inp}>
+-                <option value="MCQ">MCQ</option>
+-                <option value="True/False">True / False</option>
+-              </select>
+-            </label>
+-            <label className="block">
+-              <span className="text-xs font-bold text-slate-600">Language</span>
+-              <select value={f.language} onChange={(e) => set({ language: e.target.value })} className={inp}>
+-                {LANGUAGES.map((l) => <option key={l}>{l}</option>)}
+-              </select>
+-            </label>
+-            <label className="block">
+-              <span className="text-xs font-bold text-slate-600">Subject</span>
+-              <input value={f.subject} onChange={(e) => set({ subject: e.target.value })} placeholder="e.g. MOCK TEST" className={inp} />
+-            </label>
+-            <label className="block">
+-              <span className="text-xs font-bold text-slate-600">Topic</span>
+-              <input value={f.topic} onChange={(e) => set({ topic: e.target.value })} placeholder="e.g. Anatomy" className={inp} />
+-            </label>
+-          </div>
+-
+-          <label className="block">
+-            <span className="text-xs font-bold text-slate-600">Question *</span>
+-            <textarea value={f.q} onChange={(e) => set({ q: e.target.value })} rows={3} className={inp} placeholder="The phalanx is a:" />
+-          </label>
+-
+-          <div>
+-            <span className="text-xs font-bold text-slate-600">Options — tick the correct answer *</span>
+-            <div className="mt-1 space-y-2">
+-              {f.options.map((o, j) => (
+-                <div key={j} className="flex items-center gap-2">
+-                  <input type="radio" name="ans" checked={f.answer === j} onChange={() => set({ answer: j })} className="w-4 h-4 accent-emerald-600" />
+-                  <span className="w-5 text-sm font-bold text-slate-500">{LETTERS[j]}.</span>
+-                  <input value={o} disabled={f.qType === 'True/False'} onChange={(e) => editOpt(j, e.target.value)}
+-                    className={`flex-1 px-3 py-2 rounded-lg border text-sm ${f.answer === j ? 'border-emerald-400 bg-emerald-50' : 'border-slate-300'}`} />
+-                  {f.qType !== 'True/False' && f.options.length > 2 && (
+-                    <button type="button" onClick={() => removeOpt(j)} className="p-1.5 text-slate-400 hover:text-rose-600"><X className="w-4 h-4" /></button>
+-                  )}
+-                </div>
+-              ))}
+-              {f.qType !== 'True/False' && f.options.length < 6 && (
+-                <button type="button" onClick={() => set({ options: [...f.options, ''] })} className="text-xs font-bold text-sky-700 hover:underline">+ Add option</button>
+-              )}
+-            </div>
+-          </div>
+-
+-          <div className="grid grid-cols-3 gap-3">
+-            <label className="block">
+-              <span className="text-xs font-bold text-slate-600">Marks (+)</span>
+-              <input type="number" min={1} max={20} value={f.marks} onChange={(e) => set({ marks: e.target.value })} className={inp} />
+-            </label>
+-            <label className="block">
+-              <span className="text-xs font-bold text-slate-600">Negative marks (−)</span>
+-              <input type="number" min={0} max={20} step="0.25" value={f.negMarks} onChange={(e) => set({ negMarks: e.target.value })} className={inp} />
+-            </label>
+-            <label className="block">
+-              <span className="text-xs font-bold text-slate-600">Bonus marks</span>
+-              <input type="number" min={0} max={20} step="0.25" value={f.bonusMarks} onChange={(e) => set({ bonusMarks: e.target.value })} className={inp} />
+-            </label>
+-          </div>
+-          <p className="-mt-2 text-[11px] text-slate-500">Negative marks are taken off for a wrong answer (skipped = 0). Bonus marks &gt; 0 give <b>every</b> student those marks for this question whatever they answered — use it for a wrong or disputed question.</p>
+-
+-          <label className="block">
+-            <span className="text-xs font-bold text-slate-600">Solution (shown after the result is published)</span>
+-            <textarea value={f.rationale} onChange={(e) => set({ rationale: e.target.value })} rows={3} className={inp} placeholder="A phalanx (plural: phalanges) is a digital bone…" />
+-          </label>
+-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+-            <label className="block">
+-              <span className="text-xs font-bold text-slate-600">Hint (students can open it during the test)</span>
+-              <input value={f.hint} onChange={(e) => set({ hint: e.target.value })} className={inp} placeholder="Optional" />
+-            </label>
+-            <label className="block">
+-              <span className="text-xs font-bold text-slate-600">AAPC chapter (score report)</span>
+-              <select value={f.chapter} onChange={(e) => set({ chapter: e.target.value })} className={inp}>
+-                <option value="">— none —</option>
+-                {AAPC_CHAPTERS.map((c) => <option key={c}>{c}</option>)}
+-              </select>
+-            </label>
+-          </div>
+-        </div>
+-        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-slate-200">
+-          {problem && <span className="mr-auto text-xs text-rose-600 font-semibold">{problem}</span>}
+-          <button type="button" onClick={onCancel} className="px-4 py-2 rounded-lg text-sm font-semibold text-slate-600 hover:bg-slate-100">Cancel</button>
+-          <button type="button" disabled={saving || Boolean(problem)} onClick={() => onSave(f)}
+-            className="px-4 py-2 rounded-lg text-sm font-bold bg-sky-600 hover:bg-sky-700 text-white disabled:opacity-50">{saving ? 'Saving…' : 'Save question'}</button>
+-        </div>
+-      </div>
+-    </div>
+-  );
+-}
+-
+-function ImportModal({ test, onCancel, onImport, saving }) {
++function ImportModal({ tests, testId: initialTestId, onCancel, onImport, saving }) {
+   const [text, setText] = useState('');
+-  const [d, setD] = useState({ marks: 1, negMarks: 0, subject: test.topic || '', topic: '', language: 'English' });
++  const [testId, setTestId] = useState(initialTestId || '');
++  const [d, setD] = useState({ marks: 1, negMarks: 0, subject: '', topic: '', language: 'English' });
+   const defaults = { marks: numOr(d.marks, 1), negMarks: numOr(d.negMarks, 0), subject: d.subject, topic: d.topic, language: d.language };
+   const parsed = useMemo(() => parseQuestionText(text, defaults), [text, d]); // eslint-disable-line react-hooks/exhaustive-deps
+   const inp = 'mt-1 w-full px-2.5 py-1.5 rounded-lg border border-slate-300 text-sm';
+@@ -213,6 +98,13 @@
+ Solution: A phalanx (plural: phalanges) is a digital bone found in the fingers and toes.`}</pre>
+             <div className="mt-1 text-slate-500">Optional lines per question: <code>Marks: +1, -0.25</code> and <code>Hint: …</code>. A * after an option also marks it correct.</div>
+           </div>
++          <label className="block text-xs font-bold text-slate-600">Add to test *
++            <select value={testId} onChange={(e) => setTestId(e.target.value)} className={inp}>
++              <option value="">Select Test</option>
++              {tests.map((t) => <option key={t.id} value={t.id}>{t.name}{t.seriesName ? ` — ${t.seriesName}` : ''}{t.testCode ? ` (${t.testCode})` : ''} · {t.questionCount} questions</option>)}
++            </select>
++          </label>
++          <div className="text-[11px] text-slate-500">A test holds up to 200 questions — import a big bank test by test.</div>
+           <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+             <label className="block text-xs font-bold text-slate-600">Marks +<input type="number" value={d.marks} onChange={(e) => setD({ ...d, marks: e.target.value })} className={inp} /></label>
+             <label className="block text-xs font-bold text-slate-600">Negative −<input type="number" step="0.25" value={d.negMarks} onChange={(e) => setD({ ...d, negMarks: e.target.value })} className={inp} /></label>
+@@ -234,7 +126,7 @@
+         </div>
+         <div className="flex justify-end gap-2 px-5 py-3 border-t border-slate-200">
+           <button type="button" onClick={onCancel} className="px-4 py-2 rounded-lg text-sm font-semibold text-slate-600 hover:bg-slate-100">Cancel</button>
+-          <button type="button" disabled={saving || !parsed.length} onClick={() => onImport(parsed)}
++          <button type="button" disabled={saving || !parsed.length || !testId} onClick={() => onImport(testId, parsed)}
+             className="px-4 py-2 rounded-lg text-sm font-bold bg-sky-600 hover:bg-sky-700 text-white disabled:opacity-50">{saving ? 'Importing…' : `Add ${parsed.length} question${parsed.length === 1 ? '' : 's'}`}</button>
+         </div>
+       </div>
+@@ -242,128 +134,157 @@
+   );
+ }
+ 
+-export default function TestQuestionBank({ test, canManage, onBack, onSaved }) {
+-  const [questions, setQuestions] = useState(test.questions || []);
+-  const [qType, setQType] = useState('');
+-  const [language, setLanguage] = useState('English');
+-  const [search, setSearch] = useState('');
+-  const [reportedOnly, setReportedOnly] = useState(false);
+-  const [editing, setEditing] = useState(null); // { index, q }
+-  const [importing, setImporting] = useState(false);
+-  const [scheme, setScheme] = useState(null); // { marks, negMarks }
+-  const [saving, setSaving] = useState(false);
++export default function TestQuestionBank({ canManage, fixedTestId = '', onBack }) {
++  const [meta, setMeta] = useState(null);
++  const [rows, setRows] = useState([]);
++  const [total, setTotal] = useState(0);
++  const [loading, setLoading] = useState(true);
+   const [error, setError] = useState('');
+   const [toast, setToast] = useState('');
+-
+-  useEffect(() => { setQuestions(test.questions || []); }, [test]);
+-
+-  const languages = useMemo(() => [...new Set([...LANGUAGES, ...questions.map((q) => q.language || 'English')])], [questions]);
+-  const rows = useMemo(() => {
+-    const s = search.trim().toLowerCase();
+-    return questions.map((q, index) => ({ q, index })).filter(({ q }) => (!qType || (q.qType || 'MCQ') === qType)
+-      && (!language || (q.language || 'English') === language)
+-      && (!reportedOnly || (q.reports || []).length)
+-      && (!s || [q.q, q.topic, q.subject, q.rationale, ...(q.options || [])].some((v) => String(v || '').toLowerCase().includes(s))));
+-  }, [questions, qType, language, search, reportedOnly]);
+-  const totalMarks = questions.reduce((a, q) => a + (Number(q.marks) || 1), 0);
+-  const reported = questions.filter((q) => (q.reports || []).length).length;
+-
+-  const persist = async (list, msg) => {
+-    setSaving(true);
+-    setError('');
++  const [saving, setSaving] = useState(false);
++  const [f, setF] = useState({ limit: 10, page: 1, testId: fixedTestId, subject: '', topic: '', qType: '', language: 'English', search: '', reported: false });
++  const [searchText, setSearchText] = useState('');
++  const [editor, setEditor] = useState(null); // { initial } — full-page add / edit
++  const [importing, setImporting] = useState(false);
++  const [scheme, setScheme] = useState(null);
++  const set = (patch) => setF((x) => ({ ...x, page: 1, ...patch }));
++  const flash = (m) => { setToast(m); setTimeout(() => setToast(''), 3000); };
++
++  const loadMeta = useCallback(async () => {
++    try { setMeta(await getQuestionBankMeta()); } catch (e) { setError(errOf(e)); }
++  }, []);
++  const load = useCallback(async () => {
++    setLoading(true);
+     try {
+-      await saveTestQuestions(test.id, {
+-        questions: list.map((q) => ({
+-          ...q,
+-          options: (q.options || []).map((o) => String(o).trim()),
+-          marks: Math.max(1, Math.round(numOr(q.marks, 1))),
+-          negMarks: numOr(q.negMarks, 0),
+-          bonusMarks: numOr(q.bonusMarks, 0)
+-        }))
++      const data = await getQuestionBank({
++        page: f.page, limit: f.limit, testId: f.testId || undefined, subject: f.subject || undefined, topic: f.topic || undefined,
++        qType: f.qType || undefined, language: f.language || undefined, search: f.search || undefined, reported: f.reported ? 'true' : undefined
+       });
+-      setQuestions(list);
+-      setToast(msg);
+-      setTimeout(() => setToast(''), 3000);
+-      onSaved?.();
+-      return true;
++      setRows(data?.rows || []);
++      setTotal(data?.total || 0);
++      setError('');
+     } catch (e) {
+       setError(errOf(e));
+-      return false;
+     } finally {
+-      setSaving(false);
++      setLoading(false);
+     }
+-  };
++  }, [f]);
++  useEffect(() => { loadMeta(); }, [loadMeta]);
++  useEffect(() => { load(); }, [load]);
++  // search as you type (after a short pause)
++  useEffect(() => {
++    const t = setTimeout(() => { if (searchText !== f.search) set({ search: searchText }); }, 400);
++    return () => clearTimeout(t);
++  }, [searchText]); // eslint-disable-line react-hooks/exhaustive-deps
+ 
+-  const saveOne = async (f) => {
+-    const { _isNew, ...q } = f;
+-    const list = editing.index < 0 ? [...questions, q] : questions.map((x, i) => (i === editing.index ? q : x));
+-    if (await persist(list, _isNew ? '✓ Question added' : '✓ Question saved')) setEditing(null);
+-  };
+-  const remove = (index) => {
+-    if (!window.confirm(`Delete question ${index + 1}?`)) return;
+-    persist(questions.filter((_, i) => i !== index), 'Question deleted');
++  const refresh = () => { load(); loadMeta(); };
++  const run = async (fn, msg) => {
++    setSaving(true);
++    setError('');
++    try { await fn(); flash(msg); refresh(); return true; } catch (e) { setError(errOf(e)); return false; } finally { setSaving(false); }
+   };
+-  const resolve = (index) => persist(questions.map((q, i) => (i === index ? { ...q, resolveReports: true, reports: [] } : q)), '✓ Reports marked resolved');
+-  const importMany = async (list) => { if (await persist([...questions, ...list], `✓ ${list.length} questions imported`)) setImporting(false); };
+-  const applyScheme = async () => {
+-    const marks = numOr(scheme.marks, 1);
+-    const negMarks = numOr(scheme.negMarks, 0);
+-    if (await persist(questions.map((q) => ({ ...q, marks, negMarks })), `✓ Every question now +${marks}, -${negMarks}`)) setScheme(null);
++
++  const tests = meta?.tests || [];
++  const subjects = Object.keys(meta?.subjects || {}).sort();
++  const topics = f.subject ? (meta?.subjects?.[f.subject] || []) : [...new Set(Object.values(meta?.subjects || {}).flat())].sort();
++  const languages = [...new Set([...LANGUAGES, ...(meta?.languages || [])])];
++  const pages = Math.max(1, Math.ceil(total / f.limit));
++  const selTest = tests.find((t) => t.id === f.testId);
++
++  const remove = (r) => {
++    if (!window.confirm(`Delete this question from ${r.testName}?\n\n${htmlToText(r.question.q).slice(0, 160)}`)) return;
++    run(() => deleteBankQuestion(r.testId, r.question._id), 'Question deleted');
+   };
+ 
++  if (editor) {
++    return (
++      <QuestionEditor
++        meta={meta}
++        initial={editor.initial}
++        testId={f.testId}
++        onCancel={() => { setEditor(null); refresh(); }}
++        onSaved={() => { flash('✓ Question saved'); loadMeta(); }}
++      />
++    );
++  }
++
+   return (
+-    <div className="space-y-4 max-w-[1400px]">
++    <div className="space-y-4 max-w-[1600px]">
+       {toast && <div className="fixed bottom-5 right-5 z-50 p-3 rounded-xl bg-slate-900 text-white text-xs font-semibold shadow-lg">{toast}</div>}
+ 
+-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
++      {onBack && <div className="flex items-center justify-between gap-3">
+         <div className="flex items-center gap-3">
+-          <button type="button" onClick={onBack} className="p-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-50"><ArrowLeft className="w-4 h-4" /></button>
+-          <div>
+-            <h2 className="text-xl font-normal text-slate-800">{test.name} <span className="text-sm text-slate-400 font-mono">{test.testCode}</span></h2>
+-            <div className="text-xs text-slate-500">{test.seriesName} · {questions.length} Questions · {totalMarks} marks · {test.durationMin} min{reported ? <span className="ml-2 font-bold text-rose-600">{reported} reported</span> : null}</div>
+-          </div>
++          {onBack && <button type="button" onClick={onBack} className="p-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-50"><ArrowLeft className="w-4 h-4" /></button>}
++          <h2 className="text-2xl font-normal text-slate-800">Question</h2>
+         </div>
+-        {canManage && (
+-          <div className="flex items-center gap-2">
+-            <button type="button" onClick={() => setScheme({ marks: 1, negMarks: 0 })} disabled={!questions.length}
+-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"><SlidersHorizontal className="w-4 h-4" />Marking</button>
+-            <button type="button" onClick={() => setImporting(true)}
+-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50"><Upload className="w-4 h-4" />Import</button>
+-            <button type="button" onClick={() => setEditing({ index: -1, q: { ...blankQ({ subject: test.topic || '', language: language || 'English' }), _isNew: true } })}
+-              className="inline-flex items-center gap-1 px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-sm font-bold"><Plus className="w-4 h-4" />Add Question</button>
+-          </div>
+-        )}
+-      </div>
++        <div className="text-xs text-slate-500">Home <span className="mx-1 text-slate-300">&gt;</span> Questions</div>
++      </div>}
+ 
+       {error && <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold flex gap-2"><AlertCircle className="w-4 h-4 flex-shrink-0" />{error}<button type="button" className="ml-auto" onClick={() => setError('')}><X className="w-3.5 h-3.5" /></button></div>}
+ 
+-      {scheme && (
+-        <div className="bg-white rounded-lg border border-sky-200 p-4 flex flex-wrap items-end gap-3">
+-          <div className="text-sm font-bold text-slate-800 w-full">Set marks for all {questions.length} questions</div>
+-          <label className="text-xs font-bold text-slate-600">Marks +<input type="number" min={1} value={scheme.marks} onChange={(e) => setScheme({ ...scheme, marks: e.target.value })} className="block mt-1 w-24 px-2.5 py-1.5 rounded-lg border border-slate-300 text-sm" /></label>
+-          <label className="text-xs font-bold text-slate-600">Negative −<input type="number" min={0} step="0.25" value={scheme.negMarks} onChange={(e) => setScheme({ ...scheme, negMarks: e.target.value })} className="block mt-1 w-24 px-2.5 py-1.5 rounded-lg border border-slate-300 text-sm" /></label>
+-          <button type="button" disabled={saving} onClick={applyScheme} className="px-4 py-2 rounded-lg bg-sky-600 text-white text-sm font-bold disabled:opacity-50">Apply</button>
+-          <button type="button" onClick={() => setScheme(null)} className="px-3 py-2 rounded-lg text-sm text-slate-600 hover:bg-slate-100">Cancel</button>
++      <div className="bg-white rounded-lg border border-slate-200 shadow-sm">
++        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-4 py-3">
++          <h3 className="text-lg text-slate-800">Question List <span className="text-sm text-slate-400">({total.toLocaleString('en-IN')})</span></h3>
++          {canManage && (
++            <div className="flex items-center gap-2">
++              {f.testId && (
++                <button type="button" disabled={!selTest?.questionCount} onClick={() => setScheme({ marks: 1, negMarks: 0 })}
++                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"><SlidersHorizontal className="w-4 h-4" />Marking</button>
++              )}
++              <button type="button" disabled={!tests.length} onClick={() => setImporting(true)}
++                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"><Upload className="w-4 h-4" />Import</button>
++              <button type="button" disabled={!tests.length} title={tests.length ? '' : 'Add a test first (Test List)'}
++                onClick={() => setEditor({ initial: { defaults: { subject: f.subject, topic: f.topic, language: f.language || 'English' } } })}
++                className="inline-flex items-center gap-1 px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-sm font-bold disabled:opacity-50"><Plus className="w-4 h-4" />Add</button>
++            </div>
++          )}
+         </div>
+-      )}
+ 
+-      <div className="bg-white rounded-lg border border-slate-200 shadow-sm">
+-        <div className="px-4 py-5 flex flex-wrap items-center gap-4">
+-          <select value={qType} onChange={(e) => setQType(e.target.value)} className="px-3 py-2.5 rounded-lg border border-slate-300 text-sm w-60">
++        {scheme && (
++          <div className="mx-4 mb-2 rounded-lg border border-sky-200 bg-sky-50/50 p-3 flex flex-wrap items-end gap-3">
++            <div className="text-sm font-bold text-slate-800 w-full">Set marks for every question in {selTest?.name}</div>
++            <label className="text-xs font-bold text-slate-600">Marks +<input type="number" min={1} value={scheme.marks} onChange={(e) => setScheme({ ...scheme, marks: e.target.value })} className="block mt-1 w-24 px-2.5 py-1.5 rounded-lg border border-slate-300 text-sm" /></label>
++            <label className="text-xs font-bold text-slate-600">Negative −<input type="number" min={0} step="0.25" value={scheme.negMarks} onChange={(e) => setScheme({ ...scheme, negMarks: e.target.value })} className="block mt-1 w-24 px-2.5 py-1.5 rounded-lg border border-slate-300 text-sm" /></label>
++            <button type="button" disabled={saving} onClick={async () => { if (await run(() => setBankMarking(f.testId, { marks: numOr(scheme.marks, 1), negMarks: numOr(scheme.negMarks, 0) }), '✓ Marking updated')) setScheme(null); }} className="px-4 py-2 rounded-lg bg-sky-600 text-white text-sm font-bold disabled:opacity-50">Apply</button>
++            <button type="button" onClick={() => setScheme(null)} className="px-3 py-2 rounded-lg text-sm text-slate-600 hover:bg-white">Cancel</button>
++          </div>
++        )}
++
++        <div className="px-4 py-4 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-[auto_1fr_1fr_1fr] gap-4 items-center">
++          <label className="flex items-center gap-4 text-sm font-bold text-slate-700 pl-6">Show
++            <select value={f.limit} onChange={(e) => set({ limit: Number(e.target.value) })} className="px-3 py-2.5 rounded border border-slate-300 text-sm font-normal w-24">
++              {[10, 25, 50, 100].map((n) => <option key={n} value={n}>{n}</option>)}
++            </select>
++          </label>
++          <select value={f.testId} onChange={(e) => set({ testId: e.target.value })} className="px-3 py-2.5 rounded border border-slate-300 text-sm">
++            <option value="">Select Test</option>
++            {tests.map((t) => <option key={t.id} value={t.id}>{t.name}{t.seriesName ? ` — ${t.seriesName}` : ''} ({t.questionCount})</option>)}
++          </select>
++          <select value={f.subject} onChange={(e) => set({ subject: e.target.value, topic: '' })} className="px-3 py-2.5 rounded border border-slate-300 text-sm">
++            <option value="">All Subject</option>
++            {subjects.map((s) => <option key={s}>{s}</option>)}
++          </select>
++          <select value={f.topic} onChange={(e) => set({ topic: e.target.value })} className="px-3 py-2.5 rounded border border-slate-300 text-sm">
++            <option value="">All Topics</option>
++            {topics.map((s) => <option key={s}>{s}</option>)}
++          </select>
++        </div>
++        <div className="px-4 pb-5 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 items-center">
++          <select value={f.qType} onChange={(e) => set({ qType: e.target.value })} className="px-3 py-2.5 rounded border border-slate-300 text-sm">
+             <option value="">Question Type</option>
+             <option value="MCQ">MCQ</option>
+             <option value="True/False">True / False</option>
+           </select>
+-          <select value={language} onChange={(e) => setLanguage(e.target.value)} className="px-3 py-2.5 rounded-lg border border-slate-300 text-sm w-60">
+-            <option value="">All languages</option>
++          <select value={f.language} onChange={(e) => set({ language: e.target.value })} className="px-3 py-2.5 rounded border border-slate-300 text-sm">
++            <option value="">All Languages</option>
+             {languages.map((l) => <option key={l}>{l}</option>)}
+           </select>
+           <div className="relative">
+             <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+-            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search" className="pl-9 pr-3 py-2.5 rounded-lg border border-slate-300 text-sm w-72" />
++            <input value={searchText} onChange={(e) => setSearchText(e.target.value)} placeholder="Search" className="w-full pl-9 pr-3 py-2.5 rounded border border-slate-300 text-sm" />
+           </div>
+           <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+-            <input type="checkbox" checked={reportedOnly} onChange={(e) => setReportedOnly(e.target.checked)} />Show Reported Questions Only
++            <input type="checkbox" checked={f.reported} onChange={(e) => set({ reported: e.target.checked })} />Show Reported Questions Only
+           </label>
+         </div>
+ 
+@@ -382,56 +303,83 @@
+               </tr>
+             </thead>
+             <tbody>
+-              {rows.length === 0 && (
++              {loading && rows.length === 0 && <tr><td colSpan={8} className="p-10 text-center text-slate-500"><RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-sky-600" />Loading questions…</td></tr>}
++              {!loading && rows.length === 0 && (
+                 <tr><td colSpan={8} className="p-10 text-center text-slate-500">
+-                  {questions.length ? 'No question matches these filters.' : 'No questions yet — click Add Question or Import to paste them in.'}
++                  {total === 0 && !f.testId && !f.subject && !f.search && !f.reported && !f.topic && !f.qType ? (tests.length ? 'No questions yet — click Add, or Import to paste many at once.' : 'Add a test first in Test List, then add its questions here.') : 'No question matches these filters.'}
+                 </td></tr>
+               )}
+-              {rows.map(({ q, index }, i) => (
+-                <tr key={q._id || `n${index}`} className={`border-b border-slate-200 align-top ${i % 2 ? 'bg-white' : 'bg-slate-50/70'}`}>
+-                  <td className="p-3 border-r border-slate-200 font-bold">{index + 1}</td>
+-                  <td className="p-3 border-r border-slate-200 min-w-[380px]">
+-                    <div className="whitespace-pre-line">{q.q}</div>
+-                    <div className="mt-2 space-y-2 pl-8">
+-                      {(q.options || []).map((o, j) => <div key={j}>{LETTERS[j]}. {o}</div>)}
+-                    </div>
+-                    <div className="mt-3"><b>ANS:</b> {LETTERS[q.answer] ?? '—'}</div>
+-                    <div className="mt-2"><b>Marks :</b> +{q.marks || 1}, -{q.negMarks || 0}</div>
+-                    {q.rationale && <div className="mt-2"><b>Solution :</b><div className="whitespace-pre-line">{q.rationale}</div></div>}
+-                    {(q.reports || []).length > 0 && (
+-                      <div className="mt-3 p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-xs">
+-                        <div className="flex items-center justify-between gap-2 font-bold text-rose-700">
+-                          <span className="inline-flex items-center gap-1"><Flag className="w-3.5 h-3.5" />Reported by {q.reports.length} student{q.reports.length === 1 ? '' : 's'}</span>
+-                          {canManage && <button type="button" disabled={saving} onClick={() => resolve(index)} className="inline-flex items-center gap-1 px-2 py-1 rounded bg-white border border-rose-200 text-rose-700 hover:bg-rose-100"><CheckCircle2 className="w-3.5 h-3.5" />Mark resolved</button>}
+-                        </div>
+-                        <ul className="mt-1.5 space-y-1 text-rose-900">
+-                          {q.reports.map((r, k) => <li key={k}>“{r.reason}” — {r.studentName || r.studentId}{r.at ? `, ${new Date(r.at).toLocaleDateString('en-IN')}` : ''}</li>)}
+-                        </ul>
+-                      </div>
+-                    )}
+-                  </td>
+-                  <td className="p-3 border-r border-slate-200">{q.topic}{q.chapter && <div className="text-[11px] text-slate-400 mt-1">{q.chapter}</div>}</td>
+-                  <td className="p-3 border-r border-slate-200">{q.subject}</td>
+-                  <td className="p-3 border-r border-slate-200">{q.qType || 'MCQ'}</td>
+-                  <td className="p-3 border-r border-slate-200">{q.bonusMarks || 0}</td>
+-                  <td className="p-3 border-r border-slate-200 max-w-[180px] text-xs">{q.hint || '—'}</td>
+-                  <td className="p-3">
+-                    {canManage && (
+-                      <div className="flex gap-1.5">
+-                        <button type="button" onClick={() => setEditing({ index, q })} title="Edit" className="p-2 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white"><Pencil className="w-4 h-4" /></button>
+-                        <button type="button" disabled={saving} onClick={() => remove(index)} title="Delete" className="p-2 rounded-md bg-rose-600 hover:bg-rose-700 text-white"><Trash2 className="w-4 h-4" /></button>
++              {rows.map((r, i) => {
++                const q = r.question;
++                const font = q.font ? (q.font === 'ARIAL' ? 'Arial' : q.font) : undefined;
++                return (
++                  <tr key={`${r.testId}-${q._id}`} className={`border-b border-slate-200 align-top ${i % 2 ? 'bg-white' : 'bg-slate-50/70'} ${loading ? 'opacity-60' : ''}`}>
++                    <td className="p-3 border-r border-slate-200 font-bold">{(f.page - 1) * f.limit + i + 1}</td>
++                    <td className="p-3 border-r border-slate-200 min-w-[420px]" style={{ fontFamily: font }}>
++                      {!f.testId && <div className="text-[11px] text-slate-400 mb-1">{r.testName}{r.seriesName ? ` · ${r.seriesName}` : ''} · Q{r.index + 1}</div>}
++                      {q.instruction && <RichText html={q.instruction} className="mb-2 text-slate-600 italic" />}
++                      {q.passage && <RichText html={q.passage} className="mb-2 p-2 rounded bg-slate-100 border border-slate-200 text-[13px]" />}
++                      <RichText html={q.q} />
++                      <div className="mt-2 space-y-2 pl-8">
++                        {(q.options || []).map((o, j) => (
++                          <div key={j} className="flex gap-1"><span>{LETTERS[j]}.</span><RichText html={o} as="span" /></div>
++                        ))}
+                       </div>
+-                    )}
+-                  </td>
+-                </tr>
+-              ))}
++                      <div className="mt-3"><b>ANS:</b> {LETTERS[q.answer] ?? '—'}</div>
++                      <div className="mt-2"><b>Marks :</b> +{q.marks || 1}, -{q.negMarks || 0}</div>
++                      {q.rationale && <div className="mt-2"><b>Solution :</b><RichText html={q.rationale} /></div>}
++                      {(q.reports || []).length > 0 && (
++                        <div className="mt-3 p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-xs">
++                          <div className="flex items-center justify-between gap-2 font-bold text-rose-700">
++                            <span className="inline-flex items-center gap-1"><Flag className="w-3.5 h-3.5" />Reported by {q.reports.length} student{q.reports.length === 1 ? '' : 's'}</span>
++                            {canManage && <button type="button" disabled={saving} onClick={() => run(() => resolveBankQuestion(r.testId, q._id), '✓ Reports marked resolved')} className="inline-flex items-center gap-1 px-2 py-1 rounded bg-white border border-rose-200 text-rose-700 hover:bg-rose-100"><CheckCircle2 className="w-3.5 h-3.5" />Mark resolved</button>}
++                          </div>
++                          <ul className="mt-1.5 space-y-1 text-rose-900">
++                            {q.reports.map((rep, k) => <li key={k}>“{rep.reason}” — {rep.studentName || rep.studentId}{rep.at ? `, ${new Date(rep.at).toLocaleDateString('en-IN')}` : ''}</li>)}
++                          </ul>
++                        </div>
++                      )}
++                    </td>
++                    <td className="p-3 border-r border-slate-200">{q.topic}{q.difficulty && <div className="text-[11px] text-slate-400 mt-1">{q.difficulty}</div>}</td>
++                    <td className="p-3 border-r border-slate-200">{q.subject}</td>
++                    <td className="p-3 border-r border-slate-200">{q.qType || 'MCQ'}</td>
++                    <td className="p-3 border-r border-slate-200">{q.bonusMarks || 0}</td>
++                    <td className="p-3 border-r border-slate-200 max-w-[160px] text-xs">{q.hint}</td>
++                    <td className="p-3">
++                      {canManage && (
++                        <div className="flex gap-1.5">
++                          <button type="button" onClick={() => setEditor({ initial: { testId: r.testId, question: q } })} title="Edit" className="p-2 rounded bg-emerald-600 hover:bg-emerald-700 text-white"><Pencil className="w-4 h-4" /></button>
++                          <button type="button" disabled={saving} onClick={() => remove(r)} title="Delete" className="p-2 rounded bg-rose-600 hover:bg-rose-700 text-white"><Trash2 className="w-4 h-4" /></button>
++                        </div>
++                      )}
++                    </td>
++                  </tr>
++                );
++              })}
+             </tbody>
+           </table>
+         </div>
++
++        {total > 0 && (
++          <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-t border-slate-200 text-xs text-slate-600">
++            <span>Showing {((f.page - 1) * f.limit + 1).toLocaleString('en-IN')} to {Math.min(f.page * f.limit, total).toLocaleString('en-IN')} of {total.toLocaleString('en-IN')} questions</span>
++            <div className="flex items-center gap-1">
++              <button type="button" disabled={f.page <= 1} onClick={() => setF((x) => ({ ...x, page: 1 }))} className="px-2 py-1 rounded border border-slate-200 disabled:opacity-40">First</button>
++              <button type="button" disabled={f.page <= 1} onClick={() => setF((x) => ({ ...x, page: x.page - 1 }))} className="p-1 rounded border border-slate-200 disabled:opacity-40"><ChevronLeft className="w-4 h-4" /></button>
++              <span className="px-2">Page
++                <input type="number" min={1} max={pages} value={f.page} onChange={(e) => { const n = Math.min(pages, Math.max(1, Number(e.target.value) || 1)); setF((x) => ({ ...x, page: n })); }}
++                  className="mx-1 w-16 px-1.5 py-0.5 rounded border border-slate-300 text-center" />of {pages.toLocaleString('en-IN')}</span>
++              <button type="button" disabled={f.page >= pages} onClick={() => setF((x) => ({ ...x, page: x.page + 1 }))} className="p-1 rounded border border-slate-200 disabled:opacity-40"><ChevronRight className="w-4 h-4" /></button>
++              <button type="button" disabled={f.page >= pages} onClick={() => setF((x) => ({ ...x, page: pages }))} className="px-2 py-1 rounded border border-slate-200 disabled:opacity-40">Last</button>
++            </div>
++          </div>
++        )}
+       </div>
+ 
+-      {editing && <QuestionForm initial={editing.q} saving={saving} onCancel={() => setEditing(null)} onSave={saveOne} />}
+-      {importing && <ImportModal test={test} saving={saving} onCancel={() => setImporting(false)} onImport={importMany} />}
++      {importing && (
++        <ImportModal tests={tests} testId={f.testId} saving={saving} onCancel={() => setImporting(false)}
++          onImport={async (testId, list) => { if (await run(() => addBankQuestions(testId, { questions: list }), `✓ ${list.length} questions imported`)) setImporting(false); }} />
++      )}
+     </div>
+   );
+ }
+diff -ruN a/client/src/components/TestSeriesManager.jsx b/client/src/components/TestSeriesManager.jsx
+--- a/client/src/components/TestSeriesManager.jsx	2026-11-24 11:00:19.417646391 +0530
++++ b/client/src/components/TestSeriesManager.jsx	2026-11-24 11:00:19.421062664 +0530
+@@ -177,7 +177,7 @@
+   const [error, setError] = useState('');
+   const [toast, setToast] = useState('');
+   const [saving, setSaving] = useState(false);
+-  const [tab, setTab] = useState('tests'); // tests | courses
++  const [tab, setTab] = useState('tests'); // tests | questions | courses
+   // Test list
+   const [search, setSearch] = useState('');
+   const [pageSize, setPageSize] = useState(10);
+@@ -318,10 +318,9 @@
+   if (bankTest) {
+     return (
+       <TestQuestionBank
+-        test={bankTest}
+         canManage={canManage}
++        fixedTestId={bankTest.id}
+         onBack={() => { setBankTestId(''); load(); }}
+-        onSaved={load}
+       />
+     );
+   }
+@@ -333,9 +332,9 @@
+       {toast && <div className="fixed bottom-5 right-5 z-50 p-3 rounded-xl bg-slate-900 text-white text-xs font-semibold shadow-lg">{toast}</div>}
+ 
+       <div className="flex items-center justify-between">
+-        <h2 className="text-2xl font-normal text-slate-800">Tests</h2>
++        <h2 className="text-2xl font-normal text-slate-800">{tab === 'questions' ? 'Question' : tab === 'courses' ? 'Courses' : 'Tests'}</h2>
+         <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
+-          {[{ id: 'tests', label: 'Test List' }, { id: 'courses', label: `Courses (${series.length})` }].map((x) => (
++          {[{ id: 'tests', label: 'Test List' }, { id: 'questions', label: 'Question Bank' }, { id: 'courses', label: `Courses (${series.length})` }].map((x) => (
+             <button key={x.id} type="button" onClick={() => setTab(x.id)}
+               className={`px-3 py-1.5 rounded-md text-xs font-bold ${tab === x.id ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>{x.label}</button>
+           ))}
+@@ -479,6 +478,8 @@
+         </div>
+       )}
+ 
++      {tab === 'questions' && <TestQuestionBank canManage={canManage} />}
++
+       {tab === 'courses' && (
+         <div className="space-y-3">
+           <div className="bg-white rounded-lg border border-slate-200 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+@@ -536,6 +537,7 @@
+       {builderTest && (
+         <OnlineTestBuilder
+           test={builderTest}
++          initialTab="attempts"
+           onClose={() => { setBuilderTest(null); load(); }}
+           onSaved={() => load()}
+         />
+diff -ruN a/client/src/services/api.js b/client/src/services/api.js
+--- a/client/src/services/api.js	2026-11-24 11:00:19.417717764 +0530
++++ b/client/src/services/api.js	2026-11-24 11:00:19.421253811 +0530
+@@ -2353,6 +2353,13 @@
+ export const getMyTestSeries = async () => (await api.get('/student-portal/test-series')).data;
+ export const updateSeriesTest = async (id, testId, data) => (await api.put(`/test-series/${encodeURIComponent(id)}/tests/${encodeURIComponent(testId)}`, data)).data;
+ export const notifySeriesTest = async (id, testId) => (await api.post(`/test-series/${encodeURIComponent(id)}/tests/${encodeURIComponent(testId)}/notify`)).data;
++export const getQuestionBankMeta = async () => (await api.get('/question-bank/meta')).data;
++export const getQuestionBank = async (params) => (await api.get('/question-bank', { params })).data;
++export const addBankQuestions = async (testId, body) => (await api.post(`/question-bank/${encodeURIComponent(testId)}`, body)).data;
++export const updateBankQuestion = async (testId, qid, body) => (await api.put(`/question-bank/${encodeURIComponent(testId)}/${encodeURIComponent(qid)}`, body)).data;
++export const deleteBankQuestion = async (testId, qid) => (await api.delete(`/question-bank/${encodeURIComponent(testId)}/${encodeURIComponent(qid)}`)).data;
++export const setBankMarking = async (testId, body) => (await api.post(`/question-bank/${encodeURIComponent(testId)}/marking`, body)).data;
++export const resolveBankQuestion = async (testId, qid) => (await api.post(`/question-bank/${encodeURIComponent(testId)}/${encodeURIComponent(qid)}/resolve`)).data;
+ export const reportTestQuestion = async (testId, index, reason) => (await api.post(`/student-portal/tests/${encodeURIComponent(testId)}/report`, { index, reason })).data;
+ 
+ export const getTestLeaderboard = async (id, params) => {
+diff -ruN a/server/src/models/TrainerAssessment.js b/server/src/models/TrainerAssessment.js
+--- a/server/src/models/TrainerAssessment.js	2026-11-24 11:00:19.418999814 +0530
++++ b/server/src/models/TrainerAssessment.js	2026-11-24 11:00:19.422547234 +0530
+@@ -90,6 +90,10 @@
+       subject: { type: String, default: '' },
+       language: { type: String, default: 'English' },
+       hint: { type: String, default: '' },
++      difficulty: { type: String, default: '' }, // Easy | Medium | Hard
++      font: { type: String, default: '' }, // font family the question is shown in
++      passage: { type: String, default: '' }, // shared reading passage shown above the question
++      instruction: { type: String, default: '' }, // instruction part shown above the question
+       // Students flag a wrong / unclear question from the test screen
+       reports: {
+         type: [{ studentId: String, studentName: String, reason: String, at: { type: Date, default: Date.now } }],
+diff -ruN a/server/src/routes/api.js b/server/src/routes/api.js
+--- a/server/src/routes/api.js	2026-11-24 11:00:19.418078808 +0530
++++ b/server/src/routes/api.js	2026-11-24 11:00:19.421647581 +0530
+@@ -16492,6 +16492,132 @@
+   }
+ });
+ 
++// ---------- Online tests: shared question cleaning / saving ----------
++// Questions can hold formatted HTML from the question editor (bold, lists,
++// tables, small inline images). Strip anything executable; the browser also
++// whitelists tags when it renders.
++const safeHtml = (v, max) => String(v || '')
++  .replace(/<\s*(script|style|iframe|object|embed|link|meta|form|input|button|textarea|select)\b[\s\S]*?(<\s*\/\s*\1\s*>|$)/gi, '')
++  .replace(/<\s*\/?\s*(script|style|iframe|object|embed|link|meta|form|input|button|textarea|select)\b[^>]*>/gi, '')
++  .replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
++  .replace(/(href|src)\s*=\s*("|')\s*(javascript|vbscript):[^"']*\2/gi, '$1="#"')
++  .trim()
++  .slice(0, max);
++const htmlText = (v) => String(v || '')
++  .replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|li|tr|h\d)>/gi, '\n').replace(/<[^>]+>/g, ' ')
++  .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
++  .replace(/[ \t]+/g, ' ').replace(/\n\s*\n+/g, '\n').trim();
++const hasContent = (v) => Boolean(htmlText(v)) || /<img\b/i.test(String(v || ''));
++const QUESTION_HTML_MAX = 400000; // room for a compressed image or two
++const QUESTION_DIFFICULTY = ['Easy', 'Medium', 'Hard'];
++
++function cleanQuestionList(raw, oldQuestions = []) {
++  if (raw.length > MAX_TEST_QUESTIONS) return { error: `A test can have at most ${MAX_TEST_QUESTIONS} questions` };
++  const oldById = Object.fromEntries((oldQuestions || []).map((q) => [String(q._id), q]));
++  const num = (v, min, max) => { const n = Number(v); return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n * 100) / 100)) : 0; };
++  const questions = [];
++  for (const [i, q] of raw.entries()) {
++    const text = safeHtml(q?.q, QUESTION_HTML_MAX);
++    const options = (Array.isArray(q?.options) ? q.options : []).map((o) => safeHtml(o, QUESTION_HTML_MAX));
++    const answer = Number(q?.answer);
++    if (!hasContent(text)) return { error: `Question ${i + 1}: the question text is empty` };
++    if (options.length < 2 || options.length > 6 || options.some((o) => !hasContent(o))) return { error: `Question ${i + 1}: give 2–6 options and fill every option` };
++    if (!Number.isInteger(answer) || answer < 0 || answer >= options.length) return { error: `Question ${i + 1}: pick the correct option` };
++    const rationale = safeHtml(q?.rationale, QUESTION_HTML_MAX);
++    const old = q?._id ? oldById[String(q._id)] : null;
++    const out = {
++      q: text,
++      options,
++      answer,
++      marks: Math.min(20, Math.max(1, Math.round(Number(q?.marks) || 1))),
++      chapter: String(q?.chapter || '').trim().slice(0, 200),
++      rationale,
++      audioRationaleUrl: String(q?.audioRationaleUrl || '').trim(),
++      // read aloud by the student's audio rationale player: plain text only
++      audioRationaleText: htmlText(q?.audioRationaleText || rationale).slice(0, 3000),
++      qType: q?.qType === 'True/False' ? 'True/False' : 'MCQ',
++      negMarks: num(q?.negMarks, 0, 20),
++      bonusMarks: num(q?.bonusMarks, 0, 20),
++      topic: String(q?.topic || '').trim().slice(0, 200),
++      subject: String(q?.subject || '').trim().slice(0, 200),
++      language: String(q?.language || 'English').trim().slice(0, 40) || 'English',
++      hint: String(q?.hint || '').trim().slice(0, 1000),
++      difficulty: QUESTION_DIFFICULTY.includes(q?.difficulty) ? q.difficulty : '',
++      font: String(q?.font || '').trim().slice(0, 60),
++      passage: safeHtml(q?.passage, QUESTION_HTML_MAX),
++      instruction: safeHtml(q?.instruction, QUESTION_HTML_MAX),
++      // Reports stay with the question unless staff mark them resolved
++      reports: q?.resolveReports ? [] : (old?.reports || [])
++    };
++    if (q?._id && mongoose.isValidObjectId(q._id)) out._id = q._id;
++    questions.push(out);
++  }
++  return { questions };
++}
++
++// Save a cleaned question list on a test: totals, pass mark, duration, and
++// re-grade submitted attempts. removedIndex keeps saved answers lined up when
++// one question is deleted from the middle of a test students have taken.
++async function applyTestQuestions(item, questions, { passMark, durationMin, removedIndex = -1 } = {}) {
++  const oldTotal = Number(item.totalMarks) || 0;
++  item.questions = questions;
++  item.mode = questions.length ? 'online' : 'offline';
++  if (questions.length) {
++    const total = questions.reduce((a, q) => a + q.marks, 0);
++    const askedPass = Number(passMark);
++    item.passMark = Number.isFinite(askedPass) && askedPass > 0 && askedPass <= total
++      ? Math.round(askedPass)
++      : Math.min(total, Math.max(1, Math.round(((Number(item.passMark) || 0) / (oldTotal || total)) * total) || Math.ceil(total * 0.7)));
++    item.totalMarks = total;
++  }
++  const dur = Number(durationMin);
++  if (Number.isFinite(dur) && dur >= 5 && dur <= 300) {
++    item.durationMin = Math.round(dur);
++    item.timeLimit = `${item.durationMin} min`;
++  } else if (!item.durationMin) {
++    item.durationMin = minutesOf(item.timeLimit);
++  }
++  await item.save();
++
++  // When questions are edited / corrected, re-grade existing attempts automatically
++  const existingAttempts = await TestAttempt.find({ assessmentId: item._id.toString() });
++  if (existingAttempts.length > 0) {
++    const scores = item.scores instanceof Map ? Object.fromEntries(item.scores) : (item.scores || {});
++    const touchedKeys = [];
++    for (const att of existingAttempts) {
++      if (removedIndex >= 0 && Array.isArray(att.answers)) {
++        att.answers = att.answers.filter((_, k) => k !== removedIndex);
++        att.markModified?.('answers');
++      }
++      if (att.status === 'submitted') {
++        const { score, correct } = scoreAnswers(item.questions, att.answers);
++        att.score = score;
++        att.correct = correct;
++        att.totalMarks = item.totalMarks;
++        if (att.studentKey && !item.seriesId) {
++          scores[att.studentKey] = score;
++          touchedKeys.push(att.studentKey);
++        }
++      }
++      if (att.status === 'submitted' || removedIndex >= 0) await att.save();
++    }
++    item.scores = scores;
++    await item.save();
++    if (touchedKeys.length > 0) {
++      await recomputeAssessmentScores(touchedKeys).catch(() => {});
++    }
++  }
++
++  if (questions.length && existingAttempts.length === 0 && !item.seriesId) {
++    await notifyBatch(item.batch, {
++      type: 'assessment', title: `Online test ready: ${item.name}`,
++      message: `${questions.length} questions · ${item.durationMin} min${item.date ? ` · opens ${item.date}` : ''}. Open Materials & Tests to take it.`,
++      createdBy: item.trainerName || ''
++    });
++  }
++  return item;
++}
++
+ // ---------- Online tests: trainer side ----------
+ router.put('/trainer/assessments/:id/questions', async (req, res) => {
+   try {
+@@ -16502,90 +16628,9 @@
+     if (!item.seriesId && item.trainerId && !trainerOwnsRecord(req, item)) return res.status(403).json(NOT_YOUR_RECORD);
+ 
+     const raw = Array.isArray(req.body?.questions) ? req.body.questions : [];
+-    if (raw.length > MAX_TEST_QUESTIONS) return res.status(400).json({ error: `A test can have at most ${MAX_TEST_QUESTIONS} questions` });
+-    const questions = [];
+-    const oldById = Object.fromEntries((item.questions || []).map((q) => [String(q._id), q]));
+-    const num = (v, min, max) => { const n = Number(v); return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n * 100) / 100)) : 0; };
+-    for (const [i, q] of raw.entries()) {
+-      const text = String(q?.q || '').trim();
+-      const options = (Array.isArray(q?.options) ? q.options : []).map((o) => String(o || '').trim());
+-      const answer = Number(q?.answer);
+-      if (!text) return res.status(400).json({ error: `Question ${i + 1}: the question text is empty` });
+-      if (options.length < 2 || options.length > 6 || options.some((o) => !o)) return res.status(400).json({ error: `Question ${i + 1}: give 2–6 options and fill every option` });
+-      if (!Number.isInteger(answer) || answer < 0 || answer >= options.length) return res.status(400).json({ error: `Question ${i + 1}: pick the correct option` });
+-      questions.push({
+-        q: text.slice(0, 3000),
+-        options: options.map((o) => o.slice(0, 600)),
+-        answer,
+-        marks: Math.min(20, Math.max(1, Math.round(Number(q?.marks) || 1))),
+-        chapter: String(q?.chapter || '').trim().slice(0, 200),
+-        rationale: String(q?.rationale || '').trim().slice(0, 3000),
+-        audioRationaleUrl: String(q?.audioRationaleUrl || '').trim(),
+-        audioRationaleText: String(q?.audioRationaleText || q?.rationale || '').trim().slice(0, 3000),
+-        qType: q?.qType === 'True/False' ? 'True/False' : 'MCQ',
+-        negMarks: num(q?.negMarks, 0, 20),
+-        bonusMarks: num(q?.bonusMarks, 0, 20),
+-        topic: String(q?.topic || '').trim().slice(0, 200),
+-        subject: String(q?.subject || '').trim().slice(0, 200),
+-        language: String(q?.language || 'English').trim().slice(0, 40) || 'English',
+-        hint: String(q?.hint || '').trim().slice(0, 1000),
+-        // Reports stay with the question unless staff mark them resolved
+-        reports: q?.resolveReports ? [] : ((q?._id && oldById[String(q._id)]?.reports) || [])
+-      });
+-      if (q?._id && mongoose.isValidObjectId(q._id)) questions[questions.length - 1]._id = q._id;
+-    }
+-    const oldTotal = Number(item.totalMarks) || 0;
+-    item.questions = questions;
+-    item.mode = questions.length ? 'online' : 'offline';
+-    if (questions.length) {
+-      const total = questions.reduce((a, q) => a + q.marks, 0);
+-      const askedPass = Number(req.body?.passMark);
+-      item.passMark = Number.isFinite(askedPass) && askedPass > 0 && askedPass <= total
+-        ? Math.round(askedPass)
+-        : Math.min(total, Math.max(1, Math.round(((Number(item.passMark) || 0) / (oldTotal || total)) * total) || Math.ceil(total * 0.7)));
+-      item.totalMarks = total;
+-    }
+-    const dur = Number(req.body?.durationMin);
+-    if (Number.isFinite(dur) && dur >= 5 && dur <= 300) {
+-      item.durationMin = Math.round(dur);
+-      item.timeLimit = `${item.durationMin} min`;
+-    } else if (!item.durationMin) {
+-      item.durationMin = minutesOf(item.timeLimit);
+-    }
+-    await item.save();
+-
+-    // Editor Access: When trainer edits/corrects questions, automatically re-grade existing attempts
+-    const existingAttempts = await TestAttempt.find({ assessmentId: item._id.toString() });
+-    if (existingAttempts.length > 0) {
+-      const scores = item.scores instanceof Map ? Object.fromEntries(item.scores) : (item.scores || {});
+-      const touchedKeys = [];
+-      for (const att of existingAttempts) {
+-        if (att.status === 'submitted') {
+-          const { score, correct } = scoreAnswers(item.questions, att.answers);
+-          att.score = score;
+-          att.correct = correct;
+-          att.totalMarks = item.totalMarks;
+-          await att.save();
+-          if (att.studentKey && !item.seriesId) {
+-            scores[att.studentKey] = score;
+-            touchedKeys.push(att.studentKey);
+-          }
+-        }
+-      }
+-      item.scores = scores;
+-      await item.save();
+-      if (touchedKeys.length > 0) {
+-        await recomputeAssessmentScores(touchedKeys).catch(() => {});
+-      }
+-    }
+-
+-    if (questions.length && existingAttempts.length === 0 && !item.seriesId) {
+-      await notifyBatch(item.batch, {
+-        type: 'assessment', title: `Online test ready: ${item.name}`,
+-        message: `${questions.length} questions · ${item.durationMin} min${item.date ? ` · opens ${item.date}` : ''}. Open Materials & Tests to take it.`,
+-        createdBy: item.trainerName || ''
+-      });
+-    }
++    const cleaned = cleanQuestionList(raw, item.questions);
++    if (cleaned.error) return res.status(400).json({ error: cleaned.error });
++    await applyTestQuestions(item, cleaned.questions, { passMark: req.body?.passMark, durationMin: req.body?.durationMin });
+     res.json(formatAssessment(item));
+   } catch (e) {
+     res.status(400).json({ error: e.message });
+@@ -16729,6 +16774,8 @@
+ // Staff: all series with their tests and attempt counts
+ router.get('/test-series', async (req, res) => {
+   try {
++    // Staff only: this list carries the answer keys
++    if (req.user?.department === 'student') return res.status(403).json({ error: 'Not available in the Student Portal.' });
+     const [series, tests] = await Promise.all([
+       TestSeries.find({}).sort({ createdAt: -1 }).lean(),
+       TrainerAssessment.find({ seriesId: { $ne: '' } }).sort({ seriesOrder: 1, createdAt: 1 })
+@@ -16927,6 +16974,199 @@
+   }
+ });
+ 
++
++// ---------- Question bank (every Test Series question in one list) ----------
++// Questions live inside their test (TrainerAssessment.questions) so the online
++// test engine keeps working unchanged; this list unwinds them across all tests,
++// filtered and paged on the server so it stays quick with 19,000+ questions.
++async function loadBankTest(req, res, id) {
++  if (!canManageTestSeries(req)) { res.status(403).json({ error: 'Only the Head of Trainer and Managers can change questions.' }); return null; }
++  if (!mongoose.isValidObjectId(id)) { res.status(400).json({ error: 'Select a test' }); return null; }
++  const test = await TrainerAssessment.findById(id);
++  if (!test || !test.seriesId) { res.status(404).json({ error: 'Test not found' }); return null; }
++  return test;
++}
++const plainQuestions = (test) => (test.questions || []).map((q) => (typeof q.toObject === 'function' ? q.toObject() : { ...q }));
++
++router.get('/question-bank/meta', async (req, res) => {
++  try {
++    if (req.user?.department === 'student') return res.status(403).json({ error: 'Not available in the Student Portal.' });
++    const [series, tests, subjects] = await Promise.all([
++      TestSeries.find({}).select('name').lean(),
++      TrainerAssessment.find({ seriesId: { $nin: ['', null] } }).select('name testCode seriesId createdAt questions._id').sort({ createdAt: -1 }).lean(),
++      TrainerAssessment.aggregate([
++        { $match: { seriesId: { $nin: ['', null] } } },
++        { $project: { 'questions.subject': 1, 'questions.topic': 1, 'questions.language': 1 } },
++        { $unwind: '$questions' },
++        { $group: { _id: { $ifNull: ['$questions.subject', ''] }, topics: { $addToSet: { $ifNull: ['$questions.topic', ''] } }, languages: { $addToSet: { $ifNull: ['$questions.language', 'English'] } } } }
++      ])
++    ]);
++    const seriesName = Object.fromEntries(series.map((s) => [s._id.toString(), s.name]));
++    const subjectMap = {};
++    const languages = new Set(['English']);
++    subjects.forEach((g) => {
++      if (g._id) subjectMap[g._id] = (g.topics || []).filter(Boolean).sort();
++      (g.languages || []).forEach((l) => l && languages.add(l));
++    });
++    res.json({
++      canManage: canManageTestSeries(req),
++      tests: tests.map((t) => ({ id: t._id.toString(), name: t.name, testCode: t.testCode || '', seriesId: t.seriesId, seriesName: seriesName[t.seriesId] || '', questionCount: (t.questions || []).length })),
++      subjects: subjectMap,
++      languages: [...languages].sort()
++    });
++  } catch (e) {
++    res.status(500).json({ error: e.message });
++  }
++});
++
++router.get('/question-bank', async (req, res) => {
++  try {
++    if (req.user?.department === 'student') return res.status(403).json({ error: 'Not available in the Student Portal.' });
++    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
++    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 10));
++    const base = { seriesId: { $nin: ['', null] } };
++    if (req.query.testId) {
++      if (!mongoose.isValidObjectId(req.query.testId)) return res.status(400).json({ error: 'Invalid test' });
++      base._id = new mongoose.Types.ObjectId(String(req.query.testId));
++    }
++    const qm = {};
++    const str = (v) => String(v || '').trim();
++    if (str(req.query.subject)) qm['questions.subject'] = str(req.query.subject);
++    if (str(req.query.topic)) qm['questions.topic'] = str(req.query.topic);
++    if (str(req.query.difficulty)) qm['questions.difficulty'] = str(req.query.difficulty);
++    if (req.query.qType === 'True/False') qm['questions.qType'] = 'True/False';
++    else if (req.query.qType === 'MCQ') qm['questions.qType'] = { $ne: 'True/False' };
++    const lang = str(req.query.language);
++    if (lang) qm['questions.language'] = lang === 'English' ? { $in: ['English', '', null] } : lang;
++    if (req.query.reported === 'true') qm['questions.reports.0'] = { $exists: true };
++    const search = str(req.query.search).slice(0, 100);
++    if (search) {
++      const rx = { $regex: escapeRegex(search), $options: 'i' };
++      qm.$or = [{ 'questions.q': rx }, { 'questions.options': rx }, { 'questions.rationale': rx }, { 'questions.topic': rx }, { 'questions.subject': rx }];
++    }
++    const [out] = await TrainerAssessment.aggregate([
++      { $match: base },
++      { $sort: { createdAt: -1 } },
++      { $project: { name: 1, testCode: 1, seriesId: 1, questions: 1 } },
++      { $unwind: { path: '$questions', includeArrayIndex: 'idx' } },
++      ...(Object.keys(qm).length ? [{ $match: qm }] : []),
++      { $facet: { total: [{ $count: 'n' }], rows: [{ $skip: (page - 1) * limit }, { $limit: limit }] } }
++    ]).allowDiskUse(true);
++    const seriesIds = [...new Set((out?.rows || []).map((r) => r.seriesId))].filter((id) => mongoose.isValidObjectId(id));
++    const seriesName = Object.fromEntries((await TestSeries.find({ _id: { $in: seriesIds } }).select('name').lean()).map((s) => [s._id.toString(), s.name]));
++    res.json({
++      total: out?.total?.[0]?.n || 0,
++      page, limit,
++      rows: (out?.rows || []).map((r) => ({
++        testId: r._id.toString(), testName: r.name, testCode: r.testCode || '', seriesName: seriesName[r.seriesId] || '',
++        index: r.idx, question: { ...r.questions, _id: String(r.questions._id) }
++      }))
++    });
++  } catch (e) {
++    res.status(500).json({ error: e.message });
++  }
++});
++
++// Add one question ({ question }) or many ({ questions }) to the end of a test
++router.post('/question-bank/:testId', async (req, res) => {
++  try {
++    const test = await loadBankTest(req, res, req.params.testId);
++    if (!test) return;
++    const incoming = Array.isArray(req.body?.questions) ? req.body.questions : req.body?.question ? [req.body.question] : [];
++    if (!incoming.length) return res.status(400).json({ error: 'No question to add' });
++    const before = plainQuestions(test);
++    const cleaned = cleanQuestionList([...before, ...incoming.map(({ _id, ...q }) => q)], test.questions);
++    if (cleaned.error) return res.status(400).json({ error: cleaned.error.replace(/^Question (\d+)/, (m, n) => `Question ${Number(n) > before.length ? `${Number(n) - before.length} (new)` : n}`) });
++    await applyTestQuestions(test, cleaned.questions);
++    res.status(201).json({ success: true, added: incoming.length, questionCount: test.questions.length });
++  } catch (e) {
++    res.status(400).json({ error: e.message });
++  }
++});
++
++// Edit one question; { question, testId } with another testId moves it there
++router.put('/question-bank/:testId/:qid', async (req, res) => {
++  try {
++    const test = await loadBankTest(req, res, req.params.testId);
++    if (!test) return;
++    const list = plainQuestions(test);
++    const idx = list.findIndex((q) => String(q._id) === String(req.params.qid));
++    if (idx < 0) return res.status(404).json({ error: 'Question not found in this test' });
++    const incoming = { ...(req.body?.question || {}), _id: list[idx]._id };
++    const target = String(req.body?.testId || test._id);
++    if (target !== test._id.toString()) {
++      const dest = await loadBankTest(req, res, target);
++      if (!dest) return;
++      if (await TestAttempt.exists({ assessmentId: test._id.toString() })) {
++        return res.status(409).json({ error: 'Students have already taken this test, so its questions cannot be moved out. Copy it into the other test instead (add it there as a new question).' });
++      }
++      const { _id, reports, ...moved } = incoming;
++      const destClean = cleanQuestionList([...plainQuestions(dest), moved], dest.questions);
++      if (destClean.error) return res.status(400).json({ error: destClean.error });
++      const srcClean = cleanQuestionList(list.filter((_, k) => k !== idx), test.questions);
++      if (srcClean.error) return res.status(400).json({ error: srcClean.error });
++      await applyTestQuestions(dest, destClean.questions);
++      await applyTestQuestions(test, srcClean.questions, { removedIndex: idx });
++      return res.json({ success: true, moved: true });
++    }
++    list[idx] = incoming;
++    const cleaned = cleanQuestionList(list, test.questions);
++    if (cleaned.error) return res.status(400).json({ error: cleaned.error });
++    await applyTestQuestions(test, cleaned.questions);
++    res.json({ success: true });
++  } catch (e) {
++    res.status(400).json({ error: e.message });
++  }
++});
++
++router.delete('/question-bank/:testId/:qid', async (req, res) => {
++  try {
++    const test = await loadBankTest(req, res, req.params.testId);
++    if (!test) return;
++    const list = plainQuestions(test);
++    const idx = list.findIndex((q) => String(q._id) === String(req.params.qid));
++    if (idx < 0) return res.status(404).json({ error: 'Question not found in this test' });
++    const cleaned = cleanQuestionList(list.filter((_, k) => k !== idx), test.questions);
++    if (cleaned.error) return res.status(400).json({ error: cleaned.error });
++    await applyTestQuestions(test, cleaned.questions, { removedIndex: idx });
++    res.json({ success: true });
++  } catch (e) {
++    res.status(400).json({ error: e.message });
++  }
++});
++
++// Same +marks / -negative marks for every question of a test
++router.post('/question-bank/:testId/marking', async (req, res) => {
++  try {
++    const test = await loadBankTest(req, res, req.params.testId);
++    if (!test) return;
++    const marks = Number(req.body?.marks);
++    const negMarks = Number(req.body?.negMarks);
++    if (!Number.isFinite(marks) || marks < 1 || marks > 20) return res.status(400).json({ error: 'Marks must be 1–20' });
++    if (!Number.isFinite(negMarks) || negMarks < 0 || negMarks > 20) return res.status(400).json({ error: 'Negative marks must be 0–20' });
++    const cleaned = cleanQuestionList(plainQuestions(test).map((q) => ({ ...q, marks, negMarks })), test.questions);
++    if (cleaned.error) return res.status(400).json({ error: cleaned.error });
++    await applyTestQuestions(test, cleaned.questions);
++    res.json({ success: true });
++  } catch (e) {
++    res.status(400).json({ error: e.message });
++  }
++});
++
++router.post('/question-bank/:testId/:qid/resolve', async (req, res) => {
++  try {
++    const test = await loadBankTest(req, res, req.params.testId);
++    if (!test) return;
++    const q = (test.questions || []).find((x) => String(x._id) === String(req.params.qid));
++    if (!q) return res.status(404).json({ error: 'Question not found in this test' });
++    q.reports = [];
++    await test.save();
++    res.json({ success: true });
++  } catch (e) {
++    res.status(400).json({ error: e.message });
++  }
++});
++
+ // Student: published series for my course, each test with my progress
+ router.get('/student-portal/test-series', async (req, res) => {
+   try {
+@@ -17093,7 +17333,8 @@
+       answers: cleanAnswers(attempt.answers, test),
+       questions: test.questions.map((q) => ({
+         q: q.q, options: q.options, marks: q.marks, chapter: q.chapter || '',
+-        negMarks: q.negMarks || 0, hint: q.hint || '', qType: q.qType || 'MCQ', topic: q.topic || ''
++        negMarks: q.negMarks || 0, hint: q.hint || '', qType: q.qType || 'MCQ', topic: q.topic || '',
++        passage: q.passage || '', instruction: q.instruction || '', font: q.font || ''
+       }))
+     };
+   }
+@@ -17145,7 +17386,8 @@
+       rationale: q.rationale || test.rationale || '',
+       audioRationaleUrl: q.audioRationaleUrl || '',
+       audioRationaleText: q.audioRationaleText || q.rationale || test.rationale || '',
+-      negMarks: q.negMarks || 0, bonusMarks: q.bonusMarks || 0, hint: q.hint || ''
++      negMarks: q.negMarks || 0, bonusMarks: q.bonusMarks || 0, hint: q.hint || '',
++      passage: q.passage || '', instruction: q.instruction || '', font: q.font || ''
+     }))
+   };
+ }

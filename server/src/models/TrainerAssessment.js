@@ -81,7 +81,24 @@ const trainerAssessmentSchema = new mongoose.Schema({
       chapter: { type: String, default: '' },
       rationale: { type: String, default: '' },
       audioRationaleUrl: { type: String, default: '' },
-      audioRationaleText: { type: String, default: '' }
+      audioRationaleText: { type: String, default: '' },
+      // Question-bank fields (Test Series → Questions)
+      qType: { type: String, default: 'MCQ' }, // MCQ | True/False
+      negMarks: { type: Number, default: 0 }, // deducted for a wrong answer (unanswered = 0)
+      bonusMarks: { type: Number, default: 0 }, // > 0: everyone gets these marks for this question
+      topic: { type: String, default: '' },
+      subject: { type: String, default: '' },
+      language: { type: String, default: 'English' },
+      hint: { type: String, default: '' },
+      difficulty: { type: String, default: '' }, // Easy | Medium | Hard
+      font: { type: String, default: '' }, // font family the question is shown in
+      passage: { type: String, default: '' }, // shared reading passage shown above the question
+      instruction: { type: String, default: '' }, // instruction part shown above the question
+      // Students flag a wrong / unclear question from the test screen
+      reports: {
+        type: [{ studentId: String, studentName: String, reason: String, at: { type: Date, default: Date.now } }],
+        default: []
+      }
     }],
     default: []
   }

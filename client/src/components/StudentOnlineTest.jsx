@@ -13,7 +13,9 @@ import {
   Layers,
   Sparkles,
   HelpCircle,
-  Award
+  Award,
+  Flag,
+  Lightbulb
 } from 'lucide-react';
 import {
   getStudentTest,
@@ -21,8 +23,12 @@ import {
   saveStudentTestAnswers,
   submitStudentTest,
   getTestLeaderboard,
-  reallocateStudentTest
+  reallocateStudentTest,
+  reportTestQuestion
 } from '../services/api';
+import RichText, { htmlToText } from './RichText';
+
+const fontOf = (q) => (q?.font ? { fontFamily: q.font === 'ARIAL' ? 'Arial' : q.font } : undefined);
 
 // Student side of an online MCQ test. The server owns the clock (endsAt) and
 // the grading; answers are autosaved so a dropped connection loses nothing.
@@ -35,6 +41,19 @@ const mmss = (ms) => {
 
 export default function StudentOnlineTest({ testId, onClose, onFinished }) {
   const [view, setView] = useState(null);
+  const [hintOpen, setHintOpen] = useState(-1);
+  const [reportedIdx, setReportedIdx] = useState([]);
+  const reportQuestion = async (index) => {
+    const reason = window.prompt(`What is wrong with question ${index + 1}? (e.g. wrong answer key, typo, two correct options)`);
+    if (reason === null) return;
+    if (!reason.trim()) { window.alert('Please type what is wrong so the trainer can fix it.'); return; }
+    try {
+      await reportTestQuestion(testId, index, reason.trim());
+      setReportedIdx((list) => [...new Set([...list, index])]);
+    } catch (e) {
+      window.alert(errOf(e, 'Could not send the report.'));
+    }
+  };
   const [answers, setAnswers] = useState([]);
   const [current, setCurrent] = useState(0);
   const [error, setError] = useState('');
@@ -196,8 +215,8 @@ export default function StudentOnlineTest({ testId, onClose, onFinished }) {
       return;
     }
     const correctLetter = LETTERS[q.answer] || '';
-    const correctText = q.options?.[q.answer] || '';
-    const explanation = q.audioRationaleText || q.rationale || 'Review course reference materials for full guidance.';
+    const correctText = htmlToText(q.options?.[q.answer] || '');
+    const explanation = htmlToText(q.audioRationaleText || q.rationale || '') || 'Review course reference materials for full guidance.';
     const toSpeak = `Explanation for Question ${index + 1}. The correct answer is option ${correctLetter}, ${correctText}. Rationale: ${explanation}`;
 
     const utterance = new SpeechSynthesisUtterance(toSpeak);
@@ -263,6 +282,10 @@ export default function StudentOnlineTest({ testId, onClose, onFinished }) {
                 <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-3">Your trainer has already entered a score for this test.</p>
               ) : !view.opensToday ? (
                 <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-3">This test opens on {view.date}.</p>
+              ) : view.availability === 'upcoming' ? (
+                <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-3">This test opens on {String(view.openDate).replace('T', ' at ')}.</p>
+              ) : view.availability === 'closed' ? (
+                <p className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-xl p-3">This test closed on {String(view.closeDate).replace('T', ' at ')}.</p>
               ) : (
                 <button onClick={begin} disabled={busy} className="w-full py-3 rounded-2xl bg-[#0d9488] hover:bg-[#0f766e] text-white font-bold text-sm cursor-pointer disabled:opacity-50">{busy ? 'Starting…' : 'Start test'}</button>
               )}
@@ -290,17 +313,32 @@ export default function StudentOnlineTest({ testId, onClose, onFinished }) {
                           </span>
                         )}
                       </div>
-                      <span>{q.marks} mark{q.marks > 1 ? 's' : ''}</span>
+                      <span>+{q.marks} mark{q.marks > 1 ? 's' : ''}{q.negMarks ? <span className="text-rose-500"> · −{q.negMarks} if wrong</span> : null}</span>
                     </div>
-                    <p className="text-sm text-slate-900 font-semibold whitespace-pre-line">{q.q}</p>
+                    {q.instruction && <RichText html={q.instruction} className="text-xs text-slate-600 italic mb-2" style={fontOf(q)} />}
+                    {q.passage && <RichText html={q.passage} className="text-sm text-slate-800 bg-slate-50 border border-slate-200 rounded-xl p-3 mb-3 max-h-72 overflow-y-auto" style={fontOf(q)} />}
+                    <RichText html={q.q} className="text-sm text-slate-900 font-semibold" style={fontOf(q)} />
                     <div className="mt-4 space-y-2">
                       {q.options.map((o, j) => (
                         <button key={j} onClick={() => choose(current, j)} className={`w-full text-left px-4 py-3 rounded-xl border text-sm flex items-start gap-3 transition cursor-pointer ${answers[current] === j ? 'bg-indigo-50 border-[#483ec7] text-slate-900' : 'bg-white border-slate-200 hover:border-slate-300 text-slate-700'}`}>
                           <span className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 ${answers[current] === j ? 'bg-[#483ec7] text-white' : 'bg-slate-100 text-slate-500'}`}>{LETTERS[j]}</span>
-                          <span>{o}</span>
+                          <RichText html={o} as="span" style={fontOf(q)} />
                         </button>
                       ))}
                     </div>
+                    <div className="mt-3 flex items-center justify-between gap-2 flex-wrap">
+                      {q.hint ? (
+                        <button type="button" onClick={() => setHintOpen(hintOpen === current ? -1 : current)} className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-700 cursor-pointer">
+                          <Lightbulb className="w-3.5 h-3.5" />{hintOpen === current ? 'Hide hint' : 'Show hint'}
+                        </button>
+                      ) : <span />}
+                      {view.isSeries && (
+                        reportedIdx.includes(current)
+                          ? <span className="text-[11px] font-bold text-emerald-700">✓ Reported — thank you</span>
+                          : <button type="button" onClick={() => reportQuestion(current)} className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-400 hover:text-rose-600 cursor-pointer"><Flag className="w-3.5 h-3.5" />Report question</button>
+                      )}
+                    </div>
+                    {q.hint && hintOpen === current && <div className="mt-2 text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-xl p-3">💡 {q.hint}</div>}
                   </div>
                 );
               })()}
@@ -314,8 +352,17 @@ export default function StudentOnlineTest({ testId, onClose, onFinished }) {
             </div>
           )}
 
+          {/* STATE: SUBMITTED, RESULTS NOT PUBLISHED YET */}
+          {view?.state === 'submitted' && view.resultHidden && (
+            <div className="max-w-md mx-auto text-center space-y-3 py-10">
+              <CheckCircle2 className="w-12 h-12 text-emerald-600 mx-auto" />
+              <h4 className="text-lg font-black text-slate-900">Test submitted</h4>
+              <p className="text-xs text-slate-600">Your answers are saved{view.autoSubmitted ? ' (submitted automatically when time ran out)' : ''}. Your score, answers and solutions will appear here once the training team publishes the results.</p>
+            </div>
+          )}
+
           {/* STATE: SUBMITTED (RESULT & REVIEW) */}
-          {view?.state === 'submitted' && (
+          {view?.state === 'submitted' && !view.resultHidden && (
             <div className="space-y-5">
               {/* Score Banner with Reallocation / Retake Option */}
               <div className={`rounded-3xl p-5 sm:p-6 text-center border relative overflow-hidden ${view.score >= view.passMark ? 'bg-emerald-50/70 border-emerald-200' : 'bg-rose-50/70 border-rose-200'}`}>
@@ -332,7 +379,7 @@ export default function StudentOnlineTest({ testId, onClose, onFinished }) {
                 <div className="mt-4 pt-3 border-t border-slate-200/60 flex items-center justify-center gap-3 flex-wrap">
                   <button
                     onClick={handleRetake}
-                    disabled={busy}
+                    disabled={busy || (view.isSeries && view.availability !== 'open')}
                     className="px-4 py-2 rounded-full text-xs font-bold bg-white text-slate-800 border border-slate-200 hover:bg-slate-50 transition shadow-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
                     title="Start a new reallocated attempt for this exam"
                   >
@@ -409,8 +456,12 @@ export default function StudentOnlineTest({ testId, onClose, onFinished }) {
                           }`}
                         >
                           <div className="flex items-start justify-between gap-3 mb-2">
-                            <div className="font-bold text-slate-900 whitespace-pre-line flex-1">
-                              {i + 1}. {q.q}
+                            <div className="font-bold text-slate-900 flex-1 flex gap-1" style={fontOf(q)}>
+                              <span>{i + 1}.</span>
+                              <div className="flex-1">
+                                {q.passage && <RichText html={q.passage} className="font-normal text-slate-700 bg-slate-50 border border-slate-200 rounded-lg p-2 mb-2" />}
+                                <RichText html={q.q} />
+                              </div>
                             </div>
                             <div className="flex items-center gap-1.5 shrink-0">
                               {q.chapter && (
@@ -423,6 +474,10 @@ export default function StudentOnlineTest({ testId, onClose, onFinished }) {
                               }`}>
                                 {isCorrect ? '✓ Correct' : '✕ Incorrect'}
                               </span>
+                              {q.bonusMarks > 0 && <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-100 text-sky-800">+{q.bonusMarks} bonus</span>}
+                              {view.isSeries && (reportedIdx.includes(i)
+                                ? <span className="text-[10px] font-bold text-emerald-700">✓ Reported</span>
+                                : <button type="button" onClick={() => reportQuestion(i)} title="Report a wrong / unclear question" className="p-1 rounded text-slate-400 hover:text-rose-600 cursor-pointer"><Flag className="w-3.5 h-3.5" /></button>)}
                             </div>
                           </div>
 
@@ -439,7 +494,7 @@ export default function StudentOnlineTest({ testId, onClose, onFinished }) {
                                     : 'text-slate-600'
                                 }`}
                               >
-                                <span>{LETTERS[j]}. {o}</span>
+                                <span className="flex gap-1"><span>{LETTERS[j]}.</span><RichText html={o} as="span" /></span>
                                 {j === q.answer && <span className="text-[10px] font-bold text-emerald-700">✓ Correct Choice</span>}
                                 {j === q.yours && j !== q.answer && <span className="text-[10px] font-bold text-rose-600">Your Choice</span>}
                               </div>
@@ -466,9 +521,7 @@ export default function StudentOnlineTest({ testId, onClose, onFinished }) {
                                 <span>{isPlaying ? 'Playing Audio (Stop)' : 'Listen to Audio Rationale'}</span>
                               </button>
                             </div>
-                            <p className="text-[11.5px] text-slate-700 leading-relaxed whitespace-pre-line">
-                              {q.rationale || 'The correct option aligns with standard medical coding guidelines and anatomical references.'}
-                            </p>
+                            <RichText html={q.rationale || 'The correct option aligns with standard medical coding guidelines and anatomical references.'} className="text-[11.5px] text-slate-700 leading-relaxed" />
                           </div>
                         </div>
                       );

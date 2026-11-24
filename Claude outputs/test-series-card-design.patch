@@ -1,0 +1,681 @@
+diff -ruN a/client/src/components/TestQuestionBank.jsx b/client/src/components/TestQuestionBank.jsx
+--- a/client/src/components/TestQuestionBank.jsx	2026-11-24 11:15:10.036276874 +0530
++++ b/client/src/components/TestQuestionBank.jsx	2026-11-24 11:15:10.038802237 +0530
+@@ -1,5 +1,5 @@
+ import React, { useCallback, useEffect, useMemo, useState } from 'react';
+-import { ArrowLeft, Plus, Pencil, Trash2, Upload, X, Flag, CheckCircle2, AlertCircle, Search, SlidersHorizontal, ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react';
++import { ArrowLeft, Plus, Pencil, Trash2, Upload, X, Flag, CheckCircle2, AlertCircle, Search, SlidersHorizontal, ChevronLeft, ChevronRight, ChevronDown, RefreshCw, FileQuestion, Lightbulb } from 'lucide-react';
+ import {
+   getQuestionBankMeta, getQuestionBank, addBankQuestions, deleteBankQuestion, setBankMarking, resolveBankQuestion
+ } from '../services/api';
+@@ -147,6 +147,7 @@
+   const [editor, setEditor] = useState(null); // { initial } — full-page add / edit
+   const [importing, setImporting] = useState(false);
+   const [scheme, setScheme] = useState(null);
++  const [expanded, setExpanded] = useState([]); // question ids with the solution open
+   const set = (patch) => setF((x) => ({ ...x, page: 1, ...patch }));
+   const flash = (m) => { setToast(m); setTimeout(() => setToast(''), 3000); };
+ 
+@@ -208,174 +209,229 @@
+     );
+   }
+ 
++  const anyFilter = f.testId || f.subject || f.topic || f.qType || f.search || f.reported || (f.language && f.language !== 'English');
++  const chip = 'px-3 py-2.5 rounded-xl bg-slate-50 border border-slate-200 text-sm focus:outline-none focus:border-teal-500 focus:bg-white min-w-0';
++
+   return (
+     <div className="space-y-4 max-w-[1600px]">
+       {toast && <div className="fixed bottom-5 right-5 z-50 p-3 rounded-xl bg-slate-900 text-white text-xs font-semibold shadow-lg">{toast}</div>}
+ 
+-      {onBack && <div className="flex items-center justify-between gap-3">
++      {onBack && (
+         <div className="flex items-center gap-3">
+-          {onBack && <button type="button" onClick={onBack} className="p-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-50"><ArrowLeft className="w-4 h-4" /></button>}
+-          <h2 className="text-2xl font-normal text-slate-800">Question</h2>
++          <button type="button" onClick={onBack} className="p-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50"><ArrowLeft className="w-4 h-4" /></button>
++          <div>
++            <h2 className="text-xl font-extrabold text-slate-900 tracking-tight">{selTest?.name || 'Questions'}</h2>
++            <p className="text-xs text-slate-500">{[selTest?.seriesName, selTest?.testCode].filter(Boolean).join(' · ')}</p>
++          </div>
+         </div>
+-        <div className="text-xs text-slate-500">Home <span className="mx-1 text-slate-300">&gt;</span> Questions</div>
+-      </div>}
++      )}
+ 
+-      {error && <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold flex gap-2"><AlertCircle className="w-4 h-4 flex-shrink-0" />{error}<button type="button" className="ml-auto" onClick={() => setError('')}><X className="w-3.5 h-3.5" /></button></div>}
++      {error && <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold flex gap-2"><AlertCircle className="w-4 h-4 flex-shrink-0" />{error}<button type="button" className="ml-auto" onClick={() => setError('')}><X className="w-3.5 h-3.5" /></button></div>}
+ 
+-      <div className="bg-white rounded-lg border border-slate-200 shadow-sm">
+-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-4 py-3">
+-          <h3 className="text-lg text-slate-800">Question List <span className="text-sm text-slate-400">({total.toLocaleString('en-IN')})</span></h3>
++      {/* header + filters */}
++      <div className="bg-white rounded-2xl border border-slate-200 p-4 space-y-3">
++        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
++          <div className="flex items-center gap-3">
++            <div className="w-10 h-10 rounded-xl bg-[#0f212d] text-[#5eead4] flex items-center justify-center"><FileQuestion className="w-5 h-5" /></div>
++            <div>
++              <div className="text-base font-extrabold text-slate-900">Question List</div>
++              <div className="text-xs text-slate-500">
++                <b className="text-slate-800">{total.toLocaleString('en-IN')}</b> question{total === 1 ? '' : 's'}{anyFilter ? ' match' : ''} · {tests.length} test{tests.length === 1 ? '' : 's'} · {subjects.length} subject{subjects.length === 1 ? '' : 's'}
++              </div>
++            </div>
++          </div>
+           {canManage && (
+             <div className="flex items-center gap-2">
+               {f.testId && (
+                 <button type="button" disabled={!selTest?.questionCount} onClick={() => setScheme({ marks: 1, negMarks: 0 })}
+-                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"><SlidersHorizontal className="w-4 h-4" />Marking</button>
++                  className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"><SlidersHorizontal className="w-4 h-4" />Marking</button>
+               )}
+               <button type="button" disabled={!tests.length} onClick={() => setImporting(true)}
+-                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"><Upload className="w-4 h-4" />Import</button>
++                className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"><Upload className="w-4 h-4" />Import</button>
+               <button type="button" disabled={!tests.length} title={tests.length ? '' : 'Add a test first (Test List)'}
+                 onClick={() => setEditor({ initial: { defaults: { subject: f.subject, topic: f.topic, language: f.language || 'English' } } })}
+-                className="inline-flex items-center gap-1 px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-sm font-bold disabled:opacity-50"><Plus className="w-4 h-4" />Add</button>
++                className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#009688] hover:bg-[#00897b] text-white text-xs font-bold disabled:opacity-50"><Plus className="w-4 h-4" />Add Question</button>
+             </div>
+           )}
+         </div>
+ 
+-        {scheme && (
+-          <div className="mx-4 mb-2 rounded-lg border border-sky-200 bg-sky-50/50 p-3 flex flex-wrap items-end gap-3">
+-            <div className="text-sm font-bold text-slate-800 w-full">Set marks for every question in {selTest?.name}</div>
+-            <label className="text-xs font-bold text-slate-600">Marks +<input type="number" min={1} value={scheme.marks} onChange={(e) => setScheme({ ...scheme, marks: e.target.value })} className="block mt-1 w-24 px-2.5 py-1.5 rounded-lg border border-slate-300 text-sm" /></label>
+-            <label className="text-xs font-bold text-slate-600">Negative −<input type="number" min={0} step="0.25" value={scheme.negMarks} onChange={(e) => setScheme({ ...scheme, negMarks: e.target.value })} className="block mt-1 w-24 px-2.5 py-1.5 rounded-lg border border-slate-300 text-sm" /></label>
+-            <button type="button" disabled={saving} onClick={async () => { if (await run(() => setBankMarking(f.testId, { marks: numOr(scheme.marks, 1), negMarks: numOr(scheme.negMarks, 0) }), '✓ Marking updated')) setScheme(null); }} className="px-4 py-2 rounded-lg bg-sky-600 text-white text-sm font-bold disabled:opacity-50">Apply</button>
+-            <button type="button" onClick={() => setScheme(null)} className="px-3 py-2 rounded-lg text-sm text-slate-600 hover:bg-white">Cancel</button>
+-          </div>
+-        )}
+-
+-        <div className="px-4 py-4 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-[auto_1fr_1fr_1fr] gap-4 items-center">
+-          <label className="flex items-center gap-4 text-sm font-bold text-slate-700 pl-6">Show
+-            <select value={f.limit} onChange={(e) => set({ limit: Number(e.target.value) })} className="px-3 py-2.5 rounded border border-slate-300 text-sm font-normal w-24">
+-              {[10, 25, 50, 100].map((n) => <option key={n} value={n}>{n}</option>)}
+-            </select>
+-          </label>
+-          <select value={f.testId} onChange={(e) => set({ testId: e.target.value })} className="px-3 py-2.5 rounded border border-slate-300 text-sm">
+-            <option value="">Select Test</option>
++        <div className="relative">
++          <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
++          <input value={searchText} onChange={(e) => setSearchText(e.target.value)} placeholder="Search question, option, solution, subject or topic…"
++            className="w-full pl-10 pr-3 py-3 rounded-xl bg-slate-50 border border-slate-200 text-sm focus:outline-none focus:border-teal-500 focus:bg-white" />
++        </div>
++        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-2">
++          <select value={f.testId} disabled={Boolean(onBack)} onChange={(e) => set({ testId: e.target.value })} className={`${chip} xl:col-span-2`}>
++            <option value="">All Tests</option>
+             {tests.map((t) => <option key={t.id} value={t.id}>{t.name}{t.seriesName ? ` — ${t.seriesName}` : ''} ({t.questionCount})</option>)}
+           </select>
+-          <select value={f.subject} onChange={(e) => set({ subject: e.target.value, topic: '' })} className="px-3 py-2.5 rounded border border-slate-300 text-sm">
+-            <option value="">All Subject</option>
++          <select value={f.subject} onChange={(e) => set({ subject: e.target.value, topic: '' })} className={chip}>
++            <option value="">All Subjects</option>
+             {subjects.map((s) => <option key={s}>{s}</option>)}
+           </select>
+-          <select value={f.topic} onChange={(e) => set({ topic: e.target.value })} className="px-3 py-2.5 rounded border border-slate-300 text-sm">
++          <select value={f.topic} onChange={(e) => set({ topic: e.target.value })} className={chip}>
+             <option value="">All Topics</option>
+             {topics.map((s) => <option key={s}>{s}</option>)}
+           </select>
+-        </div>
+-        <div className="px-4 pb-5 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 items-center">
+-          <select value={f.qType} onChange={(e) => set({ qType: e.target.value })} className="px-3 py-2.5 rounded border border-slate-300 text-sm">
+-            <option value="">Question Type</option>
++          <select value={f.qType} onChange={(e) => set({ qType: e.target.value })} className={chip}>
++            <option value="">All Types</option>
+             <option value="MCQ">MCQ</option>
+             <option value="True/False">True / False</option>
+           </select>
+-          <select value={f.language} onChange={(e) => set({ language: e.target.value })} className="px-3 py-2.5 rounded border border-slate-300 text-sm">
++          <select value={f.language} onChange={(e) => set({ language: e.target.value })} className={chip}>
+             <option value="">All Languages</option>
+             {languages.map((l) => <option key={l}>{l}</option>)}
+           </select>
+-          <div className="relative">
+-            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+-            <input value={searchText} onChange={(e) => setSearchText(e.target.value)} placeholder="Search" className="w-full pl-9 pr-3 py-2.5 rounded border border-slate-300 text-sm" />
++        </div>
++        <div className="flex flex-wrap items-center justify-between gap-2">
++          <div className="flex items-center gap-2">
++            <button type="button" onClick={() => set({ reported: !f.reported })}
++              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border transition ${f.reported ? 'bg-rose-600 text-white border-rose-600' : 'bg-white text-slate-600 border-slate-200 hover:border-rose-300 hover:text-rose-600'}`}>
++              <Flag className="w-3.5 h-3.5" />Reported only
++            </button>
++            {anyFilter && (
++              <button type="button" onClick={() => { setSearchText(''); setF((x) => ({ ...x, page: 1, testId: onBack ? x.testId : '', subject: '', topic: '', qType: '', language: 'English', search: '', reported: false })); }}
++                className="px-3 py-1.5 rounded-full text-xs font-bold text-slate-500 hover:text-slate-900">Clear filters</button>
++            )}
+           </div>
+-          <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+-            <input type="checkbox" checked={f.reported} onChange={(e) => set({ reported: e.target.checked })} />Show Reported Questions Only
++          <label className="flex items-center gap-2 text-xs font-semibold text-slate-500">Show
++            <select value={f.limit} onChange={(e) => set({ limit: Number(e.target.value) })} className="px-2 py-1.5 rounded-lg border border-slate-200 text-xs bg-white">
++              {[10, 25, 50, 100].map((n) => <option key={n} value={n}>{n}</option>)}
++            </select>
++            per page
+           </label>
+         </div>
++      </div>
++
++      {scheme && (
++        <div className="rounded-2xl border border-teal-200 bg-teal-50/40 p-4 flex flex-wrap items-end gap-3">
++          <div className="text-sm font-bold text-slate-800 w-full">Set marks for every question in {selTest?.name}</div>
++          <label className="text-xs font-bold text-slate-600">Marks +<input type="number" min={1} value={scheme.marks} onChange={(e) => setScheme({ ...scheme, marks: e.target.value })} className="block mt-1 w-24 px-2.5 py-1.5 rounded-lg border border-slate-300 text-sm" /></label>
++          <label className="text-xs font-bold text-slate-600">Negative −<input type="number" min={0} step="0.25" value={scheme.negMarks} onChange={(e) => setScheme({ ...scheme, negMarks: e.target.value })} className="block mt-1 w-24 px-2.5 py-1.5 rounded-lg border border-slate-300 text-sm" /></label>
++          <button type="button" disabled={saving} onClick={async () => { if (await run(() => setBankMarking(f.testId, { marks: numOr(scheme.marks, 1), negMarks: numOr(scheme.negMarks, 0) }), '✓ Marking updated')) setScheme(null); }} className="px-4 py-2 rounded-lg bg-[#009688] text-white text-sm font-bold disabled:opacity-50">Apply</button>
++          <button type="button" onClick={() => setScheme(null)} className="px-3 py-2 rounded-lg text-sm text-slate-600 hover:bg-white">Cancel</button>
++        </div>
++      )}
+ 
+-        <div className="px-4 pb-4 overflow-x-auto">
+-          <table className="w-full text-sm text-slate-800 border border-slate-200">
+-            <thead>
+-              <tr className="text-left font-bold border-b border-slate-200">
+-                <th className="p-3 border-r border-slate-200 w-10">#</th>
+-                <th className="p-3 border-r border-slate-200">Question Details</th>
+-                <th className="p-3 border-r border-slate-200">Topic</th>
+-                <th className="p-3 border-r border-slate-200">Subject</th>
+-                <th className="p-3 border-r border-slate-200">Question Type</th>
+-                <th className="p-3 border-r border-slate-200">Bonus Marks</th>
+-                <th className="p-3 border-r border-slate-200">Hint</th>
+-                <th className="p-3">More</th>
+-              </tr>
+-            </thead>
+-            <tbody>
+-              {loading && rows.length === 0 && <tr><td colSpan={8} className="p-10 text-center text-slate-500"><RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-sky-600" />Loading questions…</td></tr>}
+-              {!loading && rows.length === 0 && (
+-                <tr><td colSpan={8} className="p-10 text-center text-slate-500">
+-                  {total === 0 && !f.testId && !f.subject && !f.search && !f.reported && !f.topic && !f.qType ? (tests.length ? 'No questions yet — click Add, or Import to paste many at once.' : 'Add a test first in Test List, then add its questions here.') : 'No question matches these filters.'}
+-                </td></tr>
+-              )}
+-              {rows.map((r, i) => {
+-                const q = r.question;
+-                const font = q.font ? (q.font === 'ARIAL' ? 'Arial' : q.font) : undefined;
+-                return (
+-                  <tr key={`${r.testId}-${q._id}`} className={`border-b border-slate-200 align-top ${i % 2 ? 'bg-white' : 'bg-slate-50/70'} ${loading ? 'opacity-60' : ''}`}>
+-                    <td className="p-3 border-r border-slate-200 font-bold">{(f.page - 1) * f.limit + i + 1}</td>
+-                    <td className="p-3 border-r border-slate-200 min-w-[420px]" style={{ fontFamily: font }}>
+-                      {!f.testId && <div className="text-[11px] text-slate-400 mb-1">{r.testName}{r.seriesName ? ` · ${r.seriesName}` : ''} · Q{r.index + 1}</div>}
+-                      {q.instruction && <RichText html={q.instruction} className="mb-2 text-slate-600 italic" />}
+-                      {q.passage && <RichText html={q.passage} className="mb-2 p-2 rounded bg-slate-100 border border-slate-200 text-[13px]" />}
+-                      <RichText html={q.q} />
+-                      <div className="mt-2 space-y-2 pl-8">
+-                        {(q.options || []).map((o, j) => (
+-                          <div key={j} className="flex gap-1"><span>{LETTERS[j]}.</span><RichText html={o} as="span" /></div>
+-                        ))}
++      {/* question cards */}
++      {loading && rows.length === 0 && (
++        <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center text-xs text-slate-500"><RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-teal-600" />Loading questions…</div>
++      )}
++      {!loading && rows.length === 0 && (
++        <div className="bg-white rounded-2xl border border-dashed border-slate-300 p-12 text-center">
++          <FileQuestion className="w-9 h-9 text-slate-300 mx-auto mb-2" />
++          <div className="text-sm font-bold text-slate-700">{anyFilter ? 'No question matches these filters' : 'No questions yet'}</div>
++          <p className="text-xs text-slate-500 mt-1">{anyFilter ? 'Try clearing a filter.' : tests.length ? 'Click Add Question, or Import to paste many at once.' : 'Add a test first in Test List, then add its questions here.'}</p>
++        </div>
++      )}
++
++      <div className={`space-y-3 ${loading ? 'opacity-60' : ''}`}>
++        {rows.map((r, i) => {
++          const q = r.question;
++          const font = q.font ? (q.font === 'ARIAL' ? 'Arial' : q.font) : undefined;
++          const num = (f.page - 1) * f.limit + i + 1;
++          const tags = [
++            q.subject && { t: q.subject, c: 'bg-indigo-50 text-indigo-700' },
++            q.topic && { t: q.topic, c: 'bg-teal-50 text-teal-700' },
++            q.difficulty && { t: q.difficulty, c: q.difficulty === 'Hard' ? 'bg-rose-50 text-rose-700' : q.difficulty === 'Medium' ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700' },
++            { t: q.qType || 'MCQ', c: 'bg-slate-100 text-slate-600' },
++            q.language && q.language !== 'English' && { t: q.language, c: 'bg-slate-100 text-slate-600' }
++          ].filter(Boolean);
++          const open = expanded.includes(q._id);
++          return (
++            <div key={`${r.testId}-${q._id}`} className={`bg-white rounded-2xl border overflow-hidden ${(q.reports || []).length ? 'border-rose-200' : 'border-slate-200'} hover:shadow-sm transition-shadow`}>
++              {/* card header */}
++              <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 bg-slate-50/80 border-b border-slate-100">
++                <span className="inline-flex items-center justify-center min-w-[2.25rem] h-7 px-2 rounded-lg bg-[#0f212d] text-white text-xs font-extrabold">Q{num}</span>
++                {!onBack && (
++                  <span className="text-[11px] text-slate-500 truncate max-w-[280px]" title={`${r.testName} · ${r.seriesName}`}>
++                    <b className="text-slate-700">{r.testName}</b>{r.seriesName ? ` · ${r.seriesName}` : ''} · #{r.index + 1}
++                  </span>
++                )}
++                <div className="flex flex-wrap gap-1">
++                  {tags.map((t) => <span key={t.t} className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${t.c}`}>{t.t}</span>)}
++                </div>
++                <div className="ml-auto flex items-center gap-1.5">
++                  <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-50 text-emerald-700">+{q.marks || 1}</span>
++                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold ${q.negMarks ? 'bg-rose-50 text-rose-700' : 'bg-slate-100 text-slate-400'}`}>−{q.negMarks || 0}</span>
++                  {q.bonusMarks > 0 && <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-sky-50 text-sky-700">Bonus +{q.bonusMarks}</span>}
++                  {canManage && (
++                    <>
++                      <button type="button" onClick={() => setEditor({ initial: { testId: r.testId, question: q } })} title="Edit" className="ml-1 p-1.5 rounded-lg text-slate-500 hover:bg-emerald-50 hover:text-emerald-700"><Pencil className="w-4 h-4" /></button>
++                      <button type="button" disabled={saving} onClick={() => remove(r)} title="Delete" className="p-1.5 rounded-lg text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 className="w-4 h-4" /></button>
++                    </>
++                  )}
++                </div>
++              </div>
++
++              {/* body */}
++              <div className="p-4 space-y-3" style={{ fontFamily: font }}>
++                {q.instruction && <RichText html={q.instruction} className="text-xs text-slate-500 italic" />}
++                {q.passage && <RichText html={q.passage} className="text-[13px] text-slate-700 p-3 rounded-xl bg-slate-50 border border-slate-200 max-h-48 overflow-y-auto" />}
++                <RichText html={q.q} className="text-[15px] font-semibold text-slate-900 leading-relaxed" />
++                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
++                  {(q.options || []).map((o, j) => {
++                    const right = j === q.answer;
++                    return (
++                      <div key={j} className={`flex items-start gap-2.5 px-3 py-2.5 rounded-xl border text-sm ${right ? 'bg-emerald-50 border-emerald-300 text-emerald-900' : 'bg-white border-slate-200 text-slate-700'}`}>
++                        <span className={`w-6 h-6 flex-shrink-0 rounded-full flex items-center justify-center text-[11px] font-extrabold ${right ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-500'}`}>{LETTERS[j].toUpperCase()}</span>
++                        <RichText html={o} className="flex-1 pt-0.5" />
++                        {right && <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0 mt-0.5" />}
+                       </div>
+-                      <div className="mt-3"><b>ANS:</b> {LETTERS[q.answer] ?? '—'}</div>
+-                      <div className="mt-2"><b>Marks :</b> +{q.marks || 1}, -{q.negMarks || 0}</div>
+-                      {q.rationale && <div className="mt-2"><b>Solution :</b><RichText html={q.rationale} /></div>}
+-                      {(q.reports || []).length > 0 && (
+-                        <div className="mt-3 p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-xs">
+-                          <div className="flex items-center justify-between gap-2 font-bold text-rose-700">
+-                            <span className="inline-flex items-center gap-1"><Flag className="w-3.5 h-3.5" />Reported by {q.reports.length} student{q.reports.length === 1 ? '' : 's'}</span>
+-                            {canManage && <button type="button" disabled={saving} onClick={() => run(() => resolveBankQuestion(r.testId, q._id), '✓ Reports marked resolved')} className="inline-flex items-center gap-1 px-2 py-1 rounded bg-white border border-rose-200 text-rose-700 hover:bg-rose-100"><CheckCircle2 className="w-3.5 h-3.5" />Mark resolved</button>}
+-                          </div>
+-                          <ul className="mt-1.5 space-y-1 text-rose-900">
+-                            {q.reports.map((rep, k) => <li key={k}>“{rep.reason}” — {rep.studentName || rep.studentId}{rep.at ? `, ${new Date(rep.at).toLocaleDateString('en-IN')}` : ''}</li>)}
+-                          </ul>
+-                        </div>
+-                      )}
+-                    </td>
+-                    <td className="p-3 border-r border-slate-200">{q.topic}{q.difficulty && <div className="text-[11px] text-slate-400 mt-1">{q.difficulty}</div>}</td>
+-                    <td className="p-3 border-r border-slate-200">{q.subject}</td>
+-                    <td className="p-3 border-r border-slate-200">{q.qType || 'MCQ'}</td>
+-                    <td className="p-3 border-r border-slate-200">{q.bonusMarks || 0}</td>
+-                    <td className="p-3 border-r border-slate-200 max-w-[160px] text-xs">{q.hint}</td>
+-                    <td className="p-3">
+-                      {canManage && (
+-                        <div className="flex gap-1.5">
+-                          <button type="button" onClick={() => setEditor({ initial: { testId: r.testId, question: q } })} title="Edit" className="p-2 rounded bg-emerald-600 hover:bg-emerald-700 text-white"><Pencil className="w-4 h-4" /></button>
+-                          <button type="button" disabled={saving} onClick={() => remove(r)} title="Delete" className="p-2 rounded bg-rose-600 hover:bg-rose-700 text-white"><Trash2 className="w-4 h-4" /></button>
+-                        </div>
+-                      )}
+-                    </td>
+-                  </tr>
+-                );
+-              })}
+-            </tbody>
+-          </table>
+-        </div>
+-
+-        {total > 0 && (
+-          <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-t border-slate-200 text-xs text-slate-600">
+-            <span>Showing {((f.page - 1) * f.limit + 1).toLocaleString('en-IN')} to {Math.min(f.page * f.limit, total).toLocaleString('en-IN')} of {total.toLocaleString('en-IN')} questions</span>
+-            <div className="flex items-center gap-1">
+-              <button type="button" disabled={f.page <= 1} onClick={() => setF((x) => ({ ...x, page: 1 }))} className="px-2 py-1 rounded border border-slate-200 disabled:opacity-40">First</button>
+-              <button type="button" disabled={f.page <= 1} onClick={() => setF((x) => ({ ...x, page: x.page - 1 }))} className="p-1 rounded border border-slate-200 disabled:opacity-40"><ChevronLeft className="w-4 h-4" /></button>
+-              <span className="px-2">Page
+-                <input type="number" min={1} max={pages} value={f.page} onChange={(e) => { const n = Math.min(pages, Math.max(1, Number(e.target.value) || 1)); setF((x) => ({ ...x, page: n })); }}
+-                  className="mx-1 w-16 px-1.5 py-0.5 rounded border border-slate-300 text-center" />of {pages.toLocaleString('en-IN')}</span>
+-              <button type="button" disabled={f.page >= pages} onClick={() => setF((x) => ({ ...x, page: x.page + 1 }))} className="p-1 rounded border border-slate-200 disabled:opacity-40"><ChevronRight className="w-4 h-4" /></button>
+-              <button type="button" disabled={f.page >= pages} onClick={() => setF((x) => ({ ...x, page: pages }))} className="px-2 py-1 rounded border border-slate-200 disabled:opacity-40">Last</button>
++                    );
++                  })}
++                </div>
++
++                {(q.rationale || q.hint) && (
++                  <div className="flex flex-wrap items-center gap-2 pt-1">
++                    {q.rationale && (
++                      <button type="button" onClick={() => setExpanded((list) => (open ? list.filter((x) => x !== q._id) : [...list, q._id]))}
++                        className="inline-flex items-center gap-1 text-xs font-bold text-teal-700 hover:text-teal-900">
++                        <ChevronDown className={`w-3.5 h-3.5 transition-transform ${open ? 'rotate-180' : ''}`} />{open ? 'Hide solution' : 'Show solution'}
++                      </button>
++                    )}
++                    {q.hint && <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 text-[11px] font-semibold"><Lightbulb className="w-3 h-3" />{q.hint}</span>}
++                  </div>
++                )}
++                {open && q.rationale && (
++                  <div className="rounded-xl bg-teal-50/50 border border-teal-100 p-3">
++                    <div className="text-[10px] font-extrabold uppercase tracking-wider text-teal-700 mb-1">Solution</div>
++                    <RichText html={q.rationale} className="text-sm text-slate-700" />
++                  </div>
++                )}
++
++                {(q.reports || []).length > 0 && (
++                  <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs">
++                    <div className="flex items-center justify-between gap-2 font-bold text-rose-700">
++                      <span className="inline-flex items-center gap-1"><Flag className="w-3.5 h-3.5" />Reported by {q.reports.length} student{q.reports.length === 1 ? '' : 's'}</span>
++                      {canManage && <button type="button" disabled={saving} onClick={() => run(() => resolveBankQuestion(r.testId, q._id), '✓ Reports marked resolved')} className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-white border border-rose-200 text-rose-700 hover:bg-rose-100"><CheckCircle2 className="w-3.5 h-3.5" />Mark resolved</button>}
++                    </div>
++                    <ul className="mt-1.5 space-y-1 text-rose-900">
++                      {q.reports.map((rep, k) => <li key={k}>“{rep.reason}” — {rep.studentName || rep.studentId}{rep.at ? `, ${new Date(rep.at).toLocaleDateString('en-IN')}` : ''}</li>)}
++                    </ul>
++                  </div>
++                )}
++              </div>
+             </div>
+-          </div>
+-        )}
++          );
++        })}
+       </div>
+ 
++      {total > 0 && (
++        <div className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs text-slate-600">
++          <span>Showing {((f.page - 1) * f.limit + 1).toLocaleString('en-IN')}–{Math.min(f.page * f.limit, total).toLocaleString('en-IN')} of {total.toLocaleString('en-IN')} questions</span>
++          <div className="flex items-center gap-1">
++            <button type="button" disabled={f.page <= 1} onClick={() => setF((x) => ({ ...x, page: 1 }))} className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white disabled:opacity-40">First</button>
++            <button type="button" disabled={f.page <= 1} onClick={() => setF((x) => ({ ...x, page: x.page - 1 }))} className="p-1.5 rounded-lg border border-slate-200 bg-white disabled:opacity-40"><ChevronLeft className="w-4 h-4" /></button>
++            <span className="px-2">Page
++              <input type="number" min={1} max={pages} value={f.page} onChange={(e) => { const n = Math.min(pages, Math.max(1, Number(e.target.value) || 1)); setF((x) => ({ ...x, page: n })); }}
++                className="mx-1 w-16 px-1.5 py-1 rounded-lg border border-slate-200 text-center" />of {pages.toLocaleString('en-IN')}</span>
++            <button type="button" disabled={f.page >= pages} onClick={() => setF((x) => ({ ...x, page: x.page + 1 }))} className="p-1.5 rounded-lg border border-slate-200 bg-white disabled:opacity-40"><ChevronRight className="w-4 h-4" /></button>
++            <button type="button" disabled={f.page >= pages} onClick={() => setF((x) => ({ ...x, page: pages }))} className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white disabled:opacity-40">Last</button>
++          </div>
++        </div>
++      )}
++
+       {importing && (
+         <ImportModal tests={tests} testId={f.testId} saving={saving} onCancel={() => setImporting(false)}
+           onImport={async (testId, list) => { if (await run(() => addBankQuestions(testId, { questions: list }), `✓ ${list.length} questions imported`)) setImporting(false); }} />
+diff -ruN a/client/src/components/TestSeriesManager.jsx b/client/src/components/TestSeriesManager.jsx
+--- a/client/src/components/TestSeriesManager.jsx	2026-11-24 11:15:10.036362598 +0530
++++ b/client/src/components/TestSeriesManager.jsx	2026-11-24 11:15:10.038914206 +0530
+@@ -180,7 +180,7 @@
+   const [tab, setTab] = useState('tests'); // tests | questions | courses
+   // Test list
+   const [search, setSearch] = useState('');
+-  const [pageSize, setPageSize] = useState(10);
++  const [pageSize, setPageSize] = useState(12);
+   const [page, setPage] = useState(1);
+   const [courseFilter, setCourseFilter] = useState('');
+   const [selected, setSelected] = useState([]);
+@@ -331,13 +331,21 @@
+     <div className="space-y-4 max-w-[1400px]">
+       {toast && <div className="fixed bottom-5 right-5 z-50 p-3 rounded-xl bg-slate-900 text-white text-xs font-semibold shadow-lg">{toast}</div>}
+ 
+-      <div className="flex items-center justify-between">
+-        <h2 className="text-2xl font-normal text-slate-800">{tab === 'questions' ? 'Question' : tab === 'courses' ? 'Courses' : 'Tests'}</h2>
+-        <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
+-          {[{ id: 'tests', label: 'Test List' }, { id: 'questions', label: 'Question Bank' }, { id: 'courses', label: `Courses (${series.length})` }].map((x) => (
+-            <button key={x.id} type="button" onClick={() => setTab(x.id)}
+-              className={`px-3 py-1.5 rounded-md text-xs font-bold ${tab === x.id ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>{x.label}</button>
+-          ))}
++      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
++        <div>
++          <h2 className="text-xl font-extrabold text-slate-900 tracking-tight">Test Series</h2>
++          <p className="text-xs text-slate-500 mt-0.5">Mock tests, question bank and courses for the Student Portal</p>
++        </div>
++        <div className="flex gap-1 bg-white border border-slate-200 p-1 rounded-xl">
++          {[{ id: 'tests', label: 'Test List', icon: ListChecks }, { id: 'questions', label: 'Question Bank', icon: FileQuestion }, { id: 'courses', label: `Courses (${series.length})`, icon: BookOpen }].map((x) => {
++            const Icon = x.icon;
++            return (
++              <button key={x.id} type="button" onClick={() => setTab(x.id)}
++                className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold transition ${tab === x.id ? 'bg-[#0f212d] text-white shadow-sm' : 'text-slate-500 hover:text-slate-800 hover:bg-slate-50'}`}>
++                <Icon className="w-3.5 h-3.5" />{x.label}
++              </button>
++            );
++          })}
+         </div>
+       </div>
+ 
+@@ -345,102 +353,141 @@
+       {!canManage && <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-xs">View only — the Head of Trainer and Managers add and edit tests.</div>}
+ 
+       {tab === 'tests' && (
+-        <div className="bg-white rounded-lg border border-slate-200 shadow-sm">
+-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-4 py-3 border-b border-slate-200">
+-            <h3 className="text-base font-bold text-slate-900">Test List</h3>
+-            <div className="flex items-center gap-2">
+-              <div className="relative">
+-                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+-                <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search Test"
+-                  className="pl-9 pr-3 py-2 w-56 rounded-lg border border-slate-300 text-sm focus:outline-none focus:border-sky-500" />
+-              </div>
+-              {canManage && (
+-                <button type="button" disabled={!series.length}
+-                  onClick={() => setTestForm({ initial: null })}
+-                  title={series.length ? '' : 'Create a course first (Courses tab)'}
+-                  className="inline-flex items-center gap-1 px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-sm font-bold disabled:opacity-50">
+-                  <Plus className="w-4 h-4" />Add
+-                </button>
+-              )}
+-            </div>
++        <div className="space-y-4">
++          {/* stat tiles */}
++          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
++            {[
++              { label: 'Tests', value: allTests.length, sub: `${series.length} course${series.length === 1 ? '' : 's'}`, icon: ListChecks, tone: 'bg-[#0f212d] text-white', iconTone: 'bg-white/10 text-[#5eead4]' },
++              { label: 'Active', value: allTests.filter((t) => t.status === 'Active').length, sub: 'visible to students', icon: Power, tone: 'bg-white', iconTone: 'bg-emerald-50 text-emerald-600' },
++              { label: 'Questions', value: allTests.reduce((a, t) => a + (t.questionCount || 0), 0), sub: `${allTests.filter((t) => t.reportedCount).length} test(s) with reports`, icon: FileQuestion, tone: 'bg-white', iconTone: 'bg-teal-50 text-teal-600' },
++              { label: 'Attempts', value: allTests.reduce((a, t) => a + (t.submitted || 0), 0), sub: 'submitted by students', icon: BarChart3, tone: 'bg-white', iconTone: 'bg-sky-50 text-sky-600' }
++            ].map((s) => {
++              const Icon = s.icon;
++              return (
++                <div key={s.label} className={`rounded-2xl border border-slate-200 p-4 flex items-center gap-3 ${s.tone}`}>
++                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${s.iconTone}`}><Icon className="w-5 h-5" /></div>
++                  <div className="min-w-0">
++                    <div className="text-2xl font-extrabold leading-none">{s.value.toLocaleString('en-IN')}</div>
++                    <div className="text-[11px] font-bold uppercase tracking-wider mt-1 opacity-70">{s.label}</div>
++                    <div className="text-[10px] opacity-60 truncate">{s.sub}</div>
++                  </div>
++                </div>
++              );
++            })}
+           </div>
+ 
+-          <div className="px-4 py-4 flex flex-wrap items-center gap-x-6 gap-y-3">
+-            <label className="flex items-center gap-3 text-sm font-bold text-slate-700">Show
+-              <select value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))} className="px-3 py-2 rounded-lg border border-slate-300 text-sm font-normal w-24">
+-                {[10, 25, 50, 100].map((n) => <option key={n} value={n}>{n}</option>)}
+-              </select>
+-            </label>
+-            <label className="flex items-center gap-3 text-sm font-bold text-slate-700">Course
+-              <select value={courseFilter} onChange={(e) => setCourseFilter(e.target.value)} className="px-3 py-2 rounded-lg border border-slate-300 text-sm font-normal w-72">
+-                <option value="">All Courses</option>
+-                {series.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+-              </select>
+-            </label>
+-            {canManage && selected.length > 0 && (
+-              <div className="flex flex-wrap items-center gap-1.5 ml-auto">
+-                <span className="text-xs font-bold text-slate-600 mr-1">{selected.length} selected</span>
+-                <button type="button" disabled={saving} onClick={() => bulk({ status: 'Active' }, 'Activated')} className="px-2.5 py-1.5 rounded-md text-xs font-bold bg-emerald-50 text-emerald-700 hover:bg-emerald-100">Activate</button>
+-                <button type="button" disabled={saving} onClick={() => bulk({ status: 'Inactive' }, 'Deactivated')} className="px-2.5 py-1.5 rounded-md text-xs font-bold bg-slate-100 text-slate-700 hover:bg-slate-200">Deactivate</button>
+-                <button type="button" disabled={saving} onClick={() => bulk({ publishResult: true }, 'Results published')} className="px-2.5 py-1.5 rounded-md text-xs font-bold bg-sky-50 text-sky-700 hover:bg-sky-100">Publish result</button>
+-                <button type="button" disabled={saving} onClick={() => bulk({ publishResult: false }, 'Results hidden')} className="px-2.5 py-1.5 rounded-md text-xs font-bold bg-amber-50 text-amber-700 hover:bg-amber-100">Hide result</button>
+-                <button type="button" disabled={saving} onClick={() => bulk('delete', 'Deleted')} className="px-2.5 py-1.5 rounded-md text-xs font-bold bg-rose-50 text-rose-700 hover:bg-rose-100">Delete</button>
+-              </div>
++          {/* toolbar */}
++          <div className="bg-white rounded-2xl border border-slate-200 p-3 flex flex-col lg:flex-row lg:items-center gap-2">
++            <div className="relative flex-1">
++              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
++              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by test name, ID or course…"
++                className="w-full pl-9 pr-3 py-2.5 rounded-xl bg-slate-50 border border-slate-200 text-sm focus:outline-none focus:border-teal-500 focus:bg-white" />
++            </div>
++            <select value={courseFilter} onChange={(e) => setCourseFilter(e.target.value)} className="px-3 py-2.5 rounded-xl bg-slate-50 border border-slate-200 text-sm lg:w-60">
++              <option value="">All Courses</option>
++              {series.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
++            </select>
++            <select value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))} className="px-3 py-2.5 rounded-xl bg-slate-50 border border-slate-200 text-sm lg:w-32">
++              {[12, 24, 48, 96].map((n) => <option key={n} value={n}>{n} / page</option>)}
++            </select>
++            {canManage && (
++              <button type="button" disabled={!series.length} onClick={() => setTestForm({ initial: null })}
++                title={series.length ? '' : 'Create a course first (Courses tab)'}
++                className="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#009688] hover:bg-[#00897b] text-white text-sm font-bold disabled:opacity-50">
++                <Plus className="w-4 h-4" />Add Test
++              </button>
+             )}
+           </div>
+ 
+-          <div className="px-4 pb-4 overflow-x-auto">
+-            <table className="w-full text-sm text-slate-800">
+-              <thead>
+-                <tr className="bg-slate-50 text-left font-bold text-slate-800 border-b border-slate-200">
+-                  <th className="p-3 w-8"><input type="checkbox" checked={allOnPage} onChange={(e) => setSelected(e.target.checked ? [...new Set([...selected, ...rows.map((t) => t.id)])] : selected.filter((id) => !rows.some((t) => t.id === id)))} /></th>
+-                  <th className="p-3 w-8">#</th>
+-                  <th className="p-3">Test ID</th>
+-                  <th className="p-3">Test Name</th>
+-                  <th className="p-3">Course</th>
+-                  <th className="p-3">Open Date</th>
+-                  <th className="p-3">Close Date</th>
+-                  <th className="p-3">Status</th>
+-                  <th className="p-3">Publish Result</th>
+-                  <th className="p-3">More</th>
+-                </tr>
+-              </thead>
+-              <tbody>
+-                {rows.length === 0 && (
+-                  <tr><td colSpan={10} className="p-10 text-center text-slate-500">
+-                    <ListChecks className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+-                    {allTests.length ? 'No test matches your search.' : series.length ? 'No tests yet — click Add to create Mock Test 1.' : 'Create a course first in the Courses tab (e.g. "CPPM Vol 1"), then add tests to it.'}
+-                  </td></tr>
+-                )}
+-                {rows.map((t, i) => (
+-                  <tr key={t.id} className={`border-b border-slate-100 align-top ${i % 2 ? 'bg-slate-50/70' : 'bg-white'}`}>
+-                    <td className="p-3"><input type="checkbox" checked={selected.includes(t.id)} onChange={(e) => setSelected(e.target.checked ? [...selected, t.id] : selected.filter((x) => x !== t.id))} /></td>
+-                    <td className="p-3 font-bold">{(curPage - 1) * pageSize + i + 1}</td>
+-                    <td className="p-3 font-mono text-[13px]">{t.testCode || '—'}</td>
+-                    <td className="p-3 min-w-[220px]">
+-                      <button type="button" onClick={() => setBankTestId(t.id)} className="text-left hover:text-sky-700">{t.name}</button>
+-                      <div className="text-slate-600">{t.questionCount} Questions{t.reportedCount ? <span className="ml-2 inline-flex items-center gap-0.5 text-[11px] font-bold text-rose-600"><Flag className="w-3 h-3" />{t.reportedCount} reported</span> : null}</div>
+-                      <div className="text-[11px] text-slate-400">{t.durationMin} min · {t.totalMarks || 0} marks{t.submitted ? ` · ${t.submitted} attempt${t.submitted === 1 ? '' : 's'}` : ''}</div>
+-                    </td>
+-                    <td className="p-3">{t.seriesName}{t.seriesStatus !== 'Published' && <div className="text-[11px] text-amber-600 font-semibold">Draft course</div>}</td>
+-                    <td className="p-3 whitespace-nowrap">{fmtWindow(t.openDate)}</td>
+-                    <td className="p-3 whitespace-nowrap">{fmtWindow(t.closeDate)}</td>
+-                    <td className="p-3"><Pill tone={t.status === 'Active' ? 'green' : 'gray'}>{t.status}</Pill></td>
+-                    <td className="p-3"><Pill tone={t.publishResult ? 'green' : 'amber'}>{t.publishResult ? 'Yes' : 'No'}</Pill></td>
+-                    <td className="p-3">
+-                      <div className="flex items-center gap-2 relative" ref={menuId === t.id ? menuRef : null}>
+-                        <button type="button" onClick={() => setMenuId(menuId === t.id ? '' : t.id)}
+-                          className="inline-flex items-center gap-1 px-3 py-2 rounded-md bg-amber-500 hover:bg-amber-600 text-white text-xs font-semibold">
+-                          <ChevronDown className="w-3 h-3" />Action
++          {/* bulk bar */}
++          {canManage && rows.length > 0 && (
++            <div className="flex flex-wrap items-center gap-2 px-1">
++              <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-600 cursor-pointer">
++                <input type="checkbox" className="accent-teal-600" checked={allOnPage} onChange={(e) => setSelected(e.target.checked ? [...new Set([...selected, ...rows.map((t) => t.id)])] : selected.filter((id) => !rows.some((t) => t.id === id)))} />
++                Select page
++              </label>
++              {selected.length > 0 && (
++                <div className="flex flex-wrap items-center gap-1.5 ml-2 pl-3 border-l border-slate-200">
++                  <span className="text-xs font-bold text-slate-700 mr-1">{selected.length} selected</span>
++                  <button type="button" disabled={saving} onClick={() => bulk({ status: 'Active' }, 'Activated')} className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-emerald-50 text-emerald-700 hover:bg-emerald-100">Activate</button>
++                  <button type="button" disabled={saving} onClick={() => bulk({ status: 'Inactive' }, 'Deactivated')} className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-slate-100 text-slate-700 hover:bg-slate-200">Deactivate</button>
++                  <button type="button" disabled={saving} onClick={() => bulk({ publishResult: true }, 'Results published')} className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-sky-50 text-sky-700 hover:bg-sky-100">Publish result</button>
++                  <button type="button" disabled={saving} onClick={() => bulk({ publishResult: false }, 'Results hidden')} className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-amber-50 text-amber-700 hover:bg-amber-100">Hide result</button>
++                  <button type="button" disabled={saving} onClick={() => bulk('delete', 'Deleted')} className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-rose-50 text-rose-700 hover:bg-rose-100">Delete</button>
++                  <button type="button" onClick={() => setSelected([])} className="px-2 py-1.5 text-xs text-slate-500 hover:text-slate-800">Clear</button>
++                </div>
++              )}
++            </div>
++          )}
++
++          {/* cards */}
++          {rows.length === 0 ? (
++            <div className="bg-white rounded-2xl border border-dashed border-slate-300 p-12 text-center">
++              <ListChecks className="w-9 h-9 text-slate-300 mx-auto mb-2" />
++              <div className="text-sm font-bold text-slate-700">{allTests.length ? 'No test matches your search' : 'No tests yet'}</div>
++              <p className="text-xs text-slate-500 mt-1">{allTests.length ? 'Try another name or course.' : series.length ? 'Click Add Test to create Mock Test 1.' : 'Create a course first in the Courses tab (e.g. "CPPM Vol 1"), then add tests to it.'}</p>
++            </div>
++          ) : (
++            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
++              {rows.map((t, i) => {
++                const isSel = selected.includes(t.id);
++                const ready = t.questionCount > 0;
++                return (
++                  <div key={t.id} className={`group bg-white rounded-2xl border transition-shadow hover:shadow-md flex flex-col ${isSel ? 'border-teal-500 ring-2 ring-teal-100' : 'border-slate-200'}`}>
++                    <div className={`h-1.5 rounded-t-2xl ${t.status !== 'Active' ? 'bg-slate-300' : ready ? 'bg-gradient-to-r from-[#009688] to-[#14b8a6]' : 'bg-amber-400'}`} />
++                    <div className="p-4 flex-1 flex flex-col gap-3">
++                      <div className="flex items-start justify-between gap-2">
++                        <label className="flex items-center gap-2 cursor-pointer min-w-0">
++                          {canManage && <input type="checkbox" className="accent-teal-600" checked={isSel} onChange={(e) => setSelected(e.target.checked ? [...selected, t.id] : selected.filter((x) => x !== t.id))} />}
++                          <span className="font-mono text-[11px] font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md truncate">{t.testCode || '—'}</span>
++                        </label>
++                        <div className="flex items-center gap-1 flex-shrink-0">
++                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${t.status === 'Active' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>{t.status}</span>
++                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${t.publishResult ? 'bg-sky-50 text-sky-700' : 'bg-amber-50 text-amber-700'}`}>{t.publishResult ? 'Result on' : 'Result held'}</span>
++                        </div>
++                      </div>
++
++                      <button type="button" onClick={() => setBankTestId(t.id)} className="text-left">
++                        <div className="text-[10px] font-bold uppercase tracking-wider text-teal-700">{t.seriesName}{t.seriesStatus !== 'Published' && <span className="ml-1.5 text-amber-600">· Draft course</span>}</div>
++                        <div className="text-base font-extrabold text-slate-900 leading-snug group-hover:text-[#00796b] line-clamp-2">{t.name}</div>
++                      </button>
++
++                      <div className="grid grid-cols-3 gap-2">
++                        {[
++                          { v: t.questionCount, l: 'Questions', warn: !ready },
++                          { v: `${t.durationMin}m`, l: 'Duration' },
++                          { v: t.totalMarks || 0, l: 'Marks' }
++                        ].map((m) => (
++                          <div key={m.l} className={`rounded-xl px-2 py-2 text-center ${m.warn ? 'bg-amber-50' : 'bg-slate-50'}`}>
++                            <div className={`text-base font-extrabold ${m.warn ? 'text-amber-700' : 'text-slate-900'}`}>{m.v}</div>
++                            <div className="text-[10px] text-slate-500 font-semibold">{m.l}</div>
++                          </div>
++                        ))}
++                      </div>
++
++                      <div className="text-[11px] text-slate-600 space-y-1">
++                        <div className="flex justify-between"><span className="text-slate-400">Opens</span><span className="font-semibold">{fmtWindow(t.openDate) === 'NA' ? 'Anytime' : fmtWindow(t.openDate)}</span></div>
++                        <div className="flex justify-between"><span className="text-slate-400">Closes</span><span className="font-semibold">{fmtWindow(t.closeDate) === 'NA' ? 'No end date' : fmtWindow(t.closeDate)}</span></div>
++                        <div className="flex justify-between"><span className="text-slate-400">Attempts</span><span className="font-semibold">{t.submitted || 0}{t.avgScore != null ? ` · avg ${t.avgScore}/${t.totalMarks}` : ''}</span></div>
++                      </div>
++
++                      {!ready && <div className="text-[11px] font-semibold text-amber-700 bg-amber-50 rounded-lg px-2.5 py-1.5">No questions yet — students can't see this test.</div>}
++                      {t.reportedCount > 0 && <div className="text-[11px] font-semibold text-rose-700 bg-rose-50 rounded-lg px-2.5 py-1.5 inline-flex items-center gap-1"><Flag className="w-3 h-3" />{t.reportedCount} question{t.reportedCount === 1 ? '' : 's'} reported by students</div>}
++                    </div>
++
++                    <div className="px-4 pb-4 flex items-center gap-2">
++                      <button type="button" onClick={() => setBankTestId(t.id)}
++                        className="flex-1 inline-flex items-center justify-center gap-1.5 py-2 rounded-xl bg-[#0f212d] hover:bg-[#172b38] text-white text-xs font-bold">
++                        <FileQuestion className="w-4 h-4" />{canManage ? 'Questions' : 'View questions'}
++                      </button>
++                      <div className="relative" ref={menuId === t.id ? menuRef : null}>
++                        <button type="button" onClick={() => setMenuId(menuId === t.id ? '' : t.id)} title="More actions"
++                          className="inline-flex items-center gap-1 px-3 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-700 hover:bg-slate-50">
++                          Action<ChevronDown className="w-3.5 h-3.5" />
+                         </button>
+-                        {canManage && (
+-                          <button type="button" disabled={saving} onClick={() => sendTest(t)} title="Notify students"
+-                            className="p-2 rounded-md bg-sky-600 hover:bg-sky-700 text-white"><Send className="w-4 h-4" /></button>
+-                        )}
+                         {menuId === t.id && (
+-                          <div className="absolute right-0 top-10 z-30 w-52 bg-white border border-slate-200 rounded-lg shadow-lg py-1 text-sm">
++                          <div className="absolute right-0 bottom-11 z-30 w-52 bg-white border border-slate-200 rounded-xl shadow-xl py-1 text-sm">
+                             {[
+-                              { label: canManage ? 'Questions' : 'View questions', icon: FileQuestion, on: () => setBankTestId(t.id) },
+                               canManage && { label: 'Edit test', icon: Pencil, on: () => setTestForm({ initial: t }) },
+                               { label: 'Results & attempts', icon: BarChart3, on: () => setBuilderTest(t) },
+                               canManage && { label: t.status === 'Active' ? 'Deactivate' : 'Activate', icon: Power, on: () => patchTest(t, { status: t.status === 'Active' ? 'Inactive' : 'Active' }, t.status === 'Active' ? 'Test deactivated — hidden from students' : '✓ Test active') },
+@@ -458,20 +505,24 @@
+                           </div>
+                         )}
+                       </div>
+-                    </td>
+-                  </tr>
+-                ))}
+-              </tbody>
+-            </table>
+-          </div>
++                      {canManage && (
++                        <button type="button" disabled={saving} onClick={() => sendTest(t)} title="Notify students"
++                          className="p-2 rounded-xl bg-teal-50 text-teal-700 hover:bg-teal-100"><Send className="w-4 h-4" /></button>
++                      )}
++                    </div>
++                  </div>
++                );
++              })}
++            </div>
++          )}
+ 
+           {filtered.length > 0 && (
+-            <div className="flex items-center justify-between px-4 py-3 border-t border-slate-200 text-xs text-slate-600">
+-              <span>Showing {(curPage - 1) * pageSize + 1} to {Math.min(curPage * pageSize, filtered.length)} of {filtered.length} tests</span>
++            <div className="flex items-center justify-between px-1 text-xs text-slate-600">
++              <span>Showing {(curPage - 1) * pageSize + 1}–{Math.min(curPage * pageSize, filtered.length)} of {filtered.length} tests</span>
+               <div className="flex items-center gap-1">
+-                <button type="button" disabled={curPage <= 1} onClick={() => setPage(curPage - 1)} className="p-1.5 rounded border border-slate-200 disabled:opacity-40"><ChevronLeft className="w-4 h-4" /></button>
++                <button type="button" disabled={curPage <= 1} onClick={() => setPage(curPage - 1)} className="p-1.5 rounded-lg border border-slate-200 bg-white disabled:opacity-40"><ChevronLeft className="w-4 h-4" /></button>
+                 <span className="px-2 font-bold">{curPage} / {pages}</span>
+-                <button type="button" disabled={curPage >= pages} onClick={() => setPage(curPage + 1)} className="p-1.5 rounded border border-slate-200 disabled:opacity-40"><ChevronRight className="w-4 h-4" /></button>
++                <button type="button" disabled={curPage >= pages} onClick={() => setPage(curPage + 1)} className="p-1.5 rounded-lg border border-slate-200 bg-white disabled:opacity-40"><ChevronRight className="w-4 h-4" /></button>
+               </div>
+             </div>
+           )}

@@ -43,6 +43,8 @@ export default function HrAdmittedStudentsCrm({
   totalPages: propTotalPages,
   totalCount: propTotalCount,
   limit: propLimit = 50,
+  totalStats: propTotalStats,
+  onLimitChange,
   onPageChange
 }) {
   // Show new / reset portal credentials in the persistent card owned by the HR dashboard
@@ -75,6 +77,7 @@ export default function HrAdmittedStudentsCrm({
   const [localPage, setLocalPage] = useState(1);
   const [localTotalPages, setLocalTotalPages] = useState(1);
   const [localTotalCount, setLocalTotalCount] = useState(0);
+  const [localStats, setLocalStats] = useState(null);
 
   const handleConfirmDeleteStudent = async () => {
     if (!deletingStudent) return;
@@ -98,7 +101,8 @@ export default function HrAdmittedStudentsCrm({
     const params = {
       ...(currentUser?.name ? { hrName: currentUser.name } : {}),
       page: targetPage,
-      limit: propLimit
+      limit: propLimit,
+      withStats: 'true'
     };
     getStudents(params).then(res => {
       if (Array.isArray(res)) {
@@ -109,6 +113,7 @@ export default function HrAdmittedStudentsCrm({
         setStudents(res.students);
         setLocalTotalCount(res.totalCount ?? res.students.length);
         setLocalTotalPages(res.totalPages || 1);
+        setLocalStats(res.stats || null);
       }
     }).catch(err => console.error('Error fetching students:', err));
   };
@@ -268,6 +273,10 @@ export default function HrAdmittedStudentsCrm({
       return bal > 0 || (s.feeStatus && s.feeStatus.toLowerCase().includes('pending'));
     }).length;
 
+    // Server totals across every page when we have them; this page's numbers otherwise
+    const serverTotals = propStudents !== undefined ? propTotalStats : localStats;
+    if (serverTotals && typeof serverTotals.total === 'number') return serverTotals;
+
     return {
       total: students.length,
       admittedThisMonth,
@@ -279,7 +288,7 @@ export default function HrAdmittedStudentsCrm({
       interviewing,
       feePending
     };
-  }, [students]);
+  }, [students, propStudents, propTotalStats, localStats]);
 
   const currentMonthLabel = new Date().toLocaleString('en-US', { month: 'long' }).toUpperCase();
 
@@ -1011,6 +1020,7 @@ export default function HrAdmittedStudentsCrm({
           if (onPageChange) onPageChange(nextPage);
           else setLocalPage(nextPage);
         }}
+        onLimitChange={onLimitChange}
       />
 
       {/* Delete Student Confirmation Modal */}

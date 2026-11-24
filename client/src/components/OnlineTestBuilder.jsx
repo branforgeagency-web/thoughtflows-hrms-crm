@@ -71,11 +71,13 @@ function parsePasted(text) {
   }).filter(Boolean);
 }
 
-export default function OnlineTestBuilder({ test, onClose, onSaved }) {
-  const [tab, setTab] = useState('questions');
+export default function OnlineTestBuilder({ test, onClose, onSaved, initialTab = 'questions' }) {
+  const [tab, setTab] = useState(initialTab);
   const [questions, setQuestions] = useState(() => (
     test.questions?.length
       ? test.questions.map((q) => ({
+          // keep question-bank fields (_id, negative / bonus marks, topic, hint…) on save
+          ...q,
           q: q.q || '',
           options: [...(q.options || ['', '', '', ''])],
           answer: typeof q.answer === 'number' ? q.answer : 0,
