@@ -428,7 +428,12 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   const [leadsTotalPages, setLeadsTotalPages] = useState(1);
   const [leadFilters, setLeadFilters] = useState({});
   const [leadsViewMode, setLeadsViewMode] = useState('kanban');
-  const [hrLeadCounts, setHrLeadCounts] = useState(null);
+  const [hrLeadCounts, setHrLeadCounts] = useState(null); // whole desk (nav badges, home, other tabs) — never Pipeline-filtered
+  // Pipeline & Follow-ups has its own list / counts so its filters, page and table
+  // mode never change what Demo Desk, Admitted Students, Home and the badges show
+  const [pipelineLeads, setPipelineLeads] = useState(null); // null = same as the desk list
+  const [pipelineLeadCounts, setPipelineLeadCounts] = useState(null);
+  const [pipelineFiltered, setPipelineFiltered] = useState(false);
   const [studentsPage, setStudentsPage] = useState(1);
   const [studentsTotalCount, setStudentsTotalCount] = useState(0);
   const [studentsStats, setStudentsStats] = useState(null); // overview card totals (all pages)
@@ -630,6 +635,21 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     }
   };
 
+  // Pipeline filters belong to the Pipeline screen only: when the user leaves it
+  // (its dropdowns reset to "All" on return) drop them so list and dropdowns agree
+  const pipelineTabRef = React.useRef(activeTab);
+  useEffect(() => {
+    const isPipe = (t) => t === 'Pipeline & Follow-ups' || t === 'My Pipeline' || t === 'Follow-up Board';
+    const was = pipelineTabRef.current;
+    pipelineTabRef.current = activeTab;
+    if (was !== activeTab && isPipe(was) && Object.keys(leadFilters).length) {
+      setLeadFilters({});
+      setLeadsPage(1);
+      loadAllData(true, { leadFilters: {}, leadsPage: 1 });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
+
   // (Re)load the Admitted Students table when it is opened or the desk scope changes
   useEffect(() => {
     if (activeTab === 'Admitted Students') loadAdmitted(1, admittedRef.current.limit);
@@ -678,11 +698,31 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         })
         .catch(() => {});
 
-      // Pill counts use the same filters as the lead list (minus paging)
+      // Desk-wide list & counts: scope only (no Pipeline filters, first page)
+      const deskLeadParams = {
+        ...branchParam,
+        ...(shouldFilterOnServer ? { counselor: counselorFilter } : {}),
+        page: 1,
+        limit: LEADS_BOARD_LIMIT
+      };
+      const { page: _dp, limit: _dl, ...deskCountParams } = deskLeadParams;
       const { page: _p, limit: _l, ...countParams } = leadParams;
-      getHrLeadCounts(Object.keys(countParams).length ? countParams : undefined)
-        .then((countsRes) => { if (countsRes && typeof countsRes === 'object') setHrLeadCounts(countsRes); })
+      const pipelineHasFilters = Object.keys(activeLeadFilters).some((k) => !['', 'all', undefined].includes(activeLeadFilters[k]));
+      const pipelineSameAsDesk = JSON.stringify(leadParams) === JSON.stringify(deskLeadParams);
+      getHrLeadCounts(Object.keys(deskCountParams).length ? deskCountParams : undefined)
+        .then((countsRes) => {
+          if (countsRes && typeof countsRes === 'object') {
+            setHrLeadCounts(countsRes);
+            if (!pipelineHasFilters) setPipelineLeadCounts(null);
+          }
+        })
         .catch(() => {});
+      if (pipelineHasFilters) {
+        // Pipeline pill counts follow its filters (minus paging)
+        getHrLeadCounts(countParams)
+          .then((countsRes) => { if (countsRes && typeof countsRes === 'object') setPipelineLeadCounts(countsRes); })
+          .catch(() => {});
+      }
 
       (counselorFilter ? getTodayClosure(counselorFilter, dKey) : Promise.resolve(null))
         .catch(() => null)
@@ -690,7 +730,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
 
       const [stRes, ldRes, dmRes] = await Promise.all([
         getStudents({ ...(shouldFilterOnServer ? { hrName: counselorFilter } : {}), ...branchParam, page: targetStudentsPage, limit: PAGE_LIMIT, withStats: 'true' }),
-        getLeads(leadParams),
+        getLeads(deskLeadParams),
         getDemos(shouldFilterOnServer ? { counselor: counselorFilter, ...branchParam } : (branchParam.branch ? branchParam : undefined))
       ]);
       if (loadSeq !== loadSeqRef.current) return;
@@ -702,8 +742,14 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
 
       const ldList = ldRes?.leads || [];
       setLeads(ldList);
-      setLeadsTotalCount(typeof ldRes?.totalCount === 'number' ? ldRes.totalCount : ldList.length);
-      setLeadsTotalPages(ldRes?.totalPages || 1);
+      // Pipeline's own page (only fetched when it differs from the desk list)
+      const pipeRes = pipelineSameAsDesk ? ldRes : await getLeads(leadParams).catch(() => null);
+      if (loadSeq !== loadSeqRef.current) return;
+      const pipeList = pipeRes?.leads || [];
+      setPipelineLeads(pipelineSameAsDesk ? null : pipeList);
+      setPipelineFiltered(pipelineHasFilters);
+      setLeadsTotalCount(typeof pipeRes?.totalCount === 'number' ? pipeRes.totalCount : pipeList.length);
+      setLeadsTotalPages(pipeRes?.totalPages || 1);
 
       setDemos(Array.isArray(dmRes) ? dmRes : []);
       setLoading(false);
@@ -904,12 +950,13 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [students, viewAll, serverScoped, teamNames, myName, branchName]);
 
-  const scopedLeads = useMemo(() => {
-    let baseLeads = leads;
+  // Desk scoping for a lead list (+ admitted students that have no lead yet)
+  const scopeLeadList = (srcLeads, withSynthetic = true) => {
+    let baseLeads = srcLeads;
     if (viewAll || serverScoped) {
-      baseLeads = leads;
+      baseLeads = srcLeads;
     } else if (myName || teamNames) {
-      baseLeads = leads.filter(l => {
+      baseLeads = srcLeads.filter(l => {
         const rb = l.branch || l.location || '';
         return (
           ownerMatch(l.counselorAssigned, rb) ||
@@ -966,9 +1013,16 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         createdAt: s.createdAt || s.registeredAt || new Date().toISOString()
       }));
 
-    return [...baseLeads, ...syntheticAdmittedLeads];
+    return withSynthetic ? [...baseLeads, ...syntheticAdmittedLeads] : baseLeads;
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const scopedLeads = useMemo(() => scopeLeadList(leads), [leads, rawScopedStudents, viewAll, serverScoped, teamNames, myName, currentUser?.name]);
+  // Pipeline view: its own filtered / paged list (filtered lists skip the extra admitted rows, they would not match the filters)
+  const scopedPipelineLeads = useMemo(
+    () => (pipelineLeads ? scopeLeadList(pipelineLeads, !pipelineFiltered) : scopedLeads),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [leads, rawScopedStudents, viewAll, serverScoped, teamNames, myName, currentUser?.name]);
+    [pipelineLeads, pipelineFiltered, scopedLeads, rawScopedStudents, viewAll, serverScoped, teamNames, myName, currentUser?.name]
+  );
 
   // Scoped students directly from verified records
   const scopedStudents = rawScopedStudents;
@@ -2110,14 +2164,14 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
           />
         ) : (activeTab === 'Pipeline & Follow-ups' || activeTab === 'My Pipeline' || activeTab === 'Follow-up Board') ? (
           <HrPipelineView 
-            leads={scopedLeads} 
+            leads={scopedPipelineLeads} 
             onRefreshLeads={loadAllData} 
             onAddLeadClick={() => { setAddLeadModalMode('single'); setShowAddLeadModal(true); }} 
             onAdmitLead={setAdmittingLead}
             onCallLead={(lead) => openCallFor(lead, false)}
             initialViewMode={activeTab === 'Follow-up Board' ? 'followup' : 'kanban'}
             currentUser={currentUser}
-            hrLeadCounts={hrLeadCounts}
+            hrLeadCounts={pipelineLeadCounts || hrLeadCounts}
             page={leadsPage}
             totalPages={leadsTotalPages}
             totalCount={leadsTotalCount}

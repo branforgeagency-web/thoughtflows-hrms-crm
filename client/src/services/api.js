@@ -2355,11 +2355,15 @@ export const updateSeriesTest = async (id, testId, data) => (await api.put(`/tes
 export const notifySeriesTest = async (id, testId) => (await api.post(`/test-series/${encodeURIComponent(id)}/tests/${encodeURIComponent(testId)}/notify`)).data;
 export const getQuestionBankMeta = async () => (await api.get('/question-bank/meta')).data;
 export const getQuestionBank = async (params) => (await api.get('/question-bank', { params })).data;
-export const addBankQuestions = async (testId, body) => (await api.post(`/question-bank/${encodeURIComponent(testId)}`, body)).data;
-export const updateBankQuestion = async (testId, qid, body) => (await api.put(`/question-bank/${encodeURIComponent(testId)}/${encodeURIComponent(qid)}`, body)).data;
-export const deleteBankQuestion = async (testId, qid) => (await api.delete(`/question-bank/${encodeURIComponent(testId)}/${encodeURIComponent(qid)}`)).data;
-export const setBankMarking = async (testId, body) => (await api.post(`/question-bank/${encodeURIComponent(testId)}/marking`, body)).data;
-export const resolveBankQuestion = async (testId, qid) => (await api.post(`/question-bank/${encodeURIComponent(testId)}/${encodeURIComponent(qid)}/resolve`)).data;
+export const addBankQuestion = async (body) => (await api.post('/question-bank', body)).data; // { question, testId? }
+export const bulkUploadQuestions = async (body) => (await api.post('/question-bank/bulk', body, { timeout: 120000 })).data; // { questions, testId?, importBatch }
+export const getQuestionImports = async () => (await api.get('/question-bank/imports')).data;
+export const undoQuestionImport = async (batch) => (await api.delete(`/question-bank/imports/${encodeURIComponent(batch)}`)).data;
+export const updateBankQuestion = async (id, body) => (await api.put(`/question-bank/${encodeURIComponent(id)}`, body)).data; // { question, testId? }
+export const deleteBankQuestion = async (id) => (await api.delete(`/question-bank/${encodeURIComponent(id)}`)).data;
+export const bankBulkAction = async (body) => (await api.post('/question-bank/bulk-action', body)).data; // { ids, action, testId? }
+export const setBankMarking = async (testId, body) => (await api.post(`/question-bank/test/${encodeURIComponent(testId)}/marking`, body)).data;
+export const resolveBankQuestion = async (id) => (await api.post(`/question-bank/${encodeURIComponent(id)}/resolve`)).data;
 export const reportTestQuestion = async (testId, index, reason) => (await api.post(`/student-portal/tests/${encodeURIComponent(testId)}/report`, { index, reason })).data;
 
 export const getTestLeaderboard = async (id, params) => {

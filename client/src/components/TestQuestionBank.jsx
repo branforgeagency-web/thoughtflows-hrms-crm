@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Plus, Pencil, Trash2, Upload, X, Flag, CheckCircle2, AlertCircle, Search, SlidersHorizontal, ChevronLeft, ChevronRight, ChevronDown, RefreshCw, FileQuestion, Lightbulb } from 'lucide-react';
+import { ArrowLeft, Plus, Pencil, Trash2, Upload, X, Flag, CheckCircle2, AlertCircle, Search, SlidersHorizontal, ChevronLeft, ChevronRight, ChevronDown, RefreshCw, FileQuestion, Lightbulb, FileSpreadsheet, Download, History, FolderInput, FolderOutput } from 'lucide-react';
 import {
-  getQuestionBankMeta, getQuestionBank, addBankQuestions, deleteBankQuestion, setBankMarking, resolveBankQuestion
+  getQuestionBankMeta, getQuestionBank, deleteBankQuestion, setBankMarking, resolveBankQuestion,
+  bulkUploadQuestions, getQuestionImports, undoQuestionImport, bankBulkAction
 } from '../services/api';
+import { readSpreadsheet, parseCsv } from './spreadsheetReader';
 import RichText, { htmlToText } from './RichText';
 import QuestionEditor, { LANGUAGES } from './QuestionEditor';
 
@@ -71,63 +73,330 @@ export function parseQuestionText(text, defaults = {}) {
   return out;
 }
 
-function ImportModal({ tests, testId: initialTestId, onCancel, onImport, saving }) {
+// ---------- Bulk upload (Excel / CSV / text) ----------
+// Column headers are matched loosely, e.g. "Question", "Option A".."Option E",
+// "Answer" (A–E, 1–5 or the option text), "Solution", "Subject", "Topic",
+// "Marks", "Negative Marks", "Difficulty", "Language", "Hint", "Type", "Test ID".
+const COLS = [
+  ['q', /^(question|questions|question text|question details|q)$/],
+  ['a', /^(option ?a|opt ?a|a|option ?1|choice ?a)$/],
+  ['b', /^(option ?b|opt ?b|b|option ?2|choice ?b)$/],
+  ['c', /^(option ?c|opt ?c|c|option ?3|choice ?c)$/],
+  ['d', /^(option ?d|opt ?d|d|option ?4|choice ?d)$/],
+  ['e', /^(option ?e|opt ?e|e|option ?5|choice ?e)$/],
+  ['f', /^(option ?f|opt ?f|f|option ?6|choice ?f)$/],
+  ['answer', /^(answer|ans|correct|correct answer|correct option|key|answer key|right answer)$/],
+  ['rationale', /^(solution|rationale|explanation|reason)$/],
+  ['subject', /^(subject|section)$/],
+  ['topic', /^(topic|chapter name|sub ?topic)$/],
+  ['marks', /^(marks|mark|\+ ?ve|positive|positive marks|\+ ?marks)$/],
+  ['negMarks', /^(negative|negative marks|neg|neg marks|- ?ve|- ?marks|minus)$/],
+  ['bonusMarks', /^(bonus|bonus marks)$/],
+  ['difficulty', /^(difficulty|difficulty level|level)$/],
+  ['language', /^(language|lang)$/],
+  ['hint', /^(hint)$/],
+  ['qType', /^(type|question type|qtype)$/],
+  ['testCode', /^(test ?id|test ?code)$/]
+];
+// Plain cell text with < or > would be read as formatting — keep it as text
+const cellHtml = (v) => (/[<>]/.test(v) ? `<span>${v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>')}</span>` : v);
+const norm = (h) => String(h || '').toLowerCase().replace(/[_.]/g, ' ').replace(/\s+/g, ' ').trim();
+const TEMPLATE = 'Question,Option A,Option B,Option C,Option D,Option E,Answer,Solution,Subject,Topic,Marks,Negative Marks,Difficulty,Language,Hint,Type,Test ID\n'
+  + '"The phalanx is a:",Ligament,Tendon,Bone,Muscle,,C,"A phalanx is a digital bone found in the fingers and toes.",MOCK TEST,Anatomy,1,0,Easy,English,DOCQ,MCQ,\n';
+
+function rowsToQuestions(rows) {
+  const h = rows.findIndex((r) => (r || []).some((x) => String(x).trim()));
+  if (h < 0 || rows.length < h + 2) return { questions: [], skipped: [], mapped: [] };
+  const header = rows[h].map(norm);
+  const at = {};
+  COLS.forEach(([key, re]) => { const i = header.findIndex((h) => re.test(h)); if (i >= 0) at[key] = i; });
+  const mapped = COLS.filter(([k]) => at[k] !== undefined).map(([k]) => k);
+  if (at.q === undefined || at.a === undefined || at.b === undefined) {
+    return { questions: [], skipped: [], mapped, headerError: 'The first row must have column names — at least "Question", "Option A", "Option B" and "Answer". Download the template to see all columns.' };
+  }
+  const questions = [];
+  const skipped = [];
+  rows.slice(h + 1).forEach((r = [], k) => {
+    const row = h + k + 2; // spreadsheet row number
+    const cell = (key) => (at[key] !== undefined ? String(r[at[key]] ?? '').trim() : '');
+    const q = cell('q');
+    if (!q && !cell('a')) return; // blank line
+    const options = ['a', 'b', 'c', 'd', 'e', 'f'].map(cell);
+    while (options.length && !options[options.length - 1]) options.pop();
+    const ans = cell('answer');
+    let answer = -1;
+    if (/^[a-f]$/i.test(ans)) answer = 'abcdef'.indexOf(ans.toLowerCase());
+    else if (/^\(?[a-f][).]?$/i.test(ans)) answer = 'abcdef'.indexOf(ans.replace(/[^a-f]/gi, '').toLowerCase());
+    else if (/^option ?[a-f]$/i.test(ans)) answer = 'abcdef'.indexOf(ans.slice(-1).toLowerCase());
+    else if (/^[1-6]$/.test(ans)) answer = Number(ans) - 1;
+    else if (ans) answer = options.findIndex((o) => o.toLowerCase() === ans.toLowerCase());
+    if (!q) { skipped.push({ row, error: 'Question is empty' }); return; }
+    if (options.length < 2 || options.some((o) => !o)) { skipped.push({ row, error: 'Needs at least 2 options, with no gaps (A, B, C…)' }); return; }
+    if (answer < 0 || answer >= options.length) { skipped.push({ row, error: `Answer "${ans}" does not match an option` }); return; }
+    const type = cell('qType').toLowerCase();
+    const isTF = /^(tf|t\/f|true ?\/ ?false|true false)$/.test(type) || (options.length === 2 && options.every((o) => /^(true|false)$/i.test(o)));
+    const diff = cell('difficulty').toLowerCase();
+    questions.push({
+      row, q: cellHtml(q), options: options.map(cellHtml), answer,
+      rationale: cellHtml(cell('rationale')), subject: cell('subject'), topic: cell('topic'),
+      marks: numOr(cell('marks'), 1), negMarks: Math.abs(numOr(cell('negMarks'), 0)), bonusMarks: numOr(cell('bonusMarks'), 0),
+      difficulty: diff ? diff[0].toUpperCase() + diff.slice(1) : '', language: cell('language') || 'English', hint: cell('hint'),
+      qType: isTF ? 'True/False' : 'MCQ', testCode: cell('testCode').toUpperCase()
+    });
+  });
+  return { questions, skipped, mapped };
+}
+
+const CHUNK = 500;
+const downloadCsv = (name, lines) => {
+  const url = URL.createObjectURL(new Blob([`\uFEFF${lines.join('\n')}`], { type: 'text/csv;charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = url; a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+};
+
+function BulkUploadModal({ tests, maxPerTest, testId: initialTestId, onClose, onDone }) {
+  const [parsed, setParsed] = useState(null); // { questions, skipped, mapped, source }
+  const [parseError, setParseError] = useState('');
+  const [reading, setReading] = useState(false);
   const [text, setText] = useState('');
-  const [testId, setTestId] = useState(initialTestId || '');
-  const [d, setD] = useState({ marks: 1, negMarks: 0, subject: '', topic: '', language: 'English' });
-  const defaults = { marks: numOr(d.marks, 1), negMarks: numOr(d.negMarks, 0), subject: d.subject, topic: d.topic, language: d.language };
-  const parsed = useMemo(() => parseQuestionText(text, defaults), [text, d]); // eslint-disable-line react-hooks/exhaustive-deps
-  const inp = 'mt-1 w-full px-2.5 py-1.5 rounded-lg border border-slate-300 text-sm';
-  const readFile = (file) => { if (!file) return; const r = new FileReader(); r.onload = () => setText(String(r.result || '')); r.readAsText(file); };
+  const [target, setTarget] = useState(initialTestId && initialTestId !== 'none' ? initialTestId : '');
+  const [d, setD] = useState({ subject: '', topic: '', language: 'English' });
+  const [progress, setProgress] = useState(null); // { done, total, inserted, errors }
+  const [finished, setFinished] = useState(null);
+  const busy = Boolean(progress && !finished);
+  const hasTestCol = Boolean(parsed?.questions.some((q) => q.testCode));
+  const targetTest = tests.find((t) => t.id === target);
+  const room = targetTest ? Math.max(0, maxPerTest - targetTest.questionCount) : Infinity;
+
+  const onFile = async (file) => {
+    if (!file) return;
+    setParseError(''); setParsed(null); setFinished(null); setProgress(null);
+    setReading(true);
+    try {
+      if (/\.txt$/i.test(file.name)) {
+        const qs = parseQuestionText(await file.text()).map((q, i) => ({ ...q, row: i + 1 }));
+        if (!qs.length) throw new Error('No questions recognised in this text file — use the "1. … / a. … / ANS: c" layout.');
+        setParsed({ questions: qs, skipped: [], mapped: [], source: file.name });
+      } else {
+        const { rows } = await readSpreadsheet(file);
+        const out = rowsToQuestions(rows);
+        if (out.headerError) throw new Error(out.headerError);
+        if (!out.questions.length && !out.skipped.length) throw new Error('No question rows found under the header row.');
+        setParsed({ ...out, source: `${file.name} · ${(rows.length - 1).toLocaleString('en-IN')} rows` });
+      }
+    } catch (e) {
+      setParseError(e.message);
+    } finally {
+      setReading(false);
+    }
+  };
+  const onPasteParse = () => {
+    setParseError(''); setFinished(null);
+    const looksTabular = /\t/.test(text.split('\n')[0] || '');
+    if (looksTabular) {
+      const out = rowsToQuestions(parseCsv(text));
+      if (out.headerError) { setParseError(out.headerError); return; }
+      setParsed({ ...out, source: 'pasted rows' });
+    } else {
+      const qs = parseQuestionText(text).map((q, i) => ({ ...q, row: i + 1 }));
+      if (!qs.length) { setParseError('Nothing recognised. Paste spreadsheet rows (with the header row) or the "1. … / a. … / ANS: c" layout.'); return; }
+      setParsed({ questions: qs, skipped: [], mapped: [], source: 'pasted text' });
+    }
+  };
+
+  const upload = async () => {
+    const list = parsed.questions.map((q) => ({
+      ...q,
+      subject: q.subject || d.subject, topic: q.topic || d.topic,
+      language: q.language && q.language !== 'English' ? q.language : (d.language || 'English')
+    }));
+    const importBatch = `IMP-${Date.now().toString(36).toUpperCase()}`;
+    const state = { done: 0, total: list.length, inserted: 0, errors: [...parsed.skipped] };
+    setProgress({ ...state });
+    for (let i = 0; i < list.length; i += CHUNK) {
+      const chunk = list.slice(i, i + CHUNK);
+      try {
+        const res = await bulkUploadQuestions({ questions: chunk, testId: hasTestCol ? '' : target, importBatch });
+        state.inserted += res.inserted || 0;
+        state.errors.push(...(res.errors || []));
+      } catch (e) {
+        chunk.forEach((q) => state.errors.push({ row: q.row, error: `Upload failed: ${errOf(e)}` }));
+      }
+      state.done = Math.min(list.length, i + CHUNK);
+      setProgress({ ...state });
+    }
+    state.errors.sort((a, b) => a.row - b.row);
+    setFinished({ ...state, importBatch });
+    onDone?.();
+  };
+
+  const inp = 'mt-1 w-full px-2.5 py-2 rounded-lg border border-slate-200 text-sm bg-white';
   return (
-    <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center p-4 overflow-y-auto" onClick={onCancel}>
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl my-8" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200">
-          <h3 className="text-base font-bold text-slate-900">Import Questions</h3>
-          <button type="button" onClick={onCancel} className="p-1 rounded hover:bg-slate-100"><X className="w-4 h-4" /></button>
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center p-4 overflow-y-auto" onClick={busy ? undefined : onClose}>
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-3xl my-8" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-200">
+          <div>
+            <h3 className="text-base font-extrabold text-slate-900">Bulk Upload Questions</h3>
+            <p className="text-[11px] text-slate-500">Excel (.xlsx), CSV or text · 20,000+ rows are sent in batches of {CHUNK}</p>
+          </div>
+          {!busy && <button type="button" onClick={onClose} className="p-1 rounded hover:bg-slate-100"><X className="w-4 h-4" /></button>}
         </div>
-        <div className="p-5 space-y-3">
-          <div className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg p-3">
-            Paste questions (or upload a .txt file) in this format — one after another:
-            <pre className="mt-2 text-[11px] text-slate-700 whitespace-pre-wrap">{`1. The phalanx is a:
-a. Ligament
-b. Tendon
-c. Bone
-d. Muscle
-ANS: c
-Solution: A phalanx (plural: phalanges) is a digital bone found in the fingers and toes.`}</pre>
-            <div className="mt-1 text-slate-500">Optional lines per question: <code>Marks: +1, -0.25</code> and <code>Hint: …</code>. A * after an option also marks it correct.</div>
-          </div>
-          <label className="block text-xs font-bold text-slate-600">Add to test *
-            <select value={testId} onChange={(e) => setTestId(e.target.value)} className={inp}>
-              <option value="">Select Test</option>
-              {tests.map((t) => <option key={t.id} value={t.id}>{t.name}{t.seriesName ? ` — ${t.seriesName}` : ''}{t.testCode ? ` (${t.testCode})` : ''} · {t.questionCount} questions</option>)}
-            </select>
-          </label>
-          <div className="text-[11px] text-slate-500">A test holds up to 200 questions — import a big bank test by test.</div>
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-            <label className="block text-xs font-bold text-slate-600">Marks +<input type="number" value={d.marks} onChange={(e) => setD({ ...d, marks: e.target.value })} className={inp} /></label>
-            <label className="block text-xs font-bold text-slate-600">Negative −<input type="number" step="0.25" value={d.negMarks} onChange={(e) => setD({ ...d, negMarks: e.target.value })} className={inp} /></label>
-            <label className="block text-xs font-bold text-slate-600">Subject<input value={d.subject} onChange={(e) => setD({ ...d, subject: e.target.value })} className={inp} /></label>
-            <label className="block text-xs font-bold text-slate-600">Topic<input value={d.topic} onChange={(e) => setD({ ...d, topic: e.target.value })} className={inp} /></label>
-            <label className="block text-xs font-bold text-slate-600">Language
-              <select value={d.language} onChange={(e) => setD({ ...d, language: e.target.value })} className={inp}>{LANGUAGES.map((l) => <option key={l}>{l}</option>)}</select>
-            </label>
-          </div>
-          <textarea value={text} onChange={(e) => setText(e.target.value)} rows={12} placeholder="Paste questions here…"
-            className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm font-mono" />
-          <div className="flex items-center justify-between">
-            <label className="inline-flex items-center gap-1.5 text-xs font-bold text-sky-700 cursor-pointer">
-              <Upload className="w-4 h-4" />Upload .txt
-              <input type="file" accept=".txt,text/plain" className="hidden" onChange={(e) => readFile(e.target.files?.[0])} />
-            </label>
-            <span className={`text-xs font-bold ${parsed.length ? 'text-emerald-700' : 'text-slate-400'}`}>{parsed.length} question{parsed.length === 1 ? '' : 's'} recognised</span>
-          </div>
+
+        <div className="p-5 space-y-4">
+          {!progress && (
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label className="flex flex-col items-center justify-center gap-2 p-6 rounded-xl border-2 border-dashed border-teal-300 bg-teal-50/40 cursor-pointer hover:bg-teal-50 text-center">
+                  <FileSpreadsheet className="w-8 h-8 text-teal-600" />
+                  <span className="text-sm font-bold text-slate-800">{reading ? 'Reading file…' : 'Choose Excel / CSV / .txt'}</span>
+                  <span className="text-[11px] text-slate-500">First row = column names</span>
+                  <input type="file" accept=".xlsx,.csv,.tsv,.txt" className="hidden" disabled={reading} onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ''; onFile(file); }} />
+                </label>
+                <div className="rounded-xl border border-slate-200 p-4 text-xs text-slate-600 space-y-2">
+                  <div className="font-bold text-slate-800">Columns</div>
+                  <div>Question · Option A–E · Answer (A–E) · Solution · Subject · Topic · Marks · Negative Marks · Difficulty · Language · Hint · Type · Test ID</div>
+                  <div className="text-slate-500">Only Question, Option A, Option B and Answer are required. Fill <b>Test ID</b> (e.g. TST2503FBB6) to put each row straight into that test.</div>
+                  <button type="button" onClick={() => downloadCsv('question-upload-template.csv', [TEMPLATE.trim()])} className="inline-flex items-center gap-1 font-bold text-teal-700 hover:underline"><Download className="w-3.5 h-3.5" />Download template</button>
+                </div>
+              </div>
+
+              <details className="rounded-xl border border-slate-200">
+                <summary className="px-4 py-2.5 text-xs font-bold text-slate-700 cursor-pointer">…or paste rows / text</summary>
+                <div className="p-4 pt-1 space-y-2">
+                  <textarea value={text} onChange={(e) => setText(e.target.value)} rows={8} placeholder={'Paste rows copied from Excel (with the header row), or:\n1. The phalanx is a:\na. Ligament\nb. Tendon\nc. Bone\nd. Muscle\nANS: c\nSolution: …'}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 text-xs font-mono" />
+                  <button type="button" disabled={!text.trim()} onClick={onPasteParse} className="px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs font-bold disabled:opacity-40">Read pasted text</button>
+                </div>
+              </details>
+
+              {parseError && <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold">{parseError}</div>}
+
+              {parsed && (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div className="rounded-xl bg-emerald-50 p-3"><div className="text-xl font-extrabold text-emerald-700">{parsed.questions.length.toLocaleString('en-IN')}</div><div className="text-[11px] font-semibold text-emerald-800">ready to upload</div></div>
+                    <div className={`rounded-xl p-3 ${parsed.skipped.length ? 'bg-amber-50' : 'bg-slate-50'}`}><div className={`text-xl font-extrabold ${parsed.skipped.length ? 'text-amber-700' : 'text-slate-400'}`}>{parsed.skipped.length.toLocaleString('en-IN')}</div><div className="text-[11px] font-semibold text-slate-600">rows with problems</div></div>
+                    <div className="rounded-xl bg-slate-50 p-3"><div className="text-xl font-extrabold text-slate-700">{parsed.mapped.length || '—'}</div><div className="text-[11px] font-semibold text-slate-600">columns matched</div></div>
+                  </div>
+                  <div className="text-[11px] text-slate-500">{parsed.source}{parsed.mapped.length ? ` · ${parsed.mapped.join(', ')}` : ''}</div>
+                  {parsed.skipped.length > 0 && (
+                    <div className="max-h-28 overflow-y-auto rounded-lg border border-amber-200 bg-amber-50/50 p-2 text-[11px] text-amber-900 space-y-0.5">
+                      {parsed.skipped.slice(0, 50).map((s) => <div key={s.row}>Row {s.row}: {s.error}</div>)}
+                      {parsed.skipped.length > 50 && <div>…and {parsed.skipped.length - 50} more (download the report after uploading)</div>}
+                    </div>
+                  )}
+                  {parsed.questions[0] && (
+                    <div className="rounded-xl border border-slate-200 p-3 text-xs">
+                      <div className="text-[10px] font-bold uppercase text-slate-400 mb-1">First question</div>
+                      <div className="font-semibold text-slate-900">{htmlToText(parsed.questions[0].q)}</div>
+                      <div className="mt-1 grid grid-cols-2 gap-x-3 text-slate-600">
+                        {parsed.questions[0].options.map((o, j) => <div key={j} className={j === parsed.questions[0].answer ? 'text-emerald-700 font-bold' : ''}>{LETTERS[j]}. {htmlToText(o)}</div>)}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <label className="block text-xs font-bold text-slate-600 sm:col-span-2">Put these questions in
+                      {hasTestCol ? (
+                        <div className="mt-1 px-3 py-2 rounded-lg bg-sky-50 text-sky-800 text-xs font-semibold">Each row goes to the test in its <b>Test ID</b> column (rows without one stay in the Question Bank).</div>
+                      ) : (
+                        <select value={target} onChange={(e) => setTarget(e.target.value)} className={inp}>
+                          <option value="">Question Bank only (add to tests later)</option>
+                          {tests.map((t) => <option key={t.id} value={t.id} disabled={t.questionCount >= maxPerTest}>{t.name}{t.seriesName ? ` — ${t.seriesName}` : ''} · {t.questionCount}/{maxPerTest}</option>)}
+                        </select>
+                      )}
+                    </label>
+                    {targetTest && parsed.questions.length > room && (
+                      <div className="sm:col-span-2 p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-[11px] text-amber-900">
+                        {targetTest.name} has room for {room} more (a test holds up to {maxPerTest}). The first {room} will be added; the rest will be reported as errors. Choose "Question Bank only" to keep all {parsed.questions.length.toLocaleString('en-IN')}.
+                      </div>
+                    )}
+                    <label className="block text-xs font-bold text-slate-600">Subject (when the row has none)<input value={d.subject} onChange={(e) => setD({ ...d, subject: e.target.value })} className={inp} placeholder="e.g. MOCK TEST" /></label>
+                    <label className="block text-xs font-bold text-slate-600">Topic (when the row has none)<input value={d.topic} onChange={(e) => setD({ ...d, topic: e.target.value })} className={inp} /></label>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {progress && (
+            <div className="space-y-3 py-2">
+              <div className="flex justify-between text-xs font-bold text-slate-700">
+                <span>{finished ? 'Upload finished' : 'Uploading…'}</span>
+                <span>{progress.done.toLocaleString('en-IN')} / {progress.total.toLocaleString('en-IN')}</span>
+              </div>
+              <div className="h-2.5 rounded-full bg-slate-100 overflow-hidden"><div className="h-full bg-[#009688] transition-all" style={{ width: `${progress.total ? Math.round((progress.done / progress.total) * 100) : 0}%` }} /></div>
+              {!finished && <p className="text-[11px] text-slate-500">Keep this window open until it finishes.</p>}
+              {finished && (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-2 text-center">
+                    <div className="rounded-xl bg-emerald-50 p-3"><div className="text-2xl font-extrabold text-emerald-700">{finished.inserted.toLocaleString('en-IN')}</div><div className="text-[11px] font-semibold text-emerald-800">questions saved</div></div>
+                    <div className={`rounded-xl p-3 ${finished.errors.length ? 'bg-rose-50' : 'bg-slate-50'}`}><div className={`text-2xl font-extrabold ${finished.errors.length ? 'text-rose-700' : 'text-slate-400'}`}>{finished.errors.length.toLocaleString('en-IN')}</div><div className="text-[11px] font-semibold text-slate-600">rows not saved</div></div>
+                  </div>
+                  {finished.errors.length > 0 && (
+                    <button type="button" onClick={() => downloadCsv(`upload-errors-${finished.importBatch}.csv`, ['Row,Problem', ...finished.errors.map((x) => `${x.row},"${String(x.error).replace(/"/g, '""')}"`)])}
+                      className="inline-flex items-center gap-1.5 text-xs font-bold text-rose-700 hover:underline"><Download className="w-3.5 h-3.5" />Download the list of rows not saved</button>
+                  )}
+                  <p className="text-[11px] text-slate-500">Upload ID <b className="font-mono">{finished.importBatch}</b> — if something looks wrong, open <b>Uploads</b> on the Question Bank and undo the whole upload.</p>
+                </div>
+              )}
+            </div>
+          )}
         </div>
+
         <div className="flex justify-end gap-2 px-5 py-3 border-t border-slate-200">
-          <button type="button" onClick={onCancel} className="px-4 py-2 rounded-lg text-sm font-semibold text-slate-600 hover:bg-slate-100">Cancel</button>
-          <button type="button" disabled={saving || !parsed.length || !testId} onClick={() => onImport(testId, parsed)}
-            className="px-4 py-2 rounded-lg text-sm font-bold bg-sky-600 hover:bg-sky-700 text-white disabled:opacity-50">{saving ? 'Importing…' : `Add ${parsed.length} question${parsed.length === 1 ? '' : 's'}`}</button>
+          {finished ? (
+            <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-bold bg-[#009688] text-white">Done</button>
+          ) : (
+            <>
+              <button type="button" disabled={busy} onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-semibold text-slate-600 hover:bg-slate-100 disabled:opacity-40">Cancel</button>
+              <button type="button" disabled={busy || !parsed?.questions.length} onClick={upload}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-bold bg-[#009688] hover:bg-[#00897b] text-white disabled:opacity-50">
+                <Upload className="w-4 h-4" />{busy ? 'Uploading…' : `Upload ${parsed?.questions.length ? parsed.questions.length.toLocaleString('en-IN') : ''} questions`}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Recent uploads with Undo
+function UploadsPanel({ onClose, onChanged }) {
+  const [list, setList] = useState(null);
+  const [err, setErr] = useState('');
+  const [busyId, setBusyId] = useState('');
+  const load = useCallback(async () => {
+    try { setList(await getQuestionImports()); } catch (e) { setErr(errOf(e)); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  const undo = async (b) => {
+    if (!window.confirm(`Delete all ${b.count} questions from upload ${b.importBatch}?`)) return;
+    setBusyId(b.importBatch); setErr('');
+    try { await undoQuestionImport(b.importBatch); await load(); onChanged?.(); } catch (e) { setErr(errOf(e)); } finally { setBusyId(''); }
+  };
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center p-4 overflow-y-auto" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-xl my-10" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-200">
+          <h3 className="text-base font-extrabold text-slate-900">Recent uploads</h3>
+          <button type="button" onClick={onClose} className="p-1 rounded hover:bg-slate-100"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="p-4 space-y-2">
+          {err && <div className="p-2.5 rounded-lg bg-rose-50 text-rose-700 text-xs font-semibold">{err}</div>}
+          {!list && <div className="py-6 text-center text-xs text-slate-500">Loading…</div>}
+          {list && !list.length && <div className="py-6 text-center text-xs text-slate-500">No bulk uploads yet.</div>}
+          {list?.map((b) => (
+            <div key={b.importBatch} className="flex items-center gap-3 p-3 rounded-xl border border-slate-200">
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-bold text-slate-900">{b.count.toLocaleString('en-IN')} questions</div>
+                <div className="text-[11px] text-slate-500"><span className="font-mono">{b.importBatch}</span> · {b.at ? new Date(b.at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : ''}{b.by ? ` · ${b.by}` : ''}{b.tests ? ` · ${b.tests} test(s)` : ' · bank only'}</div>
+              </div>
+              <button type="button" disabled={Boolean(busyId)} onClick={() => undo(b)} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-rose-50 text-rose-700 hover:bg-rose-100 disabled:opacity-50">{busyId === b.importBatch ? 'Deleting…' : 'Undo upload'}</button>
+            </div>
+          ))}
         </div>
       </div>
     </div>
@@ -148,6 +417,9 @@ export default function TestQuestionBank({ canManage, fixedTestId = '', onBack }
   const [importing, setImporting] = useState(false);
   const [scheme, setScheme] = useState(null);
   const [expanded, setExpanded] = useState([]); // question ids with the solution open
+  const [selected, setSelected] = useState([]); // question ids ticked for bulk actions
+  const [moveTo, setMoveTo] = useState('');
+  const [uploadsOpen, setUploadsOpen] = useState(false);
   const set = (patch) => setF((x) => ({ ...x, page: 1, ...patch }));
   const flash = (m) => { setToast(m); setTimeout(() => setToast(''), 3000); };
 
@@ -193,16 +465,27 @@ export default function TestQuestionBank({ canManage, fixedTestId = '', onBack }
   const selTest = tests.find((t) => t.id === f.testId);
 
   const remove = (r) => {
-    if (!window.confirm(`Delete this question from ${r.testName}?\n\n${htmlToText(r.question.q).slice(0, 160)}`)) return;
-    run(() => deleteBankQuestion(r.testId, r.question._id), 'Question deleted');
+    if (!window.confirm(`Delete this question${r.testName ? ` (it is in ${r.testName})` : ''}?\n\n${htmlToText(r.question.q).slice(0, 160)}`)) return;
+    run(() => deleteBankQuestion(r.question._id), 'Question deleted');
   };
+  const bulk = async (action) => {
+    if (!selected.length) return;
+    if (action === 'delete' && !window.confirm(`Delete ${selected.length} selected question(s)? This cannot be undone.`)) return;
+    if (action === 'assign' && !moveTo) { setError('Pick the test to add the selected questions to.'); return; }
+    const ok = await run(() => bankBulkAction({ ids: selected, action, testId: moveTo }),
+      action === 'delete' ? `${selected.length} question(s) deleted` : action === 'assign' ? `✓ ${selected.length} question(s) added to the test` : `${selected.length} question(s) moved to the Question Bank`);
+    if (ok) { setSelected([]); setMoveTo(''); }
+  };
+  useEffect(() => { setSelected([]); }, [f]);
+  const pageIds = rows.map((r) => r.question._id);
+  const allPicked = pageIds.length > 0 && pageIds.every((id) => selected.includes(id));
 
   if (editor) {
     return (
       <QuestionEditor
         meta={meta}
         initial={editor.initial}
-        testId={f.testId}
+        testId={f.testId === 'none' ? '' : f.testId}
         onCancel={() => { setEditor(null); refresh(); }}
         onSaved={() => { flash('✓ Question saved'); loadMeta(); }}
       />
@@ -236,19 +519,21 @@ export default function TestQuestionBank({ canManage, fixedTestId = '', onBack }
             <div>
               <div className="text-base font-extrabold text-slate-900">Question List</div>
               <div className="text-xs text-slate-500">
-                <b className="text-slate-800">{total.toLocaleString('en-IN')}</b> question{total === 1 ? '' : 's'}{anyFilter ? ' match' : ''} · {tests.length} test{tests.length === 1 ? '' : 's'} · {subjects.length} subject{subjects.length === 1 ? '' : 's'}
+                <b className="text-slate-800">{total.toLocaleString('en-IN')}</b> question{total === 1 ? '' : 's'}{anyFilter ? ` match (of ${(meta?.total || 0).toLocaleString('en-IN')})` : ''} · {(meta?.unassigned || 0).toLocaleString('en-IN')} not in any test · {tests.length} test{tests.length === 1 ? '' : 's'} · {subjects.length} subject{subjects.length === 1 ? '' : 's'}
               </div>
             </div>
           </div>
           {canManage && (
             <div className="flex items-center gap-2">
-              {f.testId && (
+              {f.testId && f.testId !== 'none' && (
                 <button type="button" disabled={!selTest?.questionCount} onClick={() => setScheme({ marks: 1, negMarks: 0 })}
                   className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"><SlidersHorizontal className="w-4 h-4" />Marking</button>
               )}
-              <button type="button" disabled={!tests.length} onClick={() => setImporting(true)}
-                className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"><Upload className="w-4 h-4" />Import</button>
-              <button type="button" disabled={!tests.length} title={tests.length ? '' : 'Add a test first (Test List)'}
+              <button type="button" onClick={() => setUploadsOpen(true)} title="Recent bulk uploads (undo)"
+                className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 hover:bg-slate-50"><History className="w-4 h-4" />Uploads</button>
+              <button type="button" onClick={() => setImporting(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl border border-teal-200 bg-teal-50 text-xs font-bold text-teal-800 hover:bg-teal-100"><FileSpreadsheet className="w-4 h-4" />Bulk Upload</button>
+              <button type="button"
                 onClick={() => setEditor({ initial: { defaults: { subject: f.subject, topic: f.topic, language: f.language || 'English' } } })}
                 className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#009688] hover:bg-[#00897b] text-white text-xs font-bold disabled:opacity-50"><Plus className="w-4 h-4" />Add Question</button>
             </div>
@@ -263,6 +548,7 @@ export default function TestQuestionBank({ canManage, fixedTestId = '', onBack }
         <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-2">
           <select value={f.testId} disabled={Boolean(onBack)} onChange={(e) => set({ testId: e.target.value })} className={`${chip} xl:col-span-2`}>
             <option value="">All Tests</option>
+            <option value="none">Not in any test (bank only)</option>
             {tests.map((t) => <option key={t.id} value={t.id}>{t.name}{t.seriesName ? ` — ${t.seriesName}` : ''} ({t.questionCount})</option>)}
           </select>
           <select value={f.subject} onChange={(e) => set({ subject: e.target.value, topic: '' })} className={chip}>
@@ -313,6 +599,28 @@ export default function TestQuestionBank({ canManage, fixedTestId = '', onBack }
         </div>
       )}
 
+      {/* bulk actions on ticked questions */}
+      {canManage && rows.length > 0 && (
+        <div className={`flex flex-wrap items-center gap-2 px-3 py-2 rounded-xl ${selected.length ? 'bg-[#0f212d] text-white' : ''}`}>
+          <label className={`inline-flex items-center gap-2 text-xs font-bold cursor-pointer ${selected.length ? 'text-white' : 'text-slate-600'}`}>
+            <input type="checkbox" className="accent-teal-500 w-4 h-4" checked={allPicked} onChange={(e) => setSelected((list) => (e.target.checked ? [...new Set([...list, ...pageIds])] : list.filter((id) => !pageIds.includes(id))))} />
+            {selected.length ? `${selected.length} selected` : 'Select page'}
+          </label>
+          {selected.length > 0 && (
+            <>
+              <select value={moveTo} onChange={(e) => setMoveTo(e.target.value)} className="ml-2 px-2 py-1.5 rounded-lg text-xs text-slate-800 bg-white max-w-[260px]">
+                <option value="">Add to test…</option>
+                {tests.map((t) => <option key={t.id} value={t.id} disabled={t.questionCount >= (meta?.maxPerTest || 200)}>{t.name}{t.seriesName ? ` — ${t.seriesName}` : ''} · {t.questionCount}/{meta?.maxPerTest || 200}</option>)}
+              </select>
+              <button type="button" disabled={saving || !moveTo} onClick={() => bulk('assign')} className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-teal-500 hover:bg-teal-400 text-white disabled:opacity-40"><FolderInput className="w-3.5 h-3.5" />Add</button>
+              <button type="button" disabled={saving} onClick={() => bulk('unassign')} className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-white/10 hover:bg-white/20"><FolderOutput className="w-3.5 h-3.5" />Remove from test</button>
+              <button type="button" disabled={saving} onClick={() => bulk('delete')} className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-rose-600 hover:bg-rose-500"><Trash2 className="w-3.5 h-3.5" />Delete</button>
+              <button type="button" onClick={() => setSelected([])} className="ml-auto text-xs text-slate-300 hover:text-white">Clear</button>
+            </>
+          )}
+        </div>
+      )}
+
       {/* question cards */}
       {loading && rows.length === 0 && (
         <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center text-xs text-slate-500"><RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-teal-600" />Loading questions…</div>
@@ -342,12 +650,15 @@ export default function TestQuestionBank({ canManage, fixedTestId = '', onBack }
             <div key={`${r.testId}-${q._id}`} className={`bg-white rounded-2xl border overflow-hidden ${(q.reports || []).length ? 'border-rose-200' : 'border-slate-200'} hover:shadow-sm transition-shadow`}>
               {/* card header */}
               <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 bg-slate-50/80 border-b border-slate-100">
+                {canManage && <input type="checkbox" className="accent-teal-600 w-4 h-4" checked={selected.includes(q._id)} onChange={(e) => setSelected((list) => (e.target.checked ? [...list, q._id] : list.filter((x) => x !== q._id)))} />}
                 <span className="inline-flex items-center justify-center min-w-[2.25rem] h-7 px-2 rounded-lg bg-[#0f212d] text-white text-xs font-extrabold">Q{num}</span>
-                {!onBack && (
+                {!onBack && (r.testId ? (
                   <span className="text-[11px] text-slate-500 truncate max-w-[280px]" title={`${r.testName} · ${r.seriesName}`}>
                     <b className="text-slate-700">{r.testName}</b>{r.seriesName ? ` · ${r.seriesName}` : ''} · #{r.index + 1}
                   </span>
-                )}
+                ) : (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-200 text-slate-600">Bank only</span>
+                ))}
                 <div className="flex flex-wrap gap-1">
                   {tags.map((t) => <span key={t.t} className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${t.c}`}>{t.t}</span>)}
                 </div>
@@ -404,7 +715,7 @@ export default function TestQuestionBank({ canManage, fixedTestId = '', onBack }
                   <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs">
                     <div className="flex items-center justify-between gap-2 font-bold text-rose-700">
                       <span className="inline-flex items-center gap-1"><Flag className="w-3.5 h-3.5" />Reported by {q.reports.length} student{q.reports.length === 1 ? '' : 's'}</span>
-                      {canManage && <button type="button" disabled={saving} onClick={() => run(() => resolveBankQuestion(r.testId, q._id), '✓ Reports marked resolved')} className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-white border border-rose-200 text-rose-700 hover:bg-rose-100"><CheckCircle2 className="w-3.5 h-3.5" />Mark resolved</button>}
+                      {canManage && <button type="button" disabled={saving} onClick={() => run(() => resolveBankQuestion(q._id), '✓ Reports marked resolved')} className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-white border border-rose-200 text-rose-700 hover:bg-rose-100"><CheckCircle2 className="w-3.5 h-3.5" />Mark resolved</button>}
                     </div>
                     <ul className="mt-1.5 space-y-1 text-rose-900">
                       {q.reports.map((rep, k) => <li key={k}>“{rep.reason}” — {rep.studentName || rep.studentId}{rep.at ? `, ${new Date(rep.at).toLocaleDateString('en-IN')}` : ''}</li>)}
@@ -433,9 +744,10 @@ export default function TestQuestionBank({ canManage, fixedTestId = '', onBack }
       )}
 
       {importing && (
-        <ImportModal tests={tests} testId={f.testId} saving={saving} onCancel={() => setImporting(false)}
-          onImport={async (testId, list) => { if (await run(() => addBankQuestions(testId, { questions: list }), `✓ ${list.length} questions imported`)) setImporting(false); }} />
+        <BulkUploadModal tests={tests} maxPerTest={meta?.maxPerTest || 200} testId={f.testId}
+          onClose={() => { setImporting(false); refresh(); }} onDone={refresh} />
       )}
+      {uploadsOpen && <UploadsPanel onClose={() => setUploadsOpen(false)} onChanged={() => { flash('Upload removed'); refresh(); }} />}
     </div>
   );
 }

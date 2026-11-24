@@ -1,0 +1,1436 @@
+diff -ruN base/client/src/components/QuestionEditor.jsx work/client/src/components/QuestionEditor.jsx
+--- a/client/src/components/QuestionEditor.jsx	2026-11-24 11:53:40.971154150 +0530
++++ b/client/src/components/QuestionEditor.jsx	2026-11-24 11:55:40.805893036 +0530
+@@ -2,7 +2,7 @@
+ import { ArrowLeft, AlertCircle, Save } from 'lucide-react';
+ import RichEditor from './RichEditor';
+ import { AAPC_CHAPTERS } from './OnlineTestBuilder';
+-import { addBankQuestions, updateBankQuestion } from '../services/api';
++import { addBankQuestion, updateBankQuestion } from '../services/api';
+ 
+ // Add New Questions [Question Bank] — full page, laid out like the online test
+ // panel: question options / basic details / marks / "More" switches on the
+@@ -78,8 +78,7 @@
+   };
+   const setOpt = (j, v) => setF((x) => ({ ...x, options: x.options.map((o, k) => (k === j ? v : o)) }));
+ 
+-  const problem = !testId ? 'Select the test this question belongs to.'
+-    : isBlank(f.q) ? 'Type your question.'
++  const problem = isBlank(f.q) ? 'Type your question.'
+       : f.options.some(isBlank) ? 'Fill every option.'
+         : f.answer < 0 ? 'Tick the correct option.'
+           : !(Number(f.marks) >= 1) ? 'Give +VE marks (1 or more).'
+@@ -99,8 +98,8 @@
+       bonusMarks: Number(f.bonusMarks) || 0
+     };
+     try {
+-      if (editing) await updateBankQuestion(initial.testId, start._id, { question, testId });
+-      else await addBankQuestions(testId, { question });
++      if (editing) await updateBankQuestion(start._id, { question, testId });
++      else await addBankQuestion({ question, testId });
+       onSaved?.();
+       if (addAnother && !editing) {
+         // keep the settings, clear the content
+@@ -142,10 +141,13 @@
+         <div className="bg-white rounded border border-slate-200 p-3.5 space-y-3 lg:sticky lg:top-2">
+           <div className="text-xs font-semibold text-slate-700 pb-2 border-b border-slate-200">Question Options</div>
+           <div>
+-            <Label>Test *</Label>
++            <Label>Test</Label>
+             <select value={testId} onChange={(e) => setTestId(e.target.value)} className={inp}>
+-              <option value="">Select Test</option>
+-              {tests.map((t) => <option key={t.id} value={t.id}>{t.name}{t.seriesName ? ` — ${t.seriesName}` : ''}{t.testCode ? ` (${t.testCode})` : ''}</option>)}
++              <option value="">No test — keep in Question Bank</option>
++              {tests.map((t) => {
++                const full = t.questionCount >= (meta?.maxPerTest || 200) && t.id !== initial?.testId;
++                return <option key={t.id} value={t.id} disabled={full}>{t.name}{t.seriesName ? ` — ${t.seriesName}` : ''}{t.testCode ? ` (${t.testCode})` : ''} · {t.questionCount}/{meta?.maxPerTest || 200}{full ? ' FULL' : ''}</option>;
++              })}
+             </select>
+           </div>
+           <div>
+diff -ruN base/client/src/components/TestQuestionBank.jsx work/client/src/components/TestQuestionBank.jsx
+--- a/client/src/components/TestQuestionBank.jsx	2026-11-24 11:53:40.971129185 +0530
++++ b/client/src/components/TestQuestionBank.jsx	2026-11-24 11:58:40.910129395 +0530
+@@ -1,8 +1,10 @@
+ import React, { useCallback, useEffect, useMemo, useState } from 'react';
+-import { ArrowLeft, Plus, Pencil, Trash2, Upload, X, Flag, CheckCircle2, AlertCircle, Search, SlidersHorizontal, ChevronLeft, ChevronRight, ChevronDown, RefreshCw, FileQuestion, Lightbulb } from 'lucide-react';
++import { ArrowLeft, Plus, Pencil, Trash2, Upload, X, Flag, CheckCircle2, AlertCircle, Search, SlidersHorizontal, ChevronLeft, ChevronRight, ChevronDown, RefreshCw, FileQuestion, Lightbulb, FileSpreadsheet, Download, History, FolderInput, FolderOutput } from 'lucide-react';
+ import {
+-  getQuestionBankMeta, getQuestionBank, addBankQuestions, deleteBankQuestion, setBankMarking, resolveBankQuestion
++  getQuestionBankMeta, getQuestionBank, deleteBankQuestion, setBankMarking, resolveBankQuestion,
++  bulkUploadQuestions, getQuestionImports, undoQuestionImport, bankBulkAction
+ } from '../services/api';
++import { readSpreadsheet, parseCsv } from './spreadsheetReader';
+ import RichText, { htmlToText } from './RichText';
+ import QuestionEditor, { LANGUAGES } from './QuestionEditor';
+ 
+@@ -71,63 +73,330 @@
+   return out;
+ }
+ 
+-function ImportModal({ tests, testId: initialTestId, onCancel, onImport, saving }) {
++// ---------- Bulk upload (Excel / CSV / text) ----------
++// Column headers are matched loosely, e.g. "Question", "Option A".."Option E",
++// "Answer" (A–E, 1–5 or the option text), "Solution", "Subject", "Topic",
++// "Marks", "Negative Marks", "Difficulty", "Language", "Hint", "Type", "Test ID".
++const COLS = [
++  ['q', /^(question|questions|question text|question details|q)$/],
++  ['a', /^(option ?a|opt ?a|a|option ?1|choice ?a)$/],
++  ['b', /^(option ?b|opt ?b|b|option ?2|choice ?b)$/],
++  ['c', /^(option ?c|opt ?c|c|option ?3|choice ?c)$/],
++  ['d', /^(option ?d|opt ?d|d|option ?4|choice ?d)$/],
++  ['e', /^(option ?e|opt ?e|e|option ?5|choice ?e)$/],
++  ['f', /^(option ?f|opt ?f|f|option ?6|choice ?f)$/],
++  ['answer', /^(answer|ans|correct|correct answer|correct option|key|answer key|right answer)$/],
++  ['rationale', /^(solution|rationale|explanation|reason)$/],
++  ['subject', /^(subject|section)$/],
++  ['topic', /^(topic|chapter name|sub ?topic)$/],
++  ['marks', /^(marks|mark|\+ ?ve|positive|positive marks|\+ ?marks)$/],
++  ['negMarks', /^(negative|negative marks|neg|neg marks|- ?ve|- ?marks|minus)$/],
++  ['bonusMarks', /^(bonus|bonus marks)$/],
++  ['difficulty', /^(difficulty|difficulty level|level)$/],
++  ['language', /^(language|lang)$/],
++  ['hint', /^(hint)$/],
++  ['qType', /^(type|question type|qtype)$/],
++  ['testCode', /^(test ?id|test ?code)$/]
++];
++// Plain cell text with < or > would be read as formatting — keep it as text
++const cellHtml = (v) => (/[<>]/.test(v) ? `<span>${v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>')}</span>` : v);
++const norm = (h) => String(h || '').toLowerCase().replace(/[_.]/g, ' ').replace(/\s+/g, ' ').trim();
++const TEMPLATE = 'Question,Option A,Option B,Option C,Option D,Option E,Answer,Solution,Subject,Topic,Marks,Negative Marks,Difficulty,Language,Hint,Type,Test ID\n'
++  + '"The phalanx is a:",Ligament,Tendon,Bone,Muscle,,C,"A phalanx is a digital bone found in the fingers and toes.",MOCK TEST,Anatomy,1,0,Easy,English,DOCQ,MCQ,\n';
++
++function rowsToQuestions(rows) {
++  const h = rows.findIndex((r) => (r || []).some((x) => String(x).trim()));
++  if (h < 0 || rows.length < h + 2) return { questions: [], skipped: [], mapped: [] };
++  const header = rows[h].map(norm);
++  const at = {};
++  COLS.forEach(([key, re]) => { const i = header.findIndex((h) => re.test(h)); if (i >= 0) at[key] = i; });
++  const mapped = COLS.filter(([k]) => at[k] !== undefined).map(([k]) => k);
++  if (at.q === undefined || at.a === undefined || at.b === undefined) {
++    return { questions: [], skipped: [], mapped, headerError: 'The first row must have column names — at least "Question", "Option A", "Option B" and "Answer". Download the template to see all columns.' };
++  }
++  const questions = [];
++  const skipped = [];
++  rows.slice(h + 1).forEach((r = [], k) => {
++    const row = h + k + 2; // spreadsheet row number
++    const cell = (key) => (at[key] !== undefined ? String(r[at[key]] ?? '').trim() : '');
++    const q = cell('q');
++    if (!q && !cell('a')) return; // blank line
++    const options = ['a', 'b', 'c', 'd', 'e', 'f'].map(cell);
++    while (options.length && !options[options.length - 1]) options.pop();
++    const ans = cell('answer');
++    let answer = -1;
++    if (/^[a-f]$/i.test(ans)) answer = 'abcdef'.indexOf(ans.toLowerCase());
++    else if (/^\(?[a-f][).]?$/i.test(ans)) answer = 'abcdef'.indexOf(ans.replace(/[^a-f]/gi, '').toLowerCase());
++    else if (/^option ?[a-f]$/i.test(ans)) answer = 'abcdef'.indexOf(ans.slice(-1).toLowerCase());
++    else if (/^[1-6]$/.test(ans)) answer = Number(ans) - 1;
++    else if (ans) answer = options.findIndex((o) => o.toLowerCase() === ans.toLowerCase());
++    if (!q) { skipped.push({ row, error: 'Question is empty' }); return; }
++    if (options.length < 2 || options.some((o) => !o)) { skipped.push({ row, error: 'Needs at least 2 options, with no gaps (A, B, C…)' }); return; }
++    if (answer < 0 || answer >= options.length) { skipped.push({ row, error: `Answer "${ans}" does not match an option` }); return; }
++    const type = cell('qType').toLowerCase();
++    const isTF = /^(tf|t\/f|true ?\/ ?false|true false)$/.test(type) || (options.length === 2 && options.every((o) => /^(true|false)$/i.test(o)));
++    const diff = cell('difficulty').toLowerCase();
++    questions.push({
++      row, q: cellHtml(q), options: options.map(cellHtml), answer,
++      rationale: cellHtml(cell('rationale')), subject: cell('subject'), topic: cell('topic'),
++      marks: numOr(cell('marks'), 1), negMarks: Math.abs(numOr(cell('negMarks'), 0)), bonusMarks: numOr(cell('bonusMarks'), 0),
++      difficulty: diff ? diff[0].toUpperCase() + diff.slice(1) : '', language: cell('language') || 'English', hint: cell('hint'),
++      qType: isTF ? 'True/False' : 'MCQ', testCode: cell('testCode').toUpperCase()
++    });
++  });
++  return { questions, skipped, mapped };
++}
++
++const CHUNK = 500;
++const downloadCsv = (name, lines) => {
++  const url = URL.createObjectURL(new Blob([`\uFEFF${lines.join('\n')}`], { type: 'text/csv;charset=utf-8' }));
++  const a = document.createElement('a');
++  a.href = url; a.download = name; a.click();
++  setTimeout(() => URL.revokeObjectURL(url), 2000);
++};
++
++function BulkUploadModal({ tests, maxPerTest, testId: initialTestId, onClose, onDone }) {
++  const [parsed, setParsed] = useState(null); // { questions, skipped, mapped, source }
++  const [parseError, setParseError] = useState('');
++  const [reading, setReading] = useState(false);
+   const [text, setText] = useState('');
+-  const [testId, setTestId] = useState(initialTestId || '');
+-  const [d, setD] = useState({ marks: 1, negMarks: 0, subject: '', topic: '', language: 'English' });
+-  const defaults = { marks: numOr(d.marks, 1), negMarks: numOr(d.negMarks, 0), subject: d.subject, topic: d.topic, language: d.language };
+-  const parsed = useMemo(() => parseQuestionText(text, defaults), [text, d]); // eslint-disable-line react-hooks/exhaustive-deps
+-  const inp = 'mt-1 w-full px-2.5 py-1.5 rounded-lg border border-slate-300 text-sm';
+-  const readFile = (file) => { if (!file) return; const r = new FileReader(); r.onload = () => setText(String(r.result || '')); r.readAsText(file); };
++  const [target, setTarget] = useState(initialTestId && initialTestId !== 'none' ? initialTestId : '');
++  const [d, setD] = useState({ subject: '', topic: '', language: 'English' });
++  const [progress, setProgress] = useState(null); // { done, total, inserted, errors }
++  const [finished, setFinished] = useState(null);
++  const busy = Boolean(progress && !finished);
++  const hasTestCol = Boolean(parsed?.questions.some((q) => q.testCode));
++  const targetTest = tests.find((t) => t.id === target);
++  const room = targetTest ? Math.max(0, maxPerTest - targetTest.questionCount) : Infinity;
++
++  const onFile = async (file) => {
++    if (!file) return;
++    setParseError(''); setParsed(null); setFinished(null); setProgress(null);
++    setReading(true);
++    try {
++      if (/\.txt$/i.test(file.name)) {
++        const qs = parseQuestionText(await file.text()).map((q, i) => ({ ...q, row: i + 1 }));
++        if (!qs.length) throw new Error('No questions recognised in this text file — use the "1. … / a. … / ANS: c" layout.');
++        setParsed({ questions: qs, skipped: [], mapped: [], source: file.name });
++      } else {
++        const { rows } = await readSpreadsheet(file);
++        const out = rowsToQuestions(rows);
++        if (out.headerError) throw new Error(out.headerError);
++        if (!out.questions.length && !out.skipped.length) throw new Error('No question rows found under the header row.');
++        setParsed({ ...out, source: `${file.name} · ${(rows.length - 1).toLocaleString('en-IN')} rows` });
++      }
++    } catch (e) {
++      setParseError(e.message);
++    } finally {
++      setReading(false);
++    }
++  };
++  const onPasteParse = () => {
++    setParseError(''); setFinished(null);
++    const looksTabular = /\t/.test(text.split('\n')[0] || '');
++    if (looksTabular) {
++      const out = rowsToQuestions(parseCsv(text));
++      if (out.headerError) { setParseError(out.headerError); return; }
++      setParsed({ ...out, source: 'pasted rows' });
++    } else {
++      const qs = parseQuestionText(text).map((q, i) => ({ ...q, row: i + 1 }));
++      if (!qs.length) { setParseError('Nothing recognised. Paste spreadsheet rows (with the header row) or the "1. … / a. … / ANS: c" layout.'); return; }
++      setParsed({ questions: qs, skipped: [], mapped: [], source: 'pasted text' });
++    }
++  };
++
++  const upload = async () => {
++    const list = parsed.questions.map((q) => ({
++      ...q,
++      subject: q.subject || d.subject, topic: q.topic || d.topic,
++      language: q.language && q.language !== 'English' ? q.language : (d.language || 'English')
++    }));
++    const importBatch = `IMP-${Date.now().toString(36).toUpperCase()}`;
++    const state = { done: 0, total: list.length, inserted: 0, errors: [...parsed.skipped] };
++    setProgress({ ...state });
++    for (let i = 0; i < list.length; i += CHUNK) {
++      const chunk = list.slice(i, i + CHUNK);
++      try {
++        const res = await bulkUploadQuestions({ questions: chunk, testId: hasTestCol ? '' : target, importBatch });
++        state.inserted += res.inserted || 0;
++        state.errors.push(...(res.errors || []));
++      } catch (e) {
++        chunk.forEach((q) => state.errors.push({ row: q.row, error: `Upload failed: ${errOf(e)}` }));
++      }
++      state.done = Math.min(list.length, i + CHUNK);
++      setProgress({ ...state });
++    }
++    state.errors.sort((a, b) => a.row - b.row);
++    setFinished({ ...state, importBatch });
++    onDone?.();
++  };
++
++  const inp = 'mt-1 w-full px-2.5 py-2 rounded-lg border border-slate-200 text-sm bg-white';
+   return (
+-    <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center p-4 overflow-y-auto" onClick={onCancel}>
+-      <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl my-8" onClick={(e) => e.stopPropagation()}>
+-        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200">
+-          <h3 className="text-base font-bold text-slate-900">Import Questions</h3>
+-          <button type="button" onClick={onCancel} className="p-1 rounded hover:bg-slate-100"><X className="w-4 h-4" /></button>
+-        </div>
+-        <div className="p-5 space-y-3">
+-          <div className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg p-3">
+-            Paste questions (or upload a .txt file) in this format — one after another:
+-            <pre className="mt-2 text-[11px] text-slate-700 whitespace-pre-wrap">{`1. The phalanx is a:
+-a. Ligament
+-b. Tendon
+-c. Bone
+-d. Muscle
+-ANS: c
+-Solution: A phalanx (plural: phalanges) is a digital bone found in the fingers and toes.`}</pre>
+-            <div className="mt-1 text-slate-500">Optional lines per question: <code>Marks: +1, -0.25</code> and <code>Hint: …</code>. A * after an option also marks it correct.</div>
+-          </div>
+-          <label className="block text-xs font-bold text-slate-600">Add to test *
+-            <select value={testId} onChange={(e) => setTestId(e.target.value)} className={inp}>
+-              <option value="">Select Test</option>
+-              {tests.map((t) => <option key={t.id} value={t.id}>{t.name}{t.seriesName ? ` — ${t.seriesName}` : ''}{t.testCode ? ` (${t.testCode})` : ''} · {t.questionCount} questions</option>)}
+-            </select>
+-          </label>
+-          <div className="text-[11px] text-slate-500">A test holds up to 200 questions — import a big bank test by test.</div>
+-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+-            <label className="block text-xs font-bold text-slate-600">Marks +<input type="number" value={d.marks} onChange={(e) => setD({ ...d, marks: e.target.value })} className={inp} /></label>
+-            <label className="block text-xs font-bold text-slate-600">Negative −<input type="number" step="0.25" value={d.negMarks} onChange={(e) => setD({ ...d, negMarks: e.target.value })} className={inp} /></label>
+-            <label className="block text-xs font-bold text-slate-600">Subject<input value={d.subject} onChange={(e) => setD({ ...d, subject: e.target.value })} className={inp} /></label>
+-            <label className="block text-xs font-bold text-slate-600">Topic<input value={d.topic} onChange={(e) => setD({ ...d, topic: e.target.value })} className={inp} /></label>
+-            <label className="block text-xs font-bold text-slate-600">Language
+-              <select value={d.language} onChange={(e) => setD({ ...d, language: e.target.value })} className={inp}>{LANGUAGES.map((l) => <option key={l}>{l}</option>)}</select>
+-            </label>
+-          </div>
+-          <textarea value={text} onChange={(e) => setText(e.target.value)} rows={12} placeholder="Paste questions here…"
+-            className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm font-mono" />
+-          <div className="flex items-center justify-between">
+-            <label className="inline-flex items-center gap-1.5 text-xs font-bold text-sky-700 cursor-pointer">
+-              <Upload className="w-4 h-4" />Upload .txt
+-              <input type="file" accept=".txt,text/plain" className="hidden" onChange={(e) => readFile(e.target.files?.[0])} />
+-            </label>
+-            <span className={`text-xs font-bold ${parsed.length ? 'text-emerald-700' : 'text-slate-400'}`}>{parsed.length} question{parsed.length === 1 ? '' : 's'} recognised</span>
++    <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center p-4 overflow-y-auto" onClick={busy ? undefined : onClose}>
++      <div className="bg-white rounded-2xl shadow-xl w-full max-w-3xl my-8" onClick={(e) => e.stopPropagation()}>
++        <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-200">
++          <div>
++            <h3 className="text-base font-extrabold text-slate-900">Bulk Upload Questions</h3>
++            <p className="text-[11px] text-slate-500">Excel (.xlsx), CSV or text · 20,000+ rows are sent in batches of {CHUNK}</p>
+           </div>
++          {!busy && <button type="button" onClick={onClose} className="p-1 rounded hover:bg-slate-100"><X className="w-4 h-4" /></button>}
+         </div>
++
++        <div className="p-5 space-y-4">
++          {!progress && (
++            <>
++              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
++                <label className="flex flex-col items-center justify-center gap-2 p-6 rounded-xl border-2 border-dashed border-teal-300 bg-teal-50/40 cursor-pointer hover:bg-teal-50 text-center">
++                  <FileSpreadsheet className="w-8 h-8 text-teal-600" />
++                  <span className="text-sm font-bold text-slate-800">{reading ? 'Reading file…' : 'Choose Excel / CSV / .txt'}</span>
++                  <span className="text-[11px] text-slate-500">First row = column names</span>
++                  <input type="file" accept=".xlsx,.csv,.tsv,.txt" className="hidden" disabled={reading} onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ''; onFile(file); }} />
++                </label>
++                <div className="rounded-xl border border-slate-200 p-4 text-xs text-slate-600 space-y-2">
++                  <div className="font-bold text-slate-800">Columns</div>
++                  <div>Question · Option A–E · Answer (A–E) · Solution · Subject · Topic · Marks · Negative Marks · Difficulty · Language · Hint · Type · Test ID</div>
++                  <div className="text-slate-500">Only Question, Option A, Option B and Answer are required. Fill <b>Test ID</b> (e.g. TST2503FBB6) to put each row straight into that test.</div>
++                  <button type="button" onClick={() => downloadCsv('question-upload-template.csv', [TEMPLATE.trim()])} className="inline-flex items-center gap-1 font-bold text-teal-700 hover:underline"><Download className="w-3.5 h-3.5" />Download template</button>
++                </div>
++              </div>
++
++              <details className="rounded-xl border border-slate-200">
++                <summary className="px-4 py-2.5 text-xs font-bold text-slate-700 cursor-pointer">…or paste rows / text</summary>
++                <div className="p-4 pt-1 space-y-2">
++                  <textarea value={text} onChange={(e) => setText(e.target.value)} rows={8} placeholder={'Paste rows copied from Excel (with the header row), or:\n1. The phalanx is a:\na. Ligament\nb. Tendon\nc. Bone\nd. Muscle\nANS: c\nSolution: …'}
++                    className="w-full px-3 py-2 rounded-lg border border-slate-200 text-xs font-mono" />
++                  <button type="button" disabled={!text.trim()} onClick={onPasteParse} className="px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs font-bold disabled:opacity-40">Read pasted text</button>
++                </div>
++              </details>
++
++              {parseError && <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold">{parseError}</div>}
++
++              {parsed && (
++                <div className="space-y-3">
++                  <div className="grid grid-cols-3 gap-2 text-center">
++                    <div className="rounded-xl bg-emerald-50 p-3"><div className="text-xl font-extrabold text-emerald-700">{parsed.questions.length.toLocaleString('en-IN')}</div><div className="text-[11px] font-semibold text-emerald-800">ready to upload</div></div>
++                    <div className={`rounded-xl p-3 ${parsed.skipped.length ? 'bg-amber-50' : 'bg-slate-50'}`}><div className={`text-xl font-extrabold ${parsed.skipped.length ? 'text-amber-700' : 'text-slate-400'}`}>{parsed.skipped.length.toLocaleString('en-IN')}</div><div className="text-[11px] font-semibold text-slate-600">rows with problems</div></div>
++                    <div className="rounded-xl bg-slate-50 p-3"><div className="text-xl font-extrabold text-slate-700">{parsed.mapped.length || '—'}</div><div className="text-[11px] font-semibold text-slate-600">columns matched</div></div>
++                  </div>
++                  <div className="text-[11px] text-slate-500">{parsed.source}{parsed.mapped.length ? ` · ${parsed.mapped.join(', ')}` : ''}</div>
++                  {parsed.skipped.length > 0 && (
++                    <div className="max-h-28 overflow-y-auto rounded-lg border border-amber-200 bg-amber-50/50 p-2 text-[11px] text-amber-900 space-y-0.5">
++                      {parsed.skipped.slice(0, 50).map((s) => <div key={s.row}>Row {s.row}: {s.error}</div>)}
++                      {parsed.skipped.length > 50 && <div>…and {parsed.skipped.length - 50} more (download the report after uploading)</div>}
++                    </div>
++                  )}
++                  {parsed.questions[0] && (
++                    <div className="rounded-xl border border-slate-200 p-3 text-xs">
++                      <div className="text-[10px] font-bold uppercase text-slate-400 mb-1">First question</div>
++                      <div className="font-semibold text-slate-900">{htmlToText(parsed.questions[0].q)}</div>
++                      <div className="mt-1 grid grid-cols-2 gap-x-3 text-slate-600">
++                        {parsed.questions[0].options.map((o, j) => <div key={j} className={j === parsed.questions[0].answer ? 'text-emerald-700 font-bold' : ''}>{LETTERS[j]}. {htmlToText(o)}</div>)}
++                      </div>
++                    </div>
++                  )}
++
++                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
++                    <label className="block text-xs font-bold text-slate-600 sm:col-span-2">Put these questions in
++                      {hasTestCol ? (
++                        <div className="mt-1 px-3 py-2 rounded-lg bg-sky-50 text-sky-800 text-xs font-semibold">Each row goes to the test in its <b>Test ID</b> column (rows without one stay in the Question Bank).</div>
++                      ) : (
++                        <select value={target} onChange={(e) => setTarget(e.target.value)} className={inp}>
++                          <option value="">Question Bank only (add to tests later)</option>
++                          {tests.map((t) => <option key={t.id} value={t.id} disabled={t.questionCount >= maxPerTest}>{t.name}{t.seriesName ? ` — ${t.seriesName}` : ''} · {t.questionCount}/{maxPerTest}</option>)}
++                        </select>
++                      )}
++                    </label>
++                    {targetTest && parsed.questions.length > room && (
++                      <div className="sm:col-span-2 p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-[11px] text-amber-900">
++                        {targetTest.name} has room for {room} more (a test holds up to {maxPerTest}). The first {room} will be added; the rest will be reported as errors. Choose "Question Bank only" to keep all {parsed.questions.length.toLocaleString('en-IN')}.
++                      </div>
++                    )}
++                    <label className="block text-xs font-bold text-slate-600">Subject (when the row has none)<input value={d.subject} onChange={(e) => setD({ ...d, subject: e.target.value })} className={inp} placeholder="e.g. MOCK TEST" /></label>
++                    <label className="block text-xs font-bold text-slate-600">Topic (when the row has none)<input value={d.topic} onChange={(e) => setD({ ...d, topic: e.target.value })} className={inp} /></label>
++                  </div>
++                </div>
++              )}
++            </>
++          )}
++
++          {progress && (
++            <div className="space-y-3 py-2">
++              <div className="flex justify-between text-xs font-bold text-slate-700">
++                <span>{finished ? 'Upload finished' : 'Uploading…'}</span>
++                <span>{progress.done.toLocaleString('en-IN')} / {progress.total.toLocaleString('en-IN')}</span>
++              </div>
++              <div className="h-2.5 rounded-full bg-slate-100 overflow-hidden"><div className="h-full bg-[#009688] transition-all" style={{ width: `${progress.total ? Math.round((progress.done / progress.total) * 100) : 0}%` }} /></div>
++              {!finished && <p className="text-[11px] text-slate-500">Keep this window open until it finishes.</p>}
++              {finished && (
++                <div className="space-y-3">
++                  <div className="grid grid-cols-2 gap-2 text-center">
++                    <div className="rounded-xl bg-emerald-50 p-3"><div className="text-2xl font-extrabold text-emerald-700">{finished.inserted.toLocaleString('en-IN')}</div><div className="text-[11px] font-semibold text-emerald-800">questions saved</div></div>
++                    <div className={`rounded-xl p-3 ${finished.errors.length ? 'bg-rose-50' : 'bg-slate-50'}`}><div className={`text-2xl font-extrabold ${finished.errors.length ? 'text-rose-700' : 'text-slate-400'}`}>{finished.errors.length.toLocaleString('en-IN')}</div><div className="text-[11px] font-semibold text-slate-600">rows not saved</div></div>
++                  </div>
++                  {finished.errors.length > 0 && (
++                    <button type="button" onClick={() => downloadCsv(`upload-errors-${finished.importBatch}.csv`, ['Row,Problem', ...finished.errors.map((x) => `${x.row},"${String(x.error).replace(/"/g, '""')}"`)])}
++                      className="inline-flex items-center gap-1.5 text-xs font-bold text-rose-700 hover:underline"><Download className="w-3.5 h-3.5" />Download the list of rows not saved</button>
++                  )}
++                  <p className="text-[11px] text-slate-500">Upload ID <b className="font-mono">{finished.importBatch}</b> — if something looks wrong, open <b>Uploads</b> on the Question Bank and undo the whole upload.</p>
++                </div>
++              )}
++            </div>
++          )}
++        </div>
++
+         <div className="flex justify-end gap-2 px-5 py-3 border-t border-slate-200">
+-          <button type="button" onClick={onCancel} className="px-4 py-2 rounded-lg text-sm font-semibold text-slate-600 hover:bg-slate-100">Cancel</button>
+-          <button type="button" disabled={saving || !parsed.length || !testId} onClick={() => onImport(testId, parsed)}
+-            className="px-4 py-2 rounded-lg text-sm font-bold bg-sky-600 hover:bg-sky-700 text-white disabled:opacity-50">{saving ? 'Importing…' : `Add ${parsed.length} question${parsed.length === 1 ? '' : 's'}`}</button>
++          {finished ? (
++            <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-bold bg-[#009688] text-white">Done</button>
++          ) : (
++            <>
++              <button type="button" disabled={busy} onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-semibold text-slate-600 hover:bg-slate-100 disabled:opacity-40">Cancel</button>
++              <button type="button" disabled={busy || !parsed?.questions.length} onClick={upload}
++                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-bold bg-[#009688] hover:bg-[#00897b] text-white disabled:opacity-50">
++                <Upload className="w-4 h-4" />{busy ? 'Uploading…' : `Upload ${parsed?.questions.length ? parsed.questions.length.toLocaleString('en-IN') : ''} questions`}
++              </button>
++            </>
++          )}
++        </div>
++      </div>
++    </div>
++  );
++}
++
++// Recent uploads with Undo
++function UploadsPanel({ onClose, onChanged }) {
++  const [list, setList] = useState(null);
++  const [err, setErr] = useState('');
++  const [busyId, setBusyId] = useState('');
++  const load = useCallback(async () => {
++    try { setList(await getQuestionImports()); } catch (e) { setErr(errOf(e)); }
++  }, []);
++  useEffect(() => { load(); }, [load]);
++  const undo = async (b) => {
++    if (!window.confirm(`Delete all ${b.count} questions from upload ${b.importBatch}?`)) return;
++    setBusyId(b.importBatch); setErr('');
++    try { await undoQuestionImport(b.importBatch); await load(); onChanged?.(); } catch (e) { setErr(errOf(e)); } finally { setBusyId(''); }
++  };
++  return (
++    <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center p-4 overflow-y-auto" onClick={onClose}>
++      <div className="bg-white rounded-2xl shadow-xl w-full max-w-xl my-10" onClick={(e) => e.stopPropagation()}>
++        <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-200">
++          <h3 className="text-base font-extrabold text-slate-900">Recent uploads</h3>
++          <button type="button" onClick={onClose} className="p-1 rounded hover:bg-slate-100"><X className="w-4 h-4" /></button>
++        </div>
++        <div className="p-4 space-y-2">
++          {err && <div className="p-2.5 rounded-lg bg-rose-50 text-rose-700 text-xs font-semibold">{err}</div>}
++          {!list && <div className="py-6 text-center text-xs text-slate-500">Loading…</div>}
++          {list && !list.length && <div className="py-6 text-center text-xs text-slate-500">No bulk uploads yet.</div>}
++          {list?.map((b) => (
++            <div key={b.importBatch} className="flex items-center gap-3 p-3 rounded-xl border border-slate-200">
++              <div className="flex-1 min-w-0">
++                <div className="text-sm font-bold text-slate-900">{b.count.toLocaleString('en-IN')} questions</div>
++                <div className="text-[11px] text-slate-500"><span className="font-mono">{b.importBatch}</span> · {b.at ? new Date(b.at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : ''}{b.by ? ` · ${b.by}` : ''}{b.tests ? ` · ${b.tests} test(s)` : ' · bank only'}</div>
++              </div>
++              <button type="button" disabled={Boolean(busyId)} onClick={() => undo(b)} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-rose-50 text-rose-700 hover:bg-rose-100 disabled:opacity-50">{busyId === b.importBatch ? 'Deleting…' : 'Undo upload'}</button>
++            </div>
++          ))}
+         </div>
+       </div>
+     </div>
+@@ -148,6 +417,9 @@
+   const [importing, setImporting] = useState(false);
+   const [scheme, setScheme] = useState(null);
+   const [expanded, setExpanded] = useState([]); // question ids with the solution open
++  const [selected, setSelected] = useState([]); // question ids ticked for bulk actions
++  const [moveTo, setMoveTo] = useState('');
++  const [uploadsOpen, setUploadsOpen] = useState(false);
+   const set = (patch) => setF((x) => ({ ...x, page: 1, ...patch }));
+   const flash = (m) => { setToast(m); setTimeout(() => setToast(''), 3000); };
+ 
+@@ -193,16 +465,27 @@
+   const selTest = tests.find((t) => t.id === f.testId);
+ 
+   const remove = (r) => {
+-    if (!window.confirm(`Delete this question from ${r.testName}?\n\n${htmlToText(r.question.q).slice(0, 160)}`)) return;
+-    run(() => deleteBankQuestion(r.testId, r.question._id), 'Question deleted');
++    if (!window.confirm(`Delete this question${r.testName ? ` (it is in ${r.testName})` : ''}?\n\n${htmlToText(r.question.q).slice(0, 160)}`)) return;
++    run(() => deleteBankQuestion(r.question._id), 'Question deleted');
++  };
++  const bulk = async (action) => {
++    if (!selected.length) return;
++    if (action === 'delete' && !window.confirm(`Delete ${selected.length} selected question(s)? This cannot be undone.`)) return;
++    if (action === 'assign' && !moveTo) { setError('Pick the test to add the selected questions to.'); return; }
++    const ok = await run(() => bankBulkAction({ ids: selected, action, testId: moveTo }),
++      action === 'delete' ? `${selected.length} question(s) deleted` : action === 'assign' ? `✓ ${selected.length} question(s) added to the test` : `${selected.length} question(s) moved to the Question Bank`);
++    if (ok) { setSelected([]); setMoveTo(''); }
+   };
++  useEffect(() => { setSelected([]); }, [f]);
++  const pageIds = rows.map((r) => r.question._id);
++  const allPicked = pageIds.length > 0 && pageIds.every((id) => selected.includes(id));
+ 
+   if (editor) {
+     return (
+       <QuestionEditor
+         meta={meta}
+         initial={editor.initial}
+-        testId={f.testId}
++        testId={f.testId === 'none' ? '' : f.testId}
+         onCancel={() => { setEditor(null); refresh(); }}
+         onSaved={() => { flash('✓ Question saved'); loadMeta(); }}
+       />
+@@ -236,19 +519,21 @@
+             <div>
+               <div className="text-base font-extrabold text-slate-900">Question List</div>
+               <div className="text-xs text-slate-500">
+-                <b className="text-slate-800">{total.toLocaleString('en-IN')}</b> question{total === 1 ? '' : 's'}{anyFilter ? ' match' : ''} · {tests.length} test{tests.length === 1 ? '' : 's'} · {subjects.length} subject{subjects.length === 1 ? '' : 's'}
++                <b className="text-slate-800">{total.toLocaleString('en-IN')}</b> question{total === 1 ? '' : 's'}{anyFilter ? ` match (of ${(meta?.total || 0).toLocaleString('en-IN')})` : ''} · {(meta?.unassigned || 0).toLocaleString('en-IN')} not in any test · {tests.length} test{tests.length === 1 ? '' : 's'} · {subjects.length} subject{subjects.length === 1 ? '' : 's'}
+               </div>
+             </div>
+           </div>
+           {canManage && (
+             <div className="flex items-center gap-2">
+-              {f.testId && (
++              {f.testId && f.testId !== 'none' && (
+                 <button type="button" disabled={!selTest?.questionCount} onClick={() => setScheme({ marks: 1, negMarks: 0 })}
+                   className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"><SlidersHorizontal className="w-4 h-4" />Marking</button>
+               )}
+-              <button type="button" disabled={!tests.length} onClick={() => setImporting(true)}
+-                className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"><Upload className="w-4 h-4" />Import</button>
+-              <button type="button" disabled={!tests.length} title={tests.length ? '' : 'Add a test first (Test List)'}
++              <button type="button" onClick={() => setUploadsOpen(true)} title="Recent bulk uploads (undo)"
++                className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 hover:bg-slate-50"><History className="w-4 h-4" />Uploads</button>
++              <button type="button" onClick={() => setImporting(true)}
++                className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl border border-teal-200 bg-teal-50 text-xs font-bold text-teal-800 hover:bg-teal-100"><FileSpreadsheet className="w-4 h-4" />Bulk Upload</button>
++              <button type="button"
+                 onClick={() => setEditor({ initial: { defaults: { subject: f.subject, topic: f.topic, language: f.language || 'English' } } })}
+                 className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#009688] hover:bg-[#00897b] text-white text-xs font-bold disabled:opacity-50"><Plus className="w-4 h-4" />Add Question</button>
+             </div>
+@@ -263,6 +548,7 @@
+         <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-2">
+           <select value={f.testId} disabled={Boolean(onBack)} onChange={(e) => set({ testId: e.target.value })} className={`${chip} xl:col-span-2`}>
+             <option value="">All Tests</option>
++            <option value="none">Not in any test (bank only)</option>
+             {tests.map((t) => <option key={t.id} value={t.id}>{t.name}{t.seriesName ? ` — ${t.seriesName}` : ''} ({t.questionCount})</option>)}
+           </select>
+           <select value={f.subject} onChange={(e) => set({ subject: e.target.value, topic: '' })} className={chip}>
+@@ -313,6 +599,28 @@
+         </div>
+       )}
+ 
++      {/* bulk actions on ticked questions */}
++      {canManage && rows.length > 0 && (
++        <div className={`flex flex-wrap items-center gap-2 px-3 py-2 rounded-xl ${selected.length ? 'bg-[#0f212d] text-white' : ''}`}>
++          <label className={`inline-flex items-center gap-2 text-xs font-bold cursor-pointer ${selected.length ? 'text-white' : 'text-slate-600'}`}>
++            <input type="checkbox" className="accent-teal-500 w-4 h-4" checked={allPicked} onChange={(e) => setSelected((list) => (e.target.checked ? [...new Set([...list, ...pageIds])] : list.filter((id) => !pageIds.includes(id))))} />
++            {selected.length ? `${selected.length} selected` : 'Select page'}
++          </label>
++          {selected.length > 0 && (
++            <>
++              <select value={moveTo} onChange={(e) => setMoveTo(e.target.value)} className="ml-2 px-2 py-1.5 rounded-lg text-xs text-slate-800 bg-white max-w-[260px]">
++                <option value="">Add to test…</option>
++                {tests.map((t) => <option key={t.id} value={t.id} disabled={t.questionCount >= (meta?.maxPerTest || 200)}>{t.name}{t.seriesName ? ` — ${t.seriesName}` : ''} · {t.questionCount}/{meta?.maxPerTest || 200}</option>)}
++              </select>
++              <button type="button" disabled={saving || !moveTo} onClick={() => bulk('assign')} className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-teal-500 hover:bg-teal-400 text-white disabled:opacity-40"><FolderInput className="w-3.5 h-3.5" />Add</button>
++              <button type="button" disabled={saving} onClick={() => bulk('unassign')} className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-white/10 hover:bg-white/20"><FolderOutput className="w-3.5 h-3.5" />Remove from test</button>
++              <button type="button" disabled={saving} onClick={() => bulk('delete')} className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-rose-600 hover:bg-rose-500"><Trash2 className="w-3.5 h-3.5" />Delete</button>
++              <button type="button" onClick={() => setSelected([])} className="ml-auto text-xs text-slate-300 hover:text-white">Clear</button>
++            </>
++          )}
++        </div>
++      )}
++
+       {/* question cards */}
+       {loading && rows.length === 0 && (
+         <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center text-xs text-slate-500"><RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-teal-600" />Loading questions…</div>
+@@ -342,12 +650,15 @@
+             <div key={`${r.testId}-${q._id}`} className={`bg-white rounded-2xl border overflow-hidden ${(q.reports || []).length ? 'border-rose-200' : 'border-slate-200'} hover:shadow-sm transition-shadow`}>
+               {/* card header */}
+               <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 bg-slate-50/80 border-b border-slate-100">
++                {canManage && <input type="checkbox" className="accent-teal-600 w-4 h-4" checked={selected.includes(q._id)} onChange={(e) => setSelected((list) => (e.target.checked ? [...list, q._id] : list.filter((x) => x !== q._id)))} />}
+                 <span className="inline-flex items-center justify-center min-w-[2.25rem] h-7 px-2 rounded-lg bg-[#0f212d] text-white text-xs font-extrabold">Q{num}</span>
+-                {!onBack && (
++                {!onBack && (r.testId ? (
+                   <span className="text-[11px] text-slate-500 truncate max-w-[280px]" title={`${r.testName} · ${r.seriesName}`}>
+                     <b className="text-slate-700">{r.testName}</b>{r.seriesName ? ` · ${r.seriesName}` : ''} · #{r.index + 1}
+                   </span>
+-                )}
++                ) : (
++                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-200 text-slate-600">Bank only</span>
++                ))}
+                 <div className="flex flex-wrap gap-1">
+                   {tags.map((t) => <span key={t.t} className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${t.c}`}>{t.t}</span>)}
+                 </div>
+@@ -404,7 +715,7 @@
+                   <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs">
+                     <div className="flex items-center justify-between gap-2 font-bold text-rose-700">
+                       <span className="inline-flex items-center gap-1"><Flag className="w-3.5 h-3.5" />Reported by {q.reports.length} student{q.reports.length === 1 ? '' : 's'}</span>
+-                      {canManage && <button type="button" disabled={saving} onClick={() => run(() => resolveBankQuestion(r.testId, q._id), '✓ Reports marked resolved')} className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-white border border-rose-200 text-rose-700 hover:bg-rose-100"><CheckCircle2 className="w-3.5 h-3.5" />Mark resolved</button>}
++                      {canManage && <button type="button" disabled={saving} onClick={() => run(() => resolveBankQuestion(q._id), '✓ Reports marked resolved')} className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-white border border-rose-200 text-rose-700 hover:bg-rose-100"><CheckCircle2 className="w-3.5 h-3.5" />Mark resolved</button>}
+                     </div>
+                     <ul className="mt-1.5 space-y-1 text-rose-900">
+                       {q.reports.map((rep, k) => <li key={k}>“{rep.reason}” — {rep.studentName || rep.studentId}{rep.at ? `, ${new Date(rep.at).toLocaleDateString('en-IN')}` : ''}</li>)}
+@@ -433,9 +744,10 @@
+       )}
+ 
+       {importing && (
+-        <ImportModal tests={tests} testId={f.testId} saving={saving} onCancel={() => setImporting(false)}
+-          onImport={async (testId, list) => { if (await run(() => addBankQuestions(testId, { questions: list }), `✓ ${list.length} questions imported`)) setImporting(false); }} />
++        <BulkUploadModal tests={tests} maxPerTest={meta?.maxPerTest || 200} testId={f.testId}
++          onClose={() => { setImporting(false); refresh(); }} onDone={refresh} />
+       )}
++      {uploadsOpen && <UploadsPanel onClose={() => setUploadsOpen(false)} onChanged={() => { flash('Upload removed'); refresh(); }} />}
+     </div>
+   );
+ }
+diff -ruN base/client/src/components/spreadsheetReader.js work/client/src/components/spreadsheetReader.js
+--- a/client/src/components/spreadsheetReader.js	1970-01-01 05:30:00.000000000 +0530
++++ b/client/src/components/spreadsheetReader.js	2026-11-24 11:58:40.909387198 +0530
+@@ -0,0 +1,142 @@
++// Reads .xlsx / .csv / .tsv files in the browser without extra packages.
++// Returns { rows: string[][] } — first row is usually the header.
++// .xlsx is a zip of XML files: we read the zip directory, inflate the parts we
++// need with the browser's DecompressionStream and pull cell text out of the
++// first worksheet. Fast enough for 20,000+ rows.
++
++const td = new TextDecoder('utf-8');
++
++async function inflateRaw(bytes) {
++  if (typeof DecompressionStream === 'undefined') throw new Error('This browser cannot open .xlsx files — save the sheet as CSV and upload that instead.');
++  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
++  return new Uint8Array(await new Response(stream).arrayBuffer());
++}
++
++async function unzip(buffer, wanted) {
++  const view = new DataView(buffer);
++  const bytes = new Uint8Array(buffer);
++  let eocd = -1;
++  for (let i = buffer.byteLength - 22; i >= Math.max(0, buffer.byteLength - 70000); i -= 1) {
++    if (view.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
++  }
++  if (eocd < 0) throw new Error('This does not look like an Excel (.xlsx) file.');
++  const count = view.getUint16(eocd + 10, true);
++  let p = view.getUint32(eocd + 16, true);
++  const out = {};
++  for (let n = 0; n < count; n += 1) {
++    if (view.getUint32(p, true) !== 0x02014b50) break;
++    const method = view.getUint16(p + 10, true);
++    const compSize = view.getUint32(p + 20, true);
++    const nameLen = view.getUint16(p + 28, true);
++    const extraLen = view.getUint16(p + 30, true);
++    const commentLen = view.getUint16(p + 32, true);
++    const localOff = view.getUint32(p + 42, true);
++    const name = td.decode(bytes.subarray(p + 46, p + 46 + nameLen));
++    p += 46 + nameLen + extraLen + commentLen;
++    if (!wanted(name)) continue;
++    const lNameLen = view.getUint16(localOff + 26, true);
++    const lExtraLen = view.getUint16(localOff + 28, true);
++    const start = localOff + 30 + lNameLen + lExtraLen;
++    const data = bytes.subarray(start, start + compSize);
++    if (method === 0) out[name] = td.decode(data);
++    else if (method === 8) out[name] = td.decode(await inflateRaw(data));
++  }
++  return out;
++}
++
++const decodeXml = (s) => s
++  .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'")
++  .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
++  .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
++  .replace(/&amp;/g, '&');
++const textOf = (xml) => {
++  let t = '';
++  xml.replace(/<t\b[^>]*>([\s\S]*?)<\/t>/g, (_, x) => { t += x; return ''; });
++  return decodeXml(t);
++};
++const colIndex = (ref) => {
++  const letters = String(ref || '').replace(/[^A-Z]/gi, '').toUpperCase();
++  let n = 0;
++  for (const ch of letters) n = n * 26 + (ch.charCodeAt(0) - 64);
++  return n - 1;
++};
++
++async function readXlsx(file) {
++  const buffer = await file.arrayBuffer();
++  const parts = await unzip(buffer, (n) => n === 'xl/workbook.xml' || n === 'xl/_rels/workbook.xml.rels' || n === 'xl/sharedStrings.xml' || /^xl\/worksheets\/sheet\d+\.xml$/.test(n));
++  // first sheet in workbook order
++  let sheetPath = '';
++  const firstSheet = /<sheet\b[^>]*r:id="([^"]+)"/.exec(parts['xl/workbook.xml'] || '');
++  if (firstSheet) {
++    const rel = new RegExp(`<Relationship\\b[^>]*Id="${firstSheet[1]}"[^>]*Target="([^"]+)"`).exec(parts['xl/_rels/workbook.xml.rels'] || '')
++      || new RegExp(`<Relationship\\b[^>]*Target="([^"]+)"[^>]*Id="${firstSheet[1]}"`).exec(parts['xl/_rels/workbook.xml.rels'] || '');
++    if (rel) sheetPath = rel[1].startsWith('/') ? rel[1].slice(1) : `xl/${rel[1].replace(/^\.\//, '')}`;
++  }
++  const sheetXml = parts[sheetPath] || parts['xl/worksheets/sheet1.xml'] || Object.entries(parts).find(([k]) => /worksheets\/sheet\d+\.xml$/.test(k))?.[1];
++  if (!sheetXml) throw new Error('No worksheet found in this Excel file.');
++  const shared = [];
++  (parts['xl/sharedStrings.xml'] || '').replace(/<si\b[^>]*>([\s\S]*?)<\/si>/g, (_, x) => { shared.push(textOf(x)); return ''; });
++
++  const rows = [];
++  const rowRe = /<row\b([^>]*)>([\s\S]*?)<\/row>/g;
++  const cellRe = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g;
++  let m;
++  while ((m = rowRe.exec(sheetXml))) {
++    const row = [];
++    let c;
++    let auto = 0;
++    cellRe.lastIndex = 0;
++    while ((c = cellRe.exec(m[2]))) {
++      const attrs = c[1] || '';
++      const inner = c[2] || '';
++      const ref = /\br="([A-Z]+)\d+"/i.exec(attrs);
++      const idx = ref ? colIndex(ref[1]) : auto;
++      auto = idx + 1;
++      const type = (/\bt="([^"]+)"/.exec(attrs) || [])[1] || 'n';
++      const v = (/<v>([\s\S]*?)<\/v>/.exec(inner) || [])[1];
++      let val = '';
++      if (type === 's') val = shared[Number(v)] ?? '';
++      else if (type === 'inlineStr') val = textOf(inner);
++      else if (type === 'b') val = v === '1' ? 'TRUE' : 'FALSE';
++      else val = v != null ? decodeXml(v) : '';
++      row[idx] = val;
++    }
++    for (let i = 0; i < row.length; i += 1) if (row[i] == null) row[i] = '';
++    // keep the real sheet row number (r="12") so error reports match Excel
++    const rNum = Number((/\br="(\d+)"/.exec(m[1]) || [])[1]) || rows.length + 1;
++    while (rows.length < rNum - 1) rows.push([]);
++    rows[rNum - 1] = row;
++  }
++  return rows;
++}
++
++export function parseCsv(text) {
++  const src = String(text || '').replace(/^﻿/, '');
++  const firstLine = src.split(/\r?\n/, 1)[0] || '';
++  const delim = [',', '\t', ';'].map((d) => [d, firstLine.split(d).length]).sort((a, b) => b[1] - a[1])[0][0];
++  const rows = [];
++  let row = [];
++  let field = '';
++  let inQ = false;
++  for (let i = 0; i < src.length; i += 1) {
++    const ch = src[i];
++    if (inQ) {
++      if (ch === '"') {
++        if (src[i + 1] === '"') { field += '"'; i += 1; } else inQ = false;
++      } else field += ch;
++    } else if (ch === '"') inQ = true;
++    else if (ch === delim) { row.push(field); field = ''; }
++    else if (ch === '\n' || ch === '\r') {
++      if (ch === '\r' && src[i + 1] === '\n') i += 1;
++      row.push(field); rows.push(row); row = []; field = '';
++    } else field += ch;
++  }
++  if (field || row.length) { row.push(field); rows.push(row); }
++  return rows; // blank rows kept so row numbers match the sheet (they are skipped later)
++}
++
++export async function readSpreadsheet(file) {
++  if (/\.xlsx$/i.test(file.name)) return { rows: await readXlsx(file) };
++  if (/\.xls$/i.test(file.name)) throw new Error('Old .xls files are not supported — in Excel use File → Save As → Excel Workbook (.xlsx) or CSV.');
++  return { rows: parseCsv(await file.text()) };
++}
+diff -ruN base/client/src/services/api.js work/client/src/services/api.js
+--- a/client/src/services/api.js	2026-11-24 11:53:40.971075413 +0530
++++ b/client/src/services/api.js	2026-11-24 11:55:33.392057281 +0530
+@@ -2355,11 +2355,15 @@
+ export const notifySeriesTest = async (id, testId) => (await api.post(`/test-series/${encodeURIComponent(id)}/tests/${encodeURIComponent(testId)}/notify`)).data;
+ export const getQuestionBankMeta = async () => (await api.get('/question-bank/meta')).data;
+ export const getQuestionBank = async (params) => (await api.get('/question-bank', { params })).data;
+-export const addBankQuestions = async (testId, body) => (await api.post(`/question-bank/${encodeURIComponent(testId)}`, body)).data;
+-export const updateBankQuestion = async (testId, qid, body) => (await api.put(`/question-bank/${encodeURIComponent(testId)}/${encodeURIComponent(qid)}`, body)).data;
+-export const deleteBankQuestion = async (testId, qid) => (await api.delete(`/question-bank/${encodeURIComponent(testId)}/${encodeURIComponent(qid)}`)).data;
+-export const setBankMarking = async (testId, body) => (await api.post(`/question-bank/${encodeURIComponent(testId)}/marking`, body)).data;
+-export const resolveBankQuestion = async (testId, qid) => (await api.post(`/question-bank/${encodeURIComponent(testId)}/${encodeURIComponent(qid)}/resolve`)).data;
++export const addBankQuestion = async (body) => (await api.post('/question-bank', body)).data; // { question, testId? }
++export const bulkUploadQuestions = async (body) => (await api.post('/question-bank/bulk', body, { timeout: 120000 })).data; // { questions, testId?, importBatch }
++export const getQuestionImports = async () => (await api.get('/question-bank/imports')).data;
++export const undoQuestionImport = async (batch) => (await api.delete(`/question-bank/imports/${encodeURIComponent(batch)}`)).data;
++export const updateBankQuestion = async (id, body) => (await api.put(`/question-bank/${encodeURIComponent(id)}`, body)).data; // { question, testId? }
++export const deleteBankQuestion = async (id) => (await api.delete(`/question-bank/${encodeURIComponent(id)}`)).data;
++export const bankBulkAction = async (body) => (await api.post('/question-bank/bulk-action', body)).data; // { ids, action, testId? }
++export const setBankMarking = async (testId, body) => (await api.post(`/question-bank/test/${encodeURIComponent(testId)}/marking`, body)).data;
++export const resolveBankQuestion = async (id) => (await api.post(`/question-bank/${encodeURIComponent(id)}/resolve`)).data;
+ export const reportTestQuestion = async (testId, index, reason) => (await api.post(`/student-portal/tests/${encodeURIComponent(testId)}/report`, { index, reason })).data;
+ 
+ export const getTestLeaderboard = async (id, params) => {
+diff -ruN base/server/src/models/BankQuestion.js work/server/src/models/BankQuestion.js
+--- a/server/src/models/BankQuestion.js	1970-01-01 05:30:00.000000000 +0530
++++ b/server/src/models/BankQuestion.js	2026-11-24 11:53:49.519012110 +0530
+@@ -0,0 +1,55 @@
++import mongoose from 'mongoose';
++
++// Question Bank — one document per question, so a bank of 20,000+ questions
++// can be listed, filtered and searched with indexes instead of unpacking every
++// test. A question either sits in the bank only (testId '') or belongs to one
++// Test Series test (testId + order). The test keeps a copy of its questions in
++// TrainerAssessment.questions (same _id) because the online test engine,
++// grading and attempts read them from there; the server rebuilds that copy
++// whenever a test's questions change here (syncTestFromBank).
++const bankQuestionSchema = new mongoose.Schema(
++  {
++    testId: { type: String, default: '' },
++    order: { type: Number, default: 0 },
++    q: { type: String, required: true },
++    options: { type: [String], default: [] },
++    answer: { type: Number, default: 0 },
++    marks: { type: Number, default: 1 },
++    negMarks: { type: Number, default: 0 },
++    bonusMarks: { type: Number, default: 0 },
++    qType: { type: String, default: 'MCQ' },
++    subject: { type: String, default: '' },
++    topic: { type: String, default: '' },
++    language: { type: String, default: 'English' },
++    difficulty: { type: String, default: '' },
++    hint: { type: String, default: '' },
++    font: { type: String, default: '' },
++    passage: { type: String, default: '' },
++    instruction: { type: String, default: '' },
++    rationale: { type: String, default: '' },
++    chapter: { type: String, default: '' },
++    audioRationaleUrl: { type: String, default: '' },
++    reports: {
++      type: [{ studentId: String, studentName: String, reason: String, at: { type: Date, default: Date.now } }],
++      default: []
++    },
++    reportCount: { type: Number, default: 0 },
++    // lower-case plain text of question + options + solution, for search
++    searchText: { type: String, default: '' },
++    // which upload created it — lets a whole bad import be undone
++    importBatch: { type: String, default: '' },
++    createdBy: { type: String, default: '' },
++    updatedBy: { type: String, default: '' }
++  },
++  { timestamps: true }
++);
++
++bankQuestionSchema.index({ testId: 1, order: 1 });
++bankQuestionSchema.index({ createdAt: -1 });
++bankQuestionSchema.index({ subject: 1, topic: 1 });
++bankQuestionSchema.index({ language: 1 });
++bankQuestionSchema.index({ qType: 1 });
++bankQuestionSchema.index({ reportCount: 1 });
++bankQuestionSchema.index({ importBatch: 1 });
++
++export default mongoose.models.BankQuestion || mongoose.model('BankQuestion', bankQuestionSchema);
+diff -ruN base/server/src/routes/api.js work/server/src/routes/api.js
+--- a/server/src/routes/api.js	2026-11-24 11:53:40.970732077 +0530
++++ b/server/src/routes/api.js	2026-11-24 11:55:24.065779712 +0530
+@@ -54,6 +54,7 @@
+ import BatchAnnouncement from '../models/BatchAnnouncement.js';
+ import TestAttempt from '../models/TestAttempt.js';
+ import TestSeries from '../models/TestSeries.js';
++import BankQuestion from '../models/BankQuestion.js';
+ import { contactFilter, startContactKeyBackfill } from '../utils/contactKeys.js';
+ import AppSetting from '../models/AppSetting.js';
+ import ContentPiece from '../models/ContentPiece.js';
+@@ -16601,10 +16602,16 @@
+ }
+ 
+ // Save a cleaned question list on a test: totals, pass mark, duration, and
+-// re-grade submitted attempts. removedIndex keeps saved answers lined up when
+-// one question is deleted from the middle of a test students have taken.
+-async function applyTestQuestions(item, questions, { passMark, durationMin, removedIndex = -1 } = {}) {
++// re-grade submitted attempts. Saved answers are index-based, so when questions
++// are removed / reordered / inserted (matched by _id) every attempt's answers
++// are moved to the question's new position.
++async function applyTestQuestions(item, questions, { passMark, durationMin } = {}) {
+   const oldTotal = Number(item.totalMarks) || 0;
++  const oldIds = (item.questions || []).map((q) => String(q._id));
++  const newIds = questions.map((q) => (q._id ? String(q._id) : ''));
++  const answerMap = newIds.map((id) => (id ? oldIds.indexOf(id) : -1));
++  // Remap only when the incoming list carries ids (legacy callers without ids keep the old behaviour)
++  const remap = newIds.some(Boolean) && (answerMap.length !== oldIds.length || answerMap.some((m, i) => m !== i));
+   item.questions = questions;
+   item.mode = questions.length ? 'online' : 'offline';
+   if (questions.length) {
+@@ -16630,8 +16637,9 @@
+     const scores = item.scores instanceof Map ? Object.fromEntries(item.scores) : (item.scores || {});
+     const touchedKeys = [];
+     for (const att of existingAttempts) {
+-      if (removedIndex >= 0 && Array.isArray(att.answers)) {
+-        att.answers = att.answers.filter((_, k) => k !== removedIndex);
++      if (remap) {
++        const prev = Array.isArray(att.answers) ? att.answers : [];
++        att.answers = answerMap.map((m) => (m >= 0 && Number.isInteger(prev[m]) ? prev[m] : -1));
+         att.markModified?.('answers');
+       }
+       if (att.status === 'submitted') {
+@@ -16644,7 +16652,7 @@
+           touchedKeys.push(att.studentKey);
+         }
+       }
+-      if (att.status === 'submitted' || removedIndex >= 0) await att.save();
++      if (att.status === 'submitted' || remap) await att.save();
+     }
+     item.scores = scores;
+     await item.save();
+@@ -16676,6 +16684,7 @@
+     const cleaned = cleanQuestionList(raw, item.questions);
+     if (cleaned.error) return res.status(400).json({ error: cleaned.error });
+     await applyTestQuestions(item, cleaned.questions, { passMark: req.body?.passMark, durationMin: req.body?.durationMin });
++    if (item.seriesId) await mirrorTestToBank(item);
+     res.json(formatAssessment(item));
+   } catch (e) {
+     res.status(400).json({ error: e.message });
+@@ -16894,6 +16903,7 @@
+       return res.status(409).json({ error: 'Students have already taken tests in this series. Unpublish it (set to Draft) instead of deleting, so their results are kept.' });
+     }
+     await TrainerAssessment.deleteMany({ seriesId: doc._id.toString() });
++    if (testIds.length) await BankQuestion.updateMany({ testId: { $in: testIds } }, { $set: { testId: '', order: 0 } });
+     await doc.deleteOne();
+     res.json({ success: true });
+   } catch (e) {
+@@ -17013,6 +17023,8 @@
+       return res.status(409).json({ error: 'Students have already taken this test, so it cannot be removed (their results would be lost).' });
+     }
+     await test.deleteOne();
++    // its questions stay in the Question Bank (not in any test)
++    await BankQuestion.updateMany({ testId: test._id.toString() }, { $set: { testId: '', order: 0 } });
+     res.json({ success: true });
+   } catch (e) {
+     res.status(400).json({ error: e.message });
+@@ -17020,44 +17032,143 @@
+ });
+ 
+ 
+-// ---------- Question bank (every Test Series question in one list) ----------
+-// Questions live inside their test (TrainerAssessment.questions) so the online
+-// test engine keeps working unchanged; this list unwinds them across all tests,
+-// filtered and paged on the server so it stays quick with 19,000+ questions.
+-async function loadBankTest(req, res, id) {
+-  if (!canManageTestSeries(req)) { res.status(403).json({ error: 'Only the Head of Trainer and Managers can change questions.' }); return null; }
+-  if (!mongoose.isValidObjectId(id)) { res.status(400).json({ error: 'Select a test' }); return null; }
+-  const test = await TrainerAssessment.findById(id);
+-  if (!test || !test.seriesId) { res.status(404).json({ error: 'Test not found' }); return null; }
++// ---------- Question bank (one document per question, built for 20,000+) ----------
++// BankQuestion holds every question (indexed: test, subject/topic, language,
++// type, reports, import). A question can sit in the bank only (testId '') or
++// belong to one Test Series test; that test's own copy (TrainerAssessment.
++// questions, same _id) is rebuilt from the bank whenever it changes, so the
++// online test engine, grading and attempts keep working unchanged.
++const BANK_MAX_BULK = 500; // questions per bulk request (the browser sends a big file in chunks)
++let bankMetaCache = null; // { at, data } — subjects / topics list, refreshed after writes
++const bankChanged = () => { bankMetaCache = null; };
++
++function bankCanManage(req, res) {
++  if (canManageTestSeries(req)) return true;
++  res.status(403).json({ error: 'Only the Head of Trainer and Managers can change questions.' });
++  return false;
++}
++const staffOnly = (req, res) => {
++  if (req.user?.department !== 'student') return true;
++  res.status(403).json({ error: 'Not available in the Student Portal.' });
++  return false;
++};
++
++// Clean one incoming question (same rules as the test editor); null + error if invalid
++function cleanBankQuestion(raw, label = 'Question') {
++  const out = cleanQuestionList([{ ...raw, _id: undefined }]);
++  if (out.error) return { error: out.error.replace(/^Question 1/, label) };
++  const c = out.questions[0];
++  delete c._id;
++  delete c.reports;
++  delete c.audioRationaleText;
++  c.searchText = htmlText([c.q, ...c.options, c.rationale, c.passage].join('\n')).toLowerCase().slice(0, 20000);
++  return { question: c };
++}
++
++// Bank row → the question object the test engine stores
++const engineQuestion = (b) => ({
++  _id: b._id, q: b.q, options: b.options, answer: b.answer, marks: b.marks || 1, negMarks: b.negMarks || 0,
++  bonusMarks: b.bonusMarks || 0, qType: b.qType || 'MCQ', subject: b.subject || '', topic: b.topic || '',
++  language: b.language || 'English', difficulty: b.difficulty || '', hint: b.hint || '', font: b.font || '',
++  passage: b.passage || '', instruction: b.instruction || '', rationale: b.rationale || '', chapter: b.chapter || '',
++  audioRationaleUrl: b.audioRationaleUrl || '', audioRationaleText: htmlText(b.rationale || '').slice(0, 3000),
++  reports: b.reports || []
++});
++
++// Rebuild a test's question copy from the bank (re-grades / re-aligns attempts)
++async function syncTestFromBank(testId) {
++  if (!testId || !mongoose.isValidObjectId(testId)) return null;
++  const test = await TrainerAssessment.findById(testId);
++  if (!test) return null;
++  const rows = await BankQuestion.find({ testId: String(testId) }).sort({ order: 1, createdAt: 1 }).lean();
++  await applyTestQuestions(test, rows.map(engineQuestion));
+   return test;
+ }
+-const plainQuestions = (test) => (test.questions || []).map((q) => (typeof q.toObject === 'function' ? q.toObject() : { ...q }));
++
++// Builder / old flows changed a series test's questions directly → copy them into the bank
++async function mirrorTestToBank(test) {
++  if (!test?.seriesId) return;
++  const testId = test._id.toString();
++  const ids = [];
++  const ops = (test.questions || []).map((q, i) => {
++    const o = typeof q.toObject === 'function' ? q.toObject() : q;
++    ids.push(o._id);
++    const { _id, audioRationaleText, ...rest } = o;
++    return {
++      updateOne: {
++        filter: { _id },
++        update: {
++          $set: {
++            ...rest, testId, order: i + 1, reportCount: (rest.reports || []).length,
++            searchText: htmlText([rest.q, ...(rest.options || []), rest.rationale, rest.passage].join('\n')).toLowerCase().slice(0, 20000)
++          }
++        },
++        upsert: true
++      }
++    };
++  });
++  if (ops.length) await BankQuestion.bulkWrite(ops, { ordered: false });
++  await BankQuestion.deleteMany({ testId, _id: { $nin: ids } });
++  bankChanged();
++}
++
++// One-time move of questions that were saved inside tests before the bank existed
++let bankMigration = null;
++function ensureBankMigrated() {
++  if (!bankMigration) {
++    bankMigration = (async () => {
++      const tests = await TrainerAssessment.find({ seriesId: { $nin: ['', null] }, 'questions.0': { $exists: true } }).select('_id').lean();
++      for (const t of tests) {
++        if (await BankQuestion.exists({ testId: t._id.toString() })) continue;
++        const full = await TrainerAssessment.findById(t._id);
++        if (full) await mirrorTestToBank(full);
++      }
++    })().catch((e) => { console.warn('Question bank migration failed:', e.message); bankMigration = null; });
++  }
++  return bankMigration;
++}
++
++const MAX_Q = () => MAX_TEST_QUESTIONS;
++async function testRoomLeft(testId) {
++  return MAX_Q() - await BankQuestion.countDocuments({ testId: String(testId) });
++}
++async function nextOrder(testId) {
++  const last = await BankQuestion.findOne({ testId: String(testId) }).sort({ order: -1 }).select('order').lean();
++  return (last?.order || 0) + 1;
++}
++async function seriesTestOr404(res, testId) {
++  if (!testId) return '';
++  if (!mongoose.isValidObjectId(testId)) { res.status(400).json({ error: 'Invalid test' }); return null; }
++  const t = await TrainerAssessment.findById(testId).select('_id seriesId name').lean();
++  if (!t || !t.seriesId) { res.status(404).json({ error: 'Test not found' }); return null; }
++  return t._id.toString();
++}
+ 
+ router.get('/question-bank/meta', async (req, res) => {
+   try {
+-    if (req.user?.department === 'student') return res.status(403).json({ error: 'Not available in the Student Portal.' });
+-    const [series, tests, subjects] = await Promise.all([
++    if (!staffOnly(req, res)) return;
++    await ensureBankMigrated();
++    if (!bankMetaCache || Date.now() - bankMetaCache.at > 5 * 60000) {
++      const [subjects, languages, counts] = await Promise.all([
++        BankQuestion.aggregate([{ $group: { _id: '$subject', topics: { $addToSet: '$topic' } } }]),
++        BankQuestion.distinct('language'),
++        BankQuestion.aggregate([{ $group: { _id: { $cond: [{ $eq: ['$testId', ''] }, 'bank', 'test'] }, n: { $sum: 1 } } }])
++      ]);
++      const subjectMap = {};
++      subjects.forEach((g) => { if (g._id) subjectMap[g._id] = (g.topics || []).filter(Boolean).sort(); });
++      const c = Object.fromEntries(counts.map((x) => [x._id, x.n]));
++      bankMetaCache = { at: Date.now(), data: { subjects: subjectMap, languages: [...new Set(['English', ...languages.filter(Boolean)])].sort(), total: (c.bank || 0) + (c.test || 0), unassigned: c.bank || 0 } };
++    }
++    const [series, tests] = await Promise.all([
+       TestSeries.find({}).select('name').lean(),
+-      TrainerAssessment.find({ seriesId: { $nin: ['', null] } }).select('name testCode seriesId createdAt questions._id').sort({ createdAt: -1 }).lean(),
+-      TrainerAssessment.aggregate([
+-        { $match: { seriesId: { $nin: ['', null] } } },
+-        { $project: { 'questions.subject': 1, 'questions.topic': 1, 'questions.language': 1 } },
+-        { $unwind: '$questions' },
+-        { $group: { _id: { $ifNull: ['$questions.subject', ''] }, topics: { $addToSet: { $ifNull: ['$questions.topic', ''] } }, languages: { $addToSet: { $ifNull: ['$questions.language', 'English'] } } } }
+-      ])
++      TrainerAssessment.find({ seriesId: { $nin: ['', null] } }).select('name testCode seriesId createdAt questions._id').sort({ createdAt: -1 }).lean()
+     ]);
+     const seriesName = Object.fromEntries(series.map((s) => [s._id.toString(), s.name]));
+-    const subjectMap = {};
+-    const languages = new Set(['English']);
+-    subjects.forEach((g) => {
+-      if (g._id) subjectMap[g._id] = (g.topics || []).filter(Boolean).sort();
+-      (g.languages || []).forEach((l) => l && languages.add(l));
+-    });
+     res.json({
++      ...bankMetaCache.data,
+       canManage: canManageTestSeries(req),
+-      tests: tests.map((t) => ({ id: t._id.toString(), name: t.name, testCode: t.testCode || '', seriesId: t.seriesId, seriesName: seriesName[t.seriesId] || '', questionCount: (t.questions || []).length })),
+-      subjects: subjectMap,
+-      languages: [...languages].sort()
++      maxPerTest: MAX_Q(),
++      tests: tests.map((t) => ({ id: t._id.toString(), name: t.name, testCode: t.testCode || '', seriesId: t.seriesId, seriesName: seriesName[t.seriesId] || '', questionCount: (t.questions || []).length }))
+     });
+   } catch (e) {
+     res.status(500).json({ error: e.message });
+@@ -17066,146 +17177,257 @@
+ 
+ router.get('/question-bank', async (req, res) => {
+   try {
+-    if (req.user?.department === 'student') return res.status(403).json({ error: 'Not available in the Student Portal.' });
++    if (!staffOnly(req, res)) return;
++    await ensureBankMigrated();
+     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 10));
+-    const base = { seriesId: { $nin: ['', null] } };
+-    if (req.query.testId) {
+-      if (!mongoose.isValidObjectId(req.query.testId)) return res.status(400).json({ error: 'Invalid test' });
+-      base._id = new mongoose.Types.ObjectId(String(req.query.testId));
+-    }
+-    const qm = {};
+     const str = (v) => String(v || '').trim();
+-    if (str(req.query.subject)) qm['questions.subject'] = str(req.query.subject);
+-    if (str(req.query.topic)) qm['questions.topic'] = str(req.query.topic);
+-    if (str(req.query.difficulty)) qm['questions.difficulty'] = str(req.query.difficulty);
+-    if (req.query.qType === 'True/False') qm['questions.qType'] = 'True/False';
+-    else if (req.query.qType === 'MCQ') qm['questions.qType'] = { $ne: 'True/False' };
++    const q = {};
++    const testId = str(req.query.testId);
++    if (testId === 'none') q.testId = '';
++    else if (testId) q.testId = testId;
++    if (str(req.query.subject)) q.subject = str(req.query.subject);
++    if (str(req.query.topic)) q.topic = str(req.query.topic);
++    if (str(req.query.difficulty)) q.difficulty = str(req.query.difficulty);
++    if (str(req.query.importBatch)) q.importBatch = str(req.query.importBatch);
++    if (req.query.qType === 'True/False') q.qType = 'True/False';
++    else if (req.query.qType === 'MCQ') q.qType = { $ne: 'True/False' };
+     const lang = str(req.query.language);
+-    if (lang) qm['questions.language'] = lang === 'English' ? { $in: ['English', '', null] } : lang;
+-    if (req.query.reported === 'true') qm['questions.reports.0'] = { $exists: true };
+-    const search = str(req.query.search).slice(0, 100);
+-    if (search) {
+-      const rx = { $regex: escapeRegex(search), $options: 'i' };
+-      qm.$or = [{ 'questions.q': rx }, { 'questions.options': rx }, { 'questions.rationale': rx }, { 'questions.topic': rx }, { 'questions.subject': rx }];
+-    }
+-    const [out] = await TrainerAssessment.aggregate([
+-      { $match: base },
+-      { $sort: { createdAt: -1 } },
+-      { $project: { name: 1, testCode: 1, seriesId: 1, questions: 1 } },
+-      { $unwind: { path: '$questions', includeArrayIndex: 'idx' } },
+-      ...(Object.keys(qm).length ? [{ $match: qm }] : []),
+-      { $facet: { total: [{ $count: 'n' }], rows: [{ $skip: (page - 1) * limit }, { $limit: limit }] } }
+-    ]).allowDiskUse(true);
+-    const seriesIds = [...new Set((out?.rows || []).map((r) => r.seriesId))].filter((id) => mongoose.isValidObjectId(id));
++    if (lang) q.language = lang === 'English' ? { $in: ['English', '', null] } : lang;
++    if (req.query.reported === 'true') q.reportCount = { $gt: 0 };
++    const search = str(req.query.search).toLowerCase().slice(0, 100);
++    if (search) q.searchText = { $regex: escapeRegex(search) };
++    const sort = testId && testId !== 'none' ? { order: 1, createdAt: 1 } : { createdAt: -1, _id: -1 };
++    const [rows, total] = await Promise.all([
++      BankQuestion.find(q).select('-searchText').sort(sort).skip((page - 1) * limit).limit(limit).lean(),
++      BankQuestion.countDocuments(q)
++    ]);
++    const testIds = [...new Set(rows.map((r) => r.testId).filter((id) => mongoose.isValidObjectId(id)))];
++    const tests = await TrainerAssessment.find({ _id: { $in: testIds } }).select('name testCode seriesId').lean();
++    const seriesIds = [...new Set(tests.map((t) => t.seriesId).filter((id) => mongoose.isValidObjectId(id)))];
+     const seriesName = Object.fromEntries((await TestSeries.find({ _id: { $in: seriesIds } }).select('name').lean()).map((s) => [s._id.toString(), s.name]));
++    const testById = Object.fromEntries(tests.map((t) => [t._id.toString(), t]));
+     res.json({
+-      total: out?.total?.[0]?.n || 0,
+-      page, limit,
+-      rows: (out?.rows || []).map((r) => ({
+-        testId: r._id.toString(), testName: r.name, testCode: r.testCode || '', seriesName: seriesName[r.seriesId] || '',
+-        index: r.idx, question: { ...r.questions, _id: String(r.questions._id) }
+-      }))
++      total, page, limit,
++      rows: rows.map((r) => {
++        const t = testById[r.testId];
++        return {
++          testId: r.testId || '', testName: t?.name || '', testCode: t?.testCode || '', seriesName: t ? (seriesName[t.seriesId] || '') : '',
++          index: Math.max(0, (r.order || 1) - 1),
++          question: { ...r, _id: String(r._id) }
++        };
++      })
+     });
+   } catch (e) {
+     res.status(500).json({ error: e.message });
+   }
+ });
+ 
+-// Add one question ({ question }) or many ({ questions }) to the end of a test
+-router.post('/question-bank/:testId', async (req, res) => {
++// Add one question (bank only, or into a test)
++router.post('/question-bank', async (req, res) => {
+   try {
+-    const test = await loadBankTest(req, res, req.params.testId);
+-    if (!test) return;
+-    const incoming = Array.isArray(req.body?.questions) ? req.body.questions : req.body?.question ? [req.body.question] : [];
+-    if (!incoming.length) return res.status(400).json({ error: 'No question to add' });
+-    const before = plainQuestions(test);
+-    const cleaned = cleanQuestionList([...before, ...incoming.map(({ _id, ...q }) => q)], test.questions);
+-    if (cleaned.error) return res.status(400).json({ error: cleaned.error.replace(/^Question (\d+)/, (m, n) => `Question ${Number(n) > before.length ? `${Number(n) - before.length} (new)` : n}`) });
+-    await applyTestQuestions(test, cleaned.questions);
+-    res.status(201).json({ success: true, added: incoming.length, questionCount: test.questions.length });
++    if (!bankCanManage(req, res)) return;
++    await ensureBankMigrated();
++    const testId = await seriesTestOr404(res, String(req.body?.testId || ''));
++    if (testId === null) return;
++    const { question, error } = cleanBankQuestion(req.body?.question || {});
++    if (error) return res.status(400).json({ error });
++    if (testId && await testRoomLeft(testId) < 1) return res.status(400).json({ error: `This test already has ${MAX_Q()} questions (the most a test can hold). Save it to the bank only, or pick another test.` });
++    const doc = await BankQuestion.create({ ...question, testId, order: testId ? await nextOrder(testId) : 0, createdBy: req.user?.name || '' });
++    if (testId) await syncTestFromBank(testId);
++    bankChanged();
++    res.status(201).json({ id: doc._id.toString() });
+   } catch (e) {
+     res.status(400).json({ error: e.message });
+   }
+ });
+ 
+-// Edit one question; { question, testId } with another testId moves it there
+-router.put('/question-bank/:testId/:qid', async (req, res) => {
+-  try {
+-    const test = await loadBankTest(req, res, req.params.testId);
+-    if (!test) return;
+-    const list = plainQuestions(test);
+-    const idx = list.findIndex((q) => String(q._id) === String(req.params.qid));
+-    if (idx < 0) return res.status(404).json({ error: 'Question not found in this test' });
+-    const incoming = { ...(req.body?.question || {}), _id: list[idx]._id };
+-    const target = String(req.body?.testId || test._id);
+-    if (target !== test._id.toString()) {
+-      const dest = await loadBankTest(req, res, target);
+-      if (!dest) return;
+-      if (await TestAttempt.exists({ assessmentId: test._id.toString() })) {
+-        return res.status(409).json({ error: 'Students have already taken this test, so its questions cannot be moved out. Copy it into the other test instead (add it there as a new question).' });
+-      }
+-      const { _id, reports, ...moved } = incoming;
+-      const destClean = cleanQuestionList([...plainQuestions(dest), moved], dest.questions);
+-      if (destClean.error) return res.status(400).json({ error: destClean.error });
+-      const srcClean = cleanQuestionList(list.filter((_, k) => k !== idx), test.questions);
+-      if (srcClean.error) return res.status(400).json({ error: srcClean.error });
+-      await applyTestQuestions(dest, destClean.questions);
+-      await applyTestQuestions(test, srcClean.questions, { removedIndex: idx });
+-      return res.json({ success: true, moved: true });
+-    }
+-    list[idx] = incoming;
+-    const cleaned = cleanQuestionList(list, test.questions);
+-    if (cleaned.error) return res.status(400).json({ error: cleaned.error });
+-    await applyTestQuestions(test, cleaned.questions);
++// Bulk upload: up to 500 questions per request (the browser sends a 20,000-row file in chunks).
++// Each row may carry testCode (e.g. TST2503FBB6) to land in that test; otherwise body.testId or the bank.
++router.post('/question-bank/bulk', async (req, res) => {
++  try {
++    if (!bankCanManage(req, res)) return;
++    await ensureBankMigrated();
++    const list = Array.isArray(req.body?.questions) ? req.body.questions : [];
++    if (!list.length) return res.status(400).json({ error: 'No questions to upload' });
++    if (list.length > BANK_MAX_BULK) return res.status(400).json({ error: `Send at most ${BANK_MAX_BULK} questions per request` });
++    const defaultTestId = await seriesTestOr404(res, String(req.body?.testId || ''));
++    if (defaultTestId === null) return;
++    const importBatch = String(req.body?.importBatch || '').slice(0, 60) || `IMP-${Date.now().toString(36).toUpperCase()}`;
++
++    // test codes used in this chunk → ids
++    const codes = [...new Set(list.map((r) => String(r?.testCode || '').trim().toUpperCase()).filter(Boolean))];
++    const codeTests = codes.length ? await TrainerAssessment.find({ testCode: { $in: codes }, seriesId: { $nin: ['', null] } }).select('_id testCode').lean() : [];
++    const idByCode = Object.fromEntries(codeTests.map((t) => [String(t.testCode).toUpperCase(), t._id.toString()]));
++
++    const errors = [];
++    const docs = [];
++    const room = {};
++    const order = {};
++    for (const [i, raw] of list.entries()) {
++      const rowNo = Number(raw?.row) || i + 1;
++      const code = String(raw?.testCode || '').trim().toUpperCase();
++      if (code && !idByCode[code]) { errors.push({ row: rowNo, error: `Test ID ${code} not found` }); continue; }
++      const testId = code ? idByCode[code] : defaultTestId;
++      const { question, error } = cleanBankQuestion(raw, `Row ${rowNo}`);
++      if (error) { errors.push({ row: rowNo, error }); continue; }
++      if (testId) {
++        if (room[testId] === undefined) { room[testId] = await testRoomLeft(testId); order[testId] = await nextOrder(testId); }
++        if (room[testId] < 1) { errors.push({ row: rowNo, error: `Test ${code || ''} is full (${MAX_Q()} questions) — saved nothing for this row` }); continue; }
++        room[testId] -= 1;
++      }
++      docs.push({ ...question, testId: testId || '', order: testId ? order[testId]++ : 0, importBatch, createdBy: req.user?.name || '' });
++    }
++    if (docs.length) await BankQuestion.insertMany(docs, { ordered: false });
++    for (const testId of Object.keys(room)) await syncTestFromBank(testId);
++    bankChanged();
++    res.status(201).json({ inserted: docs.length, errors, importBatch });
++  } catch (e) {
++    res.status(400).json({ error: e.message });
++  }
++});
++
++// Recent uploads (to check or undo one)
++router.get('/question-bank/imports', async (req, res) => {
++  try {
++    if (!staffOnly(req, res)) return;
++    const rows = await BankQuestion.aggregate([
++      { $match: { importBatch: { $ne: '' } } },
++      { $group: { _id: '$importBatch', count: { $sum: 1 }, at: { $min: '$createdAt' }, by: { $first: '$createdBy' }, tests: { $addToSet: '$testId' } } },
++      { $sort: { at: -1 } },
++      { $limit: 20 }
++    ]);
++    res.json(rows.map((r) => ({ importBatch: r._id, count: r.count, at: r.at, by: r.by || '', tests: (r.tests || []).filter(Boolean).length })));
++  } catch (e) {
++    res.status(500).json({ error: e.message });
++  }
++});
++
++// Undo a whole upload
++router.delete('/question-bank/imports/:batch', async (req, res) => {
++  try {
++    if (!bankCanManage(req, res)) return;
++    const batch = String(req.params.batch || '');
++    if (!batch) return res.status(400).json({ error: 'Invalid import' });
++    const testIds = (await BankQuestion.distinct('testId', { importBatch: batch })).filter(Boolean);
++    for (const testId of testIds) {
++      if (await TestAttempt.exists({ assessmentId: testId })) {
++        return res.status(409).json({ error: 'Students have already taken a test this upload added questions to. Delete those questions one by one instead.' });
++      }
++    }
++    const out = await BankQuestion.deleteMany({ importBatch: batch });
++    for (const testId of testIds) await syncTestFromBank(testId);
++    bankChanged();
++    res.json({ deleted: out.deletedCount || 0 });
++  } catch (e) {
++    res.status(400).json({ error: e.message });
++  }
++});
++
++// Edit one question; a different testId moves it ('' = bank only)
++router.put('/question-bank/:id', async (req, res) => {
++  try {
++    if (!bankCanManage(req, res)) return;
++    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid question' });
++    const doc = await BankQuestion.findById(req.params.id);
++    if (!doc) return res.status(404).json({ error: 'Question not found' });
++    const { question, error } = cleanBankQuestion(req.body?.question || {});
++    if (error) return res.status(400).json({ error });
++    const oldTest = doc.testId || '';
++    const newTest = 'testId' in (req.body || {}) ? await seriesTestOr404(res, String(req.body.testId || '')) : oldTest;
++    if (newTest === null) return;
++    if (newTest && newTest !== oldTest && await testRoomLeft(newTest) < 1) return res.status(400).json({ error: `That test already has ${MAX_Q()} questions.` });
++    Object.assign(doc, question, { updatedBy: req.user?.name || '' });
++    if (req.body?.question?.resolveReports) { doc.reports = []; doc.reportCount = 0; }
++    if (newTest !== oldTest) { doc.testId = newTest; doc.order = newTest ? await nextOrder(newTest) : 0; }
++    await doc.save();
++    if (oldTest) await syncTestFromBank(oldTest);
++    if (newTest && newTest !== oldTest) await syncTestFromBank(newTest);
++    bankChanged();
+     res.json({ success: true });
+   } catch (e) {
+     res.status(400).json({ error: e.message });
+   }
+ });
+ 
+-router.delete('/question-bank/:testId/:qid', async (req, res) => {
++router.delete('/question-bank/:id', async (req, res) => {
+   try {
+-    const test = await loadBankTest(req, res, req.params.testId);
+-    if (!test) return;
+-    const list = plainQuestions(test);
+-    const idx = list.findIndex((q) => String(q._id) === String(req.params.qid));
+-    if (idx < 0) return res.status(404).json({ error: 'Question not found in this test' });
+-    const cleaned = cleanQuestionList(list.filter((_, k) => k !== idx), test.questions);
+-    if (cleaned.error) return res.status(400).json({ error: cleaned.error });
+-    await applyTestQuestions(test, cleaned.questions, { removedIndex: idx });
++    if (!bankCanManage(req, res)) return;
++    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid question' });
++    const doc = await BankQuestion.findById(req.params.id);
++    if (!doc) return res.status(404).json({ error: 'Question not found' });
++    await doc.deleteOne();
++    if (doc.testId) await syncTestFromBank(doc.testId);
++    bankChanged();
+     res.json({ success: true });
+   } catch (e) {
+     res.status(400).json({ error: e.message });
+   }
+ });
+ 
++// Many at once: { ids, action: 'delete' | 'assign' | 'unassign', testId }
++router.post('/question-bank/bulk-action', async (req, res) => {
++  try {
++    if (!bankCanManage(req, res)) return;
++    const ids = (Array.isArray(req.body?.ids) ? req.body.ids : []).filter((id) => mongoose.isValidObjectId(id)).slice(0, 1000);
++    if (!ids.length) return res.status(400).json({ error: 'Select questions first' });
++    const action = req.body?.action;
++    const rows = await BankQuestion.find({ _id: { $in: ids } }).select('_id testId createdAt').sort({ createdAt: 1 }).lean();
++    const touched = new Set(rows.map((r) => r.testId).filter(Boolean));
++    let changed = 0;
++    if (action === 'delete') {
++      changed = (await BankQuestion.deleteMany({ _id: { $in: rows.map((r) => r._id) } })).deletedCount || 0;
++    } else if (action === 'unassign') {
++      changed = (await BankQuestion.updateMany({ _id: { $in: rows.map((r) => r._id) } }, { $set: { testId: '', order: 0 } })).modifiedCount || 0;
++    } else if (action === 'assign') {
++      const testId = await seriesTestOr404(res, String(req.body?.testId || ''));
++      if (testId === null) return;
++      if (!testId) return res.status(400).json({ error: 'Pick a test' });
++      const moving = rows.filter((r) => r.testId !== testId);
++      const left = await testRoomLeft(testId);
++      if (moving.length > left) return res.status(400).json({ error: `That test has room for ${Math.max(0, left)} more question(s) (max ${MAX_Q()}); you selected ${moving.length}.` });
++      let next = await nextOrder(testId);
++      await BankQuestion.bulkWrite(moving.map((r) => ({ updateOne: { filter: { _id: r._id }, update: { $set: { testId, order: next++ } } } })));
++      changed = moving.length;
++      touched.add(testId);
++    } else {
++      return res.status(400).json({ error: 'Unknown action' });
++    }
++    for (const testId of touched) await syncTestFromBank(testId);
++    bankChanged();
++    res.json({ success: true, changed });
++  } catch (e) {
++    res.status(400).json({ error: e.message });
++  }
++});
++
+ // Same +marks / -negative marks for every question of a test
+-router.post('/question-bank/:testId/marking', async (req, res) => {
++router.post('/question-bank/test/:testId/marking', async (req, res) => {
+   try {
+-    const test = await loadBankTest(req, res, req.params.testId);
+-    if (!test) return;
++    if (!bankCanManage(req, res)) return;
++    const testId = await seriesTestOr404(res, String(req.params.testId || ''));
++    if (!testId) return testId === null ? undefined : res.status(400).json({ error: 'Pick a test' });
+     const marks = Number(req.body?.marks);
+     const negMarks = Number(req.body?.negMarks);
+     if (!Number.isFinite(marks) || marks < 1 || marks > 20) return res.status(400).json({ error: 'Marks must be 1–20' });
+     if (!Number.isFinite(negMarks) || negMarks < 0 || negMarks > 20) return res.status(400).json({ error: 'Negative marks must be 0–20' });
+-    const cleaned = cleanQuestionList(plainQuestions(test).map((q) => ({ ...q, marks, negMarks })), test.questions);
+-    if (cleaned.error) return res.status(400).json({ error: cleaned.error });
+-    await applyTestQuestions(test, cleaned.questions);
++    await BankQuestion.updateMany({ testId }, { $set: { marks: Math.round(marks), negMarks: Math.round(negMarks * 100) / 100 } });
++    await syncTestFromBank(testId);
+     res.json({ success: true });
+   } catch (e) {
+     res.status(400).json({ error: e.message });
+   }
+ });
+ 
+-router.post('/question-bank/:testId/:qid/resolve', async (req, res) => {
++router.post('/question-bank/:id/resolve', async (req, res) => {
+   try {
+-    const test = await loadBankTest(req, res, req.params.testId);
+-    if (!test) return;
+-    const q = (test.questions || []).find((x) => String(x._id) === String(req.params.qid));
+-    if (!q) return res.status(404).json({ error: 'Question not found in this test' });
+-    q.reports = [];
+-    await test.save();
++    if (!bankCanManage(req, res)) return;
++    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid question' });
++    const doc = await BankQuestion.findByIdAndUpdate(req.params.id, { $set: { reports: [], reportCount: 0 } }, { new: true });
++    if (!doc) return res.status(404).json({ error: 'Question not found' });
++    if (doc.testId) {
++      await TrainerAssessment.updateOne({ _id: doc.testId, 'questions._id': doc._id }, { $set: { 'questions.$.reports': [] } });
++    }
+     res.json({ success: true });
+   } catch (e) {
+     res.status(400).json({ error: e.message });
+@@ -17565,6 +17787,9 @@
+     q.reports = (q.reports || []).filter((r) => r.studentId !== st.studentId);
+     q.reports.push({ studentId: st.studentId, studentName: st.name, reason, at: new Date() });
+     await test.save();
++    if (test.seriesId) {
++      await BankQuestion.updateOne({ _id: q._id }, { $set: { reports: q.reports, reportCount: q.reports.length } }).catch(() => {});
++    }
+     res.json({ success: true });
+   } catch (e) {
+     res.status(400).json({ error: e.message });

@@ -31,6 +31,7 @@ import { redirectToWhatsAppWeb } from '../utils/whatsapp';
 import PaginationBar from './PaginationBar';
 import EditLeadModal from './EditLeadModal';
 import { canonicalLeadSource } from '../constants/leadSourceCanon';
+import { HR_BRANCH_FILTERS, branchMatchesFilter } from '../constants/branches';
 
 const STAGE_ORDER = ['new', 'contacted', 'demo_booked', 'demo_attended', 'fee_followup', 'done', 'admitted', 'not_mentioned'];
 
@@ -624,8 +625,7 @@ export default function HrPipelineView({
       out = out.filter(l => cfs.includes(compactKey(l.counselorAssigned || l.allocatedTo || l.spokenBy)));
     }
     if (!serverFiltered && branchFilter !== 'all') {
-      const bf = branchFilter.toLowerCase();
-      out = out.filter(l => (l.branch || '').toLowerCase() === bf);
+      out = out.filter(l => branchMatchesFilter(l.branch, branchFilter));
     }
     if (!serverFiltered && courseFilter !== 'all') {
       const crs = courseFilter.split(',').map(compactKey).filter(Boolean);
@@ -1095,8 +1095,8 @@ export default function HrPipelineView({
             title="Filter by Branch"
           >
             <option value="all">{scopeBranch ? `${scopeBranch} (my branch)` : 'All Branches'}</option>
-            {!scopeBranch && availableBranches.map((b) => (
-              <option key={b} value={b}>{b}</option>
+            {!scopeBranch && HR_BRANCH_FILTERS.map((b) => (
+              <option key={b.value} value={b.value}>{b.label}</option>
             ))}
           </select>
 

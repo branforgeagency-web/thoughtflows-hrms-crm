@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { ArrowLeft, AlertCircle, Save } from 'lucide-react';
 import RichEditor from './RichEditor';
 import { AAPC_CHAPTERS } from './OnlineTestBuilder';
-import { addBankQuestions, updateBankQuestion } from '../services/api';
+import { addBankQuestion, updateBankQuestion } from '../services/api';
 
 // Add New Questions [Question Bank] — full page, laid out like the online test
 // panel: question options / basic details / marks / "More" switches on the
@@ -78,8 +78,7 @@ export default function QuestionEditor({ meta, initial, testId: initialTestId, o
   };
   const setOpt = (j, v) => setF((x) => ({ ...x, options: x.options.map((o, k) => (k === j ? v : o)) }));
 
-  const problem = !testId ? 'Select the test this question belongs to.'
-    : isBlank(f.q) ? 'Type your question.'
+  const problem = isBlank(f.q) ? 'Type your question.'
       : f.options.some(isBlank) ? 'Fill every option.'
         : f.answer < 0 ? 'Tick the correct option.'
           : !(Number(f.marks) >= 1) ? 'Give +VE marks (1 or more).'
@@ -99,8 +98,8 @@ export default function QuestionEditor({ meta, initial, testId: initialTestId, o
       bonusMarks: Number(f.bonusMarks) || 0
     };
     try {
-      if (editing) await updateBankQuestion(initial.testId, start._id, { question, testId });
-      else await addBankQuestions(testId, { question });
+      if (editing) await updateBankQuestion(start._id, { question, testId });
+      else await addBankQuestion({ question, testId });
       onSaved?.();
       if (addAnother && !editing) {
         // keep the settings, clear the content
@@ -142,10 +141,13 @@ export default function QuestionEditor({ meta, initial, testId: initialTestId, o
         <div className="bg-white rounded border border-slate-200 p-3.5 space-y-3 lg:sticky lg:top-2">
           <div className="text-xs font-semibold text-slate-700 pb-2 border-b border-slate-200">Question Options</div>
           <div>
-            <Label>Test *</Label>
+            <Label>Test</Label>
             <select value={testId} onChange={(e) => setTestId(e.target.value)} className={inp}>
-              <option value="">Select Test</option>
-              {tests.map((t) => <option key={t.id} value={t.id}>{t.name}{t.seriesName ? ` — ${t.seriesName}` : ''}{t.testCode ? ` (${t.testCode})` : ''}</option>)}
+              <option value="">No test — keep in Question Bank</option>
+              {tests.map((t) => {
+                const full = t.questionCount >= (meta?.maxPerTest || 200) && t.id !== initial?.testId;
+                return <option key={t.id} value={t.id} disabled={full}>{t.name}{t.seriesName ? ` — ${t.seriesName}` : ''}{t.testCode ? ` (${t.testCode})` : ''} · {t.questionCount}/{meta?.maxPerTest || 200}{full ? ' FULL' : ''}</option>;
+              })}
             </select>
           </div>
           <div>

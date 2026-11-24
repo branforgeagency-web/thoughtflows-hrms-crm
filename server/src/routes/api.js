@@ -54,6 +54,7 @@ import CourseSyllabus from '../models/CourseSyllabus.js';
 import BatchAnnouncement from '../models/BatchAnnouncement.js';
 import TestAttempt from '../models/TestAttempt.js';
 import TestSeries from '../models/TestSeries.js';
+import BankQuestion from '../models/BankQuestion.js';
 import { contactFilter, startContactKeyBackfill } from '../utils/contactKeys.js';
 import AppSetting from '../models/AppSetting.js';
 import ContentPiece from '../models/ContentPiece.js';
@@ -16601,10 +16602,16 @@ function cleanQuestionList(raw, oldQuestions = []) {
 }
 
 // Save a cleaned question list on a test: totals, pass mark, duration, and
-// re-grade submitted attempts. removedIndex keeps saved answers lined up when
-// one question is deleted from the middle of a test students have taken.
-async function applyTestQuestions(item, questions, { passMark, durationMin, removedIndex = -1 } = {}) {
+// re-grade submitted attempts. Saved answers are index-based, so when questions
+// are removed / reordered / inserted (matched by _id) every attempt's answers
+// are moved to the question's new position.
+async function applyTestQuestions(item, questions, { passMark, durationMin } = {}) {
   const oldTotal = Number(item.totalMarks) || 0;
+  const oldIds = (item.questions || []).map((q) => String(q._id));
+  const newIds = questions.map((q) => (q._id ? String(q._id) : ''));
+  const answerMap = newIds.map((id) => (id ? oldIds.indexOf(id) : -1));
+  // Remap only when the incoming list carries ids (legacy callers without ids keep the old behaviour)
+  const remap = newIds.some(Boolean) && (answerMap.length !== oldIds.length || answerMap.some((m, i) => m !== i));
   item.questions = questions;
   item.mode = questions.length ? 'online' : 'offline';
   if (questions.length) {
@@ -16630,8 +16637,9 @@ async function applyTestQuestions(item, questions, { passMark, durationMin, remo
     const scores = item.scores instanceof Map ? Object.fromEntries(item.scores) : (item.scores || {});
     const touchedKeys = [];
     for (const att of existingAttempts) {
-      if (removedIndex >= 0 && Array.isArray(att.answers)) {
-        att.answers = att.answers.filter((_, k) => k !== removedIndex);
+      if (remap) {
+        const prev = Array.isArray(att.answers) ? att.answers : [];
+        att.answers = answerMap.map((m) => (m >= 0 && Number.isInteger(prev[m]) ? prev[m] : -1));
         att.markModified?.('answers');
       }
       if (att.status === 'submitted') {
@@ -16644,7 +16652,7 @@ async function applyTestQuestions(item, questions, { passMark, durationMin, remo
           touchedKeys.push(att.studentKey);
         }
       }
-      if (att.status === 'submitted' || removedIndex >= 0) await att.save();
+      if (att.status === 'submitted' || remap) await att.save();
     }
     item.scores = scores;
     await item.save();
@@ -16676,6 +16684,7 @@ router.put('/trainer/assessments/:id/questions', async (req, res) => {
     const cleaned = cleanQuestionList(raw, item.questions);
     if (cleaned.error) return res.status(400).json({ error: cleaned.error });
     await applyTestQuestions(item, cleaned.questions, { passMark: req.body?.passMark, durationMin: req.body?.durationMin });
+    if (item.seriesId) await mirrorTestToBank(item);
     res.json(formatAssessment(item));
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -16894,6 +16903,7 @@ router.delete('/test-series/:id', async (req, res) => {
       return res.status(409).json({ error: 'Students have already taken tests in this series. Unpublish it (set to Draft) instead of deleting, so their results are kept.' });
     }
     await TrainerAssessment.deleteMany({ seriesId: doc._id.toString() });
+    if (testIds.length) await BankQuestion.updateMany({ testId: { $in: testIds } }, { $set: { testId: '', order: 0 } });
     await doc.deleteOne();
     res.json({ success: true });
   } catch (e) {
@@ -17013,6 +17023,8 @@ router.delete('/test-series/:id/tests/:testId', async (req, res) => {
       return res.status(409).json({ error: 'Students have already taken this test, so it cannot be removed (their results would be lost).' });
     }
     await test.deleteOne();
+    // its questions stay in the Question Bank (not in any test)
+    await BankQuestion.updateMany({ testId: test._id.toString() }, { $set: { testId: '', order: 0 } });
     res.json({ success: true });
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -17020,44 +17032,143 @@ router.delete('/test-series/:id/tests/:testId', async (req, res) => {
 });
 
 
-// ---------- Question bank (every Test Series question in one list) ----------
-// Questions live inside their test (TrainerAssessment.questions) so the online
-// test engine keeps working unchanged; this list unwinds them across all tests,
-// filtered and paged on the server so it stays quick with 19,000+ questions.
-async function loadBankTest(req, res, id) {
-  if (!canManageTestSeries(req)) { res.status(403).json({ error: 'Only the Head of Trainer and Managers can change questions.' }); return null; }
-  if (!mongoose.isValidObjectId(id)) { res.status(400).json({ error: 'Select a test' }); return null; }
-  const test = await TrainerAssessment.findById(id);
-  if (!test || !test.seriesId) { res.status(404).json({ error: 'Test not found' }); return null; }
+// ---------- Question bank (one document per question, built for 20,000+) ----------
+// BankQuestion holds every question (indexed: test, subject/topic, language,
+// type, reports, import). A question can sit in the bank only (testId '') or
+// belong to one Test Series test; that test's own copy (TrainerAssessment.
+// questions, same _id) is rebuilt from the bank whenever it changes, so the
+// online test engine, grading and attempts keep working unchanged.
+const BANK_MAX_BULK = 500; // questions per bulk request (the browser sends a big file in chunks)
+let bankMetaCache = null; // { at, data } — subjects / topics list, refreshed after writes
+const bankChanged = () => { bankMetaCache = null; };
+
+function bankCanManage(req, res) {
+  if (canManageTestSeries(req)) return true;
+  res.status(403).json({ error: 'Only the Head of Trainer and Managers can change questions.' });
+  return false;
+}
+const staffOnly = (req, res) => {
+  if (req.user?.department !== 'student') return true;
+  res.status(403).json({ error: 'Not available in the Student Portal.' });
+  return false;
+};
+
+// Clean one incoming question (same rules as the test editor); null + error if invalid
+function cleanBankQuestion(raw, label = 'Question') {
+  const out = cleanQuestionList([{ ...raw, _id: undefined }]);
+  if (out.error) return { error: out.error.replace(/^Question 1/, label) };
+  const c = out.questions[0];
+  delete c._id;
+  delete c.reports;
+  delete c.audioRationaleText;
+  c.searchText = htmlText([c.q, ...c.options, c.rationale, c.passage].join('\n')).toLowerCase().slice(0, 20000);
+  return { question: c };
+}
+
+// Bank row → the question object the test engine stores
+const engineQuestion = (b) => ({
+  _id: b._id, q: b.q, options: b.options, answer: b.answer, marks: b.marks || 1, negMarks: b.negMarks || 0,
+  bonusMarks: b.bonusMarks || 0, qType: b.qType || 'MCQ', subject: b.subject || '', topic: b.topic || '',
+  language: b.language || 'English', difficulty: b.difficulty || '', hint: b.hint || '', font: b.font || '',
+  passage: b.passage || '', instruction: b.instruction || '', rationale: b.rationale || '', chapter: b.chapter || '',
+  audioRationaleUrl: b.audioRationaleUrl || '', audioRationaleText: htmlText(b.rationale || '').slice(0, 3000),
+  reports: b.reports || []
+});
+
+// Rebuild a test's question copy from the bank (re-grades / re-aligns attempts)
+async function syncTestFromBank(testId) {
+  if (!testId || !mongoose.isValidObjectId(testId)) return null;
+  const test = await TrainerAssessment.findById(testId);
+  if (!test) return null;
+  const rows = await BankQuestion.find({ testId: String(testId) }).sort({ order: 1, createdAt: 1 }).lean();
+  await applyTestQuestions(test, rows.map(engineQuestion));
   return test;
 }
-const plainQuestions = (test) => (test.questions || []).map((q) => (typeof q.toObject === 'function' ? q.toObject() : { ...q }));
+
+// Builder / old flows changed a series test's questions directly → copy them into the bank
+async function mirrorTestToBank(test) {
+  if (!test?.seriesId) return;
+  const testId = test._id.toString();
+  const ids = [];
+  const ops = (test.questions || []).map((q, i) => {
+    const o = typeof q.toObject === 'function' ? q.toObject() : q;
+    ids.push(o._id);
+    const { _id, audioRationaleText, ...rest } = o;
+    return {
+      updateOne: {
+        filter: { _id },
+        update: {
+          $set: {
+            ...rest, testId, order: i + 1, reportCount: (rest.reports || []).length,
+            searchText: htmlText([rest.q, ...(rest.options || []), rest.rationale, rest.passage].join('\n')).toLowerCase().slice(0, 20000)
+          }
+        },
+        upsert: true
+      }
+    };
+  });
+  if (ops.length) await BankQuestion.bulkWrite(ops, { ordered: false });
+  await BankQuestion.deleteMany({ testId, _id: { $nin: ids } });
+  bankChanged();
+}
+
+// One-time move of questions that were saved inside tests before the bank existed
+let bankMigration = null;
+function ensureBankMigrated() {
+  if (!bankMigration) {
+    bankMigration = (async () => {
+      const tests = await TrainerAssessment.find({ seriesId: { $nin: ['', null] }, 'questions.0': { $exists: true } }).select('_id').lean();
+      for (const t of tests) {
+        if (await BankQuestion.exists({ testId: t._id.toString() })) continue;
+        const full = await TrainerAssessment.findById(t._id);
+        if (full) await mirrorTestToBank(full);
+      }
+    })().catch((e) => { console.warn('Question bank migration failed:', e.message); bankMigration = null; });
+  }
+  return bankMigration;
+}
+
+const MAX_Q = () => MAX_TEST_QUESTIONS;
+async function testRoomLeft(testId) {
+  return MAX_Q() - await BankQuestion.countDocuments({ testId: String(testId) });
+}
+async function nextOrder(testId) {
+  const last = await BankQuestion.findOne({ testId: String(testId) }).sort({ order: -1 }).select('order').lean();
+  return (last?.order || 0) + 1;
+}
+async function seriesTestOr404(res, testId) {
+  if (!testId) return '';
+  if (!mongoose.isValidObjectId(testId)) { res.status(400).json({ error: 'Invalid test' }); return null; }
+  const t = await TrainerAssessment.findById(testId).select('_id seriesId name').lean();
+  if (!t || !t.seriesId) { res.status(404).json({ error: 'Test not found' }); return null; }
+  return t._id.toString();
+}
 
 router.get('/question-bank/meta', async (req, res) => {
   try {
-    if (req.user?.department === 'student') return res.status(403).json({ error: 'Not available in the Student Portal.' });
-    const [series, tests, subjects] = await Promise.all([
+    if (!staffOnly(req, res)) return;
+    await ensureBankMigrated();
+    if (!bankMetaCache || Date.now() - bankMetaCache.at > 5 * 60000) {
+      const [subjects, languages, counts] = await Promise.all([
+        BankQuestion.aggregate([{ $group: { _id: '$subject', topics: { $addToSet: '$topic' } } }]),
+        BankQuestion.distinct('language'),
+        BankQuestion.aggregate([{ $group: { _id: { $cond: [{ $eq: ['$testId', ''] }, 'bank', 'test'] }, n: { $sum: 1 } } }])
+      ]);
+      const subjectMap = {};
+      subjects.forEach((g) => { if (g._id) subjectMap[g._id] = (g.topics || []).filter(Boolean).sort(); });
+      const c = Object.fromEntries(counts.map((x) => [x._id, x.n]));
+      bankMetaCache = { at: Date.now(), data: { subjects: subjectMap, languages: [...new Set(['English', ...languages.filter(Boolean)])].sort(), total: (c.bank || 0) + (c.test || 0), unassigned: c.bank || 0 } };
+    }
+    const [series, tests] = await Promise.all([
       TestSeries.find({}).select('name').lean(),
-      TrainerAssessment.find({ seriesId: { $nin: ['', null] } }).select('name testCode seriesId createdAt questions._id').sort({ createdAt: -1 }).lean(),
-      TrainerAssessment.aggregate([
-        { $match: { seriesId: { $nin: ['', null] } } },
-        { $project: { 'questions.subject': 1, 'questions.topic': 1, 'questions.language': 1 } },
-        { $unwind: '$questions' },
-        { $group: { _id: { $ifNull: ['$questions.subject', ''] }, topics: { $addToSet: { $ifNull: ['$questions.topic', ''] } }, languages: { $addToSet: { $ifNull: ['$questions.language', 'English'] } } } }
-      ])
+      TrainerAssessment.find({ seriesId: { $nin: ['', null] } }).select('name testCode seriesId createdAt questions._id').sort({ createdAt: -1 }).lean()
     ]);
     const seriesName = Object.fromEntries(series.map((s) => [s._id.toString(), s.name]));
-    const subjectMap = {};
-    const languages = new Set(['English']);
-    subjects.forEach((g) => {
-      if (g._id) subjectMap[g._id] = (g.topics || []).filter(Boolean).sort();
-      (g.languages || []).forEach((l) => l && languages.add(l));
-    });
     res.json({
+      ...bankMetaCache.data,
       canManage: canManageTestSeries(req),
-      tests: tests.map((t) => ({ id: t._id.toString(), name: t.name, testCode: t.testCode || '', seriesId: t.seriesId, seriesName: seriesName[t.seriesId] || '', questionCount: (t.questions || []).length })),
-      subjects: subjectMap,
-      languages: [...languages].sort()
+      maxPerTest: MAX_Q(),
+      tests: tests.map((t) => ({ id: t._id.toString(), name: t.name, testCode: t.testCode || '', seriesId: t.seriesId, seriesName: seriesName[t.seriesId] || '', questionCount: (t.questions || []).length }))
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -17066,146 +17177,257 @@ router.get('/question-bank/meta', async (req, res) => {
 
 router.get('/question-bank', async (req, res) => {
   try {
-    if (req.user?.department === 'student') return res.status(403).json({ error: 'Not available in the Student Portal.' });
+    if (!staffOnly(req, res)) return;
+    await ensureBankMigrated();
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 10));
-    const base = { seriesId: { $nin: ['', null] } };
-    if (req.query.testId) {
-      if (!mongoose.isValidObjectId(req.query.testId)) return res.status(400).json({ error: 'Invalid test' });
-      base._id = new mongoose.Types.ObjectId(String(req.query.testId));
-    }
-    const qm = {};
     const str = (v) => String(v || '').trim();
-    if (str(req.query.subject)) qm['questions.subject'] = str(req.query.subject);
-    if (str(req.query.topic)) qm['questions.topic'] = str(req.query.topic);
-    if (str(req.query.difficulty)) qm['questions.difficulty'] = str(req.query.difficulty);
-    if (req.query.qType === 'True/False') qm['questions.qType'] = 'True/False';
-    else if (req.query.qType === 'MCQ') qm['questions.qType'] = { $ne: 'True/False' };
+    const q = {};
+    const testId = str(req.query.testId);
+    if (testId === 'none') q.testId = '';
+    else if (testId) q.testId = testId;
+    if (str(req.query.subject)) q.subject = str(req.query.subject);
+    if (str(req.query.topic)) q.topic = str(req.query.topic);
+    if (str(req.query.difficulty)) q.difficulty = str(req.query.difficulty);
+    if (str(req.query.importBatch)) q.importBatch = str(req.query.importBatch);
+    if (req.query.qType === 'True/False') q.qType = 'True/False';
+    else if (req.query.qType === 'MCQ') q.qType = { $ne: 'True/False' };
     const lang = str(req.query.language);
-    if (lang) qm['questions.language'] = lang === 'English' ? { $in: ['English', '', null] } : lang;
-    if (req.query.reported === 'true') qm['questions.reports.0'] = { $exists: true };
-    const search = str(req.query.search).slice(0, 100);
-    if (search) {
-      const rx = { $regex: escapeRegex(search), $options: 'i' };
-      qm.$or = [{ 'questions.q': rx }, { 'questions.options': rx }, { 'questions.rationale': rx }, { 'questions.topic': rx }, { 'questions.subject': rx }];
-    }
-    const [out] = await TrainerAssessment.aggregate([
-      { $match: base },
-      { $sort: { createdAt: -1 } },
-      { $project: { name: 1, testCode: 1, seriesId: 1, questions: 1 } },
-      { $unwind: { path: '$questions', includeArrayIndex: 'idx' } },
-      ...(Object.keys(qm).length ? [{ $match: qm }] : []),
-      { $facet: { total: [{ $count: 'n' }], rows: [{ $skip: (page - 1) * limit }, { $limit: limit }] } }
-    ]).allowDiskUse(true);
-    const seriesIds = [...new Set((out?.rows || []).map((r) => r.seriesId))].filter((id) => mongoose.isValidObjectId(id));
+    if (lang) q.language = lang === 'English' ? { $in: ['English', '', null] } : lang;
+    if (req.query.reported === 'true') q.reportCount = { $gt: 0 };
+    const search = str(req.query.search).toLowerCase().slice(0, 100);
+    if (search) q.searchText = { $regex: escapeRegex(search) };
+    const sort = testId && testId !== 'none' ? { order: 1, createdAt: 1 } : { createdAt: -1, _id: -1 };
+    const [rows, total] = await Promise.all([
+      BankQuestion.find(q).select('-searchText').sort(sort).skip((page - 1) * limit).limit(limit).lean(),
+      BankQuestion.countDocuments(q)
+    ]);
+    const testIds = [...new Set(rows.map((r) => r.testId).filter((id) => mongoose.isValidObjectId(id)))];
+    const tests = await TrainerAssessment.find({ _id: { $in: testIds } }).select('name testCode seriesId').lean();
+    const seriesIds = [...new Set(tests.map((t) => t.seriesId).filter((id) => mongoose.isValidObjectId(id)))];
     const seriesName = Object.fromEntries((await TestSeries.find({ _id: { $in: seriesIds } }).select('name').lean()).map((s) => [s._id.toString(), s.name]));
+    const testById = Object.fromEntries(tests.map((t) => [t._id.toString(), t]));
     res.json({
-      total: out?.total?.[0]?.n || 0,
-      page, limit,
-      rows: (out?.rows || []).map((r) => ({
-        testId: r._id.toString(), testName: r.name, testCode: r.testCode || '', seriesName: seriesName[r.seriesId] || '',
-        index: r.idx, question: { ...r.questions, _id: String(r.questions._id) }
-      }))
+      total, page, limit,
+      rows: rows.map((r) => {
+        const t = testById[r.testId];
+        return {
+          testId: r.testId || '', testName: t?.name || '', testCode: t?.testCode || '', seriesName: t ? (seriesName[t.seriesId] || '') : '',
+          index: Math.max(0, (r.order || 1) - 1),
+          question: { ...r, _id: String(r._id) }
+        };
+      })
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-// Add one question ({ question }) or many ({ questions }) to the end of a test
-router.post('/question-bank/:testId', async (req, res) => {
+// Add one question (bank only, or into a test)
+router.post('/question-bank', async (req, res) => {
   try {
-    const test = await loadBankTest(req, res, req.params.testId);
-    if (!test) return;
-    const incoming = Array.isArray(req.body?.questions) ? req.body.questions : req.body?.question ? [req.body.question] : [];
-    if (!incoming.length) return res.status(400).json({ error: 'No question to add' });
-    const before = plainQuestions(test);
-    const cleaned = cleanQuestionList([...before, ...incoming.map(({ _id, ...q }) => q)], test.questions);
-    if (cleaned.error) return res.status(400).json({ error: cleaned.error.replace(/^Question (\d+)/, (m, n) => `Question ${Number(n) > before.length ? `${Number(n) - before.length} (new)` : n}`) });
-    await applyTestQuestions(test, cleaned.questions);
-    res.status(201).json({ success: true, added: incoming.length, questionCount: test.questions.length });
+    if (!bankCanManage(req, res)) return;
+    await ensureBankMigrated();
+    const testId = await seriesTestOr404(res, String(req.body?.testId || ''));
+    if (testId === null) return;
+    const { question, error } = cleanBankQuestion(req.body?.question || {});
+    if (error) return res.status(400).json({ error });
+    if (testId && await testRoomLeft(testId) < 1) return res.status(400).json({ error: `This test already has ${MAX_Q()} questions (the most a test can hold). Save it to the bank only, or pick another test.` });
+    const doc = await BankQuestion.create({ ...question, testId, order: testId ? await nextOrder(testId) : 0, createdBy: req.user?.name || '' });
+    if (testId) await syncTestFromBank(testId);
+    bankChanged();
+    res.status(201).json({ id: doc._id.toString() });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
 });
 
-// Edit one question; { question, testId } with another testId moves it there
-router.put('/question-bank/:testId/:qid', async (req, res) => {
+// Bulk upload: up to 500 questions per request (the browser sends a 20,000-row file in chunks).
+// Each row may carry testCode (e.g. TST2503FBB6) to land in that test; otherwise body.testId or the bank.
+router.post('/question-bank/bulk', async (req, res) => {
   try {
-    const test = await loadBankTest(req, res, req.params.testId);
-    if (!test) return;
-    const list = plainQuestions(test);
-    const idx = list.findIndex((q) => String(q._id) === String(req.params.qid));
-    if (idx < 0) return res.status(404).json({ error: 'Question not found in this test' });
-    const incoming = { ...(req.body?.question || {}), _id: list[idx]._id };
-    const target = String(req.body?.testId || test._id);
-    if (target !== test._id.toString()) {
-      const dest = await loadBankTest(req, res, target);
-      if (!dest) return;
-      if (await TestAttempt.exists({ assessmentId: test._id.toString() })) {
-        return res.status(409).json({ error: 'Students have already taken this test, so its questions cannot be moved out. Copy it into the other test instead (add it there as a new question).' });
+    if (!bankCanManage(req, res)) return;
+    await ensureBankMigrated();
+    const list = Array.isArray(req.body?.questions) ? req.body.questions : [];
+    if (!list.length) return res.status(400).json({ error: 'No questions to upload' });
+    if (list.length > BANK_MAX_BULK) return res.status(400).json({ error: `Send at most ${BANK_MAX_BULK} questions per request` });
+    const defaultTestId = await seriesTestOr404(res, String(req.body?.testId || ''));
+    if (defaultTestId === null) return;
+    const importBatch = String(req.body?.importBatch || '').slice(0, 60) || `IMP-${Date.now().toString(36).toUpperCase()}`;
+
+    // test codes used in this chunk → ids
+    const codes = [...new Set(list.map((r) => String(r?.testCode || '').trim().toUpperCase()).filter(Boolean))];
+    const codeTests = codes.length ? await TrainerAssessment.find({ testCode: { $in: codes }, seriesId: { $nin: ['', null] } }).select('_id testCode').lean() : [];
+    const idByCode = Object.fromEntries(codeTests.map((t) => [String(t.testCode).toUpperCase(), t._id.toString()]));
+
+    const errors = [];
+    const docs = [];
+    const room = {};
+    const order = {};
+    for (const [i, raw] of list.entries()) {
+      const rowNo = Number(raw?.row) || i + 1;
+      const code = String(raw?.testCode || '').trim().toUpperCase();
+      if (code && !idByCode[code]) { errors.push({ row: rowNo, error: `Test ID ${code} not found` }); continue; }
+      const testId = code ? idByCode[code] : defaultTestId;
+      const { question, error } = cleanBankQuestion(raw, `Row ${rowNo}`);
+      if (error) { errors.push({ row: rowNo, error }); continue; }
+      if (testId) {
+        if (room[testId] === undefined) { room[testId] = await testRoomLeft(testId); order[testId] = await nextOrder(testId); }
+        if (room[testId] < 1) { errors.push({ row: rowNo, error: `Test ${code || ''} is full (${MAX_Q()} questions) — saved nothing for this row` }); continue; }
+        room[testId] -= 1;
       }
-      const { _id, reports, ...moved } = incoming;
-      const destClean = cleanQuestionList([...plainQuestions(dest), moved], dest.questions);
-      if (destClean.error) return res.status(400).json({ error: destClean.error });
-      const srcClean = cleanQuestionList(list.filter((_, k) => k !== idx), test.questions);
-      if (srcClean.error) return res.status(400).json({ error: srcClean.error });
-      await applyTestQuestions(dest, destClean.questions);
-      await applyTestQuestions(test, srcClean.questions, { removedIndex: idx });
-      return res.json({ success: true, moved: true });
+      docs.push({ ...question, testId: testId || '', order: testId ? order[testId]++ : 0, importBatch, createdBy: req.user?.name || '' });
     }
-    list[idx] = incoming;
-    const cleaned = cleanQuestionList(list, test.questions);
-    if (cleaned.error) return res.status(400).json({ error: cleaned.error });
-    await applyTestQuestions(test, cleaned.questions);
+    if (docs.length) await BankQuestion.insertMany(docs, { ordered: false });
+    for (const testId of Object.keys(room)) await syncTestFromBank(testId);
+    bankChanged();
+    res.status(201).json({ inserted: docs.length, errors, importBatch });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Recent uploads (to check or undo one)
+router.get('/question-bank/imports', async (req, res) => {
+  try {
+    if (!staffOnly(req, res)) return;
+    const rows = await BankQuestion.aggregate([
+      { $match: { importBatch: { $ne: '' } } },
+      { $group: { _id: '$importBatch', count: { $sum: 1 }, at: { $min: '$createdAt' }, by: { $first: '$createdBy' }, tests: { $addToSet: '$testId' } } },
+      { $sort: { at: -1 } },
+      { $limit: 20 }
+    ]);
+    res.json(rows.map((r) => ({ importBatch: r._id, count: r.count, at: r.at, by: r.by || '', tests: (r.tests || []).filter(Boolean).length })));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Undo a whole upload
+router.delete('/question-bank/imports/:batch', async (req, res) => {
+  try {
+    if (!bankCanManage(req, res)) return;
+    const batch = String(req.params.batch || '');
+    if (!batch) return res.status(400).json({ error: 'Invalid import' });
+    const testIds = (await BankQuestion.distinct('testId', { importBatch: batch })).filter(Boolean);
+    for (const testId of testIds) {
+      if (await TestAttempt.exists({ assessmentId: testId })) {
+        return res.status(409).json({ error: 'Students have already taken a test this upload added questions to. Delete those questions one by one instead.' });
+      }
+    }
+    const out = await BankQuestion.deleteMany({ importBatch: batch });
+    for (const testId of testIds) await syncTestFromBank(testId);
+    bankChanged();
+    res.json({ deleted: out.deletedCount || 0 });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Edit one question; a different testId moves it ('' = bank only)
+router.put('/question-bank/:id', async (req, res) => {
+  try {
+    if (!bankCanManage(req, res)) return;
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid question' });
+    const doc = await BankQuestion.findById(req.params.id);
+    if (!doc) return res.status(404).json({ error: 'Question not found' });
+    const { question, error } = cleanBankQuestion(req.body?.question || {});
+    if (error) return res.status(400).json({ error });
+    const oldTest = doc.testId || '';
+    const newTest = 'testId' in (req.body || {}) ? await seriesTestOr404(res, String(req.body.testId || '')) : oldTest;
+    if (newTest === null) return;
+    if (newTest && newTest !== oldTest && await testRoomLeft(newTest) < 1) return res.status(400).json({ error: `That test already has ${MAX_Q()} questions.` });
+    Object.assign(doc, question, { updatedBy: req.user?.name || '' });
+    if (req.body?.question?.resolveReports) { doc.reports = []; doc.reportCount = 0; }
+    if (newTest !== oldTest) { doc.testId = newTest; doc.order = newTest ? await nextOrder(newTest) : 0; }
+    await doc.save();
+    if (oldTest) await syncTestFromBank(oldTest);
+    if (newTest && newTest !== oldTest) await syncTestFromBank(newTest);
+    bankChanged();
     res.json({ success: true });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
 });
 
-router.delete('/question-bank/:testId/:qid', async (req, res) => {
+router.delete('/question-bank/:id', async (req, res) => {
   try {
-    const test = await loadBankTest(req, res, req.params.testId);
-    if (!test) return;
-    const list = plainQuestions(test);
-    const idx = list.findIndex((q) => String(q._id) === String(req.params.qid));
-    if (idx < 0) return res.status(404).json({ error: 'Question not found in this test' });
-    const cleaned = cleanQuestionList(list.filter((_, k) => k !== idx), test.questions);
-    if (cleaned.error) return res.status(400).json({ error: cleaned.error });
-    await applyTestQuestions(test, cleaned.questions, { removedIndex: idx });
+    if (!bankCanManage(req, res)) return;
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid question' });
+    const doc = await BankQuestion.findById(req.params.id);
+    if (!doc) return res.status(404).json({ error: 'Question not found' });
+    await doc.deleteOne();
+    if (doc.testId) await syncTestFromBank(doc.testId);
+    bankChanged();
     res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Many at once: { ids, action: 'delete' | 'assign' | 'unassign', testId }
+router.post('/question-bank/bulk-action', async (req, res) => {
+  try {
+    if (!bankCanManage(req, res)) return;
+    const ids = (Array.isArray(req.body?.ids) ? req.body.ids : []).filter((id) => mongoose.isValidObjectId(id)).slice(0, 1000);
+    if (!ids.length) return res.status(400).json({ error: 'Select questions first' });
+    const action = req.body?.action;
+    const rows = await BankQuestion.find({ _id: { $in: ids } }).select('_id testId createdAt').sort({ createdAt: 1 }).lean();
+    const touched = new Set(rows.map((r) => r.testId).filter(Boolean));
+    let changed = 0;
+    if (action === 'delete') {
+      changed = (await BankQuestion.deleteMany({ _id: { $in: rows.map((r) => r._id) } })).deletedCount || 0;
+    } else if (action === 'unassign') {
+      changed = (await BankQuestion.updateMany({ _id: { $in: rows.map((r) => r._id) } }, { $set: { testId: '', order: 0 } })).modifiedCount || 0;
+    } else if (action === 'assign') {
+      const testId = await seriesTestOr404(res, String(req.body?.testId || ''));
+      if (testId === null) return;
+      if (!testId) return res.status(400).json({ error: 'Pick a test' });
+      const moving = rows.filter((r) => r.testId !== testId);
+      const left = await testRoomLeft(testId);
+      if (moving.length > left) return res.status(400).json({ error: `That test has room for ${Math.max(0, left)} more question(s) (max ${MAX_Q()}); you selected ${moving.length}.` });
+      let next = await nextOrder(testId);
+      await BankQuestion.bulkWrite(moving.map((r) => ({ updateOne: { filter: { _id: r._id }, update: { $set: { testId, order: next++ } } } })));
+      changed = moving.length;
+      touched.add(testId);
+    } else {
+      return res.status(400).json({ error: 'Unknown action' });
+    }
+    for (const testId of touched) await syncTestFromBank(testId);
+    bankChanged();
+    res.json({ success: true, changed });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
 });
 
 // Same +marks / -negative marks for every question of a test
-router.post('/question-bank/:testId/marking', async (req, res) => {
+router.post('/question-bank/test/:testId/marking', async (req, res) => {
   try {
-    const test = await loadBankTest(req, res, req.params.testId);
-    if (!test) return;
+    if (!bankCanManage(req, res)) return;
+    const testId = await seriesTestOr404(res, String(req.params.testId || ''));
+    if (!testId) return testId === null ? undefined : res.status(400).json({ error: 'Pick a test' });
     const marks = Number(req.body?.marks);
     const negMarks = Number(req.body?.negMarks);
     if (!Number.isFinite(marks) || marks < 1 || marks > 20) return res.status(400).json({ error: 'Marks must be 1–20' });
     if (!Number.isFinite(negMarks) || negMarks < 0 || negMarks > 20) return res.status(400).json({ error: 'Negative marks must be 0–20' });
-    const cleaned = cleanQuestionList(plainQuestions(test).map((q) => ({ ...q, marks, negMarks })), test.questions);
-    if (cleaned.error) return res.status(400).json({ error: cleaned.error });
-    await applyTestQuestions(test, cleaned.questions);
+    await BankQuestion.updateMany({ testId }, { $set: { marks: Math.round(marks), negMarks: Math.round(negMarks * 100) / 100 } });
+    await syncTestFromBank(testId);
     res.json({ success: true });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
 });
 
-router.post('/question-bank/:testId/:qid/resolve', async (req, res) => {
+router.post('/question-bank/:id/resolve', async (req, res) => {
   try {
-    const test = await loadBankTest(req, res, req.params.testId);
-    if (!test) return;
-    const q = (test.questions || []).find((x) => String(x._id) === String(req.params.qid));
-    if (!q) return res.status(404).json({ error: 'Question not found in this test' });
-    q.reports = [];
-    await test.save();
+    if (!bankCanManage(req, res)) return;
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid question' });
+    const doc = await BankQuestion.findByIdAndUpdate(req.params.id, { $set: { reports: [], reportCount: 0 } }, { new: true });
+    if (!doc) return res.status(404).json({ error: 'Question not found' });
+    if (doc.testId) {
+      await TrainerAssessment.updateOne({ _id: doc.testId, 'questions._id': doc._id }, { $set: { 'questions.$.reports': [] } });
+    }
     res.json({ success: true });
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -17565,6 +17787,9 @@ router.post('/student-portal/tests/:id/report', async (req, res) => {
     q.reports = (q.reports || []).filter((r) => r.studentId !== st.studentId);
     q.reports.push({ studentId: st.studentId, studentName: st.name, reason, at: new Date() });
     await test.save();
+    if (test.seriesId) {
+      await BankQuestion.updateOne({ _id: q._id }, { $set: { reports: q.reports, reportCount: q.reports.length } }).catch(() => {});
+    }
     res.json({ success: true });
   } catch (e) {
     res.status(400).json({ error: e.message });

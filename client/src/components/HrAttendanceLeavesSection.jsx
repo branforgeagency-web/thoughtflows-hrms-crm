@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { decideApproval, getHrStaffAttendance, onDataUpdate } from '../services/api';
 import { localDateKey } from '../utils/dateUtils';
+import { HR_BRANCH_FILTERS } from '../constants/branches';
 
 const daysAgoKey = (n) => {
   const d = new Date();
@@ -285,15 +286,15 @@ export default function HrAttendanceLeavesSection({
               className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-xs font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400"
             />
           </div>
-          {scopeKind === 'all' && data.branches.length > 0 && (
+          {scopeKind === 'all' && (
             <select
               value={branchFilter}
               onChange={(e) => setBranchFilter(e.target.value)}
               className="px-3 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-700 bg-white"
             >
               <option value="all">All Branches</option>
-              {data.branches.map((b) => (
-                <option key={b} value={b}>{b}</option>
+              {HR_BRANCH_FILTERS.map((b) => (
+                <option key={b.value} value={b.value}>{b.label}</option>
               ))}
             </select>
           )}

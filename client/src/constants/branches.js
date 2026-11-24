@@ -52,3 +52,39 @@ export function detectBranchFromText(text = '') {
 
   return '';
 }
+
+/**
+ * The academy's working branches (14) + Online — the only choices in branch
+ * filters. value is the short branch name: the server matches it against every
+ * spelling saved on records ("Dilsukhnagar", "Dilsukhnagar (Hyderabad)", "DSNR"…).
+ */
+export const HR_BRANCH_FILTERS = [
+  { value: 'Ameerpet', label: 'Ameerpet (Hyderabad)' },
+  { value: 'Dilsukhnagar', label: 'Dilsukhnagar (Hyderabad)' },
+  { value: 'Gandhipuram', label: 'Gandhipuram (Coimbatore)' },
+  { value: 'Hopes', label: 'Hopes (Coimbatore)' },
+  { value: 'Saravanampatti', label: 'Saravanampatti (Coimbatore)' },
+  { value: 'Kochi', label: 'Kochi (Kerala)' },
+  { value: 'Trivandrum', label: 'Trivandrum (Kerala)' },
+  { value: 'Salem', label: 'Salem (Tamil Nadu)' },
+  { value: 'Trichy', label: 'Trichy (Tamil Nadu)' },
+  { value: 'Theni', label: 'Theni (Tamil Nadu)' },
+  { value: 'Tirupati', label: 'Tirupati (Andhra Pradesh)' },
+  { value: 'Vizag', label: 'Vizag (Andhra Pradesh)' },
+  { value: 'Pune', label: 'Pune (Maharashtra)' },
+  { value: 'Kollapur', label: 'Kollapur (Maharashtra)' },
+  { value: 'Online', label: 'Online Live (Virtual)' }
+];
+
+// Does a saved branch text belong to a filter value? ("Gandhipuram (CBE)" → Gandhipuram)
+export function branchMatchesFilter(saved, filterValue) {
+  const s = String(saved || '').toLowerCase();
+  const f = String(filterValue || '').toLowerCase();
+  if (!f || f === 'all') return true;
+  if (!s) return false;
+  if (f === 'dilsukhnagar' && /\b(dsnr|dilsuk)/.test(s)) return true;
+  if (f === 'tirupati' && /tirupat|tripath/.test(s)) return true;
+  if (f === 'kollapur' && /kol+h?apur/.test(s)) return true;
+  if (f === 'online' && /online|virtual/.test(s)) return true;
+  return s.includes(f);
+}
