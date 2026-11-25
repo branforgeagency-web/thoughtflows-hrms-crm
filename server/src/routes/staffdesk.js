@@ -5,6 +5,7 @@ import Attendance from '../models/Attendance.js';
 import AppSetting from '../models/AppSetting.js';
 import LeaveRequest from '../models/LeaveRequest.js';
 import { zonedParts, addDays, weekdayOf } from '../utils/trainerAvailability.js';
+import { registerPayrollRoutes, payrollAccess } from './payroll.js';
 
 // ============================================================================
 // ATTENDANCE & LEAVE — one desk for every employee (Trainers, HR, Marketing,
@@ -190,7 +191,7 @@ export function registerStaffDeskRoutes(router, { pushNotification }) {
     try {
       const m = await me(req);
       const policy = await loadPolicy();
-      res.json({ me: m, scope: viewScope(m), canOpenDesk: viewScope(m) !== 'self', isHrApprover: isHrApprover(m), canEditPolicy: isHrApprover(m), usesTrainerLeave: m.dept === 'training', policy, deptLabels: DEPT_LABEL });
+      res.json({ me: m, scope: viewScope(m), canOpenDesk: viewScope(m) !== 'self', isHrApprover: isHrApprover(m), canEditPolicy: isHrApprover(m), usesTrainerLeave: m.dept === 'training', policy, deptLabels: DEPT_LABEL, payroll: payrollAccess(m) });
     } catch (e) { fail(res, e); }
   });
 
@@ -432,4 +433,7 @@ export function registerStaffDeskRoutes(router, { pushNotification }) {
       res.json(leaveView(l.toObject()));
     } catch (e) { fail(res, e); }
   });
+
+  // Payroll (salary structures, monthly runs, payslips) — uses this desk's attendance engine
+  registerPayrollRoutes(router, { me, dayContext, dayStatus, deptOf, DEPT_LABEL, notify });
 }

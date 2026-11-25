@@ -697,6 +697,7 @@ export const createStudent = async (studentData) => {
 // { created, failed, results: [{ rowNo, ok, studentId, error, studentLogin }] }.
 export const createStudentsBulk = async (students) => {
   const res = await api.post('/students/bulk', { students });
+  notifyDataUpdate('students');
   return res.data;
 };
 
@@ -959,6 +960,13 @@ export const getDailyClosures = async (params) => {
 };
 
 // HR Targets API
+export const getTrainerHoursScorecard = async (params) => (await api.get('/trainer/hours-scorecard', { params, skipCache: true })).data;
+export const saveTrainerHoursPolicy = async (body) => (await api.put('/trainer/hours-scorecard/policy', body)).data;
+export const getHrLeaderboard = async (params) => (await api.get('/hr/leaderboard', { params, skipCache: true })).data;
+export const getHrToppers = async () => (await api.get('/hr/toppers', { skipCache: true })).data;
+// photo: small data URL ('' removes); name: another employee (heads / Branch Head only)
+export const setStaffPhoto = async (photo, name) => (await api.put('/staff/photo', { photo, ...(name ? { name } : {}) })).data;
+
 export const getHrTargets = async (params) => {
   const res = await api.get('/hr/targets', { params });
   return res.data;
@@ -2059,6 +2067,21 @@ export const applyStaffLeave = async (body) => (await api.post('/staff-desk/leav
 export const decideStaffLeave = async (id, action, note) => (await api.post(`/staff-desk/leaves/${id}/decision`, { action, note })).data;
 export const cancelStaffLeave = async (id, note) => (await api.post(`/staff-desk/leaves/${id}/cancel`, { note })).data;
 export const saveLeavePolicy = async (body) => (await api.put('/staff-desk/policy', body)).data;
+
+// ============================================
+// PAYROLL (Branch Head / Business Lead / Department Head; My Payslips for all)
+// ============================================
+export const getPayrollMe = async () => (await api.get('/payroll/me', { skipCache: true })).data;
+export const savePayrollSettings = async (body) => (await api.put('/payroll/settings', body)).data;
+export const getSalaryStructures = async (params) => (await api.get('/payroll/structures', { params, skipCache: true })).data;
+export const saveSalaryStructure = async (email, body) => (await api.put(`/payroll/structures/${encodeURIComponent(email)}`, body)).data;
+export const getPayrollRun = async (params) => (await api.get('/payroll/run', { params, skipCache: true })).data;
+export const generatePayroll = async (body) => (await api.post('/payroll/run/generate', body)).data;
+export const savePayslipAdjustments = async (id, body) => (await api.put(`/payroll/payslips/${id}/adjustments`, body)).data;
+export const payslipAction = async (id, body) => (await api.post(`/payroll/payslips/${id}/action`, body)).data;
+export const payrollBulkAction = async (body) => (await api.post('/payroll/run/bulk-action', body)).data;
+export const deletePayslip = async (id) => (await api.delete(`/payroll/payslips/${id}`)).data;
+export const getMyPayslips = async () => (await api.get('/payroll/my-payslips', { skipCache: true })).data;
 
 // Head / Manager / TL: watch another trainer's live class, or nudge a late trainer
 export const observeLiveClass = async (sessionId) => (await api.get(`/trainer/live-class/${sessionId}/observe`, { skipCache: true })).data;

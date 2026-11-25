@@ -1,11 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight, RefreshCw, X, Filter, Video, Users, User, Clock } from 'lucide-react';
+import { ChevronLeft, ChevronRight, RefreshCw, X, Filter, Video, Users, User, Clock, CheckCircle2, XCircle, CalendarOff, Ban } from 'lucide-react';
 import { getSchedulingCalendar, getSchedulingTags } from '../../services/api';
-import { WEEK_MON, fmtMin, fmtSlot, addDays, startOfWeek, todayKey, parseDateKey, prettyDate, colorFor, errMsg, STATUS_LABEL } from './schedUtils';
+import { WEEK_MON, fmtMin, fmtSlot, addDays, startOfWeek, todayKey, parseDateKey, prettyDate, errMsg, STATUS_LABEL } from './schedUtils';
 
 // Head of Trainer → Calendar: every trainer's classes (held / not held /
 // upcoming), demos and 1:1 sessions in a compact month view (Wise-style).
-const MAX_IN_CELL = 9;
+const MAX_IN_CELL = 6;
 const TYPE_OPTIONS = [
   { key: 'class', label: 'Classes' },
   { key: 'demo', label: 'Demos' },
@@ -175,17 +175,20 @@ export default function SchedulingCalendar({ fixedTrainerId = '', heading = '', 
               const isToday = d === (data.today || todayKey());
               const shown = view === 'week' ? list : list.slice(0, MAX_IN_CELL);
               return (
-                <div key={d} className={`border-r border-b border-slate-100 p-1.5 ${view === 'week' ? 'min-h-[420px]' : 'min-h-[150px]'} ${inMonth ? 'bg-white' : 'bg-slate-50/60'}`}>
-                  <div className="flex justify-center mb-1">
-                    <span className={`text-sm font-semibold w-8 h-8 flex items-center justify-center rounded-full ${isToday ? 'bg-slate-900 text-white' : inMonth ? 'text-slate-800' : 'text-slate-400'}`}>
+                <div key={d} className={`group border-r border-b border-slate-100 p-1.5 transition-colors ${view === 'week' ? 'min-h-[420px]' : 'min-h-[150px]'} ${isToday ? 'bg-teal-50/40' : inMonth ? 'bg-white hover:bg-slate-50/70' : 'bg-slate-50/60'}`}>
+                  <div className="flex items-center justify-between mb-1.5 px-0.5">
+                    <span className={`text-sm font-semibold w-8 h-8 flex items-center justify-center rounded-full ${isToday ? 'bg-slate-900 text-white shadow-sm' : inMonth ? 'text-slate-800' : 'text-slate-400'}`}>
                       {parseDateKey(d).getDate()}
                     </span>
+                    {list.length > 0 && (
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${inMonth ? 'bg-slate-100 text-slate-500' : 'bg-slate-100/70 text-slate-400'}`}>{list.length}</span>
+                    )}
                   </div>
-                  <div className="space-y-1">
-                    {shown.map((e) => <EventChip key={e.id} e={e} onClick={() => setEventOpen(e)} />)}
+                  <div className={`space-y-1 ${inMonth ? '' : 'opacity-70'}`}>
+                    {shown.map((e) => <EventChip key={e.id} e={e} today={data.today || todayKey()} showTrainer={!fixedTrainerId} rich={view === 'week'} onClick={() => setEventOpen(e)} />)}
                   </div>
                   {list.length > shown.length && (
-                    <button onClick={() => setDayOpen(d)} className="mt-1 text-xs font-semibold text-slate-600 hover:text-teal-700 cursor-pointer">See More ({list.length - shown.length})</button>
+                    <button onClick={() => setDayOpen(d)} className="mt-1.5 w-full py-1 rounded-md text-[11px] font-bold text-slate-500 bg-slate-100/80 hover:bg-teal-50 hover:text-teal-700 cursor-pointer">+{list.length - shown.length} more</button>
                   )}
                 </div>
               );
@@ -194,19 +197,21 @@ export default function SchedulingCalendar({ fixedTrainerId = '', heading = '', 
         </div>
       </div>
 
-      <div className="flex flex-wrap gap-3 text-[11px] text-slate-500 px-1">
-        <span><b className="text-slate-700">×</b> class not held / demo missed</span>
-        <span><s>struck</s> cancelled</span>
-        <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-500" />live now</span>
-        <span className="text-rose-600">pink = demo</span>
-        <span className="text-teal-700">teal = 1:1 session</span>
-        <span>Classes come from each trainer's active batches and timetable; held times come from the Class Session Room.</span>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-slate-500 px-1">
+        <span className="inline-flex items-center gap-1.5"><CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />Held</span>
+        <span className="inline-flex items-center gap-1.5"><XCircle className="w-3.5 h-3.5 text-rose-600" />Not held / demo missed</span>
+        <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />Live now</span>
+        <span className="inline-flex items-center gap-1.5"><Ban className="w-3.5 h-3.5 text-slate-400" /><s>Cancelled</s></span>
+        <span className="inline-flex items-center gap-1.5"><CalendarOff className="w-3.5 h-3.5 text-amber-600" />Trainer on leave</span>
+        <span className="inline-flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bg-rose-100 border-l-[3px] border-rose-500" />Demo</span>
+        <span className="inline-flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bg-teal-100 border-l-[3px] border-teal-600" />1:1 session</span>
+        <span className="text-slate-400">Each course keeps its own colour. Classes come from active batches; held times from the Class Session Room.</span>
       </div>
 
       {dayOpen && (
         <Overlay onClose={() => setDayOpen(null)} title={prettyDate(dayOpen, { day: 'numeric', month: 'long', year: 'numeric' })}>
           <div className="space-y-1.5 max-h-[60vh] overflow-y-auto pr-1">
-            {(byDay[dayOpen] || []).map((e) => <EventChip key={e.id} e={e} wide onClick={() => setEventOpen(e)} />)}
+            {(byDay[dayOpen] || []).map((e) => <EventChip key={e.id} e={e} rich showTrainer today={data.today || todayKey()} onClick={() => setEventOpen(e)} />)}
           </div>
         </Overlay>
       )}
@@ -235,18 +240,96 @@ export default function SchedulingCalendar({ fixedTrainerId = '', heading = '', 
   );
 }
 
-function EventChip({ e, onClick, wide }) {
-  const struck = e.status === 'cancelled';
-  const crossed = e.status === 'missed';
+// Course colour: soft fill + strong left accent (same course → same colour)
+const TONES = [
+  { soft: 'bg-violet-50 hover:bg-violet-100', bar: 'border-l-violet-500', text: 'text-violet-900', sub: 'text-violet-600' },
+  { soft: 'bg-sky-50 hover:bg-sky-100', bar: 'border-l-sky-500', text: 'text-sky-900', sub: 'text-sky-600' },
+  { soft: 'bg-indigo-50 hover:bg-indigo-100', bar: 'border-l-indigo-500', text: 'text-indigo-900', sub: 'text-indigo-600' },
+  { soft: 'bg-amber-50 hover:bg-amber-100', bar: 'border-l-amber-500', text: 'text-amber-900', sub: 'text-amber-700' },
+  { soft: 'bg-emerald-50 hover:bg-emerald-100', bar: 'border-l-emerald-500', text: 'text-emerald-900', sub: 'text-emerald-700' },
+  { soft: 'bg-fuchsia-50 hover:bg-fuchsia-100', bar: 'border-l-fuchsia-500', text: 'text-fuchsia-900', sub: 'text-fuchsia-600' },
+  { soft: 'bg-cyan-50 hover:bg-cyan-100', bar: 'border-l-cyan-500', text: 'text-cyan-900', sub: 'text-cyan-700' },
+  { soft: 'bg-lime-50 hover:bg-lime-100', bar: 'border-l-lime-600', text: 'text-lime-900', sub: 'text-lime-700' }
+];
+function toneFor(e) {
+  if (e.type === 'demo') return { soft: 'bg-rose-50 hover:bg-rose-100', bar: 'border-l-rose-500', text: 'text-rose-900', sub: 'text-rose-600' };
+  if (e.type === 'one_on_one') return { soft: 'bg-teal-50 hover:bg-teal-100', bar: 'border-l-teal-600', text: 'text-teal-900', sub: 'text-teal-700' };
+  const key = String(e.course || e.title || '').toLowerCase().replace(/\(.*?\)/g, '').trim();
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  return TONES[h % TONES.length];
+}
+// Batch names often repeat the class time ("CPC · 11:00 AM - 1:00 PM") — the chip already shows it
+const TIME_RX = /\d{1,2}([:.]\d{2})?\s*(am|pm)\b/i;
+function cleanTitle(t = '') {
+  const parts = String(t).split(/\s*[·|]\s*/).filter((p) => p && !TIME_RX.test(p));
+  return (parts.join(' · ') || String(t)).trim();
+}
+const shortTime = (m) => {
+  const [hm, ap] = fmtMin(m).split(' ');
+  return { hm: hm.replace(/^0/, ''), ap: (ap || '').toLowerCase() };
+};
+const initials = (n = '') => n.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
+
+function EventChip({ e, onClick, rich, showTrainer, today }) {
+  const tone = toneFor(e);
+  const live = e.status === 'live';
+  const missed = e.status === 'missed';
+  const cancelled = e.status === 'cancelled';
+  const leave = e.status === 'leave';
+  const held = e.status === 'done' || e.status === 'completed';
+  const past = today && e.date < today;
+  const t = shortTime(e.startMin);
+  const title = cleanTitle(e.title);
+
+  const base = live
+    ? 'bg-emerald-600 hover:bg-emerald-700 border-l-emerald-800 text-white shadow-sm shadow-emerald-600/30'
+    : missed
+      ? 'bg-rose-50 hover:bg-rose-100 border-l-rose-500 text-rose-800'
+      : cancelled
+        ? 'bg-slate-50 hover:bg-slate-100 border-l-slate-300 text-slate-400'
+        : leave
+          ? 'bg-amber-50/60 hover:bg-amber-50 border-l-amber-400 text-amber-800 border-dashed'
+          : `${tone.soft} ${tone.bar} ${tone.text}`;
+  const subCls = live ? 'text-emerald-50/90' : missed ? 'text-rose-600' : cancelled ? 'text-slate-400' : leave ? 'text-amber-700' : tone.sub;
+
+  const Icon = live ? null : missed ? XCircle : cancelled ? Ban : leave ? CalendarOff : held ? CheckCircle2 : null;
+  const iconCls = missed ? 'text-rose-600' : cancelled ? 'text-slate-400' : leave ? 'text-amber-600' : 'text-emerald-600';
+  const statusText = STATUS_LABEL[e.status] || '';
+  const tip = `${fmtSlot(e.startMin, e.endMin)} · ${title}${e.trainerName ? ` · ${e.trainerName}` : ''}${statusText ? ` · ${statusText}` : ''}`;
+
+  if (rich) {
+    return (
+      <button onClick={onClick} title={tip}
+        className={`w-full text-left pl-2.5 pr-2 py-1.5 rounded-lg border-l-[3px] cursor-pointer transition-colors ${base} ${past && held ? 'opacity-90' : ''}`}>
+        <div className="flex items-center gap-1.5 text-[11px] font-bold">
+          {live && <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />}
+          {Icon && <Icon className={`w-3.5 h-3.5 shrink-0 ${iconCls}`} />}
+          <span className={cancelled ? 'line-through' : ''}>{fmtSlot(e.startMin, e.endMin)}</span>
+          {statusText && !['scheduled', 'booked', 'confirmed'].includes(e.status) && (
+            <span className={`ml-auto px-1.5 py-px rounded-full text-[9.5px] uppercase tracking-wide ${live ? 'bg-white/20' : 'bg-white/70'}`}>{statusText}</span>
+          )}
+        </div>
+        <div className={`text-[13px] font-semibold truncate ${cancelled ? 'line-through' : ''}`}>{title}</div>
+        {(showTrainer && e.trainerName) || e.course ? (
+          <div className={`text-[11px] truncate ${subCls}`}>{[showTrainer ? e.trainerName : '', e.course && e.course !== title ? e.course : ''].filter(Boolean).join(' · ')}</div>
+        ) : null}
+      </button>
+    );
+  }
+
   return (
-    <button onClick={onClick} title={`${fmtMin(e.startMin)} ${e.title} · ${e.trainerName || ''}`}
-      className={`w-full text-left px-2 py-1 rounded-md border text-[12px] leading-tight truncate cursor-pointer hover:brightness-95 ${colorFor(e)} ${e.status === 'leave' ? 'opacity-60 italic' : ''} ${wide ? 'py-1.5 text-[13px]' : ''}`}>
-      {e.status === 'live' && <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1 align-middle animate-pulse" />}
-      {crossed && <span className="font-bold mr-1">×</span>}
-      <span className={struck ? 'line-through' : ''}>
-        <span className="font-semibold">{fmtMin(e.startMin)}</span> {e.title}
-        {wide && e.trainerName ? <span className="opacity-70"> · {e.trainerName}</span> : null}
+    <button onClick={onClick} title={tip}
+      className={`w-full flex items-center gap-1 pl-1.5 pr-1 h-[26px] rounded-md border-l-[3px] text-[12px] leading-none cursor-pointer transition-colors ${base}`}>
+      {live && <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse shrink-0" />}
+      {Icon && <Icon className={`w-3 h-3 shrink-0 ${iconCls}`} />}
+      <span className={`shrink-0 font-bold tabular-nums ${cancelled ? 'line-through' : ''}`}>
+        {t.hm}<span className="text-[9.5px] font-semibold ml-px opacity-75">{t.ap}</span>
       </span>
+      <span className={`truncate font-medium ${cancelled ? 'line-through' : ''} ${live ? '' : 'opacity-90'}`}>{title}</span>
+      {showTrainer && e.trainerName && (
+        <span title={e.trainerName} className={`ml-auto shrink-0 w-[18px] h-[18px] rounded-full text-[8.5px] font-black flex items-center justify-center ${live ? 'bg-white/25 text-white' : 'bg-white/80 text-slate-600 ring-1 ring-black/5'}`}>{initials(e.trainerName)}</span>
+      )}
     </button>
   );
 }

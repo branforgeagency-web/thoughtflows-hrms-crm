@@ -60,7 +60,6 @@ const lazyDashboard = (rawLoader, label) => {
 };
 
 // Attendance & Leave launcher, shown inside every staff dashboard (not the Student Portal)
-const StaffDeskLauncher = React.lazy(() => import('./staffdesk/StaffDeskLauncher'));
 
 const HrDepartmentHub = lazyDashboard(() => import('./HrDepartmentHub'), 'HR & Admissions');
 const StudentPortalDashboard = lazyDashboard(() => import('./StudentPortalDashboard'), 'Student Portal');
@@ -148,7 +147,7 @@ export default function DashboardModal({
   const withDesk = (node) => (
     <>
       {node}
-      <React.Suspense fallback={null}><StaffDeskLauncher /></React.Suspense>
+      {/* Floating "Attendance & Payroll" button removed (25 Nov 2026) — Payroll is in the dashboard's Payroll tab */}
     </>
   );
 

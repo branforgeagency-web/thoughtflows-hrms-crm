@@ -7,6 +7,10 @@ import { getStaffDeskMe, getStaffLeaves } from '../../services/api';
 // (team view for heads / HR / Admin, "My Leave" for everyone else).
 const AttendanceLeaveDesk = lazy(() => import('./AttendanceLeaveDesk'));
 
+const BRANCH_ROLE_RX = /branch\s*(head|manager)|branch\s*hr\s*head|business\s*(lead|head)|\bbm\b/i;
+const DEPT_HEAD_RX = /department\s*head|dept\.?\s*head|\bhead\s+of\b|\bhod\b/i;
+const isDeskManager = (role = '') => BRANCH_ROLE_RX.test(role) || DEPT_HEAD_RX.test(role);
+
 export default function StaffDeskLauncher() {
   const [info, setInfo] = useState(null);
   const [open, setOpen] = useState(false);
@@ -28,9 +32,10 @@ export default function StaffDeskLauncher() {
   }, []);
 
   if (!info) return null;
-  // Trainers (not leaders) keep their own leave flow in the Trainer dashboard
-  if (info.scope === 'self' && info.usesTrainerLeave) return null;
-  const label = info.canOpenDesk ? 'Attendance & Leave' : 'My Leave';
+  // Only Branch Head, Business Lead and Department Head get this button
+  if (!isDeskManager(info.me?.role)) return null;
+  // Trainers (not leaders) keep their own leave flow in the Trainer dashboard — here they only see payslips
+  const label = info.payroll?.canPrepare ? 'Attendance & Payroll' : info.canOpenDesk ? 'Attendance & Leave' : info.usesTrainerLeave ? 'My Payslips' : 'My Leave & Payslips';
 
   return (
     <>

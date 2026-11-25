@@ -10,6 +10,7 @@ import LoginModal from './components/LoginModal';
 import CourseCatalogWidget from './components/CourseCatalogWidget';
 import StudentRegistrationPage from './components/StudentRegistrationPage';
 import ScreenGuard from './components/ScreenGuard';
+import HrTopperPopup from './components/HrTopperPopup';
 import GlobalApiLoader from './components/GlobalApiLoader';
 import axios from 'axios';
 import { recordTrainingLogout, prewarmCommonData } from './services/api';
@@ -427,12 +428,17 @@ export default function App() {
 
       <ScreenGuard active={Boolean(currentUser && isDashboardOpen)} />
 
-      {/* Course Catalog — visible ONLY when logged into the HR Department dashboard */}
+      {/* 🏆 Topper of the Day popup — every HR dashboard (HR, TL, Branch Head, Business Lead, HR Head), once per topper per day */}
+      {currentUser && isDashboardOpen && (selectedDashboard?.id || selectedDashboard) === 'hr' && (
+        <HrTopperPopup currentUser={currentUser} />
+      )}
+
+      {/* Course Catalog — every HR portal desk (HR, TL, Branch Head, Business Lead, HR Head) */}
       <CourseCatalogWidget
         hidden={
+          !currentUser ||
           !isDashboardOpen ||
-          (selectedDashboard?.id !== 'hr' && selectedDashboard !== 'hr') ||
-          hrRole !== 'hr'
+          (selectedDashboard?.id !== 'hr' && selectedDashboard !== 'hr')
         }
       />
     </div>

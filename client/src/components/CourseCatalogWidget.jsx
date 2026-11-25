@@ -22,8 +22,6 @@ const COURSES = COURSE_CATEGORIES.flatMap((cat) =>
 const formatINR = (n) => (n ? `₹${Number(n).toLocaleString('en-IN')}` : '—');
 
 export default function CourseCatalogWidget({ hidden = false }) {
-  if (hidden) return null;
-
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [expandedCode, setExpandedCode] = useState(null);
@@ -45,6 +43,10 @@ export default function CourseCatalogWidget({ hidden = false }) {
     setQuery('');
     setExpandedCode(null);
   };
+
+  // Hooks must run on every render — hide only after them (an early return above the
+  // hooks crashed the widget when the dashboard switched it from hidden to shown)
+  if (hidden) return null;
 
   return (
     <>

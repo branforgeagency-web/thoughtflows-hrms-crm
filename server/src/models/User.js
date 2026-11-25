@@ -68,6 +68,13 @@ const userSchema = new mongoose.Schema({
     type: String,
     default: 'TF'
   },
+  // Employee photo (small JPEG data URL, resized in the browser). select:false keeps it
+  // out of every user list — ask for it with .select('+photo') where it is shown.
+  photo: {
+    type: String,
+    default: '',
+    select: false
+  },
   avatarBg: {
     type: String,
     default: 'bg-indigo-600'

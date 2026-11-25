@@ -4,6 +4,8 @@ import {
   getStaffDay, getStaffLog, getStaffRegister, getStaffBalances, getStaffLeaves, decideStaffLeave, cancelStaffLeave, saveLeavePolicy
 } from '../../services/api';
 import MyLeavePanel from './MyLeavePanel';
+const PayrollDesk = React.lazy(() => import('./PayrollDesk'));
+const MyPayslips = React.lazy(() => import('./MyPayslips'));
 import { todayKey, addDays, prettyDate, fmtTime, fmtMin, fmtHours, errMsg, CODE_STYLE, LEAVE_STATUS, downloadCsv } from './deskUtils';
 
 // Attendance & Leave — one dashboard for Trainers, HR, Marketing, CCCP, Admin
@@ -12,8 +14,11 @@ export default function AttendanceLeaveDesk({ info, onClose, onChanged }) {
   const team = info?.scope !== 'self';
   const tabs = [
     ...(team ? [['today', 'Today'], ['log', 'Login / Logout'], ['register', 'Monthly Register'], ['approvals', 'Leave Approvals'], ['leaves', 'All Leave'], ['balances', 'Leave Balances']] : []),
+    ...(info?.payroll?.canPrepare ? [['payroll', 'Payroll']] : []),
     ...(info?.canEditPolicy ? [['policy', 'Policy & Holidays']] : []),
-    ['mine', 'My Leave']
+    // Trainers keep their own leave flow — they only get payslips here
+    ...(info?.scope === 'self' && info?.usesTrainerLeave ? [] : [['mine', 'My Leave']]),
+    ['payslips', 'My Payslips']
   ];
   const [tab, setTab] = useState(tabs[0][0]);
   const scopeLabel = info?.scope === 'all' ? 'All employees' : info?.scope === 'department' ? `${info?.deptLabels?.[info?.me?.dept] || info?.me?.dept} team` : 'Only you';
@@ -22,7 +27,7 @@ export default function AttendanceLeaveDesk({ info, onClose, onChanged }) {
     <div className="fixed inset-0 z-[90] bg-[#f4f8f8] flex flex-col">
       <div className="px-4 sm:px-6 py-3 bg-[#0f212d] text-white flex items-center justify-between gap-3">
         <div>
-          <div className="text-lg font-extrabold">Attendance &amp; Leave</div>
+          <div className="text-lg font-extrabold">Attendance, Leave &amp; Payroll</div>
           <div className="text-xs text-slate-300">{info?.me?.name} · {scopeLabel} · Trainers, HR, Marketing, CCCP &amp; all staff</div>
         </div>
         <button onClick={onClose} className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-sm font-bold flex items-center gap-1.5 cursor-pointer"><X className="w-4 h-4" />Close</button>
@@ -41,6 +46,8 @@ export default function AttendanceLeaveDesk({ info, onClose, onChanged }) {
           {tab === 'leaves' && <LeavesTab mode="all" onChanged={onChanged} canCancel={info?.isHrApprover} />}
           {tab === 'balances' && <BalancesTab />}
           {tab === 'policy' && <PolicyTab policy={info?.policy} />}
+          {tab === 'payroll' && <React.Suspense fallback={<div className="p-8 text-center text-sm text-slate-500">Opening payroll…</div>}><PayrollDesk /></React.Suspense>}
+          {tab === 'payslips' && <React.Suspense fallback={<div className="p-8 text-center text-sm text-slate-500">Loading payslips…</div>}><MyPayslips /></React.Suspense>}
           {tab === 'mine' && <MyLeavePanel me={info?.me} policy={info?.policy} usesTrainerLeave={info?.usesTrainerLeave && info?.scope === 'self'} />}
         </div>
       </div>

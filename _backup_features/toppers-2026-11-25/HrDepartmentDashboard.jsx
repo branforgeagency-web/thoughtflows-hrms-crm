@@ -1,0 +1,3211 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { localDateKey } from '../utils/dateUtils';
+import { 
+  Search, 
+  Plus, 
+  Bell, 
+  Coffee, 
+  LogOut, 
+  Phone, 
+  Clock, 
+  Calendar, 
+  CheckCircle2, 
+  Award,
+  TrendingUp,
+  Home,
+  Filter,
+  Monitor,
+  GraduationCap,
+  Target,
+  BarChart2,
+  BookOpen,
+  IndianRupee,
+  Wallet,
+  Trophy,
+  Repeat,
+  ChevronLeft,
+  ChevronRight,
+  Palette,
+  RefreshCw,
+  PhoneCall,
+  Users,
+  AlertTriangle,
+  FileSpreadsheet,
+  FileText,
+  Send,
+  ShieldCheck,
+  Play,
+  MapPin
+} from 'lucide-react';
+import HrEodReportSection from './HrEodReportSection';
+import { StartWorkConfirmationModal, CloseWorkConfirmationModal } from './WorkSessionModals';
+import HrPipelineView from './HrPipelineView';
+import HrKpiDrilldownModal from './HrKpiDrilldownModal';
+import HrFollowUpBoard from './HrFollowUpBoard';
+import HrDemoDesk from './HrDemoDesk';
+import HrAdmittedStudentsCrm from './HrAdmittedStudentsCrm';
+import HrMyTargets from './HrMyTargets';
+import HrMySchedule from './HrMySchedule';
+import HrLmsSection from './HrLmsSection';
+import HrStudentFeesCrm from './HrStudentFeesCrm';
+import HrHandoverDesk from './HrHandoverDesk';
+import HrReportsView from './HrReportsView';
+import HrCallRecordingsTable from './HrCallRecordingsTable';
+import HrStudentRequestsDesk from './HrStudentRequestsDesk';
+import TrainerQualityBoard from './TrainerQualityBoard';
+import HrTeamDataSection from './HrTeamDataSection';
+import HrAttendanceLeavesSection from './HrAttendanceLeavesSection';
+import HrWeeklyRoster from './HrWeeklyRoster';
+import HrScoreboard from './HrScoreboard';
+// Payroll (Branch Head / Business Lead / Department Head) and every employee's own payslips
+const PayrollDesk = React.lazy(() => import('./staffdesk/PayrollDesk'));
+const MyPayslips = React.lazy(() => import('./staffdesk/MyPayslips'));
+import { Inbox as InboxIcon } from 'lucide-react';
+import LeadCallModal from './LeadCallModal';
+import BookNewDemoModal from './BookNewDemoModal';
+import AddLeadModal from './AddLeadModal';
+import CompleteRegistrationModal from './CompleteRegistrationModal';
+import { getStudents, getLeads, getHrLeadCounts, createLead, updateLead, updateStudent, getDemos, createDemo, createStudent, getRecordings, getTodayClosure, saveDailyClosure, onDataUpdate, getNotifications, markNotificationRead, markNotificationsRead, getStudentRequests, getStudentTickets, getMyAttendance, setMyAttendance, startMyWork, closeMyWork, updateMyAttendanceLocation, logCall, getTodayCallLog, getHrTargets } from '../services/api';
+import { fetchCurrentLocation } from '../utils/geolocation';
+import { redirectToWhatsAppWeb } from '../utils/whatsapp';
+import { useIncentivePolicy, progressiveIncentive } from '../utils/incentive';
+import { matchesHrOwnerName } from '../utils/hrNameMatch';
+
+// viewScope (optional, set by the HR hub for leadership desks):
+//   { mode: 'team', names: [...], label }  — HR Team Lead: their HRs' data
+//   { mode: 'branch', branch, label }       — Branch Head: the whole branch (server scopes by branch)
+//   { mode: 'all', label }                  — HR Department Head: every HR, every branch
+export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, onSwitchDepartment, theme = 'classic', viewScope = null }) {
+  // Department Head of HR desk (All Branches view): no work-session attendance —
+  // no Start Work prompt, break timer, Close Work on logout or attendance card.
+  const isHrHeadDesk = viewScope?.mode === 'all';
+  // Persist active tab across browser refresh within this session
+  const [activeTab, setActiveTab] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem('thoughtflows_hr_active_tab');
+      // The Google Sheet tab was removed — a saved one falls back to Home
+      return saved && saved !== 'Google Sheet' ? saved : 'Home';
+    } catch {
+      return 'Home';
+    }
+  });
+
+  const handleTabChange = (tabName) => {
+    setActiveTab(tabName);
+    try {
+      sessionStorage.setItem('thoughtflows_hr_active_tab', tabName);
+      localStorage.removeItem('thoughtflows_hr_active_tab');
+    } catch (e) {
+      console.warn('Could not save active tab to sessionStorage', e);
+    }
+  };
+
+  const userName = currentUser?.name || currentUser?.userName || '';
+  // Break timer is kept per counsellor so a shared browser never mixes two people's breaks
+  const userKey = String(userName || 'anon').trim().toLowerCase().replace(/\s+/g, '_');
+  const breakStartKey = `thoughtflows_break_start_${userKey}`;
+  const userFirstName = userName.split(' ')[0] || 'there';
+  const branchName = currentUser?.branch || '';
+  const branchShort = String(branchName).replace(/\s*branch\b.*$/i, '').replace(/\s*\(.*\)\s*$/, '').trim();
+
+  // Current Day Date Key for Daily Reset (e.g. '2026-09-24'); re-checked every
+  // minute so a dashboard left open overnight rolls over to the new day
+  const [todayKey, setTodayKey] = useState(() => localDateKey());
+  const [hourNow, setHourNow] = useState(() => new Date().getHours());
+  useEffect(() => {
+    const t = setInterval(() => {
+      setTodayKey(localDateKey());
+      setHourNow(new Date().getHours());
+    }, 60000);
+    return () => clearInterval(t);
+  }, []);
+  const greeting = hourNow < 12 ? 'Good morning' : hourNow < 17 ? 'Good afternoon' : 'Good evening';
+
+  const todayDisplay = useMemo(() => {
+    return new Date(`${todayKey}T00:00:00`).toLocaleDateString('en-IN', {
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric'
+    });
+  }, [todayKey]);
+
+  // Helper: check if a date string/Date object is from today
+  const isToday = (dateInput) => {
+    if (!dateInput) return false;
+    const d = new Date(dateInput);
+    if (isNaN(d.getTime())) return false;
+    const now = new Date();
+    return (
+      d.getFullYear() === now.getFullYear() &&
+      d.getMonth() === now.getMonth() &&
+      d.getDate() === now.getDate()
+    );
+  };
+
+  const [searchQuery, setSearchQuery] = useState('');
+  
+  // Live Break Timer State & Persistence
+  const [breakStartTime, setBreakStartTime] = useState(() => {
+    try {
+      const saved = localStorage.getItem(breakStartKey);
+      return saved ? parseInt(saved, 10) : null;
+    } catch { return null; }
+  });
+  const [breakSeconds, setBreakSeconds] = useState(0);
+  const [accumulatedBreak, setAccumulatedBreak] = useState(() => {
+    try {
+      const today = localDateKey();
+      const saved = localStorage.getItem(`thoughtflows_break_acc_${userKey}_${today}`);
+      return saved ? parseInt(saved, 10) : 0;
+    } catch { return 0; }
+  });
+  const [isOnBreak, setIsOnBreak] = useState(() => Boolean(breakStartTime));
+  // Dashboard left open past midnight: the new day starts with no break used
+  const breakDayRef = React.useRef(localDateKey());
+  useEffect(() => {
+    if (breakDayRef.current === todayKey) return;
+    breakDayRef.current = todayKey;
+    if (!isOnBreak) setAccumulatedBreak(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [todayKey]);
+
+  useEffect(() => {
+    if (!isOnBreak) {
+      setBreakSeconds(0);
+      return undefined;
+    }
+    let start = breakStartTime;
+    if (!start) {
+      start = Date.now();
+      setBreakStartTime(start);
+      try { localStorage.setItem(breakStartKey, String(start)); } catch (_) {}
+    }
+    const tick = () => {
+      const elapsed = Math.max(0, Math.floor((Date.now() - start) / 1000));
+      setBreakSeconds(elapsed);
+    };
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [isOnBreak, breakStartTime]);
+
+  // Format timestamp helper
+  const formatTimeDisplay = (timeVal) => {
+    if (!timeVal) return '';
+    if (typeof timeVal === 'string' && (timeVal.includes('AM') || timeVal.includes('PM') || /^\d{1,2}:\d{2}$/.test(timeVal))) {
+      return timeVal;
+    }
+    try {
+      const d = new Date(timeVal);
+      if (isNaN(d.getTime())) return String(timeVal);
+      return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+    } catch {
+      return String(timeVal);
+    }
+  };
+
+  // Official Work Session & Attendance State
+  const [attendanceRecord, setAttendanceRecord] = useState(null);
+  const [sessionStatus, setSessionStatus] = useState('Not Started'); // 'Not Started' | 'In Progress' | 'Completed'
+  const [workStartTime, setWorkStartTime] = useState(null);
+  const [workEndTime, setWorkEndTime] = useState(null);
+  const [workingDurationText, setWorkingDurationText] = useState('0 hrs 0 mins');
+  const [workingMinutes, setWorkingMinutes] = useState(0);
+
+  // Modals & EOD state
+  const [showStartWorkModal, setShowStartWorkModal] = useState(false);
+  const [showCloseWorkModal, setShowCloseWorkModal] = useState(false);
+  const [workModalLoading, setWorkModalLoading] = useState(false);
+  const [eodSummaryText, setEodSummaryText] = useState('');
+  const [eodSubmitting, setEodSubmitting] = useState(false);
+
+  // Load server attendance & restore work session state
+  const loadAttendance = async (promptIfNew = true) => {
+    if (!userName || isHrHeadDesk) return;
+    try {
+      const rec = await getMyAttendance(currentUser?.branch);
+      if (rec) {
+        setAttendanceRecord(rec);
+        const sStatus = rec.sessionStatus || (rec.workEndTime ? 'Completed' : rec.workStartTime ? 'In Progress' : 'Not Started');
+        setSessionStatus(sStatus);
+        setWorkStartTime(rec.workStartTime || null);
+        setWorkEndTime(rec.workEndTime || null);
+        setWorkingMinutes(rec.calculatedWorkingMinutes || rec.workingMinutes || 0);
+        setWorkingDurationText(rec.durationText || '0 hrs 0 mins');
+
+        // Restore break state if any
+        if (rec.status === 'break' && rec.breakStartedAt && !isOnBreak) {
+          const start = new Date(rec.breakStartedAt).getTime();
+          setBreakStartTime(start);
+          try { localStorage.setItem(breakStartKey, String(start)); } catch (_) {}
+          setIsOnBreak(true);
+        } else if (rec.status === 'in' && isOnBreak) {
+          try { localStorage.removeItem(breakStartKey); } catch (_) {}
+          setBreakStartTime(null);
+          setIsOnBreak(false);
+        }
+        if (typeof rec?.breakMinutes === 'number' && rec.breakMinutes * 60 > accumulatedBreak) {
+          setAccumulatedBreak(rec.breakMinutes * 60);
+        }
+
+        // Display confirmation popup asking “Are you ready to start today’s work?”
+        // only if work has not started yet and not dismissed during this tab session
+        const dismissedKey = `thoughtflows_start_work_dismissed_${userKey}_${localDateKey()}`;
+        let dismissed = false;
+        try { dismissed = sessionStorage.getItem(dismissedKey) === 'true'; } catch (_) {}
+        if (promptIfNew && sStatus === 'Not Started' && !dismissed) {
+          setShowStartWorkModal(true);
+        }
+
+        // If active/started today but login location is missing, detect and update in background
+        if (!rec.loginLocation && (sStatus === 'In Progress' || rec.workStartTime)) {
+          fetchCurrentLocation({ timeoutMs: 4000 })
+            .then((loc) => {
+              if (loc?.success) {
+                updateMyAttendanceLocation(loc)
+                  .then((updated) => { if (updated) setAttendanceRecord(updated); })
+                  .catch(() => {});
+              }
+            })
+            .catch(() => {});
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to fetch attendance state:', e);
+    }
+  };
+
+  useEffect(() => {
+    loadAttendance(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userName]);
+
+  // Live Working Hours Duration timer while session is 'In Progress'
+  useEffect(() => {
+    if (sessionStatus !== 'In Progress' || !workStartTime) return undefined;
+
+    const calcDuration = () => {
+      try {
+        const startMs = new Date(workStartTime).getTime();
+        if (isNaN(startMs)) return;
+        const nowMs = Date.now();
+        const diffMins = Math.max(0, Math.floor((nowMs - startMs) / 60000));
+        const netMins = Math.max(0, diffMins - Math.floor(accumulatedBreak / 60) - (isOnBreak ? Math.floor(breakSeconds / 60) : 0));
+        setWorkingMinutes(netMins);
+        const hours = Math.floor(netMins / 60);
+        const mins = netMins % 60;
+        setWorkingDurationText(`${hours} hr${hours === 1 ? '' : 's'} ${mins} min${mins === 1 ? '' : 's'}`);
+      } catch (_) {}
+    };
+
+    calcDuration();
+    const interval = setInterval(calcDuration, 30000);
+    return () => clearInterval(interval);
+  }, [sessionStatus, workStartTime, accumulatedBreak, isOnBreak, breakSeconds]);
+
+  // 1. Confirm Start Work: record official work login time and location
+  const handleConfirmStartWork = async (passedLocation) => {
+    setWorkModalLoading(true);
+    try {
+      const loc = passedLocation || (await fetchCurrentLocation({ timeoutMs: 3500 }).catch(() => null));
+      const res = await startMyWork(currentUser?.branch, loc);
+      setAttendanceRecord(res);
+      setSessionStatus('In Progress');
+      setWorkStartTime(res.workStartTime || new Date().toISOString());
+      setWorkEndTime(res.workEndTime || null);
+      if (typeof res?.breakMinutes === 'number' && res.breakMinutes * 60 > accumulatedBreak) {
+        setAccumulatedBreak(res.breakMinutes * 60);
+      }
+      setWorkingDurationText(res.durationText || '0 hrs 1 min');
+      setShowStartWorkModal(false);
+      const locNote = res.loginAddress || res.loginLocation?.address ? ` · 📍 ${res.loginAddress || res.loginLocation?.address}` : '';
+      showToast(`✓ Work started at ${res.checkIn || formatTimeDisplay(res.workStartTime)}${locNote}!`);
+    } catch (err) {
+      showToast(`⚠ Could not record start work: ${err?.response?.data?.error || err.message}`);
+    } finally {
+      setWorkModalLoading(false);
+    }
+  };
+
+  // 1. Cancel Start Work: do not record work login time
+  const handleCancelStartWork = () => {
+    setShowStartWorkModal(false);
+    try {
+      sessionStorage.setItem(`thoughtflows_start_work_dismissed_${userKey}_${localDateKey()}`, 'true');
+    } catch (_) {}
+    showToast('Work session not started. Click "Start Work" when you are ready.');
+  };
+
+  // 2. Click Logout: display confirmation popup asking: “Are you sure you want to close today’s work?”
+  // Logout only asks to close the day while a work session is running;
+  // signing out before starting (or after closing) never touches attendance
+  const signOutNow = () => {
+    if (sessionStatus === 'In Progress') {
+      fetchCurrentLocation({ timeoutMs: 2500 })
+        .then(loc => closeMyWork(currentUser?.branch, loc))
+        .catch(() => {});
+    }
+    if (onLogout) onLogout();
+    else if (onClose) onClose();
+  };
+  const handleLogoutClick = () => {
+    if (isHrHeadDesk) { signOutNow(); return; }
+    if (sessionStatus === 'In Progress') setShowCloseWorkModal(true);
+    else signOutNow();
+  };
+
+  const handleCancelCloseWork = () => {
+    setShowCloseWorkModal(false);
+    showToast('Work session remains active.');
+  };
+
+  // 2. Confirm Close Work: record logout time & location, calculate total working duration between start & end
+  const handleConfirmCloseWork = async (summaryOverride, passedLocation) => {
+    setWorkModalLoading(true);
+    try {
+      const loc = passedLocation || (await fetchCurrentLocation({ timeoutMs: 3500 }).catch(() => null));
+      // Record official logout time and calculate total working duration in backend
+      const res = await closeMyWork(currentUser?.branch, loc);
+      setAttendanceRecord(res);
+      setSessionStatus('Completed');
+      setWorkEndTime(res.workEndTime || new Date().toISOString());
+      setWorkingDurationText(res.durationText || workingDurationText);
+
+      // If summary is provided or already submitted, update EOD report with completed session details
+      const summaryToSave = summaryOverride || eodSummaryText;
+      if (summaryToSave.trim() || closureSubmitted) {
+        try {
+          await handleEodReportSubmit(summaryToSave, res);
+        } catch (_) {}
+      }
+
+      setShowCloseWorkModal(false);
+      // The server closed any open break with the day
+      try { localStorage.removeItem(breakStartKey); } catch (_) {}
+      setBreakStartTime(null);
+      setIsOnBreak(false);
+      const locNote = res.logoutAddress || res.logoutLocation?.address ? ` (📍 ${res.logoutAddress || res.logoutLocation?.address})` : '';
+      showToast(`✓ Today's work closed successfully! Total Duration: ${res.durationText || workingDurationText}${locNote}`);
+
+      setTimeout(signOutNow, 700);
+    } catch (err) {
+      showToast(`⚠ Error closing work: ${err?.response?.data?.error || err.message}`);
+    } finally {
+      setWorkModalLoading(false);
+    }
+  };
+
+  const handleToggleBreak = () => {
+    setMyAttendance(isOnBreak ? 'resume' : 'break', currentUser?.branch).catch(() => {});
+    if (isOnBreak) {
+      const duration = breakStartTime ? Math.max(0, Math.floor((Date.now() - breakStartTime) / 1000)) : breakSeconds;
+      const newTotal = accumulatedBreak + duration;
+      setAccumulatedBreak(newTotal);
+      try {
+        const today = localDateKey();
+        localStorage.setItem(`thoughtflows_break_acc_${userKey}_${today}`, String(newTotal));
+        localStorage.removeItem(breakStartKey);
+      } catch (_) {}
+      setBreakStartTime(null);
+      setBreakSeconds(0);
+      setIsOnBreak(false);
+    } else {
+      const now = Date.now();
+      setBreakStartTime(now);
+      try { localStorage.setItem(breakStartKey, String(now)); } catch (_) {}
+      setIsOnBreak(true);
+    }
+  };
+
+  const fmtBreakTimer = (secs) => {
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  };
+
+  const [closureSubmitted, setClosureSubmitted] = useState(false);
+  const [closureSubmittedAt, setClosureSubmittedAt] = useState('');
+  const [customMetrics, setCustomMetrics] = useState(null);
+  const [editingMetric, setEditingMetric] = useState(null);
+  const [callRecordings, setCallRecordings] = useState([]);
+  const [leadsPage, setLeadsPage] = useState(1);
+  const [leadsTotalCount, setLeadsTotalCount] = useState(0);
+  const [leadsTotalPages, setLeadsTotalPages] = useState(1);
+  const [leadFilters, setLeadFilters] = useState({});
+  const [leadsViewMode, setLeadsViewMode] = useState('kanban');
+  const [hrLeadCounts, setHrLeadCounts] = useState(null); // whole desk (nav badges, home, other tabs) — never Pipeline-filtered
+  // Pipeline & Follow-ups has its own list / counts so its filters, page and table
+  // mode never change what Demo Desk, Admitted Students, Home and the badges show
+  const [pipelineLeads, setPipelineLeads] = useState(null); // null = same as the desk list
+  const [pipelineLeadCounts, setPipelineLeadCounts] = useState(null);
+  const [pipelineFiltered, setPipelineFiltered] = useState(false);
+  const [studentsPage, setStudentsPage] = useState(1);
+  const [studentsTotalCount, setStudentsTotalCount] = useState(0);
+  const [studentsStats, setStudentsStats] = useState(null); // overview card totals (all pages)
+  const [studentsTotalPages, setStudentsTotalPages] = useState(1);
+  const PAGE_LIMIT = 50;
+  // Tables show 10 rows by default; the Rows picker under each table switches to 25 / 50
+  const [leadsTableLimit, setLeadsTableLimit] = useState(10);
+  const [admitted, setAdmitted] = useState({ rows: [], page: 1, limit: 10, totalCount: 0, totalPages: 1, stats: null });
+  const LEADS_BOARD_LIMIT = 200;
+  const LEADS_PER_STAGE = 80; // board: up to 80 newest leads in each stage
+  
+  // Local daily calls cache for instant reactivity when calling through modal
+  // Today's calls come from the server call log (works across devices / browsers)
+  const [todayCallLogs, setTodayCallLogs] = useState([]);
+  useEffect(() => {
+    if (!userName) return undefined;
+    let alive = true;
+    // Leadership desks count the whole desk's calls (team / branch / all)
+    const load = () => getTodayCallLog(viewScope?.mode ? { scope: 'desk' } : undefined)
+      .then((r) => { if (alive && Array.isArray(r?.list)) setTodayCallLogs(r.list.map((c) => ({ id: c.leadId, time: c.createdAt, outcome: c.outcome, duration: c.durationSeconds, connected: c.connected, counselorName: c.counselorName || '', leadName: c.leadName || '' }))); })
+      .catch(() => {});
+    load();
+    const t = setInterval(() => {
+      if (typeof document === 'undefined' || !document.hidden) load();
+    }, 120000);
+    return () => { alive = false; clearInterval(t); };
+  }, [userName, viewScope?.mode]);
+
+  const [dashMenuOpen, setDashMenuOpen] = useState(false);
+  const [barTheme, setBarTheme] = useState(() => {
+    try {
+      const saved = localStorage.getItem('thoughtflows_hr_theme');
+      return saved && saved !== 'clay' ? saved : 'turquoise';
+    } catch {
+      return 'turquoise';
+    }
+  }); // 'turquoise' | 'slate' | 'teal' | 'light'
+
+  const handleCycleTheme = () => {
+    setBarTheme(prev => {
+      const next = prev === 'turquoise' ? 'slate' : prev === 'slate' ? 'teal' : prev === 'teal' ? 'light' : 'turquoise';
+      try {
+        localStorage.setItem('thoughtflows_hr_theme', next);
+      } catch (e) {
+        console.warn('Failed to save theme to localStorage', e);
+      }
+      return next;
+    });
+  };
+  const [selectedCallLead, setSelectedCallLead] = useState(null);
+  const [showBookDemoModal, setShowBookDemoModal] = useState(false);
+  const [bookDemoInitialData, setBookDemoInitialData] = useState(null);
+  const [showAddLeadModal, setShowAddLeadModal] = useState(false);
+  const [addLeadModalMode, setAddLeadModalMode] = useState('single');
+  const [studentLogin, setStudentLogin] = useState(null);
+  const [toastMsg, setToastMsg] = useState(null);
+
+  // Training → HR notifications (handover progress, attendance alerts,
+  // demo outcomes, syllabus completion, trainer recommendations)
+  const [hrNotifications, setHrNotifications] = useState([]);
+  const [showHrNotifs, setShowHrNotifs] = useState(false);
+  // A new notification (referral lead, trainer progress, student request…)
+  // came from another user's device — reload the CRM data behind it.
+  const seenHrNotifIds = React.useRef(null);
+  const reloadDataRef = React.useRef(null);
+  const loadHrNotifications = async () => {
+    try {
+      const list = await getNotifications({ audience: 'hr', recipientName: currentUser?.name || currentUser?.userName || '' });
+      const arr = Array.isArray(list) ? list : [];
+      setHrNotifications(arr);
+      const ids = arr.map(n => n._id);
+      const hasNew = seenHrNotifIds.current && ids.some(id => !seenHrNotifIds.current.has(id));
+      seenHrNotifIds.current = new Set(ids);
+      if (hasNew && reloadDataRef.current) reloadDataRef.current();
+    } catch (_) {}
+  };
+  useEffect(() => {
+    loadHrNotifications();
+    const unsub = onDataUpdate((entity) => {
+      if (['notifications', 'students', 'demos', 'trainer_attendance'].includes(entity)) loadHrNotifications();
+    });
+    const poll = setInterval(() => {
+      if (typeof document === 'undefined' || !document.hidden) loadHrNotifications();
+    }, 60000);
+    return () => { unsub(); clearInterval(poll); };
+  }, [currentUser?.name]);
+  const unreadHrNotifs = hrNotifications.filter(n => !n.read);
+
+  // Real database states
+  const [students, setStudents] = useState([]);
+  const [leads, setLeads] = useState([]);
+  const [demos, setDemos] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  // Elevated user check (Admin / Super Admin / Leadership can toggle All vs My Leads)
+  const isElevatedUser = currentUser?.role === 'Super Admin' ||
+    currentUser?.role === 'Admin' ||
+    currentUser?.department === 'admin' ||
+    currentUser?.department === 'leadership';
+
+  const [scopeMode, setScopeMode] = useState('mine'); // 'mine' | 'all'
+  const isBranchHeadUser = /branch\s*(head|manager)|branch\s*hr\s*head|business\s*(lead|head)|\bbm\b/i.test(currentUser?.role || '');
+  const scopeKind = viewScope?.mode || (isBranchHeadUser && currentUser?.branch ? 'branch' : null); // 'team' | 'branch' | 'all' | null (own desk)
+  const teamNamesKey = (viewScope?.names || []).join('|');
+  const teamNames = useMemo(
+    () => (scopeKind === 'team' ? Array.from(new Set([currentUser?.name, ...(viewScope?.names || [])].filter(Boolean))) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [scopeKind, currentUser?.name, teamNamesKey]
+  );
+  // true = show every record the server returned (Department Head / Branch Head / Admin "All")
+  const viewAll = scopeKind ? scopeKind !== 'team' : (scopeMode === 'all' && isElevatedUser);
+  // The server already returned only this desk's records (own name, or the
+  // Team Lead's team) — don't re-filter them with a weaker client-side match
+  // (The server team-scopes only real HR Team Leads — an Admin opening the
+  // Team Lead desk still gets everything, so that case filters here.)
+  const isRealTeamLead = !isElevatedUser && /\btl\b|team\s*lead/i.test(String(currentUser?.role || ''));
+  const serverScoped = (scopeKind === 'team' && isRealTeamLead)
+    || (!scopeKind && Boolean(currentUser?.name?.trim()) && (!isElevatedUser || scopeMode === 'mine'));
+
+  const showToast = (msg) => {
+    setToastMsg(msg);
+    setTimeout(() => setToastMsg(null), 3000);
+  };
+
+  // Lead allocated to a counsellor without LMS certification (server warning)
+  useEffect(() => {
+    const onWarn = (e) => showToast(`⚠ ${e.detail?.message || 'Counsellor not LMS-certified for this course'}`);
+    window.addEventListener('thoughtflows_lms_warning', onWarn);
+    return () => window.removeEventListener('thoughtflows_lms_warning', onWarn);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Applied when today's EOD closure arrives (or doesn't) — extracted so the
+  // closure lookup can run alongside the lead/student tables instead of
+  // holding them up.
+  const applyTodayClosure = (closureRes, dKey, counselorFilter) => {
+    if (closureRes) {
+      setClosureSubmitted(true);
+      if (closureRes.submittedAt) {
+        setClosureSubmittedAt(new Date(closureRes.submittedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }));
+      }
+      if (closureRes.summary || closureRes.notes) {
+        setEodSummaryText(closureRes.summary || closureRes.notes);
+      }
+      setCustomMetrics({
+        callsMade: closureRes.callsMade,
+        connected: closureRes.connected,
+        demosBooked: closureRes.demosBooked,
+        admissions: closureRes.admissions,
+        feesCollected: closureRes.feesCollected,
+        pendingFus: closureRes.pendingFus
+      });
+      return;
+    }
+    // Check localStorage for today's submission
+    try {
+      const localSaved = localStorage.getItem(`thoughtflows_closure_${dKey}_${counselorFilter || ''}`);
+      if (localSaved) {
+        const parsed = JSON.parse(localSaved);
+        if (parsed.submitted) {
+          setClosureSubmitted(true);
+          setClosureSubmittedAt(parsed.submittedAt || '');
+          if (parsed.summary) setEodSummaryText(parsed.summary);
+          if (parsed.metrics) setCustomMetrics(parsed.metrics);
+        }
+      } else {
+        // New day reset!
+        setClosureSubmitted(false);
+        setClosureSubmittedAt('');
+        setEodSummaryText('');
+        setCustomMetrics(null);
+      }
+    } catch {
+      setClosureSubmitted(false);
+    }
+  };
+
+  // Admitted Students table: its own server page (same scope as the main student list)
+  const admittedSeqRef = React.useRef(0);
+  const admittedRef = React.useRef({ page: 1, limit: 10 });
+  const admittedFiltersRef = React.useRef({}); // branch / HR / course ... picked in the table's filter bar
+  const loadAdmitted = async (page = admittedRef.current.page, limit = admittedRef.current.limit) => {
+    const seq = ++admittedSeqRef.current;
+    admittedRef.current = { page, limit };
+    const counselorFilter = currentUser?.name?.trim();
+    const shouldFilterOnServer = counselorFilter && !scopeKind && (!isElevatedUser || scopeMode === 'mine');
+    const deskBranch = viewScope?.branch || (scopeKind === 'branch' ? currentUser?.branch : '') || '';
+    const branchParam = scopeKind === 'branch' && deskBranch ? { branch: deskBranch } : {};
+    // Table filters never widen the desk's own scope: a fixed branch / own-HR view wins
+    const tableFilters = { ...admittedFiltersRef.current };
+    if (branchParam.branch) delete tableFilters.branch;
+    if (shouldFilterOnServer) delete tableFilters.hrName;
+    try {
+      const res = await getStudents({ ...tableFilters, ...(shouldFilterOnServer ? { hrName: counselorFilter } : {}), ...branchParam, page, limit, withStats: 'true' });
+      if (seq !== admittedSeqRef.current) return;
+      const rows = Array.isArray(res) ? res : (Array.isArray(res?.students) ? res.students : []);
+      setAdmitted({
+        rows, page, limit,
+        totalCount: typeof res?.totalCount === 'number' ? res.totalCount : rows.length,
+        totalPages: res?.totalPages || 1,
+        stats: res?.stats || null
+      });
+    } catch (e) {
+      console.error('Admitted students load failed:', e);
+    }
+  };
+
+  // Pipeline filters belong to the Pipeline screen only: when the user leaves it
+  // (its dropdowns reset to "All" on return) drop them so list and dropdowns agree
+  const pipelineTabRef = React.useRef(activeTab);
+  useEffect(() => {
+    const isPipe = (t) => t === 'Pipeline & Follow-ups' || t === 'My Pipeline' || t === 'Follow-up Board';
+    const was = pipelineTabRef.current;
+    pipelineTabRef.current = activeTab;
+    if (was !== activeTab && isPipe(was) && Object.keys(leadFilters).length) {
+      setLeadFilters({});
+      setLeadsPage(1);
+      loadAllData(true, { leadFilters: {}, leadsPage: 1 });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
+
+  // (Re)load the Admitted Students table when it is opened or the desk scope changes
+  useEffect(() => {
+    if (activeTab === 'Admitted Students') loadAdmitted(1, admittedRef.current.limit);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, scopeKind, scopeMode, viewScope?.branch, currentUser?.name]);
+
+  const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+  const loadSeqRef = React.useRef(0);
+  const loadAllData = async (silent = false, overrides = {}) => {
+    // Only the newest load may write to state — an older, slower response
+    // (started before a save) must never overwrite fresher data.
+    const loadSeq = ++loadSeqRef.current;
+    try {
+      if (!silent) setLoading(true);
+      const counselorFilter = currentUser?.name?.trim();
+      const shouldFilterOnServer = counselorFilter && !scopeKind && (!isElevatedUser || scopeMode === 'mine');
+      const dKey = localDateKey();
+      const targetStudentsPage = overrides.studentsPage ?? studentsPage;
+      const targetLeadsPage = overrides.leadsPage ?? leadsPage;
+      const targetLeadsMode = overrides.leadsViewMode ?? leadsViewMode;
+      const targetLeadsLimit = targetLeadsMode === 'table' ? (overrides.leadsTableLimit ?? leadsTableLimit) : LEADS_BOARD_LIMIT;
+      const activeLeadFilters = overrides.leadFilters ?? leadFilters;
+      // Branch Head desk: always ask for this branch only (the server also pins
+      // a Branch Head to their own branch; this covers Admin opening the desk)
+      const deskBranch = viewScope?.branch || (scopeKind === 'branch' ? currentUser?.branch : '') || '';
+      const branchParam = scopeKind === 'branch' && deskBranch ? { branch: deskBranch } : {};
+      const leadParams = {
+        ...activeLeadFilters,
+        ...branchParam,
+        ...(shouldFilterOnServer && !activeLeadFilters.counselor ? { counselor: counselorFilter } : {}),
+        page: targetLeadsMode === 'table' ? targetLeadsPage : 1,
+        limit: targetLeadsLimit,
+        // Board views: newest leads of every stage, not just the newest overall
+        ...(targetLeadsMode === 'table' ? {} : { perStage: LEADS_PER_STAGE })
+      };
+      Object.keys(leadParams).forEach((k) => {
+        if (leadParams[k] === '' || leadParams[k] === 'all' || leadParams[k] === undefined) {
+          delete leadParams[k];
+        }
+      });
+
+      // Call recordings, the EOD closure and the lead counters are side panels:
+      // they are applied the moment they arrive instead of delaying the lead
+      // and student tables that the page actually opens on.
+      getRecordings({ ...(shouldFilterOnServer ? { counselor: counselorFilter } : {}), ...branchParam, page: 1, limit: PAGE_LIMIT })
+        .then((recRes) => {
+          const recList = Array.isArray(recRes) ? recRes : (Array.isArray(recRes?.recordings) ? recRes.recordings : []);
+          setCallRecordings(recList);
+        })
+        .catch(() => {});
+
+      // Desk-wide list & counts: scope only (no Pipeline filters, first page)
+      const deskLeadParams = {
+        ...branchParam,
+        ...(shouldFilterOnServer ? { counselor: counselorFilter } : {}),
+        page: 1,
+        limit: LEADS_BOARD_LIMIT,
+        perStage: LEADS_PER_STAGE
+      };
+      const { page: _dp, limit: _dl, perStage: _dps, ...deskCountParams } = deskLeadParams;
+      const { page: _p, limit: _l, perStage: _ps, ...countParams } = leadParams;
+      const pipelineHasFilters = Object.keys(activeLeadFilters).some((k) => !['', 'all', undefined].includes(activeLeadFilters[k]));
+      const pipelineSameAsDesk = JSON.stringify(leadParams) === JSON.stringify(deskLeadParams);
+      getHrLeadCounts(Object.keys(deskCountParams).length ? deskCountParams : undefined)
+        .then((countsRes) => {
+          if (countsRes && typeof countsRes === 'object') {
+            setHrLeadCounts(countsRes);
+            if (!pipelineHasFilters) setPipelineLeadCounts(null);
+          }
+        })
+        .catch(() => {});
+      if (pipelineHasFilters) {
+        // Pipeline pill counts follow its filters (minus paging)
+        getHrLeadCounts(countParams)
+          .then((countsRes) => { if (countsRes && typeof countsRes === 'object') setPipelineLeadCounts(countsRes); })
+          .catch(() => {});
+      }
+
+      (counselorFilter ? getTodayClosure(counselorFilter, dKey) : Promise.resolve(null))
+        .catch(() => null)
+        .then((closureRes) => applyTodayClosure(closureRes, dKey, counselorFilter));
+
+      // Each list is applied on its own: one slow / failed request (students,
+      // demos) must never leave the lead board empty. A failed lead read is
+      // retried once, and on a second failure the board keeps what it had.
+      const withRetry = (fn) => fn().catch(() => sleepMs(1200).then(fn));
+      const [stR, ldR, dmR] = await Promise.allSettled([
+        getStudents({ ...(shouldFilterOnServer ? { hrName: counselorFilter } : {}), ...branchParam, page: targetStudentsPage, limit: PAGE_LIMIT, withStats: 'true' }),
+        withRetry(() => getLeads(deskLeadParams)),
+        getDemos(shouldFilterOnServer ? { counselor: counselorFilter, ...branchParam } : (branchParam.branch ? branchParam : undefined))
+      ]);
+      if (loadSeq !== loadSeqRef.current) return;
+
+      if (stR.status === 'fulfilled') {
+        const stRes = stR.value;
+        const stList = Array.isArray(stRes) ? stRes : (Array.isArray(stRes?.students) ? stRes.students : []);
+        setStudents(stList);
+        setStudentsTotalCount(typeof stRes?.totalCount === 'number' ? stRes.totalCount : stList.length);
+        setStudentsTotalPages(stRes?.totalPages || 1);
+        setStudentsStats(stRes?.stats || null);
+      } else {
+        console.error('Students load failed:', stR.reason);
+      }
+
+      if (ldR.status === 'fulfilled') {
+        const ldRes = ldR.value;
+        const ldList = Array.isArray(ldRes) ? ldRes : (Array.isArray(ldRes?.leads) ? ldRes.leads : null);
+        if (ldList) setLeads(ldList);
+        // Pipeline's own page (only fetched when it differs from the desk list)
+        let pipeRes = ldRes;
+        if (!pipelineSameAsDesk) {
+          pipeRes = await withRetry(() => getLeads(leadParams)).catch((e) => { console.error('Pipeline leads load failed:', e); return null; });
+          if (loadSeq !== loadSeqRef.current) return;
+        }
+        if (pipeRes) {
+          const pipeList = Array.isArray(pipeRes) ? pipeRes : (pipeRes?.leads || []);
+          setPipelineLeads(pipelineSameAsDesk ? null : pipeList);
+          setPipelineFiltered(pipelineHasFilters);
+          setLeadsTotalCount(typeof pipeRes?.totalCount === 'number' ? pipeRes.totalCount : pipeList.length);
+          setLeadsTotalPages(pipeRes?.totalPages || 1);
+        }
+      } else {
+        console.error('Leads load failed (keeping the current board):', ldR.reason);
+      }
+
+      if (dmR.status === 'fulfilled') setDemos(Array.isArray(dmR.value) ? dmR.value : []);
+      setLoading(false);
+    } catch (err) {
+      console.error('Error fetching HR CRM live data:', err);
+      setLoading(false);
+    }
+  };
+  reloadDataRef.current = () => loadAllData(true);
+
+  useEffect(() => {
+    loadAllData();
+    const unsub = onDataUpdate((entity) => {
+      if (entity === 'leads' || entity === 'students' || entity === 'demos' || entity === 'recordings' || entity === 'closures' || entity === 'placements') {
+        // Go through the ref so the reload uses the current page/filters/view
+        if (reloadDataRef.current) reloadDataRef.current();
+        else loadAllData(true);
+      }
+    });
+    return unsub;
+  }, [scopeMode, currentUser?.name, todayKey, scopeKind]);
+
+  const handleAddLeadSubmit = async (leadData) => {
+    try {
+      const owner = leadData.counselorAssigned || leadData.allocatedTo || currentUser?.name || '';
+      const payload = {
+        ...leadData,
+        fullName: leadData.fullName || leadData.name,
+        counselorAssigned: owner,
+        allocatedTo: owner
+      };
+      const created = await createLead(payload);
+      setLeads(prev => [created, ...prev]);
+      setShowAddLeadModal(false);
+      if (created.studentLogin?.password) setStudentLogin({ name: created.fullName, phone: created.phone, ...created.studentLogin });
+      showToast(created.studentLogin?.existing ? `✓ Added lead: ${created.fullName} (login already exists for this email)` : `✓ Added real lead: ${created.fullName}`);
+    } catch (err) {
+      console.error('Failed to create lead:', err);
+      const msg = err?.response?.data?.error || err.message || 'Error saving lead to database';
+      showToast(`⚠ ${msg}`);
+      throw err;
+    }
+  };
+
+  const handleBookDemoSubmit = async (demoData) => {
+    try {
+      const created = await createDemo({ ...demoData, bookedBy: currentUser?.name || currentUser?.userName || '' });
+      setDemos(prev => [created, ...prev]);
+      setShowBookDemoModal(false);
+      showToast(`✓ Booked Demo for ${created.candidateName}! Moved to Trainer Head & Manager for trainer assignment.`);
+    } catch (err) {
+      console.error('Failed to book demo:', err);
+      showToast('Error saving demo to database');
+    }
+  };
+
+  // Counselor Scoping: Strictly filter leads, students, and demos for the logged-in counselor.
+  // Names are compared whole (so "Ram" never picks up "Ramesh"), and a record with
+  // no owner belongs to nobody — it never shows up in every counsellor's list.
+  const normName = (v) => String(v || '').trim().replace(/\s+/g, ' ').toLowerCase();
+  const myName = normName(currentUser?.name);
+
+  // Checks if a record owner (counselorAssigned, allocatedTo, spokenBy) matches the logged in counselor
+  // Disambiguates shared short names across branches using candidateBranch vs loggedInBranch.
+  const matchesMyName = (candidateName, loggedInName, candidateBranch = '', loggedInBranch = branchName) =>
+    matchesHrOwnerName(candidateName, loggedInName, candidateBranch, loggedInBranch);
+
+  // Does a record owner belong to this desk's scope? (own name, or any HR in the Team Lead's team)
+  const ownerMatch = (candidateName, candidateBranch = '') => (
+    teamNames
+      ? teamNames.some((n) => matchesMyName(candidateName, n, candidateBranch, ''))
+      : matchesMyName(candidateName, myName, candidateBranch, branchName)
+  );
+
+  // ── Personal (Signed-in Person's) Records ─────────────────────────────────
+  // The Home workspace dashboard strictly displays this logged-in counselor's own data,
+  // while leadership views (HR-wise Data, Attendance, Team Board) preserve branch/team scope.
+  const myStudents = useMemo(() => {
+    if (!myName) return students;
+    return students.filter((s) => {
+      const rb = s.branch || s.leadBranch || s.location || '';
+      return (
+        matchesMyName(s.hrName, myName, rb, branchName) ||
+        matchesMyName(s.counselor, myName, rb, branchName) ||
+        matchesMyName(s.counselorName, myName, rb, branchName) ||
+        matchesMyName(s.allocatedTo, myName, rb, branchName)
+      );
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [students, myName, branchName]);
+
+  const myLeads = useMemo(() => {
+    let baseLeads = leads;
+    if (myName) {
+      baseLeads = leads.filter((l) => {
+        const rb = l.branch || l.location || '';
+        return (
+          matchesMyName(l.counselorAssigned, myName, rb, branchName) ||
+          matchesMyName(l.allocatedTo, myName, rb, branchName) ||
+          // Spoken-by only counts when the lead isn't allocated to anyone
+          (!l.counselorAssigned && !l.allocatedTo && matchesMyName(l.spokenBy, myName, rb, branchName))
+        );
+      });
+    }
+
+    const leadPhones = new Set(
+      baseLeads.map((l) => (l.phone || '').replace(/\D/g, '').slice(-10)).filter(Boolean)
+    );
+    const leadStudentIds = new Set(
+      baseLeads.map((l) => l.admittedStudentId).filter(Boolean)
+    );
+
+    const syntheticAdmittedLeads = myStudents
+      .filter((s) => {
+        const ph = (s.phone || '').replace(/\D/g, '').slice(-10);
+        const hasByPhone = ph.length === 10 && leadPhones.has(ph);
+        const hasById = s.studentId && leadStudentIds.has(s.studentId);
+        return !hasByPhone && !hasById;
+      })
+      .map((s) => ({
+        _id: `synth-${s._id || s.studentId}`,
+        id: `synth-${s._id || s.studentId}`,
+        isSynthetic: true,
+        studentMongoId: s._id || '',
+        fullName: s.name,
+        name: s.name,
+        phone: s.phone || '',
+        whatsappNumber: s.whatsappNumber || s.phone || '',
+        email: s.email || '',
+        course: s.course || '',
+        branch: s.branch || '',
+        location: s.location || s.branch || '',
+        education: s.qualification || '',
+        passoutYear: s.passoutYear || '',
+        source: s.source || 'Direct Admission',
+        sourceName: s.source || 'Direct Admission',
+        stage: 'admitted',
+        status: 'completed',
+        counselorAssigned: s.hrName || currentUser?.name || '',
+        allocatedTo: s.hrName || currentUser?.name || '',
+        admittedStudentId: s.studentId,
+        batchTiming: s.batchTiming || '',
+        followUpDate: '',
+        followUpTime: '',
+        notes: `Admitted Student ID: ${s.studentId}`,
+        createdAt: s.createdAt || s.registeredAt || new Date().toISOString()
+      }));
+
+    return [...baseLeads, ...syntheticAdmittedLeads];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leads, myStudents, myName, branchName, currentUser?.name]);
+
+  const myDemos = useMemo(() => {
+    if (!myName) return demos;
+    const leadPhones = new Set(
+      myLeads.map((l) => (l.phone || '').replace(/\D/g, '').slice(-10)).filter(Boolean)
+    );
+    return demos.filter((d) => {
+      const ph = (d.phone || '').replace(/\D/g, '').slice(-10);
+      const isLeadCandidate = ph.length === 10 && leadPhones.has(ph);
+      const rb = d.branch || d.location || '';
+      const isMine = (
+        matchesMyName(d.bookedBy, myName, rb, branchName) ||
+        matchesMyName(d.counselor, myName, rb, branchName) ||
+        matchesMyName(d.hrName, myName, rb, branchName) ||
+        matchesMyName(d.counselorAssigned, myName, rb, branchName) ||
+        matchesMyName(d.allocatedTo, myName, rb, branchName)
+      );
+      return isMine || isLeadCandidate;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [demos, myLeads, myName, branchName]);
+
+  const myRecordings = useMemo(() => {
+    if (!myName) return callRecordings;
+    return callRecordings.filter((r) => matchesMyName(r.counselorName, myName));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [callRecordings, myName]);
+
+  const myTodayCallLogs = useMemo(() => {
+    if (!myName) return todayCallLogs;
+    return todayCallLogs.filter((c) => !c.counselorName || matchesMyName(c.counselorName, myName));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [todayCallLogs, myName]);
+
+  const rawScopedStudents = useMemo(() => {
+    if (viewAll || serverScoped) return students;
+    if (!myName && !teamNames) return students;
+    return students.filter(s => {
+      const rb = s.branch || s.leadBranch || s.location || '';
+      return (
+        ownerMatch(s.hrName, rb) ||
+        ownerMatch(s.counselor, rb) ||
+        ownerMatch(s.counselorName, rb) ||
+        ownerMatch(s.allocatedTo, rb)
+      );
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [students, viewAll, serverScoped, teamNames, myName, branchName]);
+
+  // Desk scoping for a lead list (+ admitted students that have no lead yet)
+  const scopeLeadList = (srcLeads, withSynthetic = true) => {
+    let baseLeads = srcLeads;
+    if (viewAll || serverScoped) {
+      baseLeads = srcLeads;
+    } else if (myName || teamNames) {
+      baseLeads = srcLeads.filter(l => {
+        const rb = l.branch || l.location || '';
+        return (
+          ownerMatch(l.counselorAssigned, rb) ||
+          ownerMatch(l.allocatedTo, rb) ||
+          (!l.counselorAssigned && !l.allocatedTo && ownerMatch(l.spokenBy, rb))
+        );
+      });
+    }
+
+    // Ensure every admitted student belonging to this counselor is present in the pipeline
+    // even if a lead was not previously created or synced
+    const leadPhones = new Set(
+      baseLeads.map(l => (l.phone || '').replace(/\D/g, '').slice(-10)).filter(Boolean)
+    );
+    const leadStudentIds = new Set(
+      baseLeads.map(l => l.admittedStudentId).filter(Boolean)
+    );
+
+    const syntheticAdmittedLeads = rawScopedStudents
+      .filter(s => {
+        const ph = (s.phone || '').replace(/\D/g, '').slice(-10);
+        const hasByPhone = ph.length === 10 && leadPhones.has(ph);
+        const hasById = s.studentId && leadStudentIds.has(s.studentId);
+        return !hasByPhone && !hasById;
+      })
+      .map(s => ({
+        // Not a real lead: a "synth-" id never reaches /leads, and calls on it
+        // save to the student record instead (see openCallFor)
+        _id: `synth-${s._id || s.studentId}`,
+        id: `synth-${s._id || s.studentId}`,
+        isSynthetic: true,
+        studentMongoId: s._id || '',
+        fullName: s.name,
+        name: s.name,
+        phone: s.phone || '',
+        whatsappNumber: s.whatsappNumber || s.phone || '',
+        email: s.email || '',
+        course: s.course || '',
+        branch: s.branch || '',
+        location: s.location || s.branch || '',
+        education: s.qualification || '',
+        passoutYear: s.passoutYear || '',
+        source: s.source || 'Direct Admission',
+        sourceName: s.source || 'Direct Admission',
+        stage: 'admitted',
+        status: 'completed',
+        counselorAssigned: s.hrName || currentUser?.name || '',
+        allocatedTo: s.hrName || currentUser?.name || '',
+        admittedStudentId: s.studentId,
+        batchTiming: s.batchTiming || '',
+        followUpDate: '',
+        followUpTime: '',
+        notes: `Admitted Student ID: ${s.studentId}`,
+        createdAt: s.createdAt || s.registeredAt || new Date().toISOString()
+      }));
+
+    return withSynthetic ? [...baseLeads, ...syntheticAdmittedLeads] : baseLeads;
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const scopedLeads = useMemo(() => scopeLeadList(leads), [leads, rawScopedStudents, viewAll, serverScoped, teamNames, myName, currentUser?.name]);
+  // Pipeline view: its own filtered / paged list (filtered lists skip the extra admitted rows, they would not match the filters)
+  const scopedPipelineLeads = useMemo(
+    () => (pipelineLeads ? scopeLeadList(pipelineLeads, !pipelineFiltered) : scopedLeads),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pipelineLeads, pipelineFiltered, scopedLeads, rawScopedStudents, viewAll, serverScoped, teamNames, myName, currentUser?.name]
+  );
+
+  // Scoped students directly from verified records
+  const scopedStudents = rawScopedStudents;
+
+  const scopedDemos = useMemo(() => {
+    if (viewAll || serverScoped) return demos;
+    if (!myName && !teamNames) return demos;
+    const leadPhones = new Set(
+      scopedLeads.map(l => (l.phone || '').replace(/\D/g, '').slice(-10)).filter(Boolean)
+    );
+    return demos.filter(d => {
+      const ph = (d.phone || '').replace(/\D/g, '').slice(-10);
+      const isLeadCandidate = ph.length === 10 && leadPhones.has(ph);
+      const rb = d.branch || d.location || '';
+      const isMine = (
+        ownerMatch(d.counselor, rb) ||
+        ownerMatch(d.bookedBy, rb) ||
+        ownerMatch(d.hrName, rb) ||
+        ownerMatch(d.counselorAssigned, rb) ||
+        ownerMatch(d.allocatedTo, rb)
+      );
+      return isMine || isLeadCandidate;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [demos, scopedLeads, viewAll, serverScoped, teamNames, myName]);
+
+  // Call recordings in this desk's scope (the server already pins a counsellor to their own)
+  // Branch Head: recordings of the counsellors who own this branch's leads / admissions
+  const branchOwnerNames = useMemo(() => (
+    scopeKind === 'branch'
+      ? Array.from(new Set([
+        ...scopedLeads.map((l) => l.counselorAssigned || l.allocatedTo),
+        ...scopedStudents.map((st) => st.hrName)
+      ].filter(Boolean)))
+      : null
+  ), [scopeKind, scopedLeads, scopedStudents]);
+  const recordingScopeNames = (scopeKind === 'team' && !isRealTeamLead) ? teamNames : branchOwnerNames;
+  const assignableCounsellors = useMemo(() => {
+    const names = teamNames || branchOwnerNames || Array.from(new Set(scopedLeads.map((l) => l.counselorAssigned || l.allocatedTo).filter(Boolean)));
+    return Array.from(new Set([currentUser?.name, ...(names || [])].filter(Boolean))).sort((a, b) => a.localeCompare(b));
+  }, [teamNames, branchOwnerNames, scopedLeads, currentUser?.name]);
+  const scopedRecordings = useMemo(() => (
+    recordingScopeNames
+      ? callRecordings.filter((r) => recordingScopeNames.some((n) => matchesMyName(r.counselorName, n)))
+      : callRecordings
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  ), [callRecordings, recordingScopeNames]);
+
+  // Monthly admissions target: the Head of HR's target for this counsellor (or
+  // "All HR"), otherwise Admin's default target from the incentive policy
+  const incentivePolicy = useIncentivePolicy();
+  const [headTarget, setHeadTarget] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    const load = () => getHrTargets({ period: 'month' })
+      .then((rows) => {
+        if (!alive || !Array.isArray(rows)) return;
+        const admissionRows = rows.filter(t => /admission|enrol/i.test(t.title || ''));
+        const pick = admissionRows.find(t => matchesMyName(t.assignedTo, myName))
+          || admissionRows.find(t => /^all\b/i.test(String(t.assignedTo || '').trim()));
+        setHeadTarget(pick && Number(pick.target) > 0 ? Number(pick.target) : null);
+      })
+      .catch(() => {});
+    load();
+    const off = onDataUpdate((entity) => { if (entity === 'targets') load(); });
+    return () => { alive = false; off(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myName]);
+  const policyTarget = Number(incentivePolicy?.defaultTarget) > 0 ? Number(incentivePolicy.defaultTarget) : null;
+  const monthlyTarget = { value: headTarget || policyTarget, fromHead: Boolean(headTarget) };
+
+  const monthPrefix = todayKey.slice(0, 7);
+  // Home Golden Target & KPI card 4: strictly this logged-in person's closed admissions
+  const admissionsThisMonth = useMemo(() => myStudents.filter(s => {
+    if (myName && !matchesMyName(s.hrName, myName, s.branch || s.leadBranch || s.location || '', branchName)) return false;
+    const d = new Date(s.admissionDate || s.createdAt);
+    return !isNaN(d.getTime()) && localDateKey(d).slice(0, 7) === monthPrefix;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }).length, [myStudents, monthPrefix, myName, branchName]);
+
+  // Dynamic priorities for tomorrow (person's own overdue count for Home card 2)
+  const overdueCount = useMemo(() => {
+    return myLeads.filter(l => l.followUpDate && l.followUpDate < todayKey && l.stage !== 'admitted' && l.stage !== 'closed').length;
+  }, [myLeads, todayKey]);
+
+  const feePendingCount = useMemo(() => {
+    return myLeads.filter(l => l.stage === 'fee_followup' || l.stage === 'demo_attended').length;
+  }, [myLeads]);
+
+  // End of day numbers (strictly calculated for TODAY - resets each day)
+  const buildDailyMetrics = (L, S, D, R, C, admissionOwner) => {
+    // 1. Calls made TODAY — the server call log is the record (every call saved
+    //    from the call modal writes one row). Uploaded recordings only count if
+    //    they outnumber it, e.g. calls made outside the modal.
+    const recordingsToday = R.filter(r => isToday(r.createdAt));
+    const callsMadeToday = Math.max(C.length, recordingsToday.length);
+
+    // 2. Connected calls TODAY (same sources, same rule)
+    const connectedToday = Math.max(
+      C.filter(c => c.connected).length,
+      recordingsToday.filter(r => r.outcome && r.outcome !== 'Not Reachable').length
+    );
+
+    // 3. Demos BOOKED today (not demos that merely take place today)
+    const demosBookedToday = D.filter(d => isToday(d.createdAt)).length;
+
+    // 4. Admissions TODAY (strictly admissions closed by this counselor)
+    const todayAdmissions = S.filter(s => {
+      if (admissionOwner && !admissionOwner(s.hrName, s.branch || s.leadBranch || s.location || '')) return false;
+      return isToday(s.createdAt) || isToday(s.admissionDate);
+    });
+    const admissionsToday = todayAdmissions.length;
+
+    // 5. Fees collected TODAY = receipts dated today (admission payments + instalments).
+    //    Older admissions saved before receipts existed count their paid amount.
+    const feesTodayNum = S.reduce((acc, s) => {
+      const receipts = Array.isArray(s.receipts) ? s.receipts : [];
+      if (!receipts.length) return acc + (isToday(s.createdAt) ? Number(s.paidAmount) || 0 : 0);
+      return acc + receipts
+        .filter(r => r.date === todayKey || (!r.date && isToday(r.at)))
+        .reduce((a, r) => a + (Number(r.amount) || 0), 0);
+    }, 0);
+
+    // 6. Pending follow-ups due TODAY or overdue
+    const pendingToday = L.filter(l => {
+      if (l.stage === 'admitted' || l.stage === 'closed') return false;
+      if (l.followUpDate) return l.followUpDate <= todayKey;
+      return l.stage === 'new' || l.stage === 'contacted';
+    }).length;
+
+    return {
+      callsMade: callsMadeToday,
+      connected: connectedToday,
+      demosBooked: demosBookedToday,
+      admissions: admissionsToday,
+      rawFeesCollected: feesTodayNum,
+      feesCollected: `₹${feesTodayNum.toLocaleString('en-IN')}`,
+      pendingFus: pendingToday
+    };
+  };
+  const computedDailyMetrics = useMemo(
+    () => buildDailyMetrics(scopedLeads, scopedStudents, scopedDemos, scopedRecordings, todayCallLogs, (!viewAll && myName) ? ownerMatch : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [scopedLeads, scopedStudents, scopedDemos, scopedRecordings, todayCallLogs, todayKey, viewAll, myName, teamNames]
+  );
+  // The EOD report and Home dashboard cards are ALWAYS strictly the signed-in person's OWN day
+  const eodDailyMetrics = useMemo(() => {
+    return buildDailyMetrics(
+      myLeads,
+      myStudents,
+      myDemos,
+      myRecordings,
+      myTodayCallLogs,
+      (n, rb = '') => matchesMyName(n, myName, rb, branchName)
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myLeads, myStudents, myDemos, myRecordings, myTodayCallLogs, myName, branchName, todayKey]);
+
+  // If user corrected/edited numbers, use customMetrics; otherwise use live computed daily metrics
+  const closureMetrics = useMemo(() => {
+    if (customMetrics) {
+      const rawFees = typeof customMetrics.feesCollected === 'number' 
+        ? customMetrics.feesCollected 
+        : (parseInt(String(customMetrics.feesCollected).replace(/\D/g, '')) || 0);
+      return {
+        callsMade: customMetrics.callsMade ?? eodDailyMetrics.callsMade,
+        connected: customMetrics.connected ?? eodDailyMetrics.connected,
+        demosBooked: customMetrics.demosBooked ?? eodDailyMetrics.demosBooked,
+        admissions: customMetrics.admissions ?? eodDailyMetrics.admissions,
+        rawFeesCollected: rawFees,
+        feesCollected: typeof customMetrics.feesCollected === 'string' && customMetrics.feesCollected.startsWith('₹') 
+          ? customMetrics.feesCollected 
+          : `₹${rawFees.toLocaleString('en-IN')}`,
+        pendingFus: customMetrics.pendingFus ?? eodDailyMetrics.pendingFus
+      };
+    }
+    return eodDailyMetrics;
+  }, [customMetrics, eodDailyMetrics]);
+  // Home KPI cards: always the signed-in ID person's numbers
+  const homeMetrics = closureMetrics;
+
+  // Home KPI card drill-down: the records behind each count (same rules as the counts)
+  const [kpiDrill, setKpiDrill] = useState(null); // 'calls' | 'followups' | 'demos' | 'admissions'
+  const kpiDrillData = useMemo(() => {
+    if (!kpiDrill) return null;
+    const leadById = new Map(leads.map((l) => [String(l._id || l.id), l]));
+    const recordingsToday = myRecordings.filter((r) => isToday(r.createdAt));
+    const calls = (myTodayCallLogs.length >= recordingsToday.length
+      ? myTodayCallLogs.map((c, i) => {
+          const lead = leadById.get(String(c.id)) || null;
+          return { key: `c${i}`, time: c.time, name: c.leadName || lead?.fullName || lead?.name || '', phone: lead?.phone || '', outcome: c.outcome, duration: c.duration, connected: Boolean(c.connected), lead };
+        })
+      : recordingsToday.map((r, i) => {
+          const lead = leadById.get(String(r.leadId)) || null;
+          return { key: `r${i}`, time: r.createdAt, name: r.leadName || lead?.fullName || '', phone: r.leadPhone || lead?.phone || '', outcome: r.outcome, duration: r.durationSeconds, connected: Boolean(r.outcome && r.outcome !== 'Not Reachable'), lead };
+        })
+    ).sort((a, b) => new Date(b.time) - new Date(a.time));
+
+    const followups = myLeads
+      .filter((l) => {
+        if (l.stage === 'admitted' || l.stage === 'closed') return false;
+        if (l.followUpDate) return l.followUpDate <= todayKey;
+        return l.stage === 'new' || l.stage === 'contacted';
+      })
+      .map((l) => ({
+        key: String(l._id || l.id),
+        lead: l,
+        bucket: !l.followUpDate ? 'nodate' : (l.followUpDate < todayKey ? 'overdue' : 'today')
+      }))
+      .sort((a, b) => String(a.lead.followUpDate || '9999').localeCompare(String(b.lead.followUpDate || '9999')));
+
+    const demos = myDemos.map((d) => {
+      const st = String(d.status || '').toLowerCase();
+      const bucket = ['attended', 'completed', 'fee'].includes(st) ? 'attended'
+        : (!d.trainer || d.trainer === 'Unassigned') ? 'pending' : 'assigned';
+      return { key: String(d._id || d.id), demo: d, bucket };
+    });
+
+    const admissions = myStudents
+      .filter((s) => !myName || matchesMyName(s.hrName, myName, s.branch || s.leadBranch || s.location || '', branchName))
+      .map((s) => {
+        const d = new Date(s.admissionDate || s.createdAt);
+        return { key: String(s._id || s.id), student: s, thisMonth: !isNaN(d.getTime()) && localDateKey(d).slice(0, 7) === monthPrefix, at: d.getTime() || 0 };
+      })
+      .sort((a, b) => b.at - a.at);
+
+    return { calls, followups, demos, admissions };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kpiDrill, leads, myRecordings, myTodayCallLogs, myLeads, myDemos, myStudents, todayKey, monthPrefix, myName, branchName]);
+
+  // 3. Submit EOD Report to HR Head (saves report with HR user details, date, submission time, work session info, and CRM metrics)
+  const handleEodReportSubmit = async (customSummary = null, attendanceOverride = null) => {
+    setEodSubmitting(true);
+    try {
+      const summaryToSave = customSummary !== null ? customSummary : eodSummaryText;
+      const att = attendanceOverride || attendanceRecord;
+      const startTime = att?.checkIn || formatTimeDisplay(att?.workStartTime || workStartTime);
+      const endTime = att?.checkOut || formatTimeDisplay(att?.workEndTime || workEndTime);
+      const durText = att?.durationText || workingDurationText || `${Math.floor(workingMinutes / 60)} hrs ${workingMinutes % 60} mins`;
+      const curSessionStatus = att?.sessionStatus || sessionStatus;
+
+      const payload = {
+        counselorName: userName,
+        counselorEmail: currentUser?.email || '',
+        branch: branchName,
+        department: currentUser?.department || 'hr',
+        date: todayKey,
+        summary: summaryToSave,
+        notes: summaryToSave || `Daily EOD closure submitted by ${userName} on ${todayKey}`,
+        workStartTime: startTime,
+        workEndTime: endTime,
+        workingMinutes: workingMinutes || 0,
+        workingHoursText: durText,
+        workSessionStatus: curSessionStatus,
+        callsMade: closureMetrics.callsMade,
+        connected: closureMetrics.connected,
+        demosBooked: closureMetrics.demosBooked,
+        admissions: closureMetrics.admissions,
+        feesCollected: closureMetrics.rawFeesCollected,
+        pendingFus: closureMetrics.pendingFus,
+        status: 'submitted',
+        // What the system counted — managers see which numbers were hand-corrected
+        systemMetrics: {
+          callsMade: eodDailyMetrics.callsMade,
+          connected: eodDailyMetrics.connected,
+          demosBooked: eodDailyMetrics.demosBooked,
+          admissions: eodDailyMetrics.admissions,
+          feesCollected: eodDailyMetrics.rawFeesCollected,
+          pendingFus: computedDailyMetrics.pendingFus
+        }
+      };
+
+      const res = await saveDailyClosure(payload);
+      setClosureSubmitted(true);
+      const timeStr = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+      setClosureSubmittedAt(timeStr);
+      try {
+        localStorage.setItem(`thoughtflows_closure_${todayKey}_${userName}`, JSON.stringify({
+          submitted: true,
+          submittedAt: timeStr,
+          summary: summaryToSave,
+          metrics: payload
+        }));
+      } catch (e) {}
+      showToast(`✓ EOD Report successfully submitted to HR Head (${timeStr})!`);
+      setEodSubmitting(false);
+      return res;
+    } catch (err) {
+      console.error('Failed to submit daily EOD closure:', err);
+      showToast(`⚠ EOD Report NOT submitted: ${err?.response?.data?.error || err.message}. Please try again.`);
+      setEodSubmitting(false);
+      throw err;
+    }
+  };
+
+  const handleDailyClosureSubmit = async () => {
+    return handleEodReportSubmit();
+  };
+
+  // Open student requests + support tickets for this counsellor (Student Portal → HR)
+  const [studentInboxCount, setStudentInboxCount] = useState(0);
+  useEffect(() => {
+    const me = String(userName || '').trim().toLowerCase();
+    const load = async () => {
+      try {
+        const [reqs, tickets] = await Promise.all([
+          getStudentRequests({ audience: 'hr', status: 'Open' }).catch(() => []),
+          getStudentTickets({ status: 'open' }).catch(() => [])
+        ]);
+        const mine = (n) => !me || String(n || '').trim().toLowerCase() === me;
+        setStudentInboxCount((reqs || []).filter((r) => mine(r.hrName)).length + (tickets || []).filter((t) => mine(t.hrName)).length);
+      } catch (_) {}
+    };
+    load();
+    const t = setInterval(() => {
+      if (typeof document === 'undefined' || !document.hidden) load();
+    }, 60000);
+    const off = onDataUpdate((entity) => {
+      if (!entity || ['student_requests', 'tickets', 'students'].includes(entity)) load();
+    });
+    return () => { clearInterval(t); off(); };
+  }, [userName]);
+
+  // Dynamic Navigation Tabs with real database counts
+  const pendingFeesStats = useMemo(() => {
+    let count = 0;
+    let totalBal = 0;
+    scopedStudents.forEach(s => {
+      const fee = Number(s.courseFee) || 0;
+      const paid = Number(s.paidAmount) || 0;
+      const bal = (s.pendingBalance != null && !isNaN(Number(s.pendingBalance))) ? Number(s.pendingBalance) : Math.max(0, fee - paid);
+      if (bal > 0) {
+        count++;
+        totalBal += bal;
+      }
+    });
+    return { count, totalBal };
+  }, [scopedStudents]);
+
+  // Pending fees for the logged-in ID person (Home Golden Target Banner)
+  const myPendingFeesStats = useMemo(() => {
+    let count = 0;
+    let totalBal = 0;
+    myStudents.forEach(s => {
+      const fee = Number(s.courseFee) || 0;
+      const paid = Number(s.paidAmount) || 0;
+      const bal = (s.pendingBalance != null && !isNaN(Number(s.pendingBalance))) ? Number(s.pendingBalance) : Math.max(0, fee - paid);
+      if (bal > 0) {
+        count++;
+        totalBal += bal;
+      }
+    });
+    return { count, totalBal };
+  }, [myStudents]);
+
+  const NAV_TABS = useMemo(() => {
+    const trueLeadsCount = hrLeadCounts?.totalLeads ?? (leadsTotalCount || scopedLeads.length);
+    const trueStudentsCount = hrLeadCounts?.totalStudents ?? (studentsTotalCount || scopedStudents.length);
+    const pipelineCount = trueLeadsCount.toString();
+    const followUpCount = scopedLeads.filter(l => l.stage !== 'admitted' && l.stage !== 'closed').length.toString();
+    const admittedCount = trueStudentsCount.toString();
+    const handoverCount = scopedStudents.filter(s => s.handoverStatus !== 'Sent to Training' && s.handoverStatus !== 'Handed Over to Head of Trainer').length.toString();
+
+    return [
+      { name: 'Home', badge: null, icon: Home, iconBg: 'bg-[#0e6977]', color: 'teal' },
+      { name: 'Scoreboard', badge: null, icon: Trophy, iconBg: 'bg-amber-500', color: 'amber' },
+      // Team Lead / Branch Head / Department Head: HR-wise data + HR Attendance & Leaves + HR Roster
+      ...(scopeKind ? [
+        { name: 'HR-wise Data', badge: null, icon: Users, iconBg: 'bg-indigo-600', color: 'indigo' },
+        { name: 'HR Attendance', badge: null, icon: Clock, iconBg: 'bg-emerald-600', color: 'emerald' },
+        ...((scopeKind === 'all' || scopeKind === 'branch') ? [
+          { name: 'HR Roster', badge: null, icon: Calendar, iconBg: 'bg-purple-600', color: 'purple' },
+          { name: 'Payroll', badge: null, icon: Wallet, iconBg: 'bg-emerald-700', color: 'emerald' }
+        ] : [])
+      ] : []),
+      { name: 'Pipeline & Follow-ups', badge: pipelineCount, icon: Filter, iconBg: 'bg-[#7c3aed]', badgeBg: 'bg-rose-500', color: 'purple' },
+      { name: 'Demo Desk', badge: scopedDemos.length > 0 ? scopedDemos.length.toString() : null, icon: Monitor, iconBg: 'bg-cyan-600', color: 'cyan' },
+      { name: 'Admitted Students', badge: admittedCount, icon: GraduationCap, iconBg: 'bg-emerald-600', badgeBg: 'bg-emerald-500', color: 'emerald' },
+      { name: 'Call Recordings', badge: scopedRecordings.length > 0 ? String(scopedRecordings.length) : null, icon: PhoneCall, iconBg: 'bg-sky-600', badgeBg: 'bg-sky-500', color: 'sky' },
+      { name: 'My Targets', badge: null, icon: Target, iconBg: 'bg-rose-500', color: 'pink' },
+      { name: 'My Schedule', badge: null, icon: Calendar, iconBg: 'bg-blue-500', color: 'blue' },
+      { name: 'EOD Report', badge: closureSubmitted ? 'Done ✓' : 'Due', icon: FileText, iconBg: 'bg-[#0e6977]', badgeBg: closureSubmitted ? 'bg-emerald-500' : 'bg-amber-500', color: 'teal' },
+      { name: 'LMS', badge: 'Learn', isPillBadge: true, icon: BookOpen, iconBg: 'bg-yellow-700', color: 'green' },
+      { name: 'Fees', badge: pendingFeesStats.count > 0 ? String(pendingFeesStats.count) : null, badgeBg: 'bg-amber-500', icon: IndianRupee, iconBg: 'bg-teal-600', color: 'teal' },
+      { name: 'Handover', badge: handoverCount, icon: Repeat, iconBg: 'bg-orange-600', badgeBg: 'bg-orange-500', color: 'orange' },
+      { name: 'Student Requests', badge: studentInboxCount > 0 ? String(studentInboxCount) : null, icon: InboxIcon, iconBg: 'bg-indigo-600', badgeBg: 'bg-rose-500', color: 'indigo' },
+      { name: 'My Payslips', badge: null, icon: IndianRupee, iconBg: 'bg-emerald-600', color: 'emerald' },
+    ];
+  }, [scopedLeads, scopedStudents, scopedDemos, studentInboxCount, pendingFeesStats.count, scopedRecordings.length, scopeKind]);
+
+  // Today's Priority Queue: overdue follow-ups first, then today's, then
+  // fee-due admitted students, then fee-stage leads, then brand-new leads.
+  // Strictly for the signed-in ID person on the Home workspace desk.
+  const priorityQueue = useMemo(() => {
+    // Admitted students with pending / overdue fee installments
+    const feeDueItems = myStudents
+      .filter(s => {
+        const fee = Number(s.courseFee) || 0;
+        const paid = Number(s.paidAmount) || 0;
+        const bal = (s.pendingBalance != null && !isNaN(Number(s.pendingBalance))) ? Number(s.pendingBalance) : Math.max(0, fee - paid);
+        return bal > 0 && s.nextDueDate && s.nextDueDate <= todayKey;
+      })
+      .map(s => {
+        const fee = Number(s.courseFee) || 0;
+        const paid = Number(s.paidAmount) || 0;
+        const bal = (s.pendingBalance != null && !isNaN(Number(s.pendingBalance))) ? Number(s.pendingBalance) : Math.max(0, fee - paid);
+        const isOverdue = s.nextDueDate < todayKey;
+        return {
+          id: s._id || s.studentId,
+          time: isOverdue ? 'DUE OVERDUE' : 'DUE TODAY',
+          isNow: false,
+          isOverdue,
+          name: `${s.name} — Fee Due (₹${bal.toLocaleString('en-IN')})`,
+          details: [s.studentId, s.course, `Due: ${s.nextDueDate}`, `Paid so far: ₹${paid.toLocaleString('en-IN')}`].filter(Boolean).join(' • '),
+          studentData: s,
+          isFeeDue: true,
+          actionText: 'COLLECT FEE',
+          actionStyle: 'bg-amber-100 text-amber-900 border border-amber-300 hover:bg-amber-600 hover:text-white font-black'
+        };
+      });
+
+    const rankOf = (l) => {
+      if (l.followUpDate && l.followUpDate < todayKey) return 0;
+      if (l.followUpDate === todayKey) return 1;
+      if (l.followUpDate && l.followUpDate > todayKey) return 9;
+      if (l.stage === 'fee_followup' || l.stage === 'demo_attended') return 2;
+      if (l.stage === 'new' && !(l.callCount > 0)) return 3;
+      return 4;
+    };
+    const leadItems = myLeads
+      .filter(l => l.stage !== 'admitted' && l.stage !== 'closed')
+      .map(l => ({ lead: l, rank: rankOf(l) }))
+      .filter(x => x.rank < 9)
+      .sort((a, b) => a.rank - b.rank
+        || String(a.lead.followUpDate || '').localeCompare(String(b.lead.followUpDate || ''))
+        || String(a.lead.followUpTime || '99').localeCompare(String(b.lead.followUpTime || '99'))
+        || new Date(a.lead.createdAt || 0) - new Date(b.lead.createdAt || 0))
+      .slice(0, 6)
+      .map(({ lead, rank }, idx) => {
+        const stage = lead.stage || 'new';
+        let actionText = 'STUDENT FORM';
+        let actionStyle = 'bg-white border-2 border-[#00897b] text-[#00897b] hover:bg-[#00897b] hover:text-white font-extrabold';
+        if (stage === 'demo_booked') {
+          actionText = 'VIEW DEMO';
+          actionStyle = 'bg-purple-50 text-purple-700 border border-purple-200 font-bold';
+        } else if (stage === 'demo_attended' || stage === 'fee_followup') {
+          actionText = 'FEE PITCH';
+          actionStyle = 'bg-amber-50 text-amber-800 border border-amber-200 font-bold';
+        }
+        return {
+          id: lead._id || lead.id,
+          time: rank === 0 ? 'OVERDUE' : rank === 1 ? (lead.followUpTime || 'TODAY') : stage === 'new' ? 'NEW' : '—',
+          isNow: idx === 0,
+          isOverdue: rank === 0,
+          name: `${lead.fullName || lead.name} — ${stage === 'new' ? 'First Call' : stage.replace(/_/g, ' ').toUpperCase()}`,
+          details: [lead.sourceName || lead.source, lead.course, lead.location, lead.followUpNote].filter(Boolean).join(' • ') || lead.phone || '',
+          leadData: lead,
+          actionText,
+          actionStyle
+        };
+      });
+
+    return [...feeDueItems, ...leadItems].slice(0, 8);
+  }, [myLeads, myStudents, todayKey]);
+
+  // Recent Activity: real events with their real timestamps, newest first (strictly for this logged-in person)
+  const recentActivities = useMemo(() => {
+    const list = [];
+    const push = (at, e) => { const d = new Date(at); if (!isNaN(d.getTime())) list.push({ ...e, at: d }); };
+    myStudents.forEach(s => {
+      push(s.createdAt, {
+        primary: `${s.name} admitted`,
+        secondary: [s.course, s.studentId && `ID: ${s.studentId}`].filter(Boolean).join(' • '),
+        tag: 'ADMITTED', tagStyle: 'bg-emerald-50 text-emerald-700 border-emerald-200'
+      });
+      (Array.isArray(s.receipts) ? s.receipts : []).forEach(r => push(r.at || r.date, {
+        primary: `₹${(Number(r.amount) || 0).toLocaleString('en-IN')} received from ${s.name}`,
+        secondary: [r.receiptNo, r.mode].filter(Boolean).join(' • '),
+        tag: 'FEE', tagStyle: 'bg-teal-50 text-teal-700 border-teal-200'
+      }));
+    });
+    myDemos.forEach(d => push(d.updatedAt || d.createdAt, {
+      primary: `${d.candidateName} demo ${d.status || 'booked'}`,
+      secondary: [d.course, d.trainer && `with ${d.trainer}`, d.preferredDate].filter(Boolean).join(' • '),
+      tag: 'DEMO', tagStyle: 'bg-blue-50 text-blue-700 border-blue-200'
+    }));
+    myLeads.forEach(l => push(l.createdAt, {
+      primary: `New lead: ${l.fullName || l.name}`,
+      secondary: [l.sourceName || l.source, l.course].filter(Boolean).join(' • '),
+      tag: 'NEW LEAD', tagStyle: 'bg-cyan-50 text-cyan-700 border-cyan-200'
+    }));
+    const leadName = new Map(myLeads.map(l => [String(l._id || l.id), l.fullName || l.name]));
+    myTodayCallLogs.forEach(c => push(c.time, {
+      primary: `Called ${leadName.get(String(c.id)) || 'a lead'}`,
+      secondary: [c.outcome, c.duration ? `${Math.round(c.duration)}s` : ''].filter(Boolean).join(' • '),
+      tag: 'CALL', tagStyle: 'bg-slate-50 text-slate-700 border-slate-200'
+    }));
+    return list
+      .sort((a, b) => b.at - a.at)
+      .slice(0, 8)
+      .map(e => ({
+        ...e,
+        time: localDateKey(e.at) === todayKey
+          ? e.at.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false })
+          : e.at.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })
+      }));
+  }, [myStudents, myDemos, myLeads, myTodayCallLogs, todayKey]);
+
+  // Header search across my leads, students and demos
+  const searchInputRef = React.useRef(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        setSearchOpen(true);
+      } else if (e.key === 'Escape') {
+        setSearchOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+  const searchResults = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (q.length < 2) return [];
+    const qDigits = q.replace(/\D/g, '');
+    const hit = (...vals) => vals.some(v => {
+      const str = String(v || '');
+      return str.toLowerCase().includes(q) || (qDigits.length >= 4 && str.replace(/\D/g, '').includes(qDigits));
+    });
+    const out = [];
+    scopedLeads.forEach(l => {
+      if (hit(l.fullName, l.name, l.phone, l.email, l.course)) out.push({ kind: 'Lead', key: `l-${l._id}`, title: l.fullName || l.name, sub: [l.phone, (l.stage || '').replace(/_/g, ' '), l.course].filter(Boolean).join(' • '), lead: l });
+    });
+    scopedStudents.forEach(st => {
+      if (hit(st.name, st.studentId, st.phone, st.email, st.course)) out.push({ kind: 'Student', key: `s-${st._id}`, title: st.name, sub: [st.studentId, st.course, st.feeStatus].filter(Boolean).join(' • '), student: st });
+    });
+    scopedDemos.forEach(d => {
+      if (hit(d.candidateName, d.phone, d.email, d.course)) out.push({ kind: 'Demo', key: `d-${d._id}`, title: d.candidateName, sub: [d.course, d.preferredDate, d.status].filter(Boolean).join(' • '), demo: d });
+    });
+    return out.slice(0, 12);
+  }, [searchQuery, scopedLeads, scopedStudents, scopedDemos]);
+  const openSearchResult = (r) => {
+    setSearchOpen(false);
+    setSearchQuery('');
+    if (r.lead) {
+      if (r.lead.stage === 'admitted' || r.lead.stage === 'closed') { handleTabChange('Pipeline & Follow-ups'); return; }
+      openCallFor(r.lead);
+    } else if (r.student) {
+      handleTabChange(r.student.feeStatus && r.student.feeStatus !== 'Fully Paid' ? 'Fees' : 'Admitted Students');
+    } else if (r.demo) {
+      handleTabChange('Demo Desk');
+    }
+  };
+
+  // Open the call modal for a lead or student (priority queue, pipeline, search, admitted CRM)
+  const openCallFor = (lead, isStudent = false) => {
+    if (!lead) return;
+    // An admitted student shown in the pipeline has no lead record — save to the student
+    const synthetic = Boolean(lead.isSynthetic);
+    const dbId = synthetic ? lead.studentMongoId : (lead._id || lead.id || lead.studentId);
+    if (synthetic) isStudent = true;
+    // Use the latest saved copy of the lead so remarks / follow-up details
+    // entered on a previous call show up when the form is reopened
+    if (!isStudent && !synthetic) {
+      const latest = leads.find((l) => (l._id || l.id) === dbId);
+      if (latest) lead = { ...lead, ...latest };
+    }
+    setSelectedCallLead({
+      ...lead,
+      id: dbId,
+      _id: dbId,
+      name: lead.fullName || lead.name,
+      details: [lead.sourceName || lead.source, lead.course, lead.location].filter(Boolean).join(' • '),
+      phone: lead.phone || '',
+      whatsappNumber: lead.whatsappNumber || '',
+      source: lead.sourceName || lead.source || (isStudent ? 'Enrolled Student' : 'Direct'),
+      stage: lead.stage || (isStudent ? 'admitted' : 'new'),
+      callCount: lead.callCount || 0,
+      counselorAssigned: lead.counselorAssigned || lead.hrName,
+      leadData: lead,
+      isStudent
+    });
+  };
+
+  // Lead → Student: registration form pre-filled from the lead. Creating the
+  // student links it to the lead and moves the lead to Admitted (server side).
+  const [admittingLead, setAdmittingLead] = useState(null);
+  const handleAdmitSubmit = async (studentRecord) => {
+    const lead = admittingLead;
+    let created;
+    try {
+      created = await createStudent({ ...studentRecord, leadId: lead?._id || lead?.id || '' });
+    } catch (err) {
+      // The form shows this message (e.g. "already admitted as TF…")
+      throw new Error(err?.response?.data?.error || err.message);
+    }
+    setAdmittingLead(null);
+    loadAllData(true);
+    if (created?.studentLogin?.password) setStudentLogin({ name: created.name, phone: created.phone, ...created.studentLogin });
+    showToast(`✓ ${created?.name || 'Student'} admitted (${created?.studentId || ''}) — lead moved to Admitted`);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-[#f0faf8] font-sans text-slate-800 animate-fadeIn">
+      {/* Top Main Navigation Bar */}
+      <header className={`sticky top-0 z-30 transition-colors duration-200 px-4 sm:px-6 lg:px-8 py-2.5 shadow-md flex items-center justify-between gap-3 flex-wrap ${
+        barTheme === 'clay'
+          ? 'bg-white text-[#073734] border-b border-[#cce8e4] shadow-[0_6px_20px_rgba(7,55,52,0.06),inset_0_2px_4px_rgba(255,255,255,0.95)]'
+          : barTheme === 'turquoise'
+            ? 'bg-[#73C1CC] text-[#073138] border-b border-[#5cb6c2] shadow-sm'
+            : barTheme === 'slate'
+              ? 'bg-[#0f172a] text-slate-100 border-b border-slate-800'
+              : barTheme === 'teal'
+                ? 'bg-gradient-to-r from-[#042f2e] via-[#064e3b] to-[#042f2e] text-white border-b border-teal-800/60'
+                : 'bg-white/95 backdrop-blur-md text-slate-800 border-b border-slate-200/90'
+      }`}>
+        {/* Left: Logo Pill */}
+        <div className="flex items-center gap-2.5 sm:gap-3">
+
+          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-xl shadow-xs border ${
+            barTheme === 'clay'
+              ? 'clay-pill text-[#073734]'
+              : barTheme === 'turquoise'
+                ? 'bg-white/90 border-white/70 text-[#073138]'
+                : barTheme === 'slate'
+                  ? 'bg-slate-800/90 border-slate-700/80 text-white'
+                  : barTheme === 'teal'
+                    ? 'bg-white/15 border-white/20 text-white'
+                    : 'bg-slate-50 border-slate-200 text-slate-800'
+          }`}>
+            <img 
+              src="/thoughtflows-logo.png" 
+              alt="Thoughtflows" 
+              className="h-5 w-auto object-contain bg-white rounded px-1 py-0.5" 
+            />
+            <span className="text-[11px] font-bold tracking-tight hidden xs:inline">
+              Thoughtflows 2.0 <span className={
+                barTheme === 'clay'
+                  ? 'text-[#0d9488] font-extrabold'
+                  : barTheme === 'turquoise' 
+                    ? 'text-[#0e6977] font-extrabold' 
+                    : barTheme === 'slate' 
+                      ? 'text-teal-400' 
+                      : barTheme === 'teal' 
+                        ? 'text-teal-200' 
+                        : 'text-[#00897b]'
+              }>• HR</span>
+            </span>
+          </div>
+        </div>
+
+        {/* Center: Search & Add Lead */}
+        <div className="flex items-center gap-2 flex-1 max-w-md mx-auto justify-center">
+          <div className="relative w-full max-w-xs">
+            <Search className={`w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 ${
+              barTheme === 'clay' ? 'text-teal-600' : barTheme === 'turquoise' ? 'text-[#1e606a]' : 'text-slate-400'
+            }`} />
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={searchQuery}
+              onChange={(e) => { setSearchQuery(e.target.value); setSearchOpen(true); }}
+              onFocus={() => setSearchOpen(true)}
+              onBlur={() => setTimeout(() => setSearchOpen(false), 150)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && searchResults[0]) openSearchResult(searchResults[0]); }}
+              placeholder="Search leads, students, demos..."
+              className={`w-full rounded-xl pl-8 pr-12 py-1.5 text-xs outline-none transition-all ${
+                barTheme === 'clay'
+                  ? 'clay-input text-[#073138] placeholder-[#1e606a]/70'
+                  : barTheme === 'turquoise'
+                    ? 'bg-white/90 border border-white/70 text-[#073138] placeholder-[#1e606a]/70 focus:bg-white focus:border-[#0e6977] shadow-xs'
+                    : barTheme === 'slate'
+                      ? 'bg-slate-800/90 border border-slate-700 text-slate-100 placeholder-slate-400 focus:border-teal-400 focus:bg-slate-800'
+                      : barTheme === 'teal'
+                        ? 'bg-white/15 border border-white/20 text-white placeholder-teal-200/70 focus:bg-white/25 focus:border-teal-300'
+                        : 'bg-slate-100/90 border border-slate-200 text-slate-800 placeholder-slate-400 focus:bg-white focus:border-teal-500'
+              }`}
+            />
+            <span className={`absolute right-2.5 top-1/2 -translate-y-1/2 text-[9px] font-mono px-1.5 py-0.5 rounded ${
+              barTheme === 'clay'
+                ? 'clay-pill text-[#073138] font-bold'
+                : barTheme === 'turquoise'
+                  ? 'bg-[#73C1CC]/25 text-[#073138] font-bold'
+                  : barTheme === 'light'
+                    ? 'bg-slate-200 text-slate-600'
+                    : 'bg-white/10 text-white/80'
+            }`}>
+              {/Mac/i.test(navigator.platform || '') ? '⌘K' : 'Ctrl K'}
+            </span>
+            {searchOpen && searchQuery.trim().length >= 2 && (
+              <div className="absolute left-0 right-0 top-full mt-2 max-h-80 overflow-y-auto bg-white rounded-xl border border-slate-200 shadow-2xl z-50 text-left">
+                {searchResults.length === 0 ? (
+                  <div className="px-4 py-4 text-xs text-slate-400 text-center">No leads, students or demos match “{searchQuery.trim()}”.</div>
+                ) : searchResults.map((r) => (
+                  <button
+                    key={r.key}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => openSearchResult(r)}
+                    className="w-full text-left px-3 py-2 border-b border-slate-50 hover:bg-slate-50 flex items-center gap-2"
+                  >
+                    <span className={`px-1.5 py-0.5 rounded text-[9px] font-extrabold uppercase flex-shrink-0 ${r.kind === 'Lead' ? 'bg-purple-50 text-purple-700' : r.kind === 'Student' ? 'bg-emerald-50 text-emerald-700' : 'bg-blue-50 text-blue-700'}`}>{r.kind}</span>
+                    <span className="min-w-0">
+                      <span className="block text-xs font-bold text-slate-900 truncate">{r.title}</span>
+                      <span className="block text-[11px] text-slate-500 truncate">{r.sub}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <button 
+            onClick={() => { setAddLeadModalMode('single'); setShowAddLeadModal(true); }}
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold transition-all flex-shrink-0 active:scale-95 cursor-pointer ${
+            barTheme === 'clay'
+              ? 'clay-btn clay-btn-primary'
+              : barTheme === 'turquoise'
+                ? 'rounded-xl bg-[#08363e] hover:bg-[#052329] text-white shadow-sm font-extrabold'
+                : barTheme === 'slate'
+                  ? 'rounded-xl bg-gradient-to-r from-teal-500 to-emerald-600 hover:from-teal-600 hover:to-emerald-700 text-white'
+                  : barTheme === 'teal'
+                    ? 'rounded-xl bg-white hover:bg-teal-50 text-[#042f2e]'
+                    : 'rounded-xl bg-[#00897b] hover:bg-[#00796b] text-white'
+          }`}>
+            <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
+            <span>Add Enquiry</span>
+          </button>
+
+          <button 
+            onClick={() => { setAddLeadModalMode('bulk'); setShowAddLeadModal(true); }}
+            title="Bulk Upload Enquiries from Google Sheets or CSV"
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold transition-all flex-shrink-0 active:scale-95 cursor-pointer ${
+            barTheme === 'clay'
+              ? 'clay-btn clay-btn-secondary text-[#073734]'
+              : barTheme === 'turquoise'
+                ? 'rounded-xl bg-white/90 hover:bg-white text-[#08363e] border border-white/60 shadow-xs font-bold'
+                : barTheme === 'slate'
+                  ? 'rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-teal-300'
+                  : barTheme === 'teal'
+                    ? 'rounded-xl bg-teal-800/80 hover:bg-teal-800 text-white border border-teal-600'
+                    : 'rounded-xl bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-700'
+          }`}>
+            <FileSpreadsheet className="w-3.5 h-3.5 stroke-[2.2] text-emerald-600" />
+            <span>Bulk Upload</span>
+          </button>
+
+          <div className="relative flex-shrink-0">
+          <button onClick={() => setShowHrNotifs(v => !v)} title="Updates from Training" className={`p-2 rounded-xl transition-colors relative flex-shrink-0 ${
+            barTheme === 'clay'
+              ? 'clay-btn clay-btn-secondary text-[#073734]'
+              : barTheme === 'turquoise'
+                ? 'border bg-white/90 hover:bg-white border-white/70 text-[#073138] shadow-xs'
+                : barTheme === 'slate'
+                  ? 'border bg-slate-800/90 hover:bg-slate-700 border-slate-700/80 text-slate-300'
+                  : barTheme === 'teal'
+                    ? 'border bg-white/15 hover:bg-white/25 border-white/20 text-white'
+                    : 'border bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-600'
+          }`}>
+            <Bell className="w-3.5 h-3.5" />
+            {unreadHrNotifs.length > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-[15px] h-[15px] px-1 rounded-full bg-rose-600 text-white text-[9px] font-black flex items-center justify-center">{unreadHrNotifs.length}</span>
+            )}
+          </button>
+          {showHrNotifs && (
+            <div className="absolute left-0 top-full mt-2 w-80 max-h-[420px] overflow-y-auto bg-white rounded-2xl border border-slate-200 shadow-2xl z-50 text-left">
+              <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-900">Updates from Training</span>
+                {unreadHrNotifs.length > 0 && (
+                  <button
+                    onClick={async () => {
+                      try { await markNotificationsRead(unreadHrNotifs.map(n => n._id)); } catch (_) {}
+                      setHrNotifications(prev => prev.map(n => ({ ...n, read: true })));
+                    }}
+                    className="text-[11px] font-bold text-[#00897b] hover:underline"
+                  >
+                    Mark all read
+                  </button>
+                )}
+              </div>
+              {hrNotifications.length === 0 ? (
+                <div className="px-4 py-8 text-center text-xs text-slate-400">No updates yet.</div>
+              ) : hrNotifications.map(n => (
+                <button
+                  key={n._id}
+                  onClick={async () => {
+                    if (!n.read) {
+                      try { await markNotificationRead(n._id); } catch (_) {}
+                      setHrNotifications(prev => prev.map(x => x._id === n._id ? { ...x, read: true } : x));
+                    }
+                    if (n.type === 'demo') handleTabChange('Demo Desk');
+                    else if (n.studentId) handleTabChange('Handover');
+                    setShowHrNotifs(false);
+                  }}
+                  className={`w-full text-left px-4 py-3 border-b border-slate-50 hover:bg-slate-50 ${n.read ? '' : 'bg-amber-50/60'}`}
+                >
+                  <div className="text-xs font-bold text-slate-900">{n.title}</div>
+                  <div className="text-[11px] text-slate-600 mt-0.5">{n.message}</div>
+                  <div className="text-[10px] text-slate-400 mt-1">{new Date(n.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</div>
+                </button>
+              ))}
+            </div>
+          )}
+          </div>
+        </div>
+
+        {/* Right: Quick Controls & Session Actions */}
+        <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
+
+
+
+          {/* Theme Switcher Button */}
+          <button
+            onClick={handleCycleTheme}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+              barTheme === 'clay'
+                ? 'clay-btn clay-btn-secondary text-[#0b6b66] border-teal-100'
+                : barTheme === 'turquoise'
+                  ? 'border bg-white/90 hover:bg-white border-white/70 text-[#073138] shadow-xs'
+                  : barTheme === 'slate'
+                    ? 'border bg-slate-800/90 hover:bg-slate-700 border-slate-700/80 text-teal-400'
+                    : barTheme === 'teal'
+                      ? 'border bg-white/15 hover:bg-white/25 border-white/20 text-teal-200'
+                      : 'border bg-slate-100 hover:bg-slate-200 border-slate-200 text-teal-700'
+            }`}
+            title={`Current theme: ${barTheme}. Click to switch theme.`}
+          >
+            <Palette className="w-3.5 h-3.5" />
+            <span className="hidden xl:inline capitalize">{barTheme} Theme</span>
+          </button>
+
+          {/* User Profile */}
+          <div className={`flex items-center gap-2.5 px-3 py-1 rounded-xl ${
+            barTheme === 'clay'
+              ? 'clay-pill text-[#073734]'
+              : barTheme === 'turquoise'
+                ? 'border bg-white/90 border-white/70 text-[#073138] shadow-xs'
+                : barTheme === 'slate'
+                  ? 'border bg-slate-800/90 border-slate-700/80 text-slate-100'
+                  : barTheme === 'teal'
+                    ? 'border bg-white/15 border-white/20 text-white'
+                    : 'border bg-slate-50 border-slate-200 text-slate-800'
+          }`}>
+            <div className={`w-6 h-6 rounded-lg font-black text-xs flex items-center justify-center shadow-xs ${
+              barTheme === 'clay'
+                ? 'clay-squircle bg-teal-600 text-white'
+                : barTheme === 'turquoise'
+                  ? 'bg-[#08363e] text-[#73C1CC]'
+                  : 'bg-gradient-to-br from-teal-400 to-emerald-600 text-white'
+            }`}>
+              {userFirstName[0]}
+            </div>
+            <div className="text-left text-[11px] leading-tight hidden sm:block">
+              <div className="font-bold">{userName}</div>
+              {currentUser?.role && (
+                <div className={`text-[10px] font-semibold mt-0.5 ${
+                  barTheme === 'clay'
+                    ? 'text-teal-800'
+                    : barTheme === 'turquoise'
+                      ? 'text-[#0b4a54]'
+                      : barTheme === 'light'
+                        ? 'text-slate-600'
+                        : 'text-slate-300'
+                }`}>
+                  {currentUser.role}
+                </div>
+              )}
+              <div className={`text-[9.5px] uppercase tracking-wider flex items-center gap-1 mt-0.5 ${
+                barTheme === 'clay'
+                  ? 'text-teal-700 font-semibold'
+                  : barTheme === 'turquoise'
+                    ? 'text-[#185d68]'
+                    : barTheme === 'light'
+                      ? 'text-slate-500'
+                      : 'text-slate-400'
+              }`}>
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                {(branchShort || currentUser?.department || 'HR').toUpperCase()}
+              </div>
+            </div>
+          </div>
+
+{!isHrHeadDesk && (<>
+          {/* Work Session Status Pill */}
+          <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white/90 border border-slate-200/80 text-xs shadow-2xs">
+            <span className={`w-2 h-2 rounded-full ${
+              sessionStatus === 'Completed'
+                ? 'bg-emerald-500'
+                : sessionStatus === 'In Progress'
+                  ? 'bg-teal-500 animate-pulse'
+                  : 'bg-amber-400'
+            }`} />
+            <span className="font-extrabold text-slate-800">
+              {sessionStatus === 'Completed'
+                ? 'Work Completed'
+                : sessionStatus === 'In Progress'
+                  ? `Active • ${workingDurationText}`
+                  : 'Work: Not Started'}
+            </span>
+            {sessionStatus === 'Not Started' && (
+              <button
+                type="button"
+                onClick={() => setShowStartWorkModal(true)}
+                className="ml-1 px-2 py-0.5 rounded-md bg-[#0e6977] hover:bg-[#094c56] text-white text-[10px] font-bold transition-all cursor-pointer"
+              >
+                Start
+              </button>
+            )}
+          </div>
+
+          {/* Break Button */}
+          <button
+            onClick={handleToggleBreak}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+              isOnBreak 
+                ? 'bg-amber-400 border border-amber-300 text-amber-950 font-black shadow-xs ring-2 ring-amber-300/60' 
+                : barTheme === 'clay'
+                  ? 'clay-btn clay-btn-secondary text-[#073734]'
+                  : barTheme === 'turquoise'
+                    ? 'border bg-white/90 hover:bg-white border-white/70 text-[#073138] shadow-xs'
+                    : barTheme === 'slate'
+                      ? 'border bg-slate-800/90 hover:bg-slate-700 border-slate-700/80 text-slate-200'
+                      : barTheme === 'teal'
+                        ? 'border bg-white/15 hover:bg-white/25 border-white/20 text-white'
+                        : 'border bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-700'
+            }`}
+          >
+            <Coffee className={`w-3.5 h-3.5 ${isOnBreak ? 'animate-bounce text-amber-900' : ''}`} />
+            <span>
+              {isOnBreak ? `On Break (${fmtBreakTimer(breakSeconds)})` : 'Start Break'}
+            </span>
+            {!isOnBreak && accumulatedBreak > 0 && (
+              <span className="text-[10px] opacity-80">({Math.floor(accumulatedBreak / 60)}m used)</span>
+            )}
+          </button>
+
+          </>)}
+
+          {/* Logout Button: triggers "Are you sure you want to close today's work?" */}
+          <button
+            onClick={handleLogoutClick}
+            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+              barTheme === 'clay'
+                ? 'clay-btn clay-btn-danger'
+                : barTheme === 'turquoise'
+                  ? 'border bg-white/90 hover:bg-rose-50 hover:text-rose-600 border-white/70 text-[#073138] shadow-xs'
+                  : barTheme === 'slate'
+                    ? 'border bg-slate-800/90 hover:bg-rose-900/40 hover:text-rose-300 hover:border-rose-500/40 border-slate-700/80 text-slate-400'
+                    : barTheme === 'teal'
+                      ? 'border bg-white/15 hover:bg-rose-50 hover:text-white border-white/20 text-white'
+                      : 'border bg-slate-100 hover:bg-rose-50 hover:text-rose-600 hover:border-rose-200 border-slate-200 text-slate-600'
+            }`}
+            title="Log Out"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Logout</span>
+          </button>
+        </div>
+      </header>
+
+      {/* Sub-Header Navigation Tabs Bar */}
+      <div className={`border-b px-4 sm:px-6 lg:px-8 py-2 relative z-20 transition-all ${
+        barTheme === 'clay'
+          ? 'bg-[#f4fcfb] border-teal-100 shadow-[inset_0_2px_4px_rgba(255,255,255,0.9)]'
+          : barTheme === 'turquoise'
+            ? 'bg-[#f0fafb] border-[#c2e8ee] shadow-xs'
+            : barTheme === 'teal'
+              ? 'bg-[#f0faf8] border-teal-200/80 shadow-xs'
+              : 'bg-white border-slate-200/90 shadow-xs'
+      }`}>
+        <div className="w-full flex items-center gap-2">
+          {/* Scroll Left */}
+          <button 
+            onClick={() => {
+              const el = document.getElementById('hr-nav-tabs-container');
+              if (el) el.scrollLeft -= 220;
+            }}
+            className={`w-7 h-7 flex items-center justify-center text-xs flex-shrink-0 transition-colors ${
+              barTheme === 'clay'
+                ? 'clay-btn clay-btn-secondary'
+                : 'rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-800'
+            }`}
+            title="Scroll Left"
+          >
+            ◀
+          </button>
+
+          {/* Scrollable Tabs */}
+          <div 
+            id="hr-nav-tabs-container"
+            className="flex items-center gap-1.5 overflow-x-auto no-scrollbar scrollbar-none scroll-smooth flex-1 py-0.5"
+            style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+          >
+            {NAV_TABS.map((tab) => {
+              const isActive = activeTab === tab.name;
+              const IconComp = tab.icon;
+              return (
+                <button
+                  key={tab.name}
+                  onClick={() => handleTabChange(tab.name)}
+                  className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs transition-all flex-shrink-0 ${
+                    isActive
+                      ? barTheme === 'clay'
+                        ? 'clay-btn clay-btn-primary text-white font-bold'
+                        : barTheme === 'turquoise'
+                          ? 'bg-[#08363e] text-white font-bold shadow-xs border border-[#08363e]'
+                          : barTheme === 'teal'
+                            ? 'bg-[#00796b] text-white font-bold shadow-xs border border-[#00695c]'
+                            : 'bg-slate-900 text-white font-bold shadow-xs border border-slate-900'
+                      : barTheme === 'clay'
+                        ? 'clay-btn clay-btn-secondary text-[#073734] hover:text-[#0b6b66] font-semibold'
+                        : barTheme === 'turquoise'
+                          ? 'bg-white/90 hover:bg-[#e4f5f8] text-slate-700 hover:text-[#08363e] border border-slate-200/70 font-semibold'
+                          : 'bg-slate-50/90 hover:bg-slate-100 text-slate-600 hover:text-slate-900 border border-slate-200/70 font-semibold'
+                  }`}
+                >
+                  {/* Clean Unified Icon */}
+                  {IconComp && (
+                    <IconComp className={`w-3.5 h-3.5 ${
+                      isActive 
+                        ? barTheme === 'clay'
+                          ? 'text-teal-200 stroke-[2.4]'
+                          : barTheme === 'turquoise'
+                            ? 'text-[#73C1CC] stroke-[2.4]'
+                            : 'text-teal-400 stroke-[2.4]' 
+                        : 'text-slate-400 group-hover:text-slate-600 stroke-[2]'
+                    }`} />
+                  )}
+                  <span>{tab.name}</span>
+
+                  {/* Clean Unified Badge */}
+                  {tab.badge && (
+                    <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-extrabold ${
+                      isActive 
+                        ? 'bg-white/20 text-white' 
+                        : tab.isPillBadge
+                          ? 'bg-amber-100 text-amber-800'
+                          : tab.badgeBg || 'bg-slate-200 text-slate-700'
+                    }`}>
+                      {tab.badge}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Scroll Right */}
+          <button 
+            onClick={() => {
+              const el = document.getElementById('hr-nav-tabs-container');
+              if (el) el.scrollLeft += 220;
+            }}
+            className="w-7 h-7 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-800 flex items-center justify-center text-xs flex-shrink-0 transition-colors"
+            title="Scroll Right"
+          >
+            ▶
+          </button>
+        </div>
+      </div>
+
+      {/* Main Content Body */}
+      <main className="w-full px-4 sm:px-6 lg:px-8 py-5 space-y-5">
+        {scopeKind && activeTab === 'HR-wise Data' ? (
+          <HrTeamDataSection
+            leads={scopedLeads}
+            students={scopedStudents}
+            demos={scopedDemos}
+            recordings={scopedRecordings}
+            scopeKind={scopeKind}
+            scopeNames={teamNames}
+            branch={viewScope?.branch || ''}
+            scopeLabel={viewScope?.label || ''}
+            matchesName={matchesMyName}
+            hrLeadCounts={hrLeadCounts}
+          />
+        ) : scopeKind && activeTab === 'HR Attendance' ? (
+          <HrAttendanceLeavesSection
+            scopeKind={scopeKind}
+            scopeLabel={viewScope?.label || ''}
+            branch={viewScope?.branch || ''}
+            canDecideLeaves={scopeKind === 'all' || scopeKind === 'branch'}
+          />
+        ) : (scopeKind === 'all' || scopeKind === 'branch') && activeTab === 'HR Roster' ? (
+          <HrWeeklyRoster
+            canEdit
+            scopeKind={scopeKind}
+            branch={viewScope?.branch || currentUser?.branch || ''}
+          />
+        ) : activeTab === 'My Schedule' ? (
+          <div className="space-y-6">
+          <HrMySchedule 
+            isOnBreak={isOnBreak} 
+            setIsOnBreak={setIsOnBreak} 
+            breakSeconds={breakSeconds} 
+            accumulatedBreak={accumulatedBreak} 
+            handleToggleBreak={handleToggleBreak} 
+            currentUser={currentUser} 
+          />
+          {(scopeKind === 'all' || scopeKind === 'branch') && (
+            <HrWeeklyRoster
+              canEdit
+              scopeKind={scopeKind}
+              branch={viewScope?.branch || ''}
+            />
+          )}
+          </div>
+        ) : activeTab === 'My Targets' ? (
+          <HrMyTargets currentUser={currentUser} students={scopedStudents} scopeKind={scopeKind} branch={viewScope?.branch || (scopeKind === 'branch' ? currentUser?.branch : '') || ''} />
+        ) : activeTab === 'Admitted Students' ? (
+          <HrAdmittedStudentsCrm 
+            students={admitted.rows} 
+            onRefreshStudents={() => { loadAllData(true); loadAdmitted(); }} 
+            currentUser={currentUser} 
+            onStudentLogin={setStudentLogin}
+            onCallStudent={(st) => openCallFor(st, true)}
+            page={admitted.page}
+            totalPages={admitted.totalPages}
+            totalCount={admitted.totalCount}
+            totalStats={admitted.stats || studentsStats}
+            limit={admitted.limit}
+            onPageChange={(nextPage) => loadAdmitted(nextPage, admitted.limit)}
+            onLimitChange={(n) => loadAdmitted(1, n)}
+            onFiltersChange={(f) => { admittedFiltersRef.current = f || {}; loadAdmitted(1, admitted.limit); }}
+            lockedBranch={scopeKind === 'branch' ? (viewScope?.branch || currentUser?.branch || '') : ''}
+            lockedHr={Boolean(currentUser?.name?.trim() && !scopeKind && (!isElevatedUser || scopeMode === 'mine'))}
+          />
+        ) : activeTab === 'Call Recordings' ? (
+          <HrCallRecordingsTable
+            currentUser={currentUser}
+            viewAll={viewAll && !recordingScopeNames}
+            scopeNames={recordingScopeNames}
+            students={scopedStudents}
+            allStudents={students}
+            leads={scopedLeads}
+          />
+        ) : activeTab === 'Demo Desk' ? (
+          <HrDemoDesk 
+            demos={scopedDemos} 
+            onRefreshDemos={loadAllData} 
+            onBookDemoClick={() => setShowBookDemoModal(true)} 
+            currentUser={currentUser}
+          />
+        ) : (activeTab === 'Pipeline & Follow-ups' || activeTab === 'My Pipeline' || activeTab === 'Follow-up Board') ? (
+          <HrPipelineView 
+            leads={scopedPipelineLeads} 
+            onRefreshLeads={loadAllData} 
+            onAddLeadClick={() => { setAddLeadModalMode('single'); setShowAddLeadModal(true); }} 
+            onAdmitLead={setAdmittingLead}
+            onCallLead={(lead) => openCallFor(lead, false)}
+            initialViewMode={activeTab === 'Follow-up Board' ? 'followup' : 'kanban'}
+            currentUser={currentUser}
+            hrLeadCounts={pipelineLeadCounts || hrLeadCounts}
+            page={leadsPage}
+            totalPages={leadsTotalPages}
+            totalCount={leadsTotalCount}
+            limit={leadsTableLimit}
+            scopeBranch={scopeKind === 'branch' ? (viewScope?.branch || currentUser?.branch || '') : ''}
+            onPageChange={(nextPage) => {
+              setLeadsPage(nextPage);
+              loadAllData(false, { leadsPage: nextPage, leadsViewMode: 'table' });
+            }}
+            onLimitChange={(n) => {
+              setLeadsTableLimit(n);
+              setLeadsPage(1);
+              loadAllData(true, { leadsPage: 1, leadsViewMode: 'table', leadsTableLimit: n });
+            }}
+            onFilterChange={(nextFilters) => {
+              setLeadFilters(nextFilters);
+              setLeadsPage(1);
+              loadAllData(true, { leadsPage: 1, leadFilters: nextFilters });
+            }}
+            onViewModeChange={(nextMode) => {
+              setLeadsViewMode(nextMode);
+              setLeadsPage(1);
+              loadAllData(true, { leadsPage: 1, leadsViewMode: nextMode });
+            }}
+          />
+        ) : activeTab === 'LMS' ? (
+          <HrLmsSection currentUser={currentUser} />
+        ) : activeTab === 'Fees' ? (
+          <HrStudentFeesCrm 
+            students={scopedStudents} 
+            onRefreshStudents={loadAllData} 
+            currentUser={currentUser} 
+          />
+) : activeTab === 'Student Requests' ? (
+          <HrStudentRequestsDesk currentUser={currentUser} onCountChange={setStudentInboxCount} />
+        ) : activeTab === 'Handover' ? (
+          <div className="space-y-6">
+            <HrHandoverDesk 
+              students={scopedStudents} 
+              onRefreshStudents={loadAllData} 
+              currentUser={currentUser} 
+            />
+            <TrainerQualityBoard title="Faculty roster & quality overview" />
+          </div>
+        ) : activeTab === 'EOD Report' ? (
+          <HrEodReportSection
+            currentUser={currentUser}
+            userName={userName}
+            branchName={branchName}
+            todayKey={todayKey}
+            todayDisplay={todayDisplay}
+            attendanceRecord={attendanceRecord}
+            sessionStatus={sessionStatus}
+            workStartTimeFormatted={attendanceRecord?.checkIn || formatTimeDisplay(workStartTime)}
+            workEndTimeFormatted={attendanceRecord?.checkOut || formatTimeDisplay(workEndTime)}
+            workingDurationText={workingDurationText}
+            closureMetrics={closureMetrics}
+            computedDailyMetrics={eodDailyMetrics}
+            customMetrics={customMetrics}
+            setCustomMetrics={setCustomMetrics}
+            closureSubmitted={closureSubmitted}
+            closureSubmittedAt={closureSubmittedAt}
+            eodSummaryText={eodSummaryText}
+            setEodSummaryText={setEodSummaryText}
+            onSubmitEod={handleEodReportSubmit}
+            onStartWorkClick={() => setShowStartWorkModal(true)}
+            onCloseWorkClick={() => setShowCloseWorkModal(true)}
+            isElevatedUser={isElevatedUser}
+            showToast={showToast}
+          />
+        ) : (scopeKind === 'all' || scopeKind === 'branch') && activeTab === 'Payroll' ? (
+          <React.Suspense fallback={<div className="p-8 text-center text-sm text-slate-500">Opening payroll…</div>}>
+            <div className="space-y-3">
+              <div>
+                <h2 className="text-xl font-black text-slate-800">Payroll</h2>
+                <p className="text-xs text-slate-500">Salaries worked out from attendance &amp; leave — set salaries, generate the month, add incentives, submit for approval.</p>
+              </div>
+              <PayrollDesk />
+            </div>
+          </React.Suspense>
+        ) : activeTab === 'My Payslips' ? (
+          <React.Suspense fallback={<div className="p-8 text-center text-sm text-slate-500">Loading payslips…</div>}>
+            <div className="space-y-3">
+              <h2 className="text-xl font-black text-slate-800">My Payslips</h2>
+              <MyPayslips />
+            </div>
+          </React.Suspense>
+        ) : activeTab === 'Scoreboard' ? (
+          <HrScoreboard currentUser={currentUser} />
+        ) : activeTab === 'Home' ? (
+          <>
+        
+        {/* Greeting & Quick Context */}
+        <div className="text-left">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
+                {greeting}, <span className="text-[#0e6977]">{userFirstName}</span>
+              </h1>
+              <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
+                {[todayDisplay, branchName].filter(Boolean).join(' • ')} • You have <strong className="text-slate-800 font-semibold">{homeMetrics.pendingFus} pending follow-ups</strong> in your pipeline
+              </p>
+            </div>
+            {/* Scoping status pill - Home tab is personal workspace */}
+            <div className="flex items-center gap-2">
+              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-teal-50 border border-teal-200 text-teal-800 text-xs font-bold shadow-xs">
+                <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                <span>My Workspace: {myLeads.length} Leads • {myStudents.length} Students</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Admissions Scoreboard — this month's gold / silver / bronze (every HR desk) */}
+        <HrScoreboard currentUser={currentUser} compact onOpenFull={() => handleTabChange('Scoreboard')} />
+
+{!isHrHeadDesk && (<>
+        {/* Today's Official Work Session & Attendance Card */}
+        <div className="bg-white rounded-2xl border border-slate-200/90 p-4 sm:p-5 shadow-xs text-left">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-teal-50 border border-teal-200/80 flex items-center justify-center text-teal-700 shadow-2xs">
+                <Clock className="w-5 h-5 stroke-[2.2]" />
+              </div>
+              <div>
+                <h3 className="text-sm sm:text-base font-extrabold text-slate-900 leading-tight">
+                  Today&apos;s Work Session &amp; Attendance
+                </h3>
+                <p className="text-[11px] text-slate-400">
+                  Confirmed working hours &bull; Official Shift Check-in &amp; Check-out
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className={`px-3 py-1 rounded-full text-xs font-extrabold uppercase border flex items-center gap-1.5 ${
+                sessionStatus === 'Completed'
+                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                  : sessionStatus === 'In Progress'
+                    ? 'bg-teal-50 text-teal-800 border-teal-300 ring-2 ring-teal-200/60'
+                    : 'bg-amber-50 text-amber-700 border-amber-200'
+              }`}>
+                <span className={`w-2 h-2 rounded-full ${
+                  sessionStatus === 'Completed' ? 'bg-emerald-500' : sessionStatus === 'In Progress' ? 'bg-teal-500 animate-ping' : 'bg-amber-400'
+                }`} />
+                {sessionStatus}
+              </span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 pt-3.5">
+            <div className="bg-slate-50/80 border border-slate-200/70 rounded-xl p-3 text-center flex flex-col justify-between">
+              <div>
+                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Login / Start Time</div>
+                <div className="text-base sm:text-lg font-black text-slate-900 mt-1 font-mono">
+                  {attendanceRecord?.checkIn || formatTimeDisplay(workStartTime) || 'Not Started'}
+                </div>
+              </div>
+              {attendanceRecord?.loginAddress || attendanceRecord?.loginLocation?.address ? (
+                <div className="mt-1.5 flex items-center justify-center gap-1 text-[10.5px] font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200/70 rounded-lg py-0.5 px-2 max-w-full truncate" title={attendanceRecord.loginAddress || attendanceRecord.loginLocation?.address}>
+                  <MapPin className="w-3 h-3 text-emerald-600 flex-shrink-0" />
+                  <span className="truncate">{attendanceRecord.loginAddress || attendanceRecord.loginLocation?.address}</span>
+                  {attendanceRecord?.loginLocation?.mapsUrl && (
+                    <a href={attendanceRecord.loginLocation.mapsUrl} target="_blank" rel="noopener noreferrer" className="text-[9.5px] font-bold text-emerald-700 underline flex-shrink-0 ml-0.5" title="View location on Google Maps">↗</a>
+                  )}
+                </div>
+              ) : (
+                <div className="text-[10px] text-slate-400 mt-0.5">Recorded on Start Work</div>
+              )}
+            </div>
+
+            <div className="bg-slate-50/80 border border-slate-200/70 rounded-xl p-3 text-center flex flex-col justify-between">
+              <div>
+                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Logout / End Time</div>
+                <div className={`text-base sm:text-lg font-black mt-1 font-mono ${
+                  attendanceRecord?.checkOut || workEndTime ? 'text-slate-900' : sessionStatus === 'In Progress' ? 'text-teal-600' : 'text-slate-400'
+                }`}>
+                  {attendanceRecord?.checkOut || formatTimeDisplay(workEndTime) || (sessionStatus === 'In Progress' ? 'In Progress' : '--:--')}
+                </div>
+              </div>
+              {attendanceRecord?.logoutAddress || attendanceRecord?.logoutLocation?.address ? (
+                <div className="mt-1.5 flex items-center justify-center gap-1 text-[10.5px] font-semibold text-rose-800 bg-rose-50 border border-rose-200/70 rounded-lg py-0.5 px-2 max-w-full truncate" title={attendanceRecord.logoutAddress || attendanceRecord.logoutLocation?.address}>
+                  <MapPin className="w-3 h-3 text-rose-600 flex-shrink-0" />
+                  <span className="truncate">{attendanceRecord.logoutAddress || attendanceRecord.logoutLocation?.address}</span>
+                  {attendanceRecord?.logoutLocation?.mapsUrl && (
+                    <a href={attendanceRecord.logoutLocation.mapsUrl} target="_blank" rel="noopener noreferrer" className="text-[9.5px] font-bold text-rose-700 underline flex-shrink-0 ml-0.5" title="View location on Google Maps">↗</a>
+                  )}
+                </div>
+              ) : sessionStatus === 'In Progress' ? (
+                <div className="text-[10px] text-teal-600 font-medium mt-0.5">Active session in progress</div>
+              ) : (
+                <div className="text-[10px] text-slate-400 mt-0.5">Recorded on Close Work</div>
+              )}
+            </div>
+
+            <div className="bg-teal-50/50 border border-teal-200/70 rounded-xl p-3 text-center">
+              <div className="text-[10px] font-extrabold text-[#0e6977] uppercase">Total Working Duration</div>
+              <div className="text-base sm:text-lg font-black text-[#0e6977] mt-1 font-mono">
+                {workingDurationText || '0 hrs 0 mins'}
+              </div>
+              <div className="text-[10px] text-teal-600 font-medium mt-0.5">
+                {sessionStatus === 'In Progress' ? 'Active live timer' : 'Official duration'}
+              </div>
+            </div>
+
+            <div className="flex flex-col justify-center items-center gap-1.5 p-1">
+              {sessionStatus === 'Not Started' && (
+                <button
+                  type="button"
+                  onClick={() => setShowStartWorkModal(true)}
+                  className="w-full py-2.5 rounded-xl bg-[#0e6977] hover:bg-[#0a4f5a] text-white text-xs font-bold shadow-xs active:scale-95 transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Play className="w-3.5 h-3.5 fill-white stroke-none" />
+                  <span>Start Work</span>
+                </button>
+              )}
+              {sessionStatus === 'In Progress' && (
+                <div className="w-full flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowCloseWorkModal(true)}
+                    className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-xs active:scale-95 transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    <span>Close Work</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleTabChange('EOD Report')}
+                    className="px-3 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-all cursor-pointer"
+                    title="Open EOD Report"
+                  >
+                    EOD →
+                  </button>
+                </div>
+              )}
+              {sessionStatus === 'Completed' && (
+                <button
+                  type="button"
+                  onClick={handleConfirmStartWork}
+                  disabled={workModalLoading}
+                  title="Closed the day by mistake or back after a break? Re-open it — the time away counts as break"
+                  className="w-full mb-2 py-2 rounded-xl bg-white hover:bg-teal-50 text-teal-800 border border-teal-200 text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer"
+                >
+                  <Play className="w-3.5 h-3.5" />
+                  <span>Resume Work</span>
+                </button>
+              )}
+              {sessionStatus === 'Completed' && (
+                <button
+                  type="button"
+                  onClick={() => handleTabChange('EOD Report')}
+                  className="w-full py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer"
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>View / Edit EOD</span>
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+        </>)}
+
+        {/* Golden Target Progress Banner — click to open the Targets section
+            (Branch Head / HR Department Head assign targets there; roster from the HR Roster tab) */}
+        <div role="button" tabIndex={0}
+          onClick={() => setActiveTab('My Targets')}
+          onKeyDown={(e) => { if (e.key === 'Enter') setActiveTab('My Targets'); }}
+          title={(scopeKind === 'branch' || scopeKind === 'all') ? 'Open Targets to assign / update your HRs\' monthly targets' : 'Open My Targets'}
+          className="bg-gradient-to-r from-[#fff9eb] via-[#fffbeb] to-[#fef3c7] border border-[#fde68a] rounded-2xl p-4 sm:p-5 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 cursor-pointer hover:shadow-md hover:border-amber-400 transition-all">
+          <div className="flex items-center gap-3.5">
+            <div className="w-11 h-11 rounded-xl bg-amber-400/20 border border-amber-300/60 flex items-center justify-center text-amber-700 flex-shrink-0">
+              <Award className="w-6 h-6 stroke-[2.2]" />
+            </div>
+            <div>
+              <span className="text-[10px] font-extrabold tracking-wider uppercase text-amber-800 bg-amber-200/60 px-2 py-0.5 rounded-full border border-amber-300/50">
+                MONTHLY TARGET • {new Date(`${todayKey}T00:00:00`).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' }).toUpperCase()}
+              </span>
+              <h3 className="text-base sm:text-lg font-bold text-slate-900 mt-1">
+                {monthlyTarget.value
+                  ? `Target ${monthlyTarget.value} admissions • ${admissionsThisMonth} closed this month`
+                  : `${admissionsThisMonth} admissions closed this month`}
+              </h3>
+              <p className="text-xs text-amber-900/80">
+                {!monthlyTarget.value
+                  ? 'No monthly target set yet — the Head of HR or Admin (Incentive Slabs) sets it.'
+                  : admissionsThisMonth >= monthlyTarget.value
+                  ? `Goal achieved! ${admissionsThisMonth - monthlyTarget.value} surplus admissions · ₹${progressiveIncentive(admissionsThisMonth, monthlyTarget.value, incentivePolicy?.bands).toLocaleString('en-IN')} incentive earned.`
+                  : `${monthlyTarget.value - admissionsThisMonth} more to hit your target — then each extra admission earns incentive.`}
+                {monthlyTarget.value && !monthlyTarget.fromHead && ' (Admin default target.)'}
+              </p>
+              {(scopeKind === 'branch' || scopeKind === 'all') ? (
+                <div className="flex items-center gap-2 mt-2 flex-wrap">
+                  <button type="button" onClick={(e) => { e.stopPropagation(); setActiveTab('My Targets'); }}
+                    className="px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-bold cursor-pointer">
+                    Assign / update targets →
+                  </button>
+                  <button type="button" onClick={(e) => { e.stopPropagation(); setActiveTab('HR Roster'); }}
+                    className="px-2.5 py-1 rounded-lg bg-white border border-amber-300 hover:bg-amber-50 text-amber-900 text-[11px] font-bold cursor-pointer">
+                    Update roster →
+                  </button>
+                </div>
+              ) : (
+                <div className="text-[11px] font-bold text-amber-700 mt-1">View my targets →</div>
+              )}
+            </div>
+          </div>
+
+          <div className="w-full sm:w-64 flex flex-col items-end">
+            <div className="flex items-center justify-between w-full text-xs font-extrabold text-slate-800 mb-1">
+              <span>{admissionsThisMonth} / {monthlyTarget.value || "—"}</span>
+              <span className="text-amber-700">{monthlyTarget.value ? `${Math.min(100, Math.round((admissionsThisMonth / monthlyTarget.value) * 100))}%` : "—"}</span>
+            </div>
+            <div className="w-full h-2.5 bg-amber-200/60 rounded-full overflow-hidden">
+              <div 
+                className="h-full bg-gradient-to-r from-amber-400 to-[#73C1CC] rounded-full transition-all duration-500" 
+                style={{ width: `${monthlyTarget.value ? Math.min(100, Math.round((admissionsThisMonth / monthlyTarget.value) * 100)) : 0}%` }}
+              />
+            </div>
+            <div className="flex items-center justify-between w-full mt-1.5 flex-wrap gap-2">
+              <span className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">
+                COLLECTED TODAY: <strong className="text-emerald-700">{homeMetrics.feesCollected}</strong>
+              </span>
+              <button
+                type="button"
+                onClick={() => handleTabChange('Fees')}
+                className="text-[10px] font-bold text-slate-700 hover:text-[#00897b] transition-colors cursor-pointer flex items-center gap-1"
+                title="View Pending Dues in Fees CRM"
+              >
+                <span>PENDING DUES:</span>
+                <strong className="text-amber-800 font-mono">₹{myPendingFeesStats.totalBal.toLocaleString('en-IN')}</strong>
+                <span className="text-slate-500">({myPendingFeesStats.count})</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* 4 Metric Cards in a Row */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4">
+          {/* Card 1 */}
+          <div onClick={() => setKpiDrill('calls')} title="Click to see today's calls"
+            className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs hover:border-[#73C1CC]/70 hover:shadow-md transition-all flex flex-col justify-between text-left cursor-pointer">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-[11px] font-extrabold tracking-wider text-slate-500 uppercase">
+                CALLS LOGGED
+              </span>
+              <div className="w-7 h-7 rounded-full bg-[#e6f7f9] text-[#0e6977] flex items-center justify-center">
+                <Phone className="w-3.5 h-3.5" />
+              </div>
+            </div>
+            <div className="text-3xl font-extrabold text-slate-900">{homeMetrics.callsMade}</div>
+            <div className="text-xs text-slate-500 mt-1 font-medium">{homeMetrics.connected} connected</div>
+          </div>
+
+          {/* Card 2 */}
+          <div onClick={() => setKpiDrill('followups')} title="Click to see follow-ups due"
+            className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs hover:border-amber-400/50 hover:shadow-md transition-all flex flex-col justify-between text-left cursor-pointer">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-[11px] font-extrabold tracking-wider text-slate-500 uppercase">
+                FOLLOW-UPS DUE
+              </span>
+              <div className="w-7 h-7 rounded-full bg-amber-50 text-amber-600 flex items-center justify-center">
+                <Clock className="w-3.5 h-3.5" />
+              </div>
+            </div>
+            <div className="text-3xl font-extrabold text-amber-600">{homeMetrics.pendingFus}</div>
+            <div className="text-xs text-rose-500 mt-1 font-bold">{overdueCount} overdue · due today or earlier</div>
+          </div>
+
+          {/* Card 3 */}
+          <div 
+            onClick={() => setKpiDrill('demos')}
+            className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs hover:border-[#73C1CC]/80 hover:shadow-md transition-all flex flex-col justify-between text-left cursor-pointer group"
+            title="Click to see booked demos"
+          >
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-[11px] font-extrabold tracking-wider text-slate-500 uppercase">
+                DEMOS BOOKED
+              </span>
+              <div className="w-7 h-7 rounded-full bg-[#e6f7f9] text-[#0e6977] flex items-center justify-center group-hover:scale-110 transition-transform">
+                <Calendar className="w-3.5 h-3.5" />
+              </div>
+            </div>
+            <div className="text-3xl font-extrabold text-slate-900">{myDemos.length}</div>
+            <div className="text-xs text-slate-500 mt-1 font-medium">
+              {myDemos.filter(d => !d.trainer || d.trainer === 'Unassigned').length} pending faculty · {myDemos.filter(d => d.trainer && d.trainer !== 'Unassigned' && !['attended', 'completed', 'fee'].includes(String(d.status).toLowerCase())).length} assigned · {myDemos.filter(d => ['attended', 'completed', 'fee'].includes(String(d.status).toLowerCase())).length} attended
+            </div>
+          </div>
+
+          {/* Card 4 */}
+          <div onClick={() => setKpiDrill('admissions')} title="Click to see admissions"
+            className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs hover:border-[#73C1CC]/70 hover:shadow-md transition-all flex flex-col justify-between text-left cursor-pointer">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-[11px] font-extrabold tracking-wider text-slate-500 uppercase">
+                ADMISSIONS • THIS MONTH
+              </span>
+              <div className="w-7 h-7 rounded-full bg-[#e6f7f9] text-[#0e6977] flex items-center justify-center">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+              </div>
+            </div>
+            <div className="text-3xl font-extrabold text-[#0e6977]">{admissionsThisMonth}</div>
+            <div className="text-xs text-[#0e6977] mt-1 font-bold flex items-center gap-1">
+              <TrendingUp className="w-3 h-3" /> {myStudents.length} enrolled in total
+            </div>
+          </div>
+        </div>
+
+        {/* Two Column Middle Section: Priority Queue & Recent Activity */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+          
+          {/* Left: Today's Priority Queue (7 cols) */}
+          <div className="lg:col-span-7 bg-white rounded-2xl border border-slate-200/80 p-5 shadow-xs flex flex-col justify-between relative">
+            
+            <div>
+              {/* Card Header */}
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-3">
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-[#0e6977] animate-pulse" />
+                  <h3 className="text-sm font-bold text-slate-900">Today's Priority Queue</h3>
+                </div>
+                <span className="text-xs text-slate-500 font-medium">
+                  {homeMetrics.pendingFus} pending in pipeline
+                </span>
+              </div>
+
+              {/* Queue Items */}
+              <div className="space-y-2.5">
+                {priorityQueue.length === 0 ? (
+                  <div className="p-6 text-center text-xs text-slate-400 bg-slate-50/50 rounded-xl border border-dashed border-slate-200">
+                    No urgent calls in queue. Click "+ Add Enquiry" above to record a new student enquiry.
+                  </div>
+                ) : (
+                  priorityQueue.map((item, idx) => (
+                    <div 
+                      key={item.id || idx}
+                      className="p-3 rounded-xl bg-slate-50/60 hover:bg-[#f0fafb] border border-slate-100 hover:border-[#bde6ed] transition-all flex items-center justify-between gap-3 text-left"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <span className={`px-2 py-0.5 rounded-md text-[11px] font-extrabold flex-shrink-0 ${
+                          item.isOverdue
+                            ? 'bg-rose-600 text-white'
+                            : item.isNow
+                              ? 'bg-[#0e6977] text-white'
+                              : 'bg-slate-200/70 text-slate-700'
+                        }`}>
+                          {item.time}
+                        </span>
+                        <div className="min-w-0">
+                          <h4 className="text-xs font-bold text-slate-900 truncate">
+                            {item.name}
+                          </h4>
+                          <p className="text-[11px] text-slate-500 truncate mt-0.5">
+                            📞 {item.details}
+                          </p>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => {
+                          if (item.isFeeDue) handleTabChange('Fees');
+                          else if (item.leadData?.stage === 'demo_booked') handleTabChange('Demo Desk');
+                          else openCallFor(item.leadData);
+                        }}
+                        className={`px-3 py-1 rounded-full text-[10.5px] tracking-wide flex-shrink-0 transition-all cursor-pointer active:scale-95 ${item.actionStyle}`}
+                      >
+                        {item.actionText}
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Right: Recent Activity (5 cols) */}
+          <div className="lg:col-span-5 bg-white rounded-2xl border border-slate-200/80 p-5 shadow-xs flex flex-col justify-between">
+            <div>
+              {/* Card Header */}
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-3">
+                <h3 className="text-sm font-bold text-slate-900">Recent Activity</h3>
+                <span className="text-xs text-slate-500 font-medium">Live CRM Feed</span>
+              </div>
+
+              {/* Timeline Items */}
+              <div className="space-y-3">
+                {recentActivities.length === 0 ? (
+                  <div className="p-4 text-center text-xs text-slate-400">
+                    No recent activity recorded yet.
+                  </div>
+                ) : (
+                  recentActivities.map((act, idx) => (
+                    <div key={idx} className="flex items-start justify-between gap-2.5 text-left text-xs">
+                      <div className="flex items-start gap-2.5 min-w-0">
+                        <span className="text-[11px] font-mono text-slate-400 mt-0.5 flex-shrink-0">
+                          {act.time}
+                        </span>
+                        <div className="min-w-0">
+                          <div className="font-semibold text-slate-800 leading-snug truncate">
+                            {act.primary}
+                          </div>
+                          <div className="text-[11px] text-slate-500 truncate">
+                            {act.secondary}
+                          </div>
+                        </div>
+                      </div>
+                      <span className={`px-2 py-0.5 rounded-md text-[9.5px] font-extrabold flex-shrink-0 uppercase border ${act.tagStyle}`}>
+                        {act.tag}
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Bottom Banner: End-of-Day Closure Card */}
+        <div className="bg-[#082228] text-white rounded-2xl p-5 sm:p-6 shadow-xl border border-[#12424b] text-left">
+          {/* Header */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+            <div>
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <span className="text-base">🌙</span>
+                <h3 className="text-sm sm:text-base font-extrabold text-white tracking-wide">
+                  End-of-Day Closure
+                </h3>
+                <span className="px-2.5 py-0.5 rounded-full bg-[#12424b] text-[#73C1CC] text-[10.5px] font-bold font-mono border border-[#1d5c68]">
+                  {todayDisplay}
+                </span>
+                <span className="text-[10px] text-teal-300 font-semibold bg-white/5 px-2 py-0.5 rounded-md flex items-center gap-1">
+                  <span>↺</span>
+                  <span>Resets Daily</span>
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-1">
+                Submit your day before logging out. Only activity performed today is counted and rolls up to your Branch Manager's Command Center.
+              </p>
+            </div>
+            {closureSubmitted && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-emerald-400 font-bold bg-emerald-950/60 border border-emerald-500/40 px-3 py-1 rounded-xl">
+                  ✓ Submitted for {todayKey} ({closureSubmittedAt || 'Done'})
+                </span>
+                <button
+                  onClick={() => setClosureSubmitted(false)}
+                  className="text-[11px] text-slate-300 hover:text-white underline cursor-pointer"
+                >
+                  Edit / Update
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* 6 Metric Boxes */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 mb-4">
+            {/* Box 1: Calls Made */}
+            <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center transition-all hover:bg-white/10">
+              {editingMetric === 'callsMade' ? (
+                <input
+                  type="number"
+                  min="0"
+                  autoFocus
+                  value={closureMetrics.callsMade}
+                  onChange={(e) => setCustomMetrics(prev => ({ ...(prev || closureMetrics), callsMade: Math.max(0, parseInt(e.target.value) || 0) }))}
+                  onBlur={() => setEditingMetric(null)}
+                  onKeyDown={(e) => e.key === 'Enter' && setEditingMetric(null)}
+                  className="w-16 bg-white/20 text-center text-xl font-extrabold text-[#73C1CC] rounded outline-none border border-[#73C1CC] mx-auto block"
+                />
+              ) : (
+                <div 
+                  onClick={() => !closureSubmitted && setEditingMetric('callsMade')}
+                  className={`text-xl sm:text-2xl font-extrabold text-[#73C1CC] ${!closureSubmitted ? 'cursor-pointer hover:scale-105' : ''} transition-transform`}
+                  title={!closureSubmitted ? "Click to correct calls made today" : "Calls made today"}
+                >
+                  {closureMetrics.callsMade}
+                </div>
+              )}
+              <div className="text-[9.5px] font-extrabold uppercase tracking-wider text-slate-400 mt-1">
+                CALLS MADE
+              </div>
+            </div>
+
+            {/* Box 2: Connected */}
+            <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center transition-all hover:bg-white/10">
+              {editingMetric === 'connected' ? (
+                <input
+                  type="number"
+                  min="0"
+                  autoFocus
+                  value={closureMetrics.connected}
+                  onChange={(e) => setCustomMetrics(prev => ({ ...(prev || closureMetrics), connected: Math.max(0, parseInt(e.target.value) || 0) }))}
+                  onBlur={() => setEditingMetric(null)}
+                  onKeyDown={(e) => e.key === 'Enter' && setEditingMetric(null)}
+                  className="w-16 bg-white/20 text-center text-xl font-extrabold text-[#73C1CC] rounded outline-none border border-[#73C1CC] mx-auto block"
+                />
+              ) : (
+                <div 
+                  onClick={() => !closureSubmitted && setEditingMetric('connected')}
+                  className={`text-xl sm:text-2xl font-extrabold text-[#73C1CC] ${!closureSubmitted ? 'cursor-pointer hover:scale-105' : ''} transition-transform`}
+                  title={!closureSubmitted ? "Click to correct connected calls today" : "Connected calls today"}
+                >
+                  {closureMetrics.connected}
+                </div>
+              )}
+              <div className="text-[9.5px] font-extrabold uppercase tracking-wider text-slate-400 mt-1">
+                CONNECTED
+              </div>
+            </div>
+
+            {/* Box 3: Demos Booked */}
+            <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center transition-all hover:bg-white/10">
+              {editingMetric === 'demosBooked' ? (
+                <input
+                  type="number"
+                  min="0"
+                  autoFocus
+                  value={closureMetrics.demosBooked}
+                  onChange={(e) => setCustomMetrics(prev => ({ ...(prev || closureMetrics), demosBooked: Math.max(0, parseInt(e.target.value) || 0) }))}
+                  onBlur={() => setEditingMetric(null)}
+                  onKeyDown={(e) => e.key === 'Enter' && setEditingMetric(null)}
+                  className="w-16 bg-white/20 text-center text-xl font-extrabold text-[#73C1CC] rounded outline-none border border-[#73C1CC] mx-auto block"
+                />
+              ) : (
+                <div 
+                  onClick={() => !closureSubmitted && setEditingMetric('demosBooked')}
+                  className={`text-xl sm:text-2xl font-extrabold text-[#73C1CC] ${!closureSubmitted ? 'cursor-pointer hover:scale-105' : ''} transition-transform`}
+                  title={!closureSubmitted ? "Click to correct demos booked today" : "Demos booked today"}
+                >
+                  {closureMetrics.demosBooked}
+                </div>
+              )}
+              <div className="text-[9.5px] font-extrabold uppercase tracking-wider text-slate-400 mt-1">
+                DEMOS BOOKED
+              </div>
+            </div>
+
+            {/* Box 4: Admissions */}
+            <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center transition-all hover:bg-white/10">
+              {editingMetric === 'admissions' ? (
+                <input
+                  type="number"
+                  min="0"
+                  autoFocus
+                  value={closureMetrics.admissions}
+                  onChange={(e) => setCustomMetrics(prev => ({ ...(prev || closureMetrics), admissions: Math.max(0, parseInt(e.target.value) || 0) }))}
+                  onBlur={() => setEditingMetric(null)}
+                  onKeyDown={(e) => e.key === 'Enter' && setEditingMetric(null)}
+                  className="w-16 bg-white/20 text-center text-xl font-extrabold text-[#73C1CC] rounded outline-none border border-[#73C1CC] mx-auto block"
+                />
+              ) : (
+                <div 
+                  onClick={() => !closureSubmitted && setEditingMetric('admissions')}
+                  className={`text-xl sm:text-2xl font-extrabold text-[#73C1CC] ${!closureSubmitted ? 'cursor-pointer hover:scale-105' : ''} transition-transform`}
+                  title={!closureSubmitted ? "Click to correct admissions done today" : "Admissions done today"}
+                >
+                  {closureMetrics.admissions}
+                </div>
+              )}
+              <div className="text-[9.5px] font-extrabold uppercase tracking-wider text-slate-400 mt-1">
+                ADMISSIONS
+              </div>
+            </div>
+
+            {/* Box 5: Fees Collected */}
+            <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center transition-all hover:bg-white/10">
+              {editingMetric === 'feesCollected' ? (
+                <input
+                  type="number"
+                  min="0"
+                  step="1000"
+                  autoFocus
+                  value={closureMetrics.rawFeesCollected}
+                  onChange={(e) => {
+                    const val = Math.max(0, parseInt(e.target.value) || 0);
+                    setCustomMetrics(prev => ({ ...(prev || closureMetrics), feesCollected: val, rawFeesCollected: val }));
+                  }}
+                  onBlur={() => setEditingMetric(null)}
+                  onKeyDown={(e) => e.key === 'Enter' && setEditingMetric(null)}
+                  className="w-24 bg-white/20 text-center text-lg font-extrabold text-white rounded outline-none border border-white/40 mx-auto block font-mono"
+                />
+              ) : (
+                <div 
+                  onClick={() => !closureSubmitted && setEditingMetric('feesCollected')}
+                  className={`text-xl sm:text-2xl font-extrabold text-white ${!closureSubmitted ? 'cursor-pointer hover:scale-105' : ''} transition-transform font-mono`}
+                  title={!closureSubmitted ? "Click to correct fees collected today" : "Fees collected today"}
+                >
+                  {closureMetrics.feesCollected}
+                </div>
+              )}
+              <div className="text-[9.5px] font-extrabold uppercase tracking-wider text-slate-400 mt-1">
+                FEES COLLECTED
+              </div>
+            </div>
+
+            {/* Box 6: Pending Follow-ups */}
+            <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center transition-all hover:bg-white/10">
+              {editingMetric === 'pendingFus' ? (
+                <input
+                  type="number"
+                  min="0"
+                  autoFocus
+                  value={closureMetrics.pendingFus}
+                  onChange={(e) => setCustomMetrics(prev => ({ ...(prev || closureMetrics), pendingFus: Math.max(0, parseInt(e.target.value) || 0) }))}
+                  onBlur={() => setEditingMetric(null)}
+                  onKeyDown={(e) => e.key === 'Enter' && setEditingMetric(null)}
+                  className="w-16 bg-white/20 text-center text-xl font-extrabold text-amber-400 rounded outline-none border border-amber-400 mx-auto block"
+                />
+              ) : (
+                <div 
+                  onClick={() => !closureSubmitted && setEditingMetric('pendingFus')}
+                  className={`text-xl sm:text-2xl font-extrabold text-amber-400 ${!closureSubmitted ? 'cursor-pointer hover:scale-105' : ''} transition-transform`}
+                  title={!closureSubmitted ? "Click to correct pending follow-ups due today" : "Pending follow-ups due today"}
+                >
+                  {closureMetrics.pendingFus}
+                </div>
+              )}
+              <div className="text-[9.5px] font-extrabold uppercase tracking-wider text-slate-400 mt-1">
+                PENDING FUS
+              </div>
+            </div>
+          </div>
+
+          {/* Action Bar */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2 border-t border-white/10 text-xs">
+            <div className="text-slate-400 flex items-center gap-1.5">
+              <span>✏️</span>
+              <span>Tap any number to correct it before submitting.</span>
+            </div>
+
+            <div className="flex items-center gap-3 flex-wrap">
+              <button
+                onClick={() => handleTabChange('EOD Report')}
+                className="px-3.5 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-teal-200 font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer border border-white/15"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>Open Full EOD Report →</span>
+              </button>
+              <button
+                onClick={handleDailyClosureSubmit}
+                disabled={closureSubmitted}
+                className={`px-4 py-2 rounded-xl ${
+                  closureSubmitted 
+                    ? 'bg-emerald-700/80 text-white cursor-default' 
+                    : 'bg-[#0e6977] hover:bg-[#0a4f5a] text-white shadow-md active:scale-[0.98] cursor-pointer'
+                } font-bold text-xs flex items-center gap-1.5 transition-all`}
+              >
+                <span>{closureSubmitted ? `Closure Submitted (${closureSubmittedAt || 'Done'}) ✓` : "Submit EOD to HR Head →"}</span>
+              </button>
+              <span className="text-[11px] text-slate-400">
+                Tomorrow's priority: {overdueCount} overdue follow-ups + {feePendingCount} fee-pending students
+              </span>
+            </div>
+          </div>
+        </div>
+        </>
+        ) : (
+          <div className="bg-white rounded-3xl p-12 text-center border border-slate-200/80 shadow-xs max-w-xl mx-auto space-y-4">
+            <div className="w-16 h-16 rounded-2xl bg-teal-50 text-teal-700 flex items-center justify-center mx-auto text-2xl font-bold">
+              📂
+            </div>
+            <div>
+              <h2 className="text-xl font-black text-slate-900">{activeTab}</h2>
+              <p className="text-xs text-slate-500 mt-1">
+                This module is integrated with the Central Academic & Counselling Network.
+              </p>
+            </div>
+            <div className="flex items-center justify-center gap-3 pt-2">
+              <button
+                onClick={() => handleTabChange('Pipeline & Follow-ups')}
+                className="px-4 py-2 rounded-xl bg-[#7c3aed] text-white text-xs font-bold shadow-xs hover:bg-[#6d28d9] transition-all"
+              >
+                Open Pipeline & Follow-ups ({(hrLeadCounts?.totalLeads ?? (leadsTotalCount || scopedLeads.length)).toLocaleString()} Leads)
+              </button>
+              <button
+                onClick={() => handleTabChange('Home')}
+                className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-all"
+              >
+                Back to Home Dashboard
+              </button>
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* Home KPI card drill-down */}
+      {kpiDrill && kpiDrillData && (
+        <HrKpiDrilldownModal
+          kind={kpiDrill}
+          data={kpiDrillData}
+          onClose={() => setKpiDrill(null)}
+          onCallLead={(lead) => { setKpiDrill(null); openCallFor(lead, false); }}
+          onBookDemo={() => { setKpiDrill(null); setBookDemoInitialData(null); setShowBookDemoModal(true); }}
+        />
+      )}
+
+      {/* Lead Call Modal */}
+      <LeadCallModal
+        isOpen={Boolean(selectedCallLead)}
+        onClose={() => setSelectedCallLead(null)}
+        leadData={selectedCallLead}
+        currentUser={currentUser}
+        onSave={async (data) => {
+          const leadId = selectedCallLead?._id || selectedCallLead?.id;
+          if (!leadId) {
+            showToast('Could not save — this record has no database ID.');
+            return;
+          }
+          const isStudent = Boolean(selectedCallLead.isStudent);
+          let updatedLead = null;
+
+          if (isStudent) {
+            try {
+              const updatedStudent = await updateStudent(leadId, {
+                phone: data.leadForm?.phone,
+                whatsappNumber: data.leadForm?.whatsappNumber,
+                notes: data.notes
+              });
+              setStudents((prev) => prev.map((s) => ((s._id || s.id || s.studentId) === leadId ? { ...s, ...updatedStudent } : s)));
+            } catch (err) {
+              console.warn('Student update notice:', err.message);
+            }
+          } else {
+            // Latest copy of the lead, so two calls in a row both count
+            const freshLead = leads.find((l) => (l._id || l.id) === leadId) || selectedCallLead.leadData || {};
+            const update = {
+              callCount: (freshLead.callCount ?? selectedCallLead.callCount ?? 0) + 1,
+              lastCallTime: new Date().toISOString(),
+              notes: data.notes || undefined,
+              followUpNote: data.notes || undefined,
+              followUpDate: data.followUpDate || undefined,
+              followUpTime: data.followUpTime || undefined,
+              followUpStatus: data.followUpStatus || data.leadForm?.followUpStatus || undefined,
+              ...(data.leadForm ? {
+                fullName: data.leadForm.name || undefined,
+                name: data.leadForm.name || undefined,
+                phone: data.leadForm.phone || undefined,
+                whatsappNumber: data.leadForm.whatsappNumber || undefined,
+                age: data.leadForm.age || undefined,
+                gender: data.leadForm.gender || undefined,
+                education: data.leadForm.education || undefined,
+                currentRole: data.leadForm.currentRole || undefined,
+                category: data.leadForm.currentRole || undefined,
+                experienceYrs: data.leadForm.experienceYrs || undefined,
+                location: data.leadForm.location || undefined,
+                course: data.leadForm.course || undefined,
+                budget: data.leadForm.budget || undefined,
+                batchTiming: data.leadForm.batchTiming || undefined,
+                decisionStatus: data.leadForm.decisionStatus || undefined,
+                source: data.leadForm.source || undefined,
+                sourceName: data.leadForm.source || undefined,
+                branch: data.leadForm.branch || undefined,
+                fetchedBy: data.leadForm.fetchedBy || undefined,
+                allocatedTo: data.leadForm.allocatedTo || undefined,
+                counselorAssigned: data.leadForm.allocatedTo || undefined,
+              } : {})
+            };
+            if (data.stage) update.stage = data.stage;
+            // Strip undefined keys so we never overwrite real saved values with nothing
+            Object.keys(update).forEach((k) => update[k] === undefined && delete update[k]);
+
+            updatedLead = await updateLead(leadId, update);
+            setLeads((prev) => prev.map((l) => ((l._id || l.id) === leadId ? updatedLead : l)));
+          }
+
+          // Record call into today's local log for instant daily closure reactivity
+          const newCallEntry = {
+            id: leadId,
+            time: new Date().toISOString(),
+            outcome: data.outcome,
+            duration: data.durationSeconds || 0,
+            connected: data.outcome !== 'Not Reachable'
+          };
+          setTodayCallLogs((prev) => [newCallEntry, ...prev]);
+          logCall({ leadId, leadName: data.leadForm?.name || selectedCallLead?.name || '', outcome: data.outcome, durationSeconds: data.durationSeconds || 0 })
+            .catch(() => showToast('⚠ Call saved on the record, but the daily call counter could not be updated'));
+
+          showToast(`✓ Call outcome saved for ${data.leadForm?.name || selectedCallLead.name} (${data.outcome}, ${Math.round(data.durationSeconds || 0)}s)`);
+
+          // "Will Join" → straight into registration, pre-filled from the lead
+          if (String(data.outcome || '').startsWith('Will Join') && updatedLead?.stage !== 'admitted') {
+            setSelectedCallLead(null);
+            setAdmittingLead(updatedLead);
+          }
+        }}
+      />
+
+      {/* Lead → Student registration (pipeline "Admit", call outcome "Will Join") */}
+      {admittingLead && (
+        <CompleteRegistrationModal
+          key={admittingLead._id || admittingLead.id}
+          isOpen
+          onClose={() => setAdmittingLead(null)}
+          currentUser={currentUser}
+          existingStudents={students}
+          initialData={{
+            fullName: admittingLead.fullName || admittingLead.name || '',
+            fatherName: admittingLead.fatherName || '',
+            dob: admittingLead.dob || '',
+            phone: admittingLead.phone || '',
+            whatsappNumber: admittingLead.whatsappNumber || admittingLead.phone || '',
+            email: admittingLead.email || '',
+            location: admittingLead.location || admittingLead.address || admittingLead.branch || '',
+            qualification: admittingLead.qualification || admittingLead.education || '',
+            passoutYear: admittingLead.passoutYear || '',
+            collegeCompany: admittingLead.collegeCompany || admittingLead.college || '',
+            source: admittingLead.sourceName || admittingLead.source || '',
+            courseName: admittingLead.course || '',
+            branchName: admittingLead.branch || branchShort || '',
+            leadBranch: admittingLead.branch || '',
+            batchTiming: admittingLead.batchTiming || '',
+            mode: admittingLead.mode || admittingLead.courseType || 'Online',
+            courseFee: admittingLead.courseFee || admittingLead.feesAgreed || admittingLead.fee || '',
+            amountPaidNow: admittingLead.paidAmount || admittingLead.initialPayment || admittingLead.feesPaid || ''
+          }}
+          onSubmit={handleAdmitSubmit}
+        />
+      )}
+
+      {/* Book New Demo Modal */}
+      <BookNewDemoModal
+        isOpen={showBookDemoModal}
+        onClose={() => setShowBookDemoModal(false)}
+        currentUser={currentUser}
+        initialData={bookDemoInitialData || { location: branchShort || 'Gandhipuram' }}
+        onConfirm={handleBookDemoSubmit}
+      />
+
+      {/* Add New Lead Modal */}
+      {studentLogin && (
+        <div className="fixed inset-0 z-[90] bg-black/60 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl w-full max-w-sm p-6 space-y-4 shadow-xl">
+            <h3 className="text-base font-bold text-slate-900">Student login created</h3>
+            <p className="text-xs text-slate-500">{studentLogin.name} has been added to Users. Share these dashboard credentials with the student.</p>
+            <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 text-xs space-y-1.5 font-mono">
+              <div><span className="text-slate-400">Email: </span><span className="font-bold text-slate-900">{studentLogin.email}</span></div>
+              <div><span className="text-slate-400">Password: </span><span className="font-bold text-slate-900">{studentLogin.password}</span></div>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => { try { navigator.clipboard.writeText(`Email: ${studentLogin.email}\nPassword: ${studentLogin.password}`); } catch (_) {} }}
+                className="flex-1 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold"
+              >Copy</button>
+              <button
+                onClick={() => {
+                  const text = `Hi ${studentLogin.name}, welcome to Thoughtflows! Your student dashboard login\nEmail: ${studentLogin.email}\nPassword: ${studentLogin.password}`;
+                  redirectToWhatsAppWeb(studentLogin.phone, text);
+                }}
+                className="flex-1 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold"
+              >Send via WhatsApp</button>
+            </div>
+            <button onClick={() => setStudentLogin(null)} className="w-full py-2 rounded-xl bg-[#009688] hover:bg-[#00897b] text-white text-xs font-bold">Done</button>
+          </div>
+        </div>
+      )}
+
+      <AddLeadModal
+        isOpen={showAddLeadModal}
+        onClose={() => setShowAddLeadModal(false)}
+        onAddLead={handleAddLeadSubmit}
+        onBulkImported={() => loadAllData(true)}
+        initialMode={addLeadModalMode}
+        currentUser={currentUser}
+        assignableCounsellors={scopeKind ? assignableCounsellors : null}
+      />
+
+      {/* 1. Start Work Confirmation Modal: "Are you ready to start today’s work?" (not on the Head of HR desk) */}
+      <StartWorkConfirmationModal
+        isOpen={showStartWorkModal && !isHrHeadDesk}
+        onClose={handleCancelStartWork}
+        onConfirmStart={handleConfirmStartWork}
+        loading={workModalLoading}
+        userName={userName}
+        branchName={branchName}
+      />
+
+      {/* 2. Close Work Confirmation Modal: "Are you sure you want to close today’s work?" */}
+      <CloseWorkConfirmationModal
+        isOpen={showCloseWorkModal && !isHrHeadDesk}
+        onClose={handleCancelCloseWork}
+        onConfirmClose={handleConfirmCloseWork}
+        loading={workModalLoading}
+        userName={userName}
+        workStartTime={workStartTime}
+        workStartTimeFormatted={attendanceRecord?.checkIn || formatTimeDisplay(workStartTime)}
+        workingDurationText={workingDurationText}
+        closureSubmitted={closureSubmitted}
+        closureSubmittedAt={closureSubmittedAt}
+        eodSummary={eodSummaryText}
+        onEodSummaryChange={setEodSummaryText}
+        onOpenEodTab={() => handleTabChange('EOD Report')}
+        onSignOutOnly={() => { setShowCloseWorkModal(false); signOutNow(); }}
+      />
+    </div>
+  );
+}

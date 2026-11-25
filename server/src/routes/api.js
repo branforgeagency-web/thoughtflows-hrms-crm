@@ -153,6 +153,14 @@ router.use(async (req, res, next) => {
   next();
 });
 
+// HR Toppers spotlight cache — cleared the moment a student / admission is saved,
+// so the next dashboard poll shows the new topper straight away.
+const toppersCache = { at: 0, day: '', data: null };
+router.use((req, res, next) => {
+  if (req.method !== 'GET' && /^\/(students|student-portal|hr\/targets)(\/|$)/.test(req.path)) toppersCache.at = 0;
+  next();
+});
+
 // Health Check
 router.get('/health', (req, res) => {
   const isMongoConnected = mongoose.connection.readyState === 1;
@@ -1674,17 +1682,17 @@ router.get('/hr/targets/progress', async (req, res) => {
     if (hrNames.length) {
       const jobs = [];
       if (metricsNeeded.has('admissions') || metricsNeeded.has('fees')) {
-        jobs.push(Student.find({ $or: [{ createdAt: { $gte: startUtc } }, { admissionDate: { $gte: startUtc } }, { 'receipts.0': { $exists: true } }] })
-          .select('hrName counselor counselorName branch leadBranch location admissionDate createdAt receipts paidAmount').lean()
+        jobs.push(Student.find({ $or: [{ registeredAt: { $gte: startUtc } }, { createdAt: { $gte: startUtc } }, { admissionDate: { $gte: startUtc } }, { 'receipts.0': { $exists: true } }] })
+          .select('hrName counselor counselorName branch leadBranch location registeredAt admissionDate createdAt receipts paidAmount').lean()
           .then((list) => list.forEach((s) => {
             const recBranch = s.branch || s.leadBranch || s.location || '';
             const owner = ownerOf([s.hrName, s.counselor, s.counselorName], recBranch, hrBranchOf);
             if (!owner) return;
-            if (metricsNeeded.has('admissions')) add('admissions', owner, dayKeyIst(s.admissionDate || s.createdAt));
+            if (metricsNeeded.has('admissions')) add('admissions', owner, dayKeyIst(s.registeredAt || s.admissionDate || s.createdAt));
             if (metricsNeeded.has('fees')) {
               const receipts = Array.isArray(s.receipts) ? s.receipts : [];
               if (receipts.length) receipts.forEach((r) => add('fees', owner, dayKeyIst(r.date || r.at), Number(r.amount) || 0));
-              else add('fees', owner, dayKeyIst(s.admissionDate || s.createdAt), Number(s.paidAmount) || 0);
+              else add('fees', owner, dayKeyIst(s.registeredAt || s.admissionDate || s.createdAt), Number(s.paidAmount) || 0);
             }
           })));
       }
@@ -2478,6 +2486,251 @@ router.get('/leadership/team', async (req, res) => {
 
 // HR hub landing KPIs — counts only (no names / contact data), so the
 // HR role-desk page can show live numbers before anyone signs in
+// ---- HR Admissions Scoreboard (every HR dashboard) ----
+// Ranks every HR counsellor by students admitted in the month (registeredAt — the
+// admission / batch date — else record creation, IST). Ties → more fees collected this month ranks higher.
+// Same board for everyone; ?branch= narrows it to one branch.
+router.get('/hr/leaderboard', async (req, res) => {
+  try {
+    const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(req.query.month || '')) ? req.query.month : monthKeyIst();
+    const [yy, mm] = month.split('-').map(Number);
+    const startUtc = new Date(Date.UTC(yy, mm - 1, 1) - 330 * 60000);
+    const branchFilter = branchShort(String(req.query.branch || '').replace(/^all$/i, ''));
+    const bKey = (b) => branchShort(b).toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    const [users, team] = await Promise.all([
+      User.find({ $and: [HR_STAFF, ACTIVE_USER] }).select('name role branch').lean(),
+      TeamMember.find(deptCodeQuery('DEP-HR-001')).select('name role branchName').lean()
+    ]);
+    // Counsellors only — heads, managers and Business Leads are not on the board
+    const notHead = (r) => !isDeptHeadRole(r) && !/\bhead\b|\bhod\b|manager|business\s*lead|admin/i.test(r || '');
+    const pool = new Map();
+    users.filter((u) => u.name && notHead(u.role)).forEach((u) => pool.set(normName(u.name), { name: String(u.name).trim(), branch: branchShort(u.branch || '') }));
+    team.filter((m) => m.name && notHead(m.role)).forEach((m) => {
+      const k = normName(m.name);
+      if (!pool.has(k)) pool.set(k, { name: String(m.name).trim(), branch: branchShort(m.branchName || '') });
+      else if (!pool.get(k).branch && m.branchName) pool.get(k).branch = branchShort(m.branchName);
+    });
+    let hrs = [...pool.values()];
+    if (branchFilter) hrs = hrs.filter((h) => h.branch && (bKey(h.branch).includes(bKey(branchFilter)) || bKey(branchFilter).includes(bKey(h.branch))));
+    const stats = new Map(hrs.map((h) => [normName(h.name), { ...h, admissions: 0, fees: 0, courses: {} }]));
+
+    // Admission date = registeredAt (bulk upload: the batch / joining date), else when the record was made
+    const students = await Student.find({ $or: [{ registeredAt: { $gte: startUtc } }, { createdAt: { $gte: startUtc } }, { admissionDate: { $gte: startUtc } }, { 'receipts.0': { $exists: true } }] })
+      .select('hrName counselor counselorName branch leadBranch location registeredAt admissionDate createdAt receipts course').lean();
+    const ownerOf = (s) => {
+      const recBranch = s.branch || s.leadBranch || s.location || '';
+      return hrs.find((h) => [s.hrName, s.counselor, s.counselorName].some((c) => c && namesMatch(h.name, c, h.branch, recBranch)));
+    };
+    for (const s of students) {
+      const owner = ownerOf(s);
+      if (!owner) continue;
+      const row = stats.get(normName(owner.name));
+      if (String(dayKeyIst(s.registeredAt || s.admissionDate || s.createdAt) || '').slice(0, 7) === month) {
+        row.admissions += 1;
+        const c = String(s.course || 'Other').trim() || 'Other';
+        row.courses[c] = (row.courses[c] || 0) + 1;
+      }
+      for (const r of (Array.isArray(s.receipts) ? s.receipts : [])) {
+        if (String(dayKeyIst(r.date || r.at) || '').slice(0, 7) === month) row.fees += Number(r.amount) || 0;
+      }
+    }
+    const rows = [...stats.values()].sort((a, b) => b.admissions - a.admissions || b.fees - a.fees || a.name.localeCompare(b.name));
+    // Same admissions + same fees share a rank
+    rows.forEach((r, i) => {
+      const prev = rows[i - 1];
+      r.rank = prev && prev.admissions === r.admissions && prev.fees === r.fees ? prev.rank : i + 1;
+      r.topCourse = Object.entries(r.courses).sort((a, b) => b[1] - a[1])[0]?.[0] || '';
+      delete r.courses;
+    });
+    const me = rows.find((r) => req.user?.name && namesMatch(r.name, req.user.name, r.branch, req.user.branch || '')) || null;
+    const branches = [...new Set([...pool.values()].map((h) => h.branch).filter(Boolean))].sort();
+    res.json({
+      month, branch: branchFilter || 'all', rows, branches,
+      totals: { hrs: rows.length, admissions: rows.reduce((t, r) => t + r.admissions, 0), fees: rows.reduce((t, r) => t + r.fees, 0) },
+      me: me ? { name: me.name, rank: me.rank, admissions: me.admissions } : null,
+      updatedAt: new Date().toISOString()
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---- HR Toppers spotlight + daily popup (every HR dashboard / every staff login) ----
+// Ranked by TARGET ACHIEVEMENT: admissions ÷ admissions target.
+//   Monthly target = the HR's own admissions target(s) for the month, else "All HR" of their branch,
+//   else organisation-wide "All HR".  Daily target = monthly target ÷ days in the month (rounded up).
+//   HRs with no target set rank after everyone who has one (by admission count).
+//   Ties → more admissions, then more fees collected, then name.
+// Topper of the Day resets at midnight IST; Topper of the Month counts from the 1st till now.
+// "yesterday" (final standings) is used by the morning popup before today's first admission.
+// Admission date = registeredAt (bulk upload: batch date), else admissionDate / record creation.
+const TOPPERS_TTL_MS = 20000;
+const shiftDayKey = (dayKey, delta) => {
+  const d = new Date(`${dayKey}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + delta);
+  return d.toISOString().slice(0, 10);
+};
+const daysInMonthKey = (m) => { const [y, mo] = m.split('-').map(Number); return new Date(Date.UTC(y, mo, 0)).getUTCDate(); };
+
+async function computeHrToppers(today) {
+  const month = today.slice(0, 7);
+  const yesterday = shiftDayKey(today, -1);
+  const yMonth = yesterday.slice(0, 7);
+  const firstDay = yMonth < month ? `${yMonth}-01` : `${month}-01`;
+  const [fy, fm] = firstDay.split('-').map(Number);
+  const startUtc = new Date(Date.UTC(fy, fm - 1, 1) - 330 * 60000);
+
+  const [users, team] = await Promise.all([
+    User.find({ $and: [HR_STAFF, ACTIVE_USER] }).select('name role branch').lean(),
+    TeamMember.find(deptCodeQuery('DEP-HR-001')).select('name role branchName').lean()
+  ]);
+  // Counsellors only — same pool as the Scoreboard
+  const notHead = (r) => !isDeptHeadRole(r) && !/\bhead\b|\bhod\b|manager|business\s*lead|admin/i.test(r || '');
+  const pool = new Map();
+  users.filter((u) => u.name && notHead(u.role)).forEach((u) => pool.set(normName(u.name), { name: String(u.name).trim(), branch: branchShort(u.branch || '') }));
+  team.filter((m) => m.name && notHead(m.role)).forEach((m) => {
+    const k = normName(m.name);
+    if (!pool.has(k)) pool.set(k, { name: String(m.name).trim(), branch: branchShort(m.branchName || '') });
+    else if (!pool.get(k).branch && m.branchName) pool.get(k).branch = branchShort(m.branchName);
+  });
+  const hrs = [...pool.values()];
+  const stats = new Map(hrs.map((h) => [normName(h.name), { ...h, day: 0, dayFees: 0, yday: 0, ydayFees: 0, month: 0, monthFees: 0 }]));
+
+  const [students, tasks] = await Promise.all([
+    Student.find({ $or: [{ registeredAt: { $gte: startUtc } }, { createdAt: { $gte: startUtc } }, { admissionDate: { $gte: startUtc } }, { 'receipts.0': { $exists: true } }] })
+      .select('hrName counselor counselorName branch leadBranch location registeredAt admissionDate createdAt receipts').lean(),
+    HrTarget.find({ metric: 'admissions', $or: [{ month: { $in: [month, yMonth] } }, { month: { $in: ['', null] }, period: 'month' }] })
+      .select('assignedTo branch target month').lean()
+  ]);
+  for (const s of students) {
+    const recBranch = s.branch || s.leadBranch || s.location || '';
+    const owner = hrs.find((h) => [s.hrName, s.counselor, s.counselorName].some((c) => c && namesMatch(h.name, c, h.branch, recBranch)));
+    if (!owner) continue;
+    const row = stats.get(normName(owner.name));
+    const admDay = String(dayKeyIst(s.registeredAt || s.admissionDate || s.createdAt) || '');
+    if (admDay.slice(0, 7) === month) row.month += 1;
+    if (admDay === today) row.day += 1;
+    if (admDay === yesterday) row.yday += 1;
+    for (const r of (Array.isArray(s.receipts) ? s.receipts : [])) {
+      const rd = String(dayKeyIst(r.date || r.at) || '');
+      if (rd.slice(0, 7) === month) row.monthFees += Number(r.amount) || 0;
+      if (rd === today) row.dayFees += Number(r.amount) || 0;
+      if (rd === yesterday) row.ydayFees += Number(r.amount) || 0;
+    }
+  }
+
+  // Monthly admissions target for an HR in month m
+  const isAll = (t) => /^all\s*hr$/i.test(String(t.assignedTo || '').trim());
+  const monthTargetOf = (h, m) => {
+    const inMonth = tasks.filter((t) => t.month === m || (!t.month && m === month));
+    const levels = [
+      inMonth.filter((t) => !isAll(t) && normName(t.assignedTo) === normName(h.name)),
+      inMonth.filter((t) => isAll(t) && t.branch && h.branch && bClean(t.branch) === bClean(h.branch)),
+      inMonth.filter((t) => isAll(t) && !t.branch)
+    ];
+    const level = levels.find((l) => l.length);
+    return level ? (level.reduce((sum, t) => sum + (Number(t.target) || 0), 0) || null) : null;
+  };
+  const dayTargetOf = (h, m) => { const t = monthTargetOf(h, m); return t ? Math.max(1, Math.ceil(t / daysInMonthKey(m))) : null; };
+
+  const rows = [...stats.values()];
+  const rank = (countKey, feeKey, targetOf) => {
+    const list = rows.filter((r) => r[countKey] > 0).map((r) => {
+      const target = targetOf(r);
+      return { r, count: r[countKey], fees: r[feeKey], target, pct: target ? r[countKey] / target : null };
+    }).sort((a, b) => (Number(b.pct != null) - Number(a.pct != null)) || (b.pct || 0) - (a.pct || 0)
+      || b.count - a.count || b.fees - a.fees || a.r.name.localeCompare(b.r.name));
+    if (!list.length) return null;
+    const top = list[0];
+    const tiedWith = list.slice(1).filter((x) => x.pct === top.pct && x.count === top.count).map((x) => x.r.name);
+    return {
+      name: top.r.name, branch: top.r.branch, admissions: top.count, target: top.target,
+      percent: top.pct != null ? Math.round(top.pct * 100) : null, tiedWith,
+      runnersUp: list.slice(1, 3).map((x) => ({ name: x.r.name, branch: x.r.branch, admissions: x.count, percent: x.pct != null ? Math.round(x.pct * 100) : null }))
+    };
+  };
+  const day = rank('day', 'dayFees', (h) => dayTargetOf(h, month));
+  const yday = rank('yday', 'ydayFees', (h) => dayTargetOf(h, yMonth));
+  const monthTopper = rank('month', 'monthFees', (h) => monthTargetOf(h, month));
+
+  // Photos for the toppers only (photos are not part of normal user lists)
+  const names = [...new Set([day?.name, yday?.name, monthTopper?.name].filter(Boolean))];
+  const photoUsers = names.length
+    ? await User.find({ name: { $in: names.map((n) => exactNameRx(n)) } }).select({ name: 1, photo: 1 }).lean()
+    : [];
+  const withPhoto = (p) => (p ? { ...p, photo: photoUsers.find((u) => u.photo && normName(u.name) === normName(p.name))?.photo || '' } : null);
+
+  return {
+    date: today,
+    month,
+    yesterdayDate: yesterday,
+    day: withPhoto(day),
+    yesterday: withPhoto(yday),
+    monthTopper: withPhoto(monthTopper),
+    rankedBy: 'target',
+    totals: { today: rows.reduce((t, r) => t + r.day, 0), month: rows.reduce((t, r) => t + r.month, 0) },
+    updatedAt: new Date().toISOString()
+  };
+}
+
+router.get('/hr/toppers', async (req, res) => {
+  try {
+    const today = dayKeyIst(new Date());
+    let data = toppersCache.data;
+    if (!data || toppersCache.day !== today || Date.now() - toppersCache.at > TOPPERS_TTL_MS) {
+      data = await computeHrToppers(today);
+      toppersCache.at = Date.now();
+      toppersCache.day = today;
+      toppersCache.data = data;
+    }
+    // Per-viewer bits (never cached): does the viewer have a photo, may they set others' photos
+    let hasPhoto = false;
+    if (req.user?.sub && mongoose.isValidObjectId(req.user.sub)) {
+      const me = await User.findById(req.user.sub).select('+photo').lean();
+      hasPhoto = Boolean(me?.photo);
+    }
+    res.json({ ...data, me: { name: req.user?.name || '', hasPhoto }, canSetPhotos: canAssignHrTargets(req) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Employee photo — anyone may set their own; Admin / HR heads / Branch Head (own branch HRs)
+// may set another employee's (pass { name }). Body: { photo: "data:image/jpeg;base64,…" } ('' removes it).
+router.put('/staff/photo', async (req, res) => {
+  try {
+    const photo = String(req.body?.photo || '');
+    if (photo && !/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(photo)) {
+      return res.status(400).json({ error: 'Upload a JPG, PNG or WEBP photo.' });
+    }
+    if (photo.length > 400000) return res.status(413).json({ error: 'This photo is too large — please choose a smaller one.' });
+    const forName = String(req.body?.name || '').trim();
+    let target = null;
+    if (forName && normName(forName) !== normName(req.user?.name || '')) {
+      if (!canAssignHrTargets(req)) return res.status(403).json({ error: "You can only change your own photo." });
+      if (isScopedBranchManager(req)) {
+        const staff = await branchHrNames(getBranchManagerBranch(req));
+        if (!staff.some((n) => normName(n) === normName(forName))) return res.status(403).json({ error: `${forName} is not an HR of your branch.` });
+      }
+      target = await User.findOne({ name: exactNameRx(forName) });
+      if (!target) return res.status(404).json({ error: `${forName} has no login account yet — the photo is saved on the login account.` });
+    } else {
+      const or = [];
+      if (mongoose.isValidObjectId(req.user?.sub)) or.push({ _id: req.user.sub });
+      if (req.user?.email) or.push({ email: String(req.user.email).trim().toLowerCase() });
+      target = or.length ? await User.findOne({ $or: or }) : null;
+      if (!target) return res.status(404).json({ error: 'Your login account was not found.' });
+    }
+    target.photo = photo;
+    await target.save();
+    toppersCache.at = 0;
+    res.json({ ok: true, name: target.name, hasPhoto: Boolean(photo) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 router.get('/hr/hub-summary', async (req, res) => {
   try {
     await syncTeamFromUsers().catch(() => {});
@@ -4678,9 +4931,13 @@ async function checkDuplicateRegistration({ phone, whatsappNumber, email, leadId
 // One admission — shared by POST /students (single) and POST /students/bulk.
 // Returns { status, json } instead of writing to res, so the bulk route can
 // run it once per sheet row and collect each row's outcome.
-async function admitStudentRecord(req, rawBody) {
+// opts.bulk (staff bulk upload of admitted students): no mobile-number format check, paid may be
+// more than the fee, and the same student (same mobile / email) is allowed for a DIFFERENT course —
+// only the same mobile/email + same course is rejected.
+async function admitStudentRecord(req, rawBody, opts = {}) {
   try {
     const staff = isStaffCaller(req);
+    const bulk = Boolean(opts.bulk) && staff;
     const body = rawBody || {};
     let payload;
     if (staff) {
@@ -4702,8 +4959,18 @@ async function admitStudentRecord(req, rawBody) {
     }
     if (!String(payload.name || '').trim()) return __admitResult(400, { error: 'Student name is required.' });
     if (!String(payload.course || '').trim()) return __admitResult(400, { error: 'Course is required.' });
-    const contactErr = validateStudentContact(payload, { requirePhone: true });
-    if (contactErr) return __admitResult(400, { error: contactErr });
+    if (bulk) {
+      // Keep numbers / email exactly as in the sheet; tidy them only when they are valid
+      for (const k of ['phone', 'whatsappNumber', 'alternatePhone', 'additionalNumber']) {
+        if (!(k in payload)) continue;
+        const raw = String(payload[k] ?? '').trim();
+        payload[k] = raw ? (normalizeMobile(raw) || raw) : '';
+      }
+      if ('email' in payload) payload.email = String(payload.email || '').trim().toLowerCase();
+    } else {
+      const contactErr = validateStudentContact(payload, { requirePhone: true });
+      if (contactErr) return __admitResult(400, { error: contactErr });
+    }
     if (payload.registeredAt) {
       const d = new Date(payload.registeredAt);
       payload.registeredAt = isNaN(d.getTime()) ? new Date() : d;
@@ -4717,7 +4984,18 @@ async function admitStudentRecord(req, rawBody) {
       ? body.sameContactLeadIds.map(String).filter((id) => mongoose.isValidObjectId(id)).slice(0, 10)
       : [];
     delete payload.sameContactLeadIds;
-    const dup = await checkDuplicateRegistration({
+    if (bulk) {
+      const same = await Student.findOne({
+        $and: [
+          contactFilter(Student, { phones: [payload.phone, payload.whatsappNumber].filter(Boolean), email: payload.email }),
+          { course: exactNameRx(payload.course) }
+        ]
+      }).select('studentId name course').lean();
+      if (same) {
+        return __admitResult(409, { error: `Already admitted for ${same.course} as ${same.studentId} (${same.name}) — same mobile/email and same course. A different course is allowed.` });
+      }
+    }
+    const dup = bulk ? null : await checkDuplicateRegistration({
       phone: payload.phone,
       whatsappNumber: payload.whatsappNumber,
       email: payload.email,
@@ -4763,7 +5041,7 @@ async function admitStudentRecord(req, rawBody) {
     if (lead?.admittedStudentId) {
       // Admitting the same lead twice is a mistake; a matching phone on an old,
       // already-admitted lead is just a returning student taking another course.
-      if (payload.leadId) return __admitResult(409, { error: `${lead.fullName || 'This lead'} is already admitted as ${lead.admittedStudentId}` });
+      if (payload.leadId && !bulk) return __admitResult(409, { error: `${lead.fullName || 'This lead'} is already admitted as ${lead.admittedStudentId}` });
       lead = null;
     }
     if (lead) {
@@ -4801,7 +5079,7 @@ async function admitStudentRecord(req, rawBody) {
     if (!staff) { delete payload.courseFee; delete payload.paidAmount; }
     payload.courseFee = Math.max(0, Number(payload.courseFee) || 0);
     payload.paidAmount = Math.max(0, Number(payload.paidAmount) || 0);
-    if (payload.courseFee > 0 && payload.paidAmount > payload.courseFee) {
+    if (!bulk && payload.courseFee > 0 && payload.paidAmount > payload.courseFee) {
       return __admitResult(400, { error: `Amount paid (₹${payload.paidAmount.toLocaleString('en-IN')}) is more than the course fee (₹${payload.courseFee.toLocaleString('en-IN')}).` });
     }
     applyFeeTotals(payload);
@@ -5037,7 +5315,7 @@ router.post('/students/bulk', async (req, res) => {
         row.leadId = String(fromLead._id);
         row.sameContactLeadIds = openLeads.slice(1).map((l) => String(l._id));
       }
-      const r = await admitStudentRecord(req, row);
+      const r = await admitStudentRecord(req, row, { bulk: true });
       if (r.status === 201) {
         const s = r.json;
         results.push({
@@ -9522,6 +9800,132 @@ async function loadOrCreateUtilDoc(userId, date, hints = {}) {
     slots: DEFAULT_WORK_SLOTS.map((s) => ({ ...s }))
   });
 }
+
+// ---- Trainer Hours Scorecard & Incentive ----
+// Class hours a trainer actually took in the month: batch classes started from the
+// Class Session Room (startedAt → endedAt) + completed 1:1 sessions. Overlapping
+// sessions are merged so nothing is counted twice. Hours above the monthly target
+// (default 90 h) earn the incentive: extra hours × rate per extra hour.
+const TRAINER_HOURS_KEY = 'trainer_hours_policy';
+const DEFAULT_TRAINER_HOURS_POLICY = { targetHours: 90, ratePerExtraHour: 0, countOneOnOne: true, maxSessionMinutes: 240, missingEndMinutes: 120 };
+async function loadTrainerHoursPolicy() {
+  const doc = await AppSetting.findOne({ key: TRAINER_HOURS_KEY }).lean();
+  return { ...DEFAULT_TRAINER_HOURS_POLICY, ...(doc?.value || {}) };
+}
+const canManageTrainerHours = (req) => isTrainerHeadUser(req) || ['admin', 'leadership'].includes(normalizeDept(req.user?.department, req.user?.role)) || /admin|founder|director/i.test(req.user?.role || '');
+const seesTrainerIncentives = (req) => canManageTrainerHours(req) || isTrainerManagerUser(req) || isTrainerTLUser(req);
+
+router.get('/trainer/hours-scorecard', async (req, res) => {
+  try {
+    const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(req.query.month || '')) ? req.query.month : monthKeyIst();
+    const [yy, mm] = month.split('-').map(Number);
+    const startUtc = new Date(Date.UTC(yy, mm - 1, 1) - 330 * 60000);
+    const endUtc = new Date(Date.UTC(yy, mm, 1) - 330 * 60000);
+    const policy = await loadTrainerHoursPolicy();
+    const OneOnOneSession = mongoose.models.OneOnOneSession;
+    const [trainers, classes, ones] = await Promise.all([
+      Trainer.find({ active: { $ne: false } }).select('trainerId trainerName name branchName branch email').lean(),
+      LiveClassSession.find({ startedAt: { $gte: startUtc, $lt: endUtc } }).select('trainerId trainerName batch course startedAt endedAt isLive').lean(),
+      policy.countOneOnOne && OneOnOneSession
+        ? OneOnOneSession.find({ date: { $gte: `${month}-01`, $lte: `${month}-31` }, status: 'completed' }).select('trainerId trainerName date startMin endMin liveAt endedAt studentName course').lean()
+        : []
+    ]);
+    const now = Date.now();
+    const cap = (Number(policy.maxSessionMinutes) || 240) * 60000;
+    const per = new Map(); // trainerId → { intervals, sessions[] }
+    const bucket = (id, name) => {
+      const k = String(id || '').trim();
+      if (!k) return null;
+      if (!per.has(k)) per.set(k, { name: name || '', intervals: [], sessions: [] });
+      return per.get(k);
+    };
+    for (const c of classes) {
+      const b = bucket(c.trainerId, c.trainerName);
+      if (!b) continue;
+      const s = new Date(c.startedAt).getTime();
+      let e = c.endedAt ? new Date(c.endedAt).getTime() : c.isLive ? now : s + (Number(policy.missingEndMinutes) || 120) * 60000;
+      e = Math.min(e, s + cap);
+      if (e <= s) continue;
+      b.intervals.push([s, e]);
+      b.sessions.push({ type: 'class', date: dayKeyIst(c.startedAt), title: c.batch, course: c.course || '', start: c.startedAt, minutes: Math.round((e - s) / 60000), noEnd: !c.endedAt && !c.isLive, live: Boolean(c.isLive) });
+    }
+    for (const o of ones) {
+      const b = bucket(o.trainerId, o.trainerName);
+      if (!b) continue;
+      let s, e;
+      if (o.liveAt && o.endedAt) { s = new Date(o.liveAt).getTime(); e = new Date(o.endedAt).getTime(); }
+      else { s = new Date(`${o.date}T00:00:00+05:30`).getTime() + o.startMin * 60000; e = s + Math.max(0, o.endMin - o.startMin) * 60000; }
+      e = Math.min(e, s + cap);
+      if (e <= s) continue;
+      b.intervals.push([s, e]);
+      b.sessions.push({ type: 'one_on_one', date: o.date, title: `1:1 · ${o.studentName || 'Student'}`, course: o.course || '', start: new Date(s), minutes: Math.round((e - s) / 60000) });
+    }
+    const mergedMinutes = (list) => {
+      const iv = [...list].sort((a, b) => a[0] - b[0]);
+      let total = 0, cs = null, ce = null;
+      for (const [s, e] of iv) {
+        if (cs === null) { cs = s; ce = e; continue; }
+        if (s <= ce) ce = Math.max(ce, e); else { total += ce - cs; cs = s; ce = e; }
+      }
+      if (cs !== null) total += ce - cs;
+      return Math.round(total / 60000);
+    };
+    const target = Number(policy.targetHours) || 90;
+    const rate = Number(policy.ratePerExtraHour) || 0;
+    const showMoney = seesTrainerIncentives(req);
+    const myId = String(req.user?.trainerId || '').trim();
+    const byId = new Map(trainers.map((t) => [String(t.trainerId || t._id), t]));
+    const ids = new Set([...byId.keys(), ...per.keys()]);
+    const rows = [...ids].map((id) => {
+      const t = byId.get(id);
+      const p = per.get(id);
+      const minutes = p ? mergedMinutes(p.intervals) : 0;
+      const hours = Math.round((minutes / 60) * 100) / 100;
+      const extraHours = Math.max(0, Math.round((hours - target) * 100) / 100);
+      const mine = myId && id.toLowerCase() === myId.toLowerCase();
+      return {
+        trainerId: id, name: t?.trainerName || t?.name || p?.name || id, branch: t?.branchName || t?.branch || '',
+        hours, sessions: p?.sessions.length || 0, extraHours, progress: Math.min(100, Math.round((hours / target) * 100)),
+        incentive: showMoney || mine ? Math.round(extraHours * rate) : null, noEndSessions: p ? p.sessions.filter((s) => s.noEnd).length : 0,
+        isMe: Boolean(mine)
+      };
+    }).filter((r) => byId.has(r.trainerId) || r.hours > 0)
+      .sort((a, b) => b.hours - a.hours || a.name.localeCompare(b.name));
+    rows.forEach((r, i) => { const prev = rows[i - 1]; r.rank = prev && prev.hours === r.hours ? prev.rank : i + 1; });
+    const me = rows.find((r) => r.isMe) || null;
+    const mySessions = me ? (per.get(me.trainerId)?.sessions || []).sort((a, b) => new Date(b.start) - new Date(a.start)) : [];
+    res.json({
+      month, policy: { ...policy, targetHours: target, ratePerExtraHour: rate }, rows, me, mySessions,
+      canEditPolicy: canManageTrainerHours(req), showIncentives: showMoney,
+      totals: {
+        trainers: rows.length, hours: Math.round(rows.reduce((t, r) => t + r.hours, 0) * 10) / 10,
+        achieved: rows.filter((r) => r.hours >= target).length,
+        incentive: showMoney ? rows.reduce((t, r) => t + (r.incentive || 0), 0) : null
+      }
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.put('/trainer/hours-scorecard/policy', async (req, res) => {
+  try {
+    if (!canManageTrainerHours(req)) return res.status(403).json({ error: 'Only the Department Head of Training or Admin can change the hours policy.' });
+    const b = req.body || {};
+    const clamp = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : d; };
+    const value = {
+      targetHours: clamp(b.targetHours, 1, 400, 90),
+      ratePerExtraHour: clamp(b.ratePerExtraHour, 0, 100000, 0),
+      countOneOnOne: b.countOneOnOne !== false,
+      maxSessionMinutes: clamp(b.maxSessionMinutes, 30, 720, 240),
+      missingEndMinutes: clamp(b.missingEndMinutes, 0, 480, 120)
+    };
+    await AppSetting.findOneAndUpdate({ key: TRAINER_HOURS_KEY }, { $set: { value, updatedBy: req.user?.name || '' } }, { upsert: true });
+    res.json(value);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // 1. GET /trainer/utilization — Retrieve live hourly work records and metrics
 router.get('/trainer/utilization', async (req, res) => {

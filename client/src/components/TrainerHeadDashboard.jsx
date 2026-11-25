@@ -7,8 +7,9 @@ import {
   Laptop as MenuAvailIcon, Link2 as MenuLinkIcon, UserCheck as MenuOneIcon, Clock as MenuShiftIcon,
   Network as MenuMappingIcon, ClipboardCheck as MenuAttendanceIcon, Gauge as MenuUtilIcon, Briefcase as MenuManagersIcon,
   Building2 as MenuBranchIcon, Layers as MenuBatchIcon, AlertTriangle as MenuWeakIcon, ListChecks as MenuSyllabusIcon, BookOpen as MenuLmsIcon,
-  FileQuestion as MenuSeriesIcon
+  FileQuestion as MenuSeriesIcon, Trophy as MenuHoursIcon
 } from 'lucide-react';
+import TrainerHoursScorecard from './TrainerHoursScorecard';
 import SchedulingCalendar from './scheduling/SchedulingCalendar';
 import AvailabilityFinder from './scheduling/AvailabilityFinder';
 import ConsultationsDesk from './scheduling/ConsultationsDesk';
@@ -1916,6 +1917,7 @@ export default function TrainerHeadDashboard({
               { id: 'mapping', label: 'Trainer Mapping', icon: MenuMappingIcon, count: scopedTrainers.length, hint: 'Trainer & batch mapping' },
               { id: 'trainer_attendance', label: 'Trainer Attendance', icon: MenuAttendanceIcon },
               { id: 'utilization', label: 'Utilization', icon: MenuUtilIcon, hint: 'Hourly utilization dashboard' },
+              { id: 'hours_scorecard', label: 'Hours Scorecard', icon: MenuHoursIcon, hint: 'Class hours vs 90 h target · extra-hour incentive' },
               { id: 'managers_tls', label: 'Managers & TLs', icon: MenuManagersIcon, hidden: !isHeadRole, count: `${trainerManagersList.length} · ${trainerTLsList.length}`, hint: `${trainerManagersList.length} managers · ${trainerTLsList.length} team leads` }
             ] },
             { id: 'students', title: 'Students & learning', items: [
@@ -5297,6 +5299,11 @@ export default function TrainerHeadDashboard({
               materials={materials}
               onChanged={loadDashboardData}
             />
+          )}
+
+          {/* ================= TRAINER HOURS SCORECARD (90 h target → incentive) ================= */}
+          {activeTab === 'hours_scorecard' && (
+            <TrainerHoursScorecard teamView />
           )}
 
           {/* ================= SECTION 9: UTILIZATION & HOURLY WORK TRACKER ================= */}

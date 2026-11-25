@@ -228,8 +228,9 @@ function mapRow(cells, colMap, opts, rowNo) {
   const warnings = [];
   if (!payload.name) errors.push('Name missing');
   if (!payload.course) errors.push('Course missing');
-  if (!normalizeMobile(payload.phone)) errors.push(payload.phone ? `Contact ${payload.phone} is not a valid number (10-digit Indian, or foreign with country code)` : 'Contact missing');
-  if (courseFee > 0 && paidAmount > courseFee) errors.push(`Paid ₹${paidAmount} is more than fee ₹${courseFee}`);
+  // Bulk upload: any contact number is accepted as given (no format check, no duplicate check)
+  if (!payload.phone) warnings.push('No contact number');
+  if (courseFee > 0 && paidAmount > courseFee) warnings.push(`Paid ₹${paidAmount} is more than fee ₹${courseFee}`);
   if (!batchDate) warnings.push(r.doj ? `DOJ "${r.doj}" not understood — today's date will be used` : 'No DOJ');
   if (!payload.email) warnings.push('No email — no portal login will be created');
   if (!detectBranchFromText(branchRaw)) warnings.push(`Branch "${branchRaw || 'blank'}" → ${branch || 'none'}`);
@@ -277,12 +278,23 @@ export default function BulkAdmitStudentsModal({ isOpen, onClose, onDone, curren
       const headerIdx = table.findIndex((r) => r.some((c) => /^(NAME|STUDENT NAME)$/i.test(clean(c))));
       if (headerIdx < 0) throw new Error('Header row not found — it needs at least a NAME column (copy the sheet including its header row).');
       const colMap = buildColumnMap(table[headerIdx]);
-      if (!colMap.includes('phone')) throw new Error('No CONTACT / Mobile column found in the header row.');
       const rows = table.slice(headerIdx + 1)
         .map((cells, i) => ({ cells, rowNo: headerIdx + i + 2 }))
         .filter(({ cells }) => cells.some((c, idx) => ['name', 'phone'].includes(colMap[idx]) && clean(c)))
         .map(({ cells, rowNo }) => mapRow(cells, colMap, { defaultBranch, year }, rowNo));
       if (!rows.length) throw new Error('No student rows found under the header.');
+      // Same student (same mobile or email) twice in this sheet: fine for a different course,
+      // an error for the same course
+      const seen = new Map(); // `${contact}|${course}` → first rowNo
+      const phoneKeyOf = (v) => { const d = String(v || '').replace(/\D/g, ''); return d.length >= 10 ? d.slice(-10) : ''; };
+      rows.forEach((r) => {
+        const course = String(r.payload.course || '').trim().toLowerCase();
+        if (!course) return;
+        const keys = [phoneKeyOf(r.payload.phone) && `p:${phoneKeyOf(r.payload.phone)}`, r.payload.email && `e:${String(r.payload.email).trim().toLowerCase()}`].filter(Boolean);
+        const hit = keys.map((k) => seen.get(`${k}|${course}`)).find(Boolean);
+        if (hit) r.errors.push(`Same student and same course as row ${hit}`);
+        else keys.forEach((k) => seen.set(`${k}|${course}`, r.payload.rowNo));
+      });
       setParsed({ rows });
     } catch (e) {
       setParsed(null);
@@ -363,7 +375,7 @@ export default function BulkAdmitStudentsModal({ isOpen, onClose, onDone, curren
               <h2 className="font-extrabold text-base sm:text-lg">Bulk Upload · Admitted Students</h2>
             </div>
             <p className="text-xs text-teal-100 mt-1">
-              Paste rows from your branch admission sheet (with the header row) or pick a CSV. Each row is admitted like a walk-in: duplicate check, Student ID, fee receipts and portal login.
+              Paste rows from your branch admission sheet (with the header row) or pick a CSV. Each row is admitted as given — any contact number; the same student may join a different course (same course is blocked) — with Student ID, fee receipts and portal login.
             </p>
           </div>
           <button onClick={onClose} disabled={uploading} className="p-1.5 rounded-lg hover:bg-white/15 disabled:opacity-40" aria-label="Close">

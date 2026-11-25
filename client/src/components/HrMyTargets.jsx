@@ -57,7 +57,7 @@ function HrMyTargetsCounsellor({ students: propStudents, currentUser, scopeKind 
   const now = new Date();
   const thisMonth = monthKey(now);
   const lastMonth = monthKey(new Date(now.getFullYear(), now.getMonth() - 1, 1));
-  const admittedOn = (s) => monthKey(s.admissionDate || s.createdAt);
+  const admittedOn = (s) => monthKey(s.registeredAt || s.admissionDate || s.createdAt);
 
   const mine = useMemo(
     () => allStudents.filter((s) => myName && matchesHrOwnerName(s.hrName, myName, s.branch || s.leadBranch || s.location || '', myBranch)),

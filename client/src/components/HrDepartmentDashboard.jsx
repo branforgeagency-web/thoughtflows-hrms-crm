@@ -20,6 +20,8 @@ import {
   BarChart2,
   BookOpen,
   IndianRupee,
+  Wallet,
+  Trophy,
   Repeat,
   ChevronLeft,
   ChevronRight,
@@ -54,6 +56,10 @@ import TrainerQualityBoard from './TrainerQualityBoard';
 import HrTeamDataSection from './HrTeamDataSection';
 import HrAttendanceLeavesSection from './HrAttendanceLeavesSection';
 import HrWeeklyRoster from './HrWeeklyRoster';
+import HrScoreboard from './HrScoreboard';
+// Payroll (Branch Head / Business Lead / Department Head) and every employee's own payslips
+const PayrollDesk = React.lazy(() => import('./staffdesk/PayrollDesk'));
+const MyPayslips = React.lazy(() => import('./staffdesk/MyPayslips'));
 import { Inbox as InboxIcon } from 'lucide-react';
 import LeadCallModal from './LeadCallModal';
 import BookNewDemoModal from './BookNewDemoModal';
@@ -1418,12 +1424,14 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
 
     return [
       { name: 'Home', badge: null, icon: Home, iconBg: 'bg-[#0e6977]', color: 'teal' },
+      { name: 'Scoreboard', badge: null, icon: Trophy, iconBg: 'bg-amber-500', color: 'amber' },
       // Team Lead / Branch Head / Department Head: HR-wise data + HR Attendance & Leaves + HR Roster
       ...(scopeKind ? [
         { name: 'HR-wise Data', badge: null, icon: Users, iconBg: 'bg-indigo-600', color: 'indigo' },
         { name: 'HR Attendance', badge: null, icon: Clock, iconBg: 'bg-emerald-600', color: 'emerald' },
         ...((scopeKind === 'all' || scopeKind === 'branch') ? [
-          { name: 'HR Roster', badge: null, icon: Calendar, iconBg: 'bg-purple-600', color: 'purple' }
+          { name: 'HR Roster', badge: null, icon: Calendar, iconBg: 'bg-purple-600', color: 'purple' },
+          { name: 'Payroll', badge: null, icon: Wallet, iconBg: 'bg-emerald-700', color: 'emerald' }
         ] : [])
       ] : []),
       { name: 'Pipeline & Follow-ups', badge: pipelineCount, icon: Filter, iconBg: 'bg-[#7c3aed]', badgeBg: 'bg-rose-500', color: 'purple' },
@@ -1437,6 +1445,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       { name: 'Fees', badge: pendingFeesStats.count > 0 ? String(pendingFeesStats.count) : null, badgeBg: 'bg-amber-500', icon: IndianRupee, iconBg: 'bg-teal-600', color: 'teal' },
       { name: 'Handover', badge: handoverCount, icon: Repeat, iconBg: 'bg-orange-600', badgeBg: 'bg-orange-500', color: 'orange' },
       { name: 'Student Requests', badge: studentInboxCount > 0 ? String(studentInboxCount) : null, icon: InboxIcon, iconBg: 'bg-indigo-600', badgeBg: 'bg-rose-500', color: 'indigo' },
+      { name: 'My Payslips', badge: null, icon: IndianRupee, iconBg: 'bg-emerald-600', color: 'emerald' },
     ];
   }, [scopedLeads, scopedStudents, scopedDemos, studentInboxCount, pendingFeesStats.count, scopedRecordings.length, scopeKind]);
 
@@ -2275,6 +2284,25 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             isElevatedUser={isElevatedUser}
             showToast={showToast}
           />
+        ) : (scopeKind === 'all' || scopeKind === 'branch') && activeTab === 'Payroll' ? (
+          <React.Suspense fallback={<div className="p-8 text-center text-sm text-slate-500">Opening payroll…</div>}>
+            <div className="space-y-3">
+              <div>
+                <h2 className="text-xl font-black text-slate-800">Payroll</h2>
+                <p className="text-xs text-slate-500">Salaries worked out from attendance &amp; leave — set salaries, generate the month, add incentives, submit for approval.</p>
+              </div>
+              <PayrollDesk />
+            </div>
+          </React.Suspense>
+        ) : activeTab === 'My Payslips' ? (
+          <React.Suspense fallback={<div className="p-8 text-center text-sm text-slate-500">Loading payslips…</div>}>
+            <div className="space-y-3">
+              <h2 className="text-xl font-black text-slate-800">My Payslips</h2>
+              <MyPayslips />
+            </div>
+          </React.Suspense>
+        ) : activeTab === 'Scoreboard' ? (
+          <HrScoreboard currentUser={currentUser} />
         ) : activeTab === 'Home' ? (
           <>
         
@@ -2298,6 +2326,9 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             </div>
           </div>
         </div>
+
+        {/* Admissions Scoreboard — this month's gold / silver / bronze (every HR desk) */}
+        <HrScoreboard currentUser={currentUser} compact onOpenFull={() => handleTabChange('Scoreboard')} />
 
 {!isHrHeadDesk && (<>
         {/* Today's Official Work Session & Attendance Card */}
