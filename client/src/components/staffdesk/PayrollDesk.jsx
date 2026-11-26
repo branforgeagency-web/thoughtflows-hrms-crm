@@ -7,6 +7,7 @@ import {
 import PaginationBar from '../PaginationBar';
 import { errMsg, downloadCsv, todayKey } from './deskUtils';
 import { rupees, monthLabel, prevMonth, thisMonth, SLIP_STATUS, printPayslip } from './payrollUtils';
+import AttendanceSheetTab from './AttendanceSheetTab';
 
 // Payroll — salary from the Attendance & Leave register.
 //   Branch Head / Business Lead: own branch — salaries, generate, adjust, submit.
@@ -20,7 +21,7 @@ export default function PayrollDesk() {
   if (error) return <Err e={error} />;
   if (!access) return <Loading />;
   if (!access.canPrepare) return <Err e={access.noBranch ? 'No branch is set on your account, so there is no branch payroll to show. Ask Admin to set your branch.' : 'Payroll is managed by Branch Heads, Business Leads and Department Heads.'} />;
-  const subs = [['run', 'Monthly Payroll'], ['structures', 'Salary Structures'], ...(access.canEditSettings ? [['settings', 'Payroll Settings']] : [])];
+  const subs = [['run', 'Monthly Payroll'], ['sheet', 'Attendance Upload'], ['structures', 'Salary Structures'], ...(access.canEditSettings ? [['settings', 'Payroll Settings']] : [])];
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -33,7 +34,8 @@ export default function PayrollDesk() {
           {access.canApprove ? 'All employees · you can approve and mark salaries paid' : 'All employees · you prepare and submit; a Department Head approves'}
         </div>
       </div>
-      {sub === 'run' && <RunTab access={access} />}
+      {sub === 'run' && <RunTab access={access} onOpenSheet={() => setSub('sheet')} />}
+      {sub === 'sheet' && <AttendanceSheetTab />}
       {sub === 'structures' && <StructuresTab access={access} />}
       {sub === 'settings' && <SettingsTab settings={access.settings} onSaved={(s) => setAccess({ ...access, settings: s })} />}
     </div>
@@ -79,6 +81,7 @@ export function PayslipBreakdown({ slip }) {
   ];
   return (
     <div className="space-y-3 mt-3">
+      {a.source === 'sheet' && <div className="text-xs text-teal-800 bg-teal-50 border border-teal-200 rounded-xl px-3 py-2">Attendance from the uploaded sheet{a.sheetName ? ` ("${a.sheetName}")` : ''}{a.blankDays ? ` · ${a.blankDays} blank day(s)` : ''}{a.eodNotDone ? ` · EOD not done ${a.eodNotDone}` : ''}</div>}
       <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
         {chips.map(([l, v]) => (
           <div key={l} className={`p-2 rounded-xl border ${l === 'Paid days' ? 'border-emerald-200 bg-emerald-50' : l === 'LOP days' && v ? 'border-rose-200 bg-rose-50' : 'border-slate-200 bg-slate-50'}`}>
@@ -118,7 +121,7 @@ export function PayslipBreakdown({ slip }) {
 }
 
 // ---------------------------------------------------------------- Monthly payroll
-function RunTab({ access }) {
+function RunTab({ access, onOpenSheet }) {
   const [month, setMonth] = useState(prevMonth());
   const [branch, setBranch] = useState('all');
   const [data, setData] = useState(null);
@@ -194,6 +197,17 @@ function RunTab({ access }) {
           </Card>
         ))}
       </div>
+
+      {data && (
+        <div className={`p-3 rounded-xl border text-sm flex flex-wrap items-center justify-between gap-2 ${data.sheet ? 'bg-teal-50 border-teal-200 text-teal-900' : 'bg-slate-50 border-slate-200 text-slate-700'}`}>
+          <div>
+            {data.sheet
+              ? <>Attendance source: <b>uploaded sheet</b> ({data.sheet.fileName || 'sheet'} · {data.sheet.mapped} employees · by {data.sheet.uploadedBy}). Employees not in the sheet use the app login register. Click <b>{slips.length ? 'Recalculate drafts' : 'Generate payroll'}</b> after a new upload.</>
+              : <>Attendance source: <b>app login register</b>. Upload the month's LOGIN / LOGOUT / LEAVE sheet to use it instead.</>}
+          </div>
+          <button onClick={onOpenSheet} className="px-3 py-1.5 rounded-lg bg-white border border-slate-300 text-xs font-bold cursor-pointer">{data.sheet ? 'View sheet' : 'Upload attendance sheet'}</button>
+        </div>
+      )}
 
       {(data?.noStructure?.length > 0 || data?.notGenerated?.length > 0) && (
         <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-sm flex gap-2">

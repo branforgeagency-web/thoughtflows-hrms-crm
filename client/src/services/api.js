@@ -2082,6 +2082,11 @@ export const payslipAction = async (id, body) => (await api.post(`/payroll/paysl
 export const payrollBulkAction = async (body) => (await api.post('/payroll/run/bulk-action', body)).data;
 export const deletePayslip = async (id) => (await api.delete(`/payroll/payslips/${id}`)).data;
 export const getMyPayslips = async () => (await api.get('/payroll/my-payslips', { skipCache: true })).data;
+// Monthly attendance sheet (LOGIN / LOGOUT / EOD) for payroll
+export const previewAttendanceSheet = async (body) => (await api.post('/payroll/attendance-sheet/preview', body)).data;
+export const saveAttendanceSheet = async (body) => (await api.post('/payroll/attendance-sheet', body)).data;
+export const getAttendanceSheet = async (params) => (await api.get('/payroll/attendance-sheet', { params, skipCache: true })).data;
+export const deleteAttendanceSheet = async (params) => (await api.delete('/payroll/attendance-sheet', { params })).data;
 
 // Head / Manager / TL: watch another trainer's live class, or nudge a late trainer
 export const observeLiveClass = async (sessionId) => (await api.get(`/trainer/live-class/${sessionId}/observe`, { skipCache: true })).data;

@@ -5,6 +5,8 @@ import SalaryStructure from '../models/SalaryStructure.js';
 import Payslip from '../models/Payslip.js';
 import { BRANCH_MASTER } from '../constants/org.js';
 import { zonedParts, addDays } from '../utils/trainerAvailability.js';
+import AttendanceSheet from '../models/AttendanceSheet.js';
+import { parseAttendanceGrid, sheetSummary, matchHeaders, headerKey, DEFAULT_IMPORT_OPTIONS } from '../utils/attendanceSheet.js';
 
 // ============================================================================
 // PAYROLL — monthly pay for every staff employee, worked out from the
@@ -113,10 +115,10 @@ export function summariseAttendance(days, settings) {
       case 'P': a.present += 1; break;
       case 'HD': a.present += 0.5; a.halfDays += 1; a.absent += 0.5; break;
       case 'HL':
-        if (isUnpaid(d.leaveType)) a.unpaidLeave += 0.5; else a.paidLeave += 0.5;
+        if (d.unpaid || isUnpaid(d.leaveType)) a.unpaidLeave += 0.5; else a.paidLeave += 0.5;
         if (d.login) a.present += 0.5; else a.absent += 0.5;
         break;
-      case 'L': if (isUnpaid(d.leaveType)) a.unpaidLeave += 1; else a.paidLeave += 1; break;
+      case 'L': if (d.unpaid || isUnpaid(d.leaveType)) a.unpaidLeave += 1; else a.paidLeave += 1; break;
       case 'A': a.absent += 1; break;
       case 'WO': a.weekOffs += 1; break;
       case 'H': a.holidays += 1; break;
@@ -250,8 +252,14 @@ export function registerPayrollRoutes(router, { me, dayContext, dayStatus, deptO
   });
 
   // Recalculate one draft payslip from attendance (keeps its adjustments)
-  function buildSlip({ emp, structure, month, ctx, dates, settings, now, existing, by }) {
+  // sheet: the month's uploaded attendance sheet (or null); sheetCol: this employee's column in it
+  function buildSlip({ emp, structure, month, ctx, dates, settings, now, existing, by, sheet = null, sheetCol = null }) {
+    const sheetDay = sheetCol ? new Map((sheetCol.days || []).map((d) => [d.date, d])) : null;
     const days = dates.map((d) => {
+      if (sheetDay) {
+        const x = sheetDay.get(d) || { code: '' };
+        return { code: x.code || '', late: false, minutes: x.minutes || 0, leaveType: x.leaveType || '', unpaid: Boolean(x.unpaid), login: Boolean(x.login || x.worked), pendingLeave: '', blank: Boolean(x.blank), eodNotDone: /NOT\s*DONE/i.test(x.eod || '') };
+      }
       const s = dayStatus(emp, d, ctx, now);
       return { code: s.code, late: s.late, minutes: s.minutes, leaveType: s.leaveType, login: Boolean(s.login), pendingLeave: s.pendingLeave };
     });
@@ -260,12 +268,17 @@ export function registerPayrollRoutes(router, { me, dayContext, dayStatus, deptO
       dates.forEach((d, i) => { if (d < structure.joiningDate) days[i] = { code: 'A', minutes: 0, beforeJoining: true }; });
     }
     const att = summariseAttendance(days, settings);
+    att.source = sheetCol ? 'sheet' : 'app';
+    if (sheetCol) { att.blankDays = days.filter((d) => d.blank).length; att.eodNotDone = days.filter((d) => d.eodNotDone).length; att.sheetName = sheetCol.header; }
     att.beforeJoiningDays = days.filter((d) => d.beforeJoining).length;
     const state = stateOfBranch(emp.branch || structure.branch, settings.defaultState);
     const adjustments = existing?.adjustments ? (existing.adjustments.toObject ? existing.adjustments.toObject() : existing.adjustments) : {};
     const pay = computePay(structure, att, adjustments, settings, state);
     const warnings = [];
     if (att.pendingDays > 0) warnings.push(`${att.pendingDays} day(s) not over yet — counted as paid. Recalculate after month end.`);
+    if (sheet && !sheetCol) warnings.push('Not in the uploaded attendance sheet — the app login register was used.');
+    if (att.blankDays > 0) warnings.push(`${att.blankDays} blank day(s) in the attendance sheet counted as ${sheet?.options?.blank === 'present' ? 'present' : 'absent (LOP)'}.`);
+    if (sheetCol?.discontinued) warnings.push('Marked "Discontinued" in the attendance sheet — days after that are LOP.');
     if (att.pendingLeaveDays > 0) warnings.push(`${att.pendingLeaveDays} absent day(s) have a leave request still waiting for approval.`);
     const snap = { payType: 'monthly', basic: structure.basic, da: structure.da || 0, hra: structure.hra, conveyance: structure.conveyance, special: structure.special, otherAllowance: structure.otherAllowance, rate: structure.rate, pfApplicable: structure.pfApplicable, esiApplicable: structure.esiApplicable, ptApplicable: structure.ptApplicable, tdsMonthly: structure.tdsMonthly, payMode: structure.payMode };
     return {
@@ -360,9 +373,10 @@ export function registerPayrollRoutes(router, { me, dayContext, dayStatus, deptO
       const month = isMonth(req.query.month) ? req.query.month : zonedParts().date.slice(0, 7);
       const employees = await managedEmployees(v, String(req.query.branch || ''));
       const emails = employees.map((e) => e.email);
-      const [slips, structures] = await Promise.all([
+      const [slips, structures, sheet] = await Promise.all([
         Payslip.find({ month, email: { $in: emails } }).lean(),
-        SalaryStructure.find({ email: { $in: emails }, active: { $ne: false } }).select('email').lean()
+        SalaryStructure.find({ email: { $in: emails }, active: { $ne: false } }).select('email').lean(),
+        AttendanceSheet.findOne({ month }).select('fileName uploadedBy updatedAt lastDataDate columns.email').lean()
       ]);
       const hasStructure = new Set(structures.map((s) => s.email));
       const slipEmails = new Set(slips.map((s) => s.email));
@@ -370,6 +384,7 @@ export function registerPayrollRoutes(router, { me, dayContext, dayStatus, deptO
       for (const s of slips) { totals.gross += s.gross; totals.deductions += s.totalDeductions; totals.net += s.net; totals[s.status] += 1; }
       res.json({
         month, totals,
+        sheet: sheet ? { fileName: sheet.fileName, uploadedBy: sheet.uploadedBy, updatedAt: sheet.updatedAt, lastDataDate: sheet.lastDataDate, columns: sheet.columns.length, mapped: sheet.columns.filter((c) => c.email).length } : null,
         payslips: slips.map(slipView).sort((a, b) => (a.branch || '').localeCompare(b.branch || '') || a.employeeName.localeCompare(b.employeeName)),
         noStructure: employees.filter((e) => !hasStructure.has(e.email)),
         notGenerated: employees.filter((e) => hasStructure.has(e.email) && !slipEmails.has(e.email))
@@ -397,17 +412,19 @@ export function registerPayrollRoutes(router, { me, dayContext, dayStatus, deptO
       const { from, to } = monthRange(month);
       const dates = [];
       for (let d = from; d <= to; d = addDays(d, 1)) dates.push(d);
-      const [ctx, settings, existing] = await Promise.all([
+      const [ctx, settings, existing, sheet] = await Promise.all([
         dayContext(employees, from, to),
         loadSettings(),
-        Payslip.find({ month, email: { $in: employees.map((e) => e.email) } })
+        Payslip.find({ month, email: { $in: employees.map((e) => e.email) } }),
+        AttendanceSheet.findOne({ month }).lean()
       ]);
+      const sheetBy = new Map((sheet?.columns || []).filter((c) => c.email).map((c) => [c.email, c]));
       const exBy = new Map(existing.map((p) => [p.email, p]));
       let created = 0, updated = 0, locked = 0;
       for (const emp of employees) {
         const ex = exBy.get(emp.email);
         if (ex && ex.status !== 'draft') { locked += 1; continue; }
-        const data = buildSlip({ emp, structure: sBy.get(emp.email), month, ctx, dates, settings, now, existing: ex, by: v });
+        const data = buildSlip({ emp, structure: sBy.get(emp.email), month, ctx, dates, settings, now, existing: ex, by: v, sheet, sheetCol: sheetBy.get(emp.email) || null });
         if (ex) {
           Object.assign(ex, data);
           ex.history.push({ by: v.name, byEmail: v.email, at: new Date(), action: 'recalculated' });
@@ -519,6 +536,122 @@ export function registerPayrollRoutes(router, { me, dayContext, dayStatus, deptO
       if (!p || !canTouch(v, p)) throw httpErr(404, 'Payslip not found');
       if (p.status !== 'draft') throw httpErr(409, 'Only draft payslips can be removed.');
       await p.deleteOne();
+      res.json({ ok: true });
+    } catch (e) { fail(res, e); }
+  });
+
+  // ---- monthly attendance sheet (LOGIN / LOGOUT / EOD) upload ----
+  // The browser reads the Excel / CSV file into a grid of cells; the server
+  // parses it, matches sheet names to staff and stores the per-day codes.
+  const SHEET_NAMES_KEY = 'attendance_sheet_names'; // remembered "sheet name → staff email"
+
+  async function sheetStaff() {
+    const users = (await User.find().select('name email role department branch status active').lean())
+      .filter((u) => u.email && deptOf(u) !== 'student' && !/inactive|disabled|left|resigned/i.test(u.status || '') && u.active !== false);
+    return users.map((u) => ({ email: norm(u.email), name: u.name || u.email, role: u.role || '', dept: deptOf(u), deptLabel: DEPT_LABEL[deptOf(u)] || deptOf(u), branch: u.branch || '' }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  function readImportBody(b) {
+    const month = String(b.month || '');
+    if (!isMonth(month)) throw httpErr(400, 'Choose the month of this sheet.');
+    if (month > zonedParts().date.slice(0, 7)) throw httpErr(400, 'You cannot upload attendance for a future month.');
+    if (!Array.isArray(b.grid) || !b.grid.length) throw httpErr(400, 'The sheet is empty.');
+    const o = b.options || {};
+    const options = {
+      leave: o.leave === 'paid' ? 'paid' : 'unpaid',
+      ml: o.ml === 'unpaid' ? 'unpaid' : 'paid',
+      blank: o.blank === 'present' ? 'present' : 'absent',
+      halfDayMinutes: Math.max(60, Math.min(480, Number(o.halfDayMinutes) || DEFAULT_IMPORT_OPTIONS.halfDayMinutes))
+    };
+    return { month, options, parsed: parseAttendanceGrid(b.grid, month, options, zonedParts().date) };
+  }
+
+  const sheetColView = (c) => ({
+    col: c.col, header: c.header, email: c.email || '', how: c.how || '', suggestions: c.suggestions || [], employeeName: c.employeeName || '',
+    discontinued: Boolean(c.discontinued), issues: c.issues || [], summary: sheetSummary(c.days || []),
+    days: (c.days || []).map((d) => ({ date: d.date, code: d.code, label: d.label, login: d.login, logout: d.logout, raw: d.raw, eod: d.eod, leaveType: d.leaveType, unpaid: d.unpaid, blank: d.blank }))
+  });
+
+  router.post('/payroll/attendance-sheet/preview', async (req, res) => {
+    try {
+      const v = await viewer(req);
+      if (!v.access.canPrepare) throw httpErr(403, 'Only Branch Heads, Business Leads and Department Heads upload attendance.');
+      const { month, options, parsed } = readImportBody(req.body || {});
+      const [staff, remembered, existing] = await Promise.all([
+        sheetStaff(),
+        AppSetting.findOne({ key: SHEET_NAMES_KEY }).lean(),
+        AttendanceSheet.findOne({ month }).select('fileName uploadedBy updatedAt columns.header columns.email').lean()
+      ]);
+      // A re-upload keeps this month's earlier mapping, then the remembered names
+      const prev = { ...(remembered?.value || {}) };
+      for (const c of existing?.columns || []) if (c.email) prev[headerKey(c.header)] = c.email;
+      const matches = new Map(matchHeaders(parsed.columns, staff, prev).map((m) => [m.col, m]));
+      res.json({
+        month, options, lastDataDate: parsed.lastDataDate, warnings: parsed.warnings, dates: parsed.dates,
+        columns: parsed.columns.map((c) => sheetColView({ ...c, ...matches.get(c.col) })),
+        staff: staff.map(({ email, name, role, deptLabel, branch }) => ({ email, name, role, deptLabel, branch })),
+        existing: existing ? { fileName: existing.fileName, uploadedBy: existing.uploadedBy, updatedAt: existing.updatedAt } : null
+      });
+    } catch (e) { fail(res, e); }
+  });
+
+  router.post('/payroll/attendance-sheet', async (req, res) => {
+    try {
+      const v = await viewer(req);
+      if (!v.access.canPrepare) throw httpErr(403, 'Only Branch Heads, Business Leads and Department Heads upload attendance.');
+      const b = req.body || {};
+      const { month, options, parsed } = readImportBody(b);
+      const staff = await sheetStaff();
+      const byEmail = new Map(staff.map((e) => [e.email, e]));
+      const mapping = b.mapping && typeof b.mapping === 'object' ? b.mapping : {};
+      const used = new Map();
+      const columns = parsed.columns.map((c) => {
+        const email = norm(mapping[c.col] || '');
+        if (email && !byEmail.has(email)) throw httpErr(400, `"${c.header}" is mapped to ${email}, who is not an active staff member.`);
+        if (email && used.has(email)) throw httpErr(400, `"${c.header}" and "${used.get(email)}" are both mapped to ${byEmail.get(email).name}. Each person can have only one column.`);
+        if (email) used.set(email, c.header);
+        return { header: c.header, email, employeeName: email ? byEmail.get(email).name : '', discontinued: c.discontinued, issues: c.issues, days: c.days };
+      });
+      if (!used.size) throw httpErr(400, 'Map at least one sheet name to an employee before saving.');
+      const doc = await AttendanceSheet.findOneAndUpdate(
+        { month },
+        { $set: { fileName: String(b.fileName || '').slice(0, 120), options, lastDataDate: parsed.lastDataDate, warnings: parsed.warnings, columns, uploadedBy: v.name, uploadedByEmail: v.email } },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      ).lean();
+      // Remember the names for next month's upload
+      const rem = (await AppSetting.findOne({ key: SHEET_NAMES_KEY }).lean())?.value || {};
+      for (const c of columns) if (c.email) rem[headerKey(c.header)] = c.email;
+      await AppSetting.findOneAndUpdate({ key: SHEET_NAMES_KEY }, { $set: { value: rem, updatedBy: v.name } }, { upsert: true });
+      const drafts = await Payslip.countDocuments({ month, status: 'draft' });
+      res.json({ month, saved: columns.filter((c) => c.email).length, ignored: columns.filter((c) => !c.email).length, draftsToRecalculate: drafts, updatedAt: doc.updatedAt });
+    } catch (e) { fail(res, e); }
+  });
+
+  router.get('/payroll/attendance-sheet', async (req, res) => {
+    try {
+      const v = await viewer(req);
+      if (!v.access.canPrepare) throw httpErr(403, 'Not allowed');
+      const month = isMonth(req.query.month) ? req.query.month : zonedParts().date.slice(0, 7);
+      const doc = await AttendanceSheet.findOne({ month }).lean();
+      if (!doc) return res.json({ month, sheet: null });
+      res.json({
+        month,
+        sheet: {
+          fileName: doc.fileName, uploadedBy: doc.uploadedBy, updatedAt: doc.updatedAt, options: doc.options, lastDataDate: doc.lastDataDate, warnings: doc.warnings,
+          columns: doc.columns.map((c, i) => sheetColView({ ...c, col: i, how: c.email ? 'saved' : '' }))
+        }
+      });
+    } catch (e) { fail(res, e); }
+  });
+
+  router.delete('/payroll/attendance-sheet', async (req, res) => {
+    try {
+      const v = await viewer(req);
+      if (!v.access.canPrepare) throw httpErr(403, 'Not allowed');
+      const month = String(req.query.month || '');
+      if (!isMonth(month)) throw httpErr(400, 'Choose a month');
+      await AttendanceSheet.deleteOne({ month });
       res.json({ ok: true });
     } catch (e) { fail(res, e); }
   });
