@@ -39,6 +39,7 @@ export default function HrDepartmentHub({ onClose, currentUser, onLogout, onHrAu
     if (!u) return null;
     try {
       const saved = sessionStorage.getItem(SS_ROLE);
+      if (saved === 'business') return 'branch'; // former Business Lead desk → shared desk
       if (saved && HR_ROLE_META[saved]) return saved;
     } catch (_) {}
     return inferHrRole(u);
@@ -158,7 +159,7 @@ export default function HrDepartmentHub({ onClose, currentUser, onLogout, onHrAu
     );
   }
 
-  if (selectedRole === 'tl' || selectedRole === 'head' || selectedRole === 'branch' || selectedRole === 'business') {
+  if (selectedRole === 'tl' || selectedRole === 'head' || selectedRole === 'branch') {
     const user = activeHrUser || currentUser || {};
     const branchLabel = String(user.branch || '').replace(/\s*branch\b.*$/i, '').trim();
     const viewScope = selectedRole === 'tl'
@@ -171,7 +172,7 @@ export default function HrDepartmentHub({ onClose, currentUser, onLogout, onHrAu
             ? 'My Team · no HRs report to you yet — ask Admin to set "Reports to"'
             : `My Team (${teamNames.length} HR${teamNames.length === 1 ? '' : 's'}${teamSource === 'branch' ? ` · ${branchLabel || 'branch'} (no one assigned to you yet)` : ''})`
       }
-      : (selectedRole === 'branch' || selectedRole === 'business')
+      : selectedRole === 'branch'
         ? { mode: 'branch', branch: user.branch || '', label: `${branchLabel || 'Branch'} Branch · All HRs` }
         : { mode: 'all', label: 'All Branches · All HRs' };
     if (selectedRole === 'tl' && !teamLoaded) {
@@ -185,7 +186,7 @@ export default function HrDepartmentHub({ onClose, currentUser, onLogout, onHrAu
       <HrDepartmentDashboard
         key={selectedRole}
         onClose={onClose}
-        currentUser={(selectedRole === 'branch' || selectedRole === 'business') ? { ...user, isBranchManager: true } : user}
+        currentUser={selectedRole === 'branch' ? { ...user, isBranchManager: true } : user}
         onLogout={handleHrLogout}
         onSwitchDepartment={onSwitchDepartment}
         theme={theme}
@@ -255,7 +256,7 @@ export default function HrDepartmentHub({ onClose, currentUser, onLogout, onHrAu
               <span className="text-rose-300">Counsellor &amp; Leadership Portals</span>
             </h2>
             <p className="text-slate-300 text-sm mt-4 max-w-lg leading-relaxed">
-              Each role desk has its own login. Sign in as HR, HR Team Lead, Branch Head, Business Lead or HR Department Head to open your dashboard.
+              Each role desk has its own login. Sign in as HR, HR Team Lead, Branch Head / Business Lead or HR Department Head to open your dashboard.
             </p>
           </div>
           <div className="relative z-10 grid grid-cols-2 gap-3.5">
@@ -279,7 +280,7 @@ export default function HrDepartmentHub({ onClose, currentUser, onLogout, onHrAu
             </span>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
             {HR_ROLE_ORDER.map((key) => {
               const role = HR_ROLE_META[key];
               const Icon = role.icon;
@@ -331,7 +332,7 @@ export default function HrDepartmentHub({ onClose, currentUser, onLogout, onHrAu
           <Strip icon={Radio} iconCls="bg-emerald-50 text-emerald-600" title="Counsellors On Duty" value={`${show(stats?.available)} Available`} sub="HR team not on leave today" />
           <Strip icon={PhoneCall} iconCls="bg-rose-50 text-rose-600" title="Lead Inflow" value={`${show(stats?.leadsToday)} New Today`} sub="Enquiries captured today" />
           <Strip icon={Calendar} iconCls="bg-amber-50 text-amber-600" title="Upcoming Demos" value={`${show(stats?.demos)} Scheduled`} sub="Booked & confirmed demos" />
-          <Strip icon={Building2} iconCls="bg-purple-50 text-purple-600" title="Branch Network" value={`${show(stats?.branches)} Branches`} sub="Each with its own Branch Head login" />
+          <Strip icon={Building2} iconCls="bg-purple-50 text-purple-600" title="Branch Network" value={`${show(stats?.branches)} Branches`} sub="Each with its own Branch Head / Business Lead login" />
         </div>
       </main>
     </div>

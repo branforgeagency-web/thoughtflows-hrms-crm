@@ -133,7 +133,7 @@ export default function App() {
     }
   });
 
-  // Which HR hub desk is open ('hr' | 'tl' | 'branch' | 'business' | 'head' | null)
+  // Which HR hub desk is open ('hr' | 'tl' | 'branch' (Branch Head / Business Lead) | 'head' | null)
   const [hrRole, setHrRole] = useState(() => {
     try { return sessionStorage.getItem('thoughtflows_hr_role') || null; } catch { return null; }
   });
@@ -201,11 +201,11 @@ export default function App() {
       sessionStorage.setItem('thoughtflows_hr_role', user.hrRole);
       setHrRole(user.hrRole);
     } else if (isBusinessLeadUser(user)) {
-      // Business Lead always lands on their own Business Lead desk in the HR hub
+      // Business Lead lands on the shared Branch Head / Business Lead desk in the HR hub
       targetDept = 'hr';
-      sessionStorage.setItem('thoughtflows_hr_user', JSON.stringify({ ...user, hrRole: 'business' }));
-      sessionStorage.setItem('thoughtflows_hr_role', 'business');
-      setHrRole('business');
+      sessionStorage.setItem('thoughtflows_hr_user', JSON.stringify({ ...user, hrRole: 'branch' }));
+      sessionStorage.setItem('thoughtflows_hr_role', 'branch');
+      setHrRole('branch');
     } else if (isHeadOfTrainerUser(user)) targetDept = 'training';
     else if (!targetDept || targetDept === 'Medical Coding Faculty') targetDept = 'training';
     const matchedCard = DEPT_CARDS.find(c => c.id === targetDept) || DEPT_CARDS[0];

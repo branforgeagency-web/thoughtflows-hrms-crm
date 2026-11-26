@@ -54,9 +54,9 @@ export const HR_ROLE_META = {
   },
   branch: {
     key: 'branch',
-    tier: 'BRANCH OPERATIONS',
-    name: 'Branch Head',
-    title: 'Branch Head Sign In',
+    tier: 'BRANCH & BUSINESS OPERATIONS',
+    name: 'Branch Head / Business Lead',
+    title: 'Branch Head / Business Lead Sign In',
     subtitle: 'Branch-scoped HR, admissions & operations',
     desc: 'The HR dashboard for your whole branch — every HR\'s leads, follow-ups, demos, admissions & fees.',
     scope: '14 BRANCHES · ONE LOGIN EACH',
@@ -65,26 +65,9 @@ export const HR_ROLE_META = {
     accentText: 'text-purple-700',
     ring: 'hover:border-purple-400',
     badgeBg: 'bg-purple-50 text-purple-700 border-purple-200',
-    adminRole: 'BRANCH HEAD',
-    emailLabel: 'Branch Account Email',
+    adminRole: 'BRANCH HEAD or BUSINESS LEAD',
+    emailLabel: 'Branch Head / Business Lead Email',
     emailPlaceholder: 'e.g. gandhipuram@thoughtflows.in'
-  },
-  business: {
-    key: 'business',
-    tier: 'BUSINESS OPERATIONS',
-    name: 'Business Lead',
-    title: 'Business Lead Sign In',
-    subtitle: 'Branch-scoped HR, admissions & operations',
-    desc: 'The HR dashboard for your whole branch — every HR\'s leads, follow-ups, demos, admissions & fees.',
-    scope: '14 BRANCHES · ONE LOGIN EACH',
-    icon: TrendingUp,
-    gradient: 'linear-gradient(135deg, #d97706, #f59e0b)',
-    accentText: 'text-amber-700',
-    ring: 'hover:border-amber-400',
-    badgeBg: 'bg-amber-50 text-amber-700 border-amber-200',
-    adminRole: 'BUSINESS LEAD',
-    emailLabel: 'Business Lead Email',
-    emailPlaceholder: 'Enter Business Lead email'
   },
   head: {
     key: 'head',
@@ -105,7 +88,8 @@ export const HR_ROLE_META = {
   }
 };
 
-export const HR_ROLE_ORDER = ['hr', 'tl', 'branch', 'business', 'head'];
+// Branch Head and Business Lead share one card and one desk ('branch')
+export const HR_ROLE_ORDER = ['hr', 'tl', 'branch', 'head'];
 
 const lc = (v) => String(v || '').toLowerCase();
 const isBranchHeadRole = (role) => /branch\s*(manager|head)/i.test(role || '');
@@ -116,9 +100,9 @@ const isHrUser = (u) => lc(u?.department) === 'hr' || /\bhr\b/i.test(u?.role || 
 export function inferHrRole(u) {
   if (!u) return null;
   const role = String(u.role || '');
+  if (u.hrRole === 'business') return 'branch'; // old sessions from the former Business Lead card
   if (u.hrRole && HR_ROLE_META[u.hrRole]) return u.hrRole;
-  if (isBranchHeadRole(role)) return 'branch';
-  if (isBusinessLeadRole(role)) return 'business';
+  if (isBranchHeadRole(role) || isBusinessLeadRole(role)) return 'branch';
   if (!isHrUser(u)) return null;
   if (/\bhead\b|\bhod\b/i.test(role)) return 'head';
   if (/\btl\b|team\s*lead/i.test(role)) return 'tl';
@@ -137,9 +121,7 @@ export function hrRoleAllows(roleKey, u) {
     case 'tl':
       return isHrUser(u) && /\btl\b|team\s*lead|\bhead\b|\bhod\b/i.test(role);
     case 'branch':
-      return isBranchHeadRole(role) && Boolean(String(u.branch || '').trim());
-    case 'business':
-      return isBusinessLeadRole(role) && Boolean(String(u.branch || '').trim());
+      return (isBranchHeadRole(role) || isBusinessLeadRole(role)) && Boolean(String(u.branch || '').trim());
     case 'head':
       return isHrUser(u) && /\bhead\b|\bhod\b/i.test(role);
     default:
@@ -191,7 +173,7 @@ export default function HrRoleLoginModal({ isOpen, roleKey = 'hr', onClose, onLo
           setError('This Branch Head account has no branch set. Ask Admin to set the branch on this user before signing in.');
           return;
         }
-        if (roleKey === 'business' && isBusinessLeadRole(authedUser.role) && !String(authedUser.branch || '').trim()) {
+        if (roleKey === 'branch' && isBusinessLeadRole(authedUser.role) && !String(authedUser.branch || '').trim()) {
           setError('This Business Lead account has no branch set. Ask Admin to set the branch on this user before signing in.');
           return;
         }
@@ -240,10 +222,8 @@ export default function HrRoleLoginModal({ isOpen, roleKey = 'hr', onClose, onLo
           <div className="text-xs text-slate-600">
             <span className="font-bold text-slate-800 block mb-0.5">Admin-Created Account Required</span>
             {roleKey === 'branch'
-              ? 'Sign in with your branch account (e.g. gandhipuram@thoughtflows.in) or a user created in Admin with role "BRANCH HEAD".'
-              : roleKey === 'business'
-                ? 'Sign in with a user created in Admin with role "BUSINESS LEAD" and a branch assigned.'
-                : `Sign in with the account created for you in Admin Management with role "${meta.adminRole}".`}
+              ? 'Sign in with your branch account (e.g. gandhipuram@thoughtflows.in) or a user created in Admin with role "BRANCH HEAD" or "BUSINESS LEAD" and a branch assigned.'
+              : `Sign in with the account created for you in Admin Management with role "${meta.adminRole}".`}
           </div>
         </div>
 

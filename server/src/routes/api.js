@@ -3883,7 +3883,7 @@ async function branchLeadOwnerNames(branch) {
   const bRx = new RegExp(escapeRegex(short), 'i');
   const [hrs, heads] = await Promise.all([
     branchHrNames(branch),
-    User.find({ $and: [{ role: /branch\s*(head|manager)|branch\s*hr\s*head/i }, ACTIVE_USER, { branch: bRx }] }).select('name').lean()
+    User.find({ $and: [{ role: /branch\s*(head|manager)|branch\s*hr\s*head|business\s*(lead|head)/i }, ACTIVE_USER, { branch: bRx }] }).select('name').lean()
   ]);
   const seen = new Set();
   const names = [...hrs, ...heads.map((u) => String(u.name || '').trim())].filter((n) => {
@@ -3959,11 +3959,29 @@ async function branchStudentQuery(branch, requestedHr) {
   return { $or: [ownedByBranch, unownedHere] };
 }
 
+// Branch Head / Business Lead desk:
+//   • leads allocated to this branch's HRs, plus
+//   • leads this branch's HRs put in for another branch (addedByBranch), plus
+//   • leads another branch's HR put in for this branch (Add Lead form, branch = this one)
+// Bulk-upload branch values are not trusted (sheets stamp a default branch),
+// so the branch field counts only for leads added one by one from the form.
 async function branchAllocationQuery(branch, requestedCounselor) {
   const staff = await branchLeadOwnerNames(branch);
   const names = staff.length ? pickTeamNames(staff, requestedCounselor) : [NO_MATCH_NAME];
-  return ownerAnyQuery(names, LEAD_ALLOC_FIELDS, []);
+  const allocated = ownerAnyQuery(names, LEAD_ALLOC_FIELDS, []);
+  const short = branchShort(branch);
+  if (!short) return allocated;
+  // One HR picked in the filter → their allocated leads + the ones they added
+  if (splitCounselorParam(requestedCounselor).length) {
+    return { $or: [allocated, ownerAnyQuery(names, ['addedBy'], [])] };
+  }
+  const bRx = new RegExp(escapeRegex(short), 'i');
+  return { $or: [allocated, { addedByBranch: bRx }, { addedVia: 'single', branch: bRx }] };
 }
+// Branch of the HR / Team Lead / Branch Head / Business Lead adding a lead.
+// Admin and Department Heads are not tied to a branch, so nothing is stamped.
+const leadAdderBranch = (req) => ((isScopedHr(req) || isScopedBranchManager(req) || isHrTeamLeadUser(req))
+  ? String(req.user?.branch || '').trim() : '');
 
 const leadOwner = (l) => l?.counselorAssigned || l?.allocatedTo || l?.spokenBy || l?.counselor || l?.hrName || '';
 const leadOwnerQuery = (name, branch = '') => ownerQueryWithBranch(name, branch, LEAD_OWNER_FIELDS, BRANCH_FIELDS_LEAD);
@@ -4041,7 +4059,7 @@ const branchOwnsRecord = (req, rec) => {
     const owners = recordOwnerNames(rec);
     if (owners.some((o) => req.branchOwnerNames.some((n) => namesMatch(n, o, '', '')))) return true;
   }
-  const vals = [rec?.branch, rec?.leadBranch, rec?.location].map(bClean).filter(Boolean);
+  const vals = [rec?.branch, rec?.leadBranch, rec?.location, rec?.addedByBranch].map(bClean).filter(Boolean);
   return vals.some((v) => v.includes(ub) || ub.includes(v));
 };
 const canChangeRecord = (req, rec) => {
@@ -6185,6 +6203,10 @@ router.post('/leads', async (req, res) => {
     if (isScopedHr(req) && !payload.counselorAssigned && !payload.allocatedTo) payload.counselorAssigned = req.user?.name || "";
     if (isScopedBranchManager(req) && !payload.branch) payload.branch = req.user.branch;
     delete payload.admittedStudentId;
+    // Who added it (cross-branch leads show on both branches' desks)
+    payload.addedBy = req.user?.name || '';
+    payload.addedByBranch = leadAdderBranch(req);
+    payload.addedVia = 'single';
     const owner = leadOwner(payload);
     const gate = await lmsGate(owner, payload.course);
     if (gate?.blocked) return res.status(403).json({ error: gate.message, code: 'LMS_NOT_CERTIFIED' });
@@ -6365,6 +6387,9 @@ router.post('/leads/bulk', async (req, res) => {
       // (synchronously, before any DB call) so a repeat of this same
       // phone/email LATER in this same sheet is still caught as a
       // duplicate against it.
+      payload.addedBy = req.user?.name || '';
+      payload.addedByBranch = leadAdderBranch(req);
+      payload.addedVia = 'bulk';
       rowMetas.push({ row: i + 1, name: payload.fullName });
       toInsert.push(payload);
       indexDupRecord(payload, 'pending');
@@ -6422,6 +6447,7 @@ router.put('/leads/:id', async (req, res) => {
     if (!ownsLead(req, current)) return res.status(403).json(NOT_YOURS);
     const body = { ...(req.body || {}) };
     delete body.admittedStudentId; // set only when the student record is created
+    delete body.addedBy; delete body.addedByBranch; delete body.addedVia; // set once, when the lead is added
     // Re-allocation to another counsellor → LMS certification check
     let gate = null;
     const newOwner = body.allocatedTo || body.counselorAssigned;
@@ -8256,7 +8282,7 @@ const mapRoleOrDeptToDashboard = (role = '', department = '') => {
 //   leadership:branch  branch sign-in inside the Leadership Hub
 //   <dashboard>      main landing cards (cccp, marketing, leadership, student, admin, wiseapp)
 const LOGIN_CARD_LABELS = {
-  'hr:hr': 'HR', 'hr:tl': 'HR Team Lead', 'hr:branch': 'Branch Head', 'hr:business': 'Business Lead', 'hr:head': 'HR Department Head',
+  'hr:hr': 'HR', 'hr:tl': 'HR Team Lead', 'hr:branch': 'Branch Head / Business Lead', 'hr:business': 'Branch Head / Business Lead', 'hr:head': 'HR Department Head',
   'training:head': 'Department Head of Training', 'training:manager': 'Trainer Manager', 'training:tl': 'Training Team Lead',
   'training:part_time': 'Part Time Trainer', 'training:trainer': 'Trainer',
   cccp: 'CCCP', marketing: 'Marketing', leadership: 'Leadership', 'leadership:branch': 'Branch',
@@ -8264,7 +8290,7 @@ const LOGIN_CARD_LABELS = {
 };
 const LOGIN_CARD_WHERE = {
   'hr:hr': 'the HR card in HR Department', 'hr:tl': 'the HR Team Lead card in HR Department',
-  'hr:branch': 'the Branch Head card in HR Department', 'hr:business': 'the Business Lead card in HR Department',
+  'hr:branch': 'the Branch Head / Business Lead card in HR Department', 'hr:business': 'the Branch Head / Business Lead card in HR Department',
   'hr:head': 'the HR Department Head card in HR Department',
   'training:head': 'the Department Head of Training card in Trainers Department', 'training:manager': 'the Trainer Manager card in Trainers Department',
   'training:tl': 'the Team Lead card in Trainers Department', 'training:part_time': 'the Part Time Trainer card in Trainers Department',
@@ -8276,7 +8302,8 @@ const LOGIN_CARD_WHERE = {
 function loginCardsFor(user = {}) {
   const role = String(user.role || '');
   const dept = String(user.department || '').toLowerCase();
-  if (/business\s*lead/i.test(role)) return ['hr:business'];
+  // Branch Head and Business Lead share one card ('hr:branch'); 'hr:business' kept for older clients
+  if (/business\s*lead/i.test(role)) return ['hr:branch', 'hr:business'];
   if (/branch\s*(manager|head)/i.test(role)) return ['hr:branch', 'leadership', 'leadership:branch'];
   if (dept === 'hr') {
     if (/\bhead\b|\bhod\b/i.test(role)) return ['hr:head'];

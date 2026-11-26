@@ -174,6 +174,21 @@ const studentLeadSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  // Who put this lead in, and from which branch. A branch's HR can add a lead
+  // for another branch (e.g. Kerala → Gandhipuram); the Branch Head /
+  // Business Lead desk of BOTH branches shows it.
+  addedBy: {
+    type: String,
+    default: ''
+  },
+  addedByBranch: {
+    type: String,
+    default: ''
+  },
+  addedVia: {
+    type: String, // 'single' (Add Lead form — branch chosen on purpose) | 'bulk'
+    default: ''
+  },
   spokenBy: {
     type: String,
     default: ''
