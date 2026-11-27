@@ -5063,7 +5063,37 @@ async function checkDuplicateRegistration({ phone, whatsappNumber, email, leadId
 // opts.bulk (staff bulk upload of admitted students): no mobile-number format check, paid may be
 // more than the fee, and the same student (same mobile / email) is allowed for a DIFFERENT course —
 // only the same mobile/email + same course is rejected.
+// Admissions for the same mobile number / email run one at a time. Without this,
+// two requests for one person arriving together (a double click, or a bulk upload
+// sent again while the first was still running after a gateway timeout) both pass
+// the "already admitted for this course?" check and both save — a duplicate.
+const admitLocks = new Map(); // contact key → tail of its queue
+async function withAdmitLock(rawBody, fn) {
+  const b = rawBody || {};
+  const keys = [...new Set([
+    ...['phone', 'whatsappNumber', 'alternatePhone', 'additionalNumber'].map((f) => {
+      const d = String(b[f] ?? '').replace(/\D/g, '');
+      return d.length >= 10 ? `p:${d.slice(-10)}` : '';
+    }),
+    String(b.email || '').trim() ? `e:${String(b.email).trim().toLowerCase()}` : ''
+  ].filter(Boolean))].sort();
+  if (!keys.length) return fn();
+  const waits = keys.map((k) => admitLocks.get(k)).filter(Boolean);
+  let release;
+  const mine = new Promise((r) => { release = r; });
+  keys.forEach((k) => admitLocks.set(k, mine));
+  try {
+    await Promise.all(waits.map((w) => w.catch(() => {})));
+    return await fn();
+  } finally {
+    release();
+    keys.forEach((k) => { if (admitLocks.get(k) === mine) admitLocks.delete(k); });
+  }
+}
 async function admitStudentRecord(req, rawBody, opts = {}) {
+  return withAdmitLock(rawBody, () => admitStudentRecordNow(req, rawBody, opts));
+}
+async function admitStudentRecordNow(req, rawBody, opts = {}) {
   try {
     const staff = isStaffCaller(req);
     const bulk = Boolean(opts.bulk) && staff;
