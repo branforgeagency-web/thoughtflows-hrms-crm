@@ -125,6 +125,7 @@ router.use((req, res, next) => {
 // once — e.g. a Branch Head is always pinned to their current branch.
 const liveUserCache = new Map(); // key → { at, doc }
 router.use(async (req, res, next) => {
+  if (req.path === '/health' || req.path === '/auth/file-token') return next();
   try {
     const u = req.user;
     if (!u || u.studentId || u.trainerId) return next();
@@ -167,6 +168,7 @@ router.use((req, res, next) => {
 // HR Team Lead: the names whose records they may see / change (own + team).
 // Resolved once per request so the sync ownership checks can use it.
 router.use(async (req, res, next) => {
+  if (req.path === '/health' || req.path === '/auth/file-token') return next();
   try { req.hrTeamNames = await hrTeamScopeNames(req); } catch (_) { req.hrTeamNames = null; }
   // Branch Head / Business Lead: names of their branch's HRs (record ownership checks)
   try {
@@ -1948,32 +1950,71 @@ const HEAD_ROLE_RX = /dept head|head of|department head|operational head|managem
 
 router.get('/stats', async (req, res) => {
   try {
-    const [deptCount, branchCount, students, leadCount, users] = await Promise.all([
+    const cached = getHrCache('global-stats');
+    if (cached) return res.json(cached);
+    const monthStart = monthStartIST();
+    const [deptCount, branchCount, [stAgg], leadCount, users] = await Promise.all([
       Department.countDocuments(),
       Branch.countDocuments(),
-      Student.find().select('statusGroup placementStatus placementStage paidAmount receipts').lean(),
+      Student.aggregate([
+        {
+          $project: {
+            isPlaced: {
+              $or: [
+                { $eq: ['$statusGroup', 'placed'] },
+                { $regexMatch: { input: { $ifNull: ['$placementStatus', ''] }, regex: /placed/i } },
+                { $gte: [{ $convert: { input: '$placementStage', to: 'double', onError: 0, onNull: 0 } }, 7] }
+              ]
+            },
+            paid: { $convert: { input: '$paidAmount', to: 'double', onError: 0, onNull: 0 } },
+            mtd: {
+              $reduce: {
+                input: { $ifNull: ['$receipts', []] },
+                initialValue: 0,
+                in: {
+                  $add: [
+                    '$$value',
+                    {
+                      $cond: [
+                        { $gte: [{ $convert: { input: { $ifNull: ['$$this.at', '$$this.date'] }, to: 'date', onError: null, onNull: null } }, monthStart] },
+                        { $convert: { input: '$$this.amount', to: 'double', onError: 0, onNull: 0 } },
+                        0
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            activeStudents: { $sum: 1 },
+            placedStudents: { $sum: { $cond: ['$isPlaced', 1, 0] } },
+            grossRevenue: { $sum: '$paid' },
+            mtdRevenue: { $sum: '$mtd' }
+          }
+        }
+      ]),
       StudentLead.countDocuments({ stage: { $nin: ['admitted', 'closed'] } }),
       User.find().select('role department status').lean()
     ]);
-    const placedCount = students.filter((s) => s.statusGroup === 'placed' || /placed/i.test(s.placementStatus || '') || Number(s.placementStage) >= 7).length;
-    const totalCollected = students.reduce((sum, s) => sum + (Number(s.paidAmount) || 0), 0);
-    const monthStart = monthStartIST();
-    const mtdRevenue = students.reduce((sum, s) => sum + (s.receipts || [])
-      .filter((r) => new Date(r.at || r.date) >= monthStart)
-      .reduce((a, r) => a + (Number(r.amount) || 0), 0), 0);
+    const activeStudents = stAgg?.activeStudents || 0;
+    const placedCount = stAgg?.placedStudents || 0;
 
-    res.json({
+    res.json(setHrCache('global-stats', {
       branchesCount: branchCount,
       teamsCount: deptCount,
-      activeStudents: students.length,
+      activeStudents,
       activeLeads: leadCount,
       placedStudents: placedCount,
-      placementRate: students.length > 0 ? `${((placedCount / students.length) * 100).toFixed(1)}%` : '0.0%',
+      placementRate: activeStudents > 0 ? `${((placedCount / activeStudents) * 100).toFixed(1)}%` : '0.0%',
       activeStaff: users.filter(isStaffUser).length,
       // Fees actually collected (sum of receipts), all-time and this month
-      grossRevenue: totalCollected,
-      mtdRevenue
-    });
+      grossRevenue: stAgg?.grossRevenue || 0,
+      mtdRevenue: stAgg?.mtdRevenue || 0
+    }));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -2599,7 +2640,8 @@ router.get('/hr/leaderboard', async (req, res) => {
 // Topper of the Day resets at midnight IST; Topper of the Month counts from the 1st till now.
 // "yesterday" (final standings) is used by the morning popup before today's first admission.
 // Admission date = registeredAt (bulk upload: batch date), else admissionDate / record creation.
-const TOPPERS_TTL_MS = 20000;
+const TOPPERS_TTL_MS = 60000;
+let toppersInFlight = null;
 const shiftDayKey = (dayKey, delta) => {
   const d = new Date(`${dayKey}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + delta);
@@ -2713,10 +2755,17 @@ router.get('/hr/toppers', async (req, res) => {
     const today = dayKeyIst(new Date());
     let data = toppersCache.data;
     if (!data || toppersCache.day !== today || Date.now() - toppersCache.at > TOPPERS_TTL_MS) {
-      data = await computeHrToppers(today);
-      toppersCache.at = Date.now();
-      toppersCache.day = today;
-      toppersCache.data = data;
+      if (!toppersInFlight) {
+        toppersInFlight = computeHrToppers(today)
+          .then((resData) => {
+            toppersCache.at = Date.now();
+            toppersCache.day = today;
+            toppersCache.data = resData;
+            return resData;
+          })
+          .finally(() => { toppersInFlight = null; });
+      }
+      data = await toppersInFlight;
     }
     // Per-viewer bits (never cached): does the viewer have a photo, may they set others' photos
     let hasPhoto = false;
@@ -4505,6 +4554,9 @@ router.get('/students', async (req, res) => {
 router.get('/students/filter-options', async (req, res) => {
   try {
     await ensureStaffNamesLoaded();
+    const cacheKey = `stFilterOpts:${req.user?.name || ''}|${req.user?.role || ''}|${req.user?.branch || ''}|${(req.hrTeamNames || []).join(',')}|${req.originalUrl}`;
+    const cached = getHrCache(cacheKey);
+    if (cached) return res.json(cached);
     const scope = await studentRoleScope(req, { branch: req.query.branch });
     const base = scope.andConditions.length ? { $and: scope.andConditions } : {};
     const scopedHr = isScopedHr(req);
@@ -4520,9 +4572,28 @@ router.get('/students/filter-options', async (req, res) => {
       return [...seen.values()].sort((a, b) => a.localeCompare(b));
     };
 
-    const [courses, modes, batchTimings, sources, certified, examStatus, placementStatus] = await Promise.all(
-      ['course', 'mode', 'batchTiming', 'source', 'certified', 'examStatus', 'placementStatus'].map((f) => Student.distinct(f, base))
-    );
+    const [agg] = await Student.aggregate([
+      { $match: base },
+      {
+        $group: {
+          _id: null,
+          courses: { $addToSet: '$course' },
+          modes: { $addToSet: '$mode' },
+          batchTimings: { $addToSet: '$batchTiming' },
+          sources: { $addToSet: '$source' },
+          certified: { $addToSet: '$certified' },
+          examStatus: { $addToSet: '$examStatus' },
+          placementStatus: { $addToSet: '$placementStatus' }
+        }
+      }
+    ]);
+    const courses = agg?.courses || [];
+    const modes = agg?.modes || [];
+    const batchTimings = agg?.batchTimings || [];
+    const sources = agg?.sources || [];
+    const certified = agg?.certified || [];
+    const examStatus = agg?.examStatus || [];
+    const placementStatus = agg?.placementStatus || [];
 
     let branches = [];
     if (canFilterBranch) branches = clean((await branchList()).map((b) => b.name));
@@ -4536,7 +4607,7 @@ router.get('/students/filter-options', async (req, res) => {
       hrs = clean(hrs);
     }
 
-    res.json({
+    res.json(setHrCache(cacheKey, {
       canFilterBranch,
       canFilterHr,
       branches,
@@ -4548,7 +4619,7 @@ router.get('/students/filter-options', async (req, res) => {
       certified: clean(certified),
       examStatus: clean(examStatus),
       placementStatus: clean(placementStatus)
-    });
+    }));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -5772,6 +5843,9 @@ async function leadSourceVariants(source) {
 router.get('/leads/filter-options', async (req, res) => {
   try {
     await ensureStaffNamesLoaded();
+    const cacheKey = `ldFilterOpts:${req.user?.name || ''}|${req.user?.role || ''}|${req.user?.branch || ''}|${(req.hrTeamNames || []).join(',')}|${req.originalUrl}`;
+    const cached = getHrCache(cacheKey);
+    if (cached) return res.json(cached);
     const matchConds = [];
     let deskBranch = ''; // set when this is a Branch Head desk (own branch, or opened by Admin / Leadership)
     if (req.hrTeamNames) {
@@ -5789,13 +5863,24 @@ router.get('/leads/filter-options', async (req, res) => {
     }
     const matchQuery = matchConds.length > 0 ? { $and: matchConds } : {};
 
-    const [counselors, branches, courses, sources, months] = await Promise.all([
-      StudentLead.distinct('counselorAssigned', matchQuery),
-      StudentLead.distinct('branch', matchQuery),
-      StudentLead.distinct('course', matchQuery),
-      StudentLead.distinct('sourceName', matchQuery),
-      StudentLead.distinct('enquiryMonth', matchQuery)
+    const [agg] = await StudentLead.aggregate([
+      { $match: matchQuery },
+      {
+        $group: {
+          _id: null,
+          counselors: { $addToSet: '$counselorAssigned' },
+          branches: { $addToSet: '$branch' },
+          courses: { $addToSet: '$course' },
+          sources: { $addToSet: '$sourceName' },
+          months: { $addToSet: '$enquiryMonth' }
+        }
+      }
     ]);
+    const counselors = agg?.counselors || [];
+    const branches = agg?.branches || [];
+    const courses = agg?.courses || [];
+    const sources = agg?.sources || [];
+    const months = agg?.months || [];
 
     const PLACEHOLDERS = new Set(['n/a', 'na', 'none', 'nil', 'null', 'undefined', 'unknown', 'not mentioned']);
     const toTitleCase = (str) =>
@@ -5833,13 +5918,13 @@ router.get('/leads/filter-options', async (req, res) => {
       Array.from(new Set((arr || []).map((v) => String(v || '').trim()).filter((v) => /^\d{4}-\d{2}$/.test(v))))
         .sort((a, b) => b.localeCompare(a));
 
-    res.json({
+    res.json(setHrCache(cacheKey, {
       counselors: branchCounselors || cleanSorted(counselors, { mode: 'title' }).filter(isKnownStaffName),
       branches: cleanSorted(branches, { mode: 'title' }),
       courses: cleanSorted(courses, { mode: 'upper' }),
       sources: cleanSorted((sources || []).map(canonicalLeadSource), { mode: 'raw' }),
       months: cleanMonths(months)
-    });
+    }));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
