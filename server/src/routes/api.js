@@ -3981,11 +3981,9 @@ async function branchLeadOwnerNames(branch) {
   return names;
 }
 // ---- Admitted students on a Branch Head / Business Lead desk ----
-// Same rule as leads: a student belongs to the branch of the HR who admitted
-// them (hrName / counsellor), not the sheet's BRANCH column — bulk uploads
-// stamp the uploader's default branch on "ONLINE" / blank rows. The branch
-// field is used only when the student's HR is not staff of any branch
-// (blank HR, or a sheet name that matches nobody).
+// A branch desk shows students admitted by its own HRs (hrName / counsellor)
+// PLUS every student whose branch field says this branch, so a student marked
+// Hopes but admitted by a Salem HR shows on both the Hopes and Salem desks.
 const branchStudentOwnerCache = new Map();
 async function branchStudentOwnerNames(branch) {
   const short = branchShort(branch);
@@ -4034,14 +4032,12 @@ async function branchStudentQuery(branch, requestedHr) {
   const ownedByBranch = ownerAnyQuery(picked.length ? picked : [NO_MATCH_NAME], STUDENT_BRANCH_OWNER_FIELDS, []);
   // One HR picked in the filter → only that HR's students
   if (wanted.length) return ownedByBranch;
+  // Also every student whose branch / leadBranch / location says this branch,
+  // even when another branch's HR admitted them — they show on both desks
+  // (same "both branches" rule as leads put in for another branch).
   const bRx = new RegExp(escapeRegex(branchShort(branch)), 'i');
-  const ownerKeys = new Set(owners.map(normName));
-  const otherStaff = (await allBranchStaffNames()).filter((n) => !ownerKeys.has(normName(n)));
   const branchFieldMatch = { $or: BRANCH_FIELDS_STUDENT.map((f) => ({ [f]: bRx })) };
-  const unownedHere = otherStaff.length
-    ? { $and: [branchFieldMatch, { $nor: [ownerAnyQuery(otherStaff, STUDENT_BRANCH_OWNER_FIELDS, [])] }] }
-    : branchFieldMatch;
-  return { $or: [ownedByBranch, unownedHere] };
+  return { $or: [ownedByBranch, branchFieldMatch] };
 }
 
 // Branch Head / Business Lead desk:
@@ -18728,3 +18724,4 @@ registerStaffDeskRoutes(router, { pushNotification });
 router.use('/wiseapp', wiseappRouter);
 
 export default router;
+
