@@ -3670,9 +3670,19 @@ function refreshStaffNames() {
     // HR staff plus Branch Heads / Business Leads: they own leads and students
     // too, so their names must block look-alike matches (Sindhu ≠ Sindhuja)
     User.find({ $and: [{ $or: [HR_STAFF, { role: /branch\s*(head|manager)|branch\s*hr\s*head|business\s*(lead|head)/i }] }, ACTIVE_USER] }).select('name branch role department').lean(),
-    branchList().catch(() => BRANCH_MASTER)
+    branchList().catch(() => BRANCH_MASTER),
+    // Every active staff member (any role / department) — used only to stop a
+    // short form like "Sindhu" being read as someone else's name ("Sindhuja")
+    User.find({ $and: [ACTIVE_USER, { role: { $not: /student|scholar/i } }, { department: { $not: /student/i } }] }).select('name').lean()
   ])
-    .then(([rows, branches]) => {
+    .then(([rows, branches, everyone]) => {
+      const people = { full: new Set(), first: new Set() };
+      (everyone || []).forEach((u) => {
+        const n = normStaffName(u.name);
+        if (!n) return;
+        people.full.add(n.replace(/\s+/g, ''));
+        people.first.add(n.split(' ')[0]);
+      });
       const branchDocs = Array.isArray(branches) && branches.length ? branches : BRANCH_MASTER;
       const seen = new Set();
       const staff = [];
@@ -3692,7 +3702,7 @@ function refreshStaffNames() {
           branchKey: bKey
         });
       });
-      staffNameCache = { at: Date.now(), loaded: true, staff, branches: branchDocs, loading: null };
+      staffNameCache = { at: Date.now(), loaded: true, staff, people, branches: branchDocs, loading: null };
     })
     .catch(() => { staffNameCache.loading = null; });
   return staffNameCache.loading;
@@ -3718,6 +3728,20 @@ function looseTokenScope(token, self, kind, selfBranch = '') {
   const effBranch = findSelfBranch(selfNorm, selfBranch);
   const myBranchKey = resolveStaffBranchKey(effBranch);
 
+  // A short form that is ANOTHER staff member's own name ("Sindhu", "Sindhu R"'s
+  // first name) belongs to that person — never borrow it, whatever their role or branch.
+  if (kind !== 'word' && staffNameCache.people) {
+    const tc = t.replace(/\s+/g, '');
+    const selfFirst = selfNorm.split(' ')[0];
+    const isSelf = tc === meCompact || (kind === 'first' && t === selfFirst && !staffNameCache.people.full.has(tc));
+    if (!isSelf && (staffNameCache.people.full.has(tc) || (kind === 'prefix' && staffNameCache.people.first.has(t)))) return 'taken';
+    // A cut-off spelling that also starts another person's first name ("Sindh" →
+    // Sindhu or Sindhuja?) is ambiguous: give it to nobody.
+    if (kind === 'prefix') {
+      const myFirst = selfNorm.split(' ')[0];
+      for (const f of staffNameCache.people.first) if (f !== myFirst && f.startsWith(t)) return 'taken';
+    }
+  }
   const conflicts = staffNameCache.staff.filter((s) => {
     if (s.compact === meCompact) {
       return Boolean(myBranchKey && s.branchKey && s.branchKey !== myBranchKey);
