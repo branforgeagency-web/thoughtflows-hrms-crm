@@ -74,7 +74,8 @@ export default function HrAdmittedStudentsCrm({
   onPageChange,
   onFiltersChange,
   lockedBranch = '',
-  lockedHr = false
+  lockedHr = false,
+  loading: propLoading = false
 }) {
   // Show new / reset portal credentials in the persistent card owned by the HR dashboard
   const shareLogin = (st, login) => {
@@ -107,6 +108,8 @@ export default function HrAdmittedStudentsCrm({
   const [localTotalPages, setLocalTotalPages] = useState(1);
   const [localTotalCount, setLocalTotalCount] = useState(0);
   const [localStats, setLocalStats] = useState(null);
+  const [localLoading, setLocalLoading] = useState(false);
+  const isLoading = Boolean(propLoading || localLoading);
 
   // ---- Table filters (branch, HR, course, ...) — applied on the server so they
   // cover every page, not just the rows currently loaded
@@ -159,6 +162,7 @@ export default function HrAdmittedStudentsCrm({
       limit: propLimit,
       withStats: 'true'
     };
+    setLocalLoading(true);
     getStudents(params).then(res => {
       if (Array.isArray(res)) {
         setStudents(res);
@@ -170,7 +174,8 @@ export default function HrAdmittedStudentsCrm({
         setLocalTotalPages(res.totalPages || 1);
         setLocalStats(res.stats || null);
       }
-    }).catch(err => console.error('Error fetching students:', err));
+    }).catch(err => console.error('Error fetching students:', err))
+      .finally(() => setLocalLoading(false));
   };
 
   useEffect(() => {
@@ -1060,9 +1065,18 @@ export default function HrAdmittedStudentsCrm({
               {filteredStudents.length === 0 && (
                 <tr>
                   <td colSpan={18} className="py-10 text-center text-xs text-slate-500 font-semibold">
-                    No students match these filters.
-                    {(activeFilterCount > 0 || searchQuery || activeTabFilter !== 'all') && (
-                      <button type="button" onClick={clearAllFilters} className="ml-2 text-[#00897b] underline font-bold cursor-pointer">Clear filters</button>
+                    {isLoading ? (
+                      <span className="inline-flex items-center gap-2 text-[#00897b] font-bold">
+                        <span className="w-4 h-4 border-2 border-[#00897b] border-t-transparent rounded-full animate-spin" />
+                        Loading admitted students…
+                      </span>
+                    ) : (
+                      <>
+                        No students match these filters.
+                        {(activeFilterCount > 0 || searchQuery || activeTabFilter !== 'all') && (
+                          <button type="button" onClick={clearAllFilters} className="ml-2 text-[#00897b] underline font-bold cursor-pointer">Clear filters</button>
+                        )}
+                      </>
                     )}
                   </td>
                 </tr>

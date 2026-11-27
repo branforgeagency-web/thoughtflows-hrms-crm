@@ -6206,9 +6206,14 @@ router.get('/leads', async (req, res) => {
 
     // Board view (?perStage=N): the newest N leads of EVERY stage, so one busy
     // stage (e.g. hundreds of just-admitted students) can't crowd the others off.
-    // Single $facet aggregation replaces 12 separate DB round-trips.
+    // Uses per-bucket index-backed .limit(perStage) queries (avoids $facet 100MB
+    // memory errors on large Dept Head / Branch Head datasets) + 25s cache.
     const perStage = Math.min(300, Math.max(0, parseInt(req.query.perStage, 10) || 0));
     if (perStage) {
+      const leadsCacheKey = `leadsBoard:${req.user?.name || ''}|${req.user?.role || ''}|${req.user?.branch || ''}|${(req.hrTeamNames || []).join(',')}|${req.originalUrl}`;
+      const cachedBoard = getHrCache(leadsCacheKey);
+      if (cachedBoard) return res.json(cachedBoard);
+
       const SID = { admittedStudentId: { $nin: [null, ''] } };
       const NO_SID = { admittedStudentId: { $in: [null, ''] } };
       const KNOWN = ['new', 'contacted', 'demo_booked', 'demo_attended', 'fee_followup', 'done', 'admitted', 'not_mentioned'];
@@ -6218,43 +6223,12 @@ router.get('/leads', async (req, res) => {
         ...KNOWN.filter((k) => k !== 'new').map((k) => ({ $and: [NO_SID, { stage: k }] })),
         { $and: [NO_SID, { stage: { $nin: [...KNOWN, null, ''] } }] }
       ];
-      const bucketFacets = Object.fromEntries(
-        buckets.map((b, i) => [`b${i}`, [{ $match: b }, { $limit: perStage }]])
-      );
-      let lists;
-      let totalCount;
-      let stageCounts;
-      if (!stageCond) {
-        const [facetRes] = await StudentLead.aggregate([
-          { $match: query },
-          { $sort: { createdAt: -1 } },
-          { $project: { whatsappMessages: 0 } },
-          {
-            $facet: {
-              ...bucketFacets,
-              totalCount: [{ $count: 'n' }],
-              stageCounts: [{ $group: { _id: '$stage', count: { $sum: 1 } } }]
-            }
-          }
-        ], { allowDiskUse: true });
-        lists = buckets.map((_, i) => facetRes?.[`b${i}`] || []);
-        totalCount = facetRes?.totalCount?.[0]?.n || 0;
-        stageCounts = facetRes?.stageCounts || [];
-      } else {
-        const [facetRes, tc, sc] = await Promise.all([
-          StudentLead.aggregate([
-            { $match: query },
-            { $sort: { createdAt: -1 } },
-            { $project: { whatsappMessages: 0 } },
-            { $facet: bucketFacets }
-          ], { allowDiskUse: true }),
-          StudentLead.countDocuments(query),
-          stageAggPromise
-        ]);
-        lists = buckets.map((_, i) => facetRes?.[0]?.[`b${i}`] || []);
-        totalCount = tc;
-        stageCounts = sc;
-      }
+      const withQuery = (b) => (Object.keys(query).length ? { $and: [query, b] } : b);
+      const [lists, totalCount, stageCounts] = await Promise.all([
+        Promise.all(buckets.map((b) => StudentLead.find(withQuery(b)).select('-whatsappMessages').sort({ createdAt: -1 }).limit(perStage).lean())),
+        StudentLead.countDocuments(query),
+        stageAggPromise
+      ]);
       stageCounts.forEach((row) => {
         const match = stages.find((s) => s.key === row._id);
         if (match) match.count = row.count;
@@ -6263,7 +6237,7 @@ router.get('/leads', async (req, res) => {
       const leads = lists.flat()
         .filter((l) => { const k = String(l._id); if (seen.has(k)) return false; seen.add(k); return true; })
         .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-      return res.json({ leads, stages, totalCount, page: 1, limit: leads.length, totalPages: 1, perStage });
+      return res.json(setHrCache(leadsCacheKey, { leads, stages, totalCount, page: 1, limit: leads.length, totalPages: 1, perStage }));
     }
 
     if (hasPagination) {
@@ -7409,7 +7383,7 @@ router.get('/demos', async (req, res) => {
         const demoConds = names.flatMap((n) => ownerSingleBranchConditions(n, branchHint, DEMO_OWNER_FIELDS, BRANCH_FIELDS_LEAD));
         const leadConds = names.flatMap((n) => ownerSingleBranchConditions(n, branchHint, LEAD_OWNER_FIELDS, BRANCH_FIELDS_LEAD));
         const myLeads = await StudentLead.find(leadConds.length === 1 ? leadConds[0] : { $or: leadConds })
-          .select('phone whatsappNumber').lean();
+          .select('phone whatsappNumber').sort({ createdAt: -1 }).limit(1500).lean();
         const myPhones = Array.from(new Set(
           myLeads.map((l) => phoneDigits(l.phone || l.whatsappNumber)).filter((p) => p.length === 10)
         ));

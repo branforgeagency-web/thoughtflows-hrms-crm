@@ -448,8 +448,8 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   // Tables show 10 rows by default; the Rows picker under each table switches to 25 / 50
   const [leadsTableLimit, setLeadsTableLimit] = useState(10);
   const [admitted, setAdmitted] = useState({ rows: [], page: 1, limit: 10, totalCount: 0, totalPages: 1, stats: null });
-  const LEADS_BOARD_LIMIT = 200;
-  const LEADS_PER_STAGE = 80; // board: up to 80 newest leads in each stage
+  const LEADS_BOARD_LIMIT = 150;
+  const LEADS_PER_STAGE = 40; // board: up to 40 newest leads in each stage
   
   // Local daily calls cache for instant reactivity when calling through modal
   // Today's calls come from the server call log (works across devices / browsers)
@@ -621,6 +621,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
   const admittedSeqRef = React.useRef(0);
   const admittedRef = React.useRef({ page: 1, limit: 10 });
   const admittedFiltersRef = React.useRef({}); // branch / HR / course ... picked in the table's filter bar
+  const [admittedLoading, setAdmittedLoading] = useState(false);
   const loadAdmitted = async (page = admittedRef.current.page, limit = admittedRef.current.limit) => {
     const seq = ++admittedSeqRef.current;
     admittedRef.current = { page, limit };
@@ -632,6 +633,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
     const tableFilters = { ...admittedFiltersRef.current };
     if (branchParam.branch) delete tableFilters.branch;
     if (shouldFilterOnServer) delete tableFilters.hrName;
+    setAdmittedLoading(true);
     try {
       const res = await getStudents({ ...tableFilters, ...(shouldFilterOnServer ? { hrName: counselorFilter } : {}), ...branchParam, page, limit, withStats: 'true' });
       if (seq !== admittedSeqRef.current) return;
@@ -644,6 +646,8 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       });
     } catch (e) {
       console.error('Admitted students load failed:', e);
+    } finally {
+      if (seq === admittedSeqRef.current) setAdmittedLoading(false);
     }
   };
 
@@ -2132,6 +2136,15 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
 
       {/* Main Content Body */}
       <main className="w-full px-4 sm:px-6 lg:px-8 py-5 space-y-5">
+        {(loading || admittedLoading) && (
+          <div className="flex items-center justify-between gap-3 px-4 py-2.5 rounded-xl bg-teal-50/90 border border-teal-200/80 text-teal-900 shadow-xs">
+            <div className="flex items-center gap-2.5 text-xs font-bold">
+              <RefreshCw className="w-4 h-4 text-[#00897b] animate-spin flex-shrink-0" />
+              <span>Loading live dashboard data…</span>
+            </div>
+            <span className="text-[11px] font-semibold text-teal-700/80">Please wait</span>
+          </div>
+        )}
         {scopeKind && activeTab === 'HR-wise Data' ? (
           <HrTeamDataSection
             leads={scopedLeads}
@@ -2195,6 +2208,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
             onFiltersChange={(f) => { admittedFiltersRef.current = f || {}; loadAdmitted(1, admitted.limit); }}
             lockedBranch={scopeKind === 'branch' ? (viewScope?.branch || currentUser?.branch || '') : ''}
             lockedHr={Boolean(currentUser?.name?.trim() && !scopeKind && (!isElevatedUser || scopeMode === 'mine'))}
+            loading={admittedLoading || loading}
           />
         ) : activeTab === 'Call Recordings' ? (
           <HrCallRecordingsTable
