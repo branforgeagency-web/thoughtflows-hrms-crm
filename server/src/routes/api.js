@@ -2555,6 +2555,7 @@ router.get('/leadership/team', async (req, res) => {
 // Ranks every HR counsellor by students admitted in the month (registeredAt — the
 // admission / batch date — else record creation, IST). Ties → more fees collected this month ranks higher.
 // Same board for everyone; ?branch= narrows it to one branch.
+const leaderboardInFlight = new Map(); // cacheKey → promise of the board being built
 router.get('/hr/leaderboard', async (req, res) => {
   try {
     const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(req.query.month || '')) ? req.query.month : monthKeyIst();
@@ -2563,7 +2564,11 @@ router.get('/hr/leaderboard', async (req, res) => {
     const branchFilter = branchShort(String(req.query.branch || '').replace(/^all$/i, ''));
     const cacheKey = `lb:${month}:${branchFilter || 'all'}`;
     let base = getHrCache(cacheKey);
+    if (!base && leaderboardInFlight.has(cacheKey)) base = await leaderboardInFlight.get(cacheKey);
     if (!base) {
+     let doneLb;
+     leaderboardInFlight.set(cacheKey, new Promise((r) => { doneLb = r; }));
+     try {
       const bKey = (b) => branchShort(b).toLowerCase().replace(/[^a-z0-9]/g, '');
 
       const [users, team] = await Promise.all([
@@ -2586,9 +2591,12 @@ router.get('/hr/leaderboard', async (req, res) => {
       // Admission date = registeredAt (bulk upload: the batch / joining date), else when the record was made
       const students = await Student.find({ $or: [{ registeredAt: { $gte: startUtc } }, { createdAt: { $gte: startUtc } }, { admissionDate: { $gte: startUtc } }, { 'receipts.0': { $exists: true } }] })
         .select('hrName counselor counselorName branch leadBranch location registeredAt admissionDate createdAt receipts course').lean();
+      const ownerMemo = new Map();
       const ownerOf = (s) => {
         const recBranch = s.branch || s.leadBranch || s.location || '';
-        return hrs.find((h) => [s.hrName, s.counselor, s.counselorName].some((c) => c && namesMatch(h.name, c, h.branch, recBranch)));
+        const k = `${s.hrName || ''}|${s.counselor || ''}|${s.counselorName || ''}|${recBranch}`;
+        if (!ownerMemo.has(k)) ownerMemo.set(k, hrs.find((h) => [s.hrName, s.counselor, s.counselorName].some((c) => c && namesMatch(h.name, c, h.branch, recBranch))) || null);
+        return ownerMemo.get(k);
       };
       for (const s of students) {
         const owner = ownerOf(s);
@@ -2620,7 +2628,12 @@ router.get('/hr/leaderboard', async (req, res) => {
         totals: { hrs: rows.length, admissions: rows.reduce((t, r) => t + r.admissions, 0), fees: rows.reduce((t, r) => t + r.fees, 0) },
         updatedAt: new Date().toISOString()
       });
+     } finally {
+      doneLb(base || null);
+      leaderboardInFlight.delete(cacheKey);
+     }
     }
+    if (!base) return res.status(500).json({ error: 'Could not build the scoreboard' });
     const me = base.rows.find((r) => req.user?.name && namesMatch(r.name, req.user.name, r.branch, req.user.branch || '')) || null;
     res.json({
       ...base,
@@ -3760,7 +3773,27 @@ function looseTokenScope(token, self, kind, selfBranch = '') {
   return sameOrUnknown ? 'taken' : 'branch';
 }
 
+// Name-matching rules depend only on the name, the branch and the staff list, so
+// they are worked out once per name and reused until the staff list reloads.
+// (The HR scoreboard compares ~1,250 students × ~50 HRs × 3 fields; rebuilding
+// the rules for every comparison froze the server for 40–100 s.)
+const nameMemo = { at: -1, analyze: new Map(), match: new Map() };
+const nameMemoFresh = () => {
+  if (nameMemo.at !== staffNameCache.at || nameMemo.analyze.size > 20000 || nameMemo.match.size > 100000) {
+    nameMemo.at = staffNameCache.at;
+    nameMemo.analyze.clear();
+    nameMemo.match.clear();
+  }
+  return nameMemo;
+};
 const analyzeCounselorName = (name, branch = '') => {
+  const m = nameMemoFresh();
+  const key = `${name}\u0001${branch}`;
+  let hit = m.analyze.get(key);
+  if (!hit) { hit = analyzeCounselorNameNow(name, branch); m.analyze.set(key, hit); }
+  return hit;
+};
+const analyzeCounselorNameNow = (name, branch = '') => {
   const clean = String(name || '').replace(/[.\-_]+/g, ' ').trim().replace(/\s+/g, ' ');
   if (!clean) return { strictRx: /^$/, unconditionalRx: /^$/, branchScopedRx: null, strictIsBranchScoped: false, branchRx: null };
   const effBranch = findSelfBranch(clean.toLowerCase(), branch);
@@ -4097,6 +4130,14 @@ const leadOwner = (l) => l?.counselorAssigned || l?.allocatedTo || l?.spokenBy |
 const leadOwnerQuery = (name, branch = '') => ownerQueryWithBranch(name, branch, LEAD_OWNER_FIELDS, BRANCH_FIELDS_LEAD);
 
 const namesMatch = (a, b, aBranch = '', bBranch = '') => {
+  if (!a || !b) return false;
+  const m = nameMemoFresh();
+  const key = `${a}\u0001${b}\u0001${aBranch}\u0001${bBranch}`;
+  let hit = m.match.get(key);
+  if (hit === undefined) { hit = namesMatchNow(a, b, aBranch, bBranch); m.match.set(key, hit); }
+  return hit;
+};
+const namesMatchNow = (a, b, aBranch = '', bBranch = '') => {
   if (!a || !b) return false;
   const clean = (v) => String(v).replace(/\([^)]*\)/g, '').replace(/[.\-_]/g, ' ').replace(/\s+/g, ' ').trim();
   const cA = clean(a);
