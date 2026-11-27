@@ -48,7 +48,11 @@ const payslipSchema = new mongoose.Schema(
     paymentRef: { type: String, default: '' },
     generatedBy: { type: String, default: '' },
     generatedAt: { type: Date, default: null },
-    history: { type: [stepSchema], default: [] }
+    history: { type: [stepSchema], default: [] },
+    // Employees can only view their payslip; a download needs the Head of
+    // Department's approval. { status: none|pending|approved|rejected, reason,
+    // requestedAt, decidedBy, decidedByEmail, decidedAt, note, validUntil, count, lastAt }
+    download: { type: mongoose.Schema.Types.Mixed, default: null }
   },
   { timestamps: true }
 );
@@ -56,5 +60,6 @@ const payslipSchema = new mongoose.Schema(
 payslipSchema.index({ month: 1, email: 1 }, { unique: true });
 payslipSchema.index({ email: 1, month: -1 });
 payslipSchema.index({ month: 1, branch: 1, status: 1 });
+payslipSchema.index({ 'download.status': 1 }, { sparse: true });
 
 export default mongoose.models.Payslip || mongoose.model('Payslip', payslipSchema);

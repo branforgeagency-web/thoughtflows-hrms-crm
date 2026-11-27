@@ -290,6 +290,16 @@ demoSchema.index({ joinCode: 1 }, { sparse: true });
 // Indexes for the dashboard / portal queries that filter and sort on these fields
 demoSchema.index({ createdAt: -1 });
 demoSchema.index({ status: 1, preferredDate: 1 });
+demoSchema.index({ status: 1, createdAt: -1 });
 demoSchema.index({ email: 1 });
+demoSchema.index({ phone: 1 });
+demoSchema.index({ branch: 1, createdAt: -1 });
+demoSchema.index({ location: 1, createdAt: -1 });
+demoSchema.index({ bookedBy: 1, createdAt: -1 });
+demoSchema.index({ counselor: 1, createdAt: -1 });
+demoSchema.index({ counselorName: 1, createdAt: -1 });
+demoSchema.index({ hrName: 1, createdAt: -1 });
+demoSchema.index({ allocatedTo: 1, createdAt: -1 });
+demoSchema.index({ counselorAssigned: 1, createdAt: -1 });
 
 export default mongoose.models.Demo || mongoose.model('Demo', demoSchema);

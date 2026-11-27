@@ -74,6 +74,30 @@ import { randomInt as cryptoRandomInt } from 'crypto';
 
 const router = express.Router();
 
+// Short-TTL in-memory cache for expensive HR dashboard aggregations
+// (lead-counts, hub-summary, leaderboard, studentOverviewStats). Automatically
+// cleared on any successful write to HR/CRM collections.
+const HR_CACHE_TTL_MS = 25000;
+const hrDashboardCache = new Map();
+const clearHrDashboardCache = () => { hrDashboardCache.clear(); };
+const getHrCache = (key) => {
+  const hit = hrDashboardCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > HR_CACHE_TTL_MS) { hrDashboardCache.delete(key); return null; }
+  return hit.data;
+};
+const setHrCache = (key, data) => {
+  if (hrDashboardCache.size >= 400) hrDashboardCache.clear();
+  hrDashboardCache.set(key, { at: Date.now(), data });
+  return data;
+};
+router.use((req, res, next) => {
+  if (req.method !== 'GET' && /^\/(leads|students|demos|team|users|hr\/targets|closures|calls)/i.test(req.path)) {
+    res.on('finish', () => { if (res.statusCode < 400) clearHrDashboardCache(); });
+  }
+  next();
+});
+
 // Drop legacy unique index if it exists in MongoDB so group demos up to 6 students work smoothly
 Demo.collection?.dropIndex('trainerId_1_preferredDate_1_timeSlot_1').catch(() => {});
 
@@ -1345,7 +1369,7 @@ router.get('/closures/today', async (req, res) => {
     const closure = await DailyClosure.findOne({
       counselorName: exactNameRx(counselorName),
       date
-    });
+    }).lean();
     res.json(closure || null);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2496,60 +2520,70 @@ router.get('/hr/leaderboard', async (req, res) => {
     const [yy, mm] = month.split('-').map(Number);
     const startUtc = new Date(Date.UTC(yy, mm - 1, 1) - 330 * 60000);
     const branchFilter = branchShort(String(req.query.branch || '').replace(/^all$/i, ''));
-    const bKey = (b) => branchShort(b).toLowerCase().replace(/[^a-z0-9]/g, '');
+    const cacheKey = `lb:${month}:${branchFilter || 'all'}`;
+    let base = getHrCache(cacheKey);
+    if (!base) {
+      const bKey = (b) => branchShort(b).toLowerCase().replace(/[^a-z0-9]/g, '');
 
-    const [users, team] = await Promise.all([
-      User.find({ $and: [HR_STAFF, ACTIVE_USER] }).select('name role branch').lean(),
-      TeamMember.find(deptCodeQuery('DEP-HR-001')).select('name role branchName').lean()
-    ]);
-    // Counsellors only — heads, managers and Business Leads are not on the board
-    const notHead = (r) => !isDeptHeadRole(r) && !/\bhead\b|\bhod\b|manager|business\s*lead|admin/i.test(r || '');
-    const pool = new Map();
-    users.filter((u) => u.name && notHead(u.role)).forEach((u) => pool.set(normName(u.name), { name: String(u.name).trim(), branch: branchShort(u.branch || '') }));
-    team.filter((m) => m.name && notHead(m.role)).forEach((m) => {
-      const k = normName(m.name);
-      if (!pool.has(k)) pool.set(k, { name: String(m.name).trim(), branch: branchShort(m.branchName || '') });
-      else if (!pool.get(k).branch && m.branchName) pool.get(k).branch = branchShort(m.branchName);
-    });
-    let hrs = [...pool.values()];
-    if (branchFilter) hrs = hrs.filter((h) => h.branch && (bKey(h.branch).includes(bKey(branchFilter)) || bKey(branchFilter).includes(bKey(h.branch))));
-    const stats = new Map(hrs.map((h) => [normName(h.name), { ...h, admissions: 0, fees: 0, courses: {} }]));
+      const [users, team] = await Promise.all([
+        User.find({ $and: [HR_STAFF, ACTIVE_USER] }).select('name role branch').lean(),
+        TeamMember.find(deptCodeQuery('DEP-HR-001')).select('name role branchName').lean()
+      ]);
+      // Counsellors only — heads, managers and Business Leads are not on the board
+      const notHead = (r) => !isDeptHeadRole(r) && !/\bhead\b|\bhod\b|manager|business\s*lead|admin/i.test(r || '');
+      const pool = new Map();
+      users.filter((u) => u.name && notHead(u.role)).forEach((u) => pool.set(normName(u.name), { name: String(u.name).trim(), branch: branchShort(u.branch || '') }));
+      team.filter((m) => m.name && notHead(m.role)).forEach((m) => {
+        const k = normName(m.name);
+        if (!pool.has(k)) pool.set(k, { name: String(m.name).trim(), branch: branchShort(m.branchName || '') });
+        else if (!pool.get(k).branch && m.branchName) pool.get(k).branch = branchShort(m.branchName);
+      });
+      let hrs = [...pool.values()];
+      if (branchFilter) hrs = hrs.filter((h) => h.branch && (bKey(h.branch).includes(bKey(branchFilter)) || bKey(branchFilter).includes(bKey(h.branch))));
+      const stats = new Map(hrs.map((h) => [normName(h.name), { ...h, admissions: 0, fees: 0, courses: {} }]));
 
-    // Admission date = registeredAt (bulk upload: the batch / joining date), else when the record was made
-    const students = await Student.find({ $or: [{ registeredAt: { $gte: startUtc } }, { createdAt: { $gte: startUtc } }, { admissionDate: { $gte: startUtc } }, { 'receipts.0': { $exists: true } }] })
-      .select('hrName counselor counselorName branch leadBranch location registeredAt admissionDate createdAt receipts course').lean();
-    const ownerOf = (s) => {
-      const recBranch = s.branch || s.leadBranch || s.location || '';
-      return hrs.find((h) => [s.hrName, s.counselor, s.counselorName].some((c) => c && namesMatch(h.name, c, h.branch, recBranch)));
-    };
-    for (const s of students) {
-      const owner = ownerOf(s);
-      if (!owner) continue;
-      const row = stats.get(normName(owner.name));
-      if (String(dayKeyIst(s.registeredAt || s.admissionDate || s.createdAt) || '').slice(0, 7) === month) {
-        row.admissions += 1;
-        const c = String(s.course || 'Other').trim() || 'Other';
-        row.courses[c] = (row.courses[c] || 0) + 1;
+      // Admission date = registeredAt (bulk upload: the batch / joining date), else when the record was made
+      const students = await Student.find({ $or: [{ registeredAt: { $gte: startUtc } }, { createdAt: { $gte: startUtc } }, { admissionDate: { $gte: startUtc } }, { 'receipts.0': { $exists: true } }] })
+        .select('hrName counselor counselorName branch leadBranch location registeredAt admissionDate createdAt receipts course').lean();
+      const ownerOf = (s) => {
+        const recBranch = s.branch || s.leadBranch || s.location || '';
+        return hrs.find((h) => [s.hrName, s.counselor, s.counselorName].some((c) => c && namesMatch(h.name, c, h.branch, recBranch)));
+      };
+      for (const s of students) {
+        const owner = ownerOf(s);
+        if (!owner) continue;
+        const row = stats.get(normName(owner.name));
+        if (String(dayKeyIst(s.registeredAt || s.admissionDate || s.createdAt) || '').slice(0, 7) === month) {
+          row.admissions += 1;
+          const c = String(s.course || 'Other').trim() || 'Other';
+          row.courses[c] = (row.courses[c] || 0) + 1;
+        }
+        for (const r of (Array.isArray(s.receipts) ? s.receipts : [])) {
+          if (String(dayKeyIst(r.date || r.at) || '').slice(0, 7) === month) row.fees += Number(r.amount) || 0;
+        }
       }
-      for (const r of (Array.isArray(s.receipts) ? s.receipts : [])) {
-        if (String(dayKeyIst(r.date || r.at) || '').slice(0, 7) === month) row.fees += Number(r.amount) || 0;
-      }
+      const rows = [...stats.values()].sort((a, b) => b.admissions - a.admissions || b.fees - a.fees || a.name.localeCompare(b.name));
+      // Same admissions + same fees share a rank
+      rows.forEach((r, i) => {
+        const prev = rows[i - 1];
+        r.rank = prev && prev.admissions === r.admissions && prev.fees === r.fees ? prev.rank : i + 1;
+        r.topCourse = Object.entries(r.courses).sort((a, b) => b[1] - a[1])[0]?.[0] || '';
+        delete r.courses;
+      });
+      const branches = [...new Set([...pool.values()].map((h) => h.branch).filter(Boolean))].sort();
+      base = setHrCache(cacheKey, {
+        month,
+        branch: branchFilter || 'all',
+        rows,
+        branches,
+        totals: { hrs: rows.length, admissions: rows.reduce((t, r) => t + r.admissions, 0), fees: rows.reduce((t, r) => t + r.fees, 0) },
+        updatedAt: new Date().toISOString()
+      });
     }
-    const rows = [...stats.values()].sort((a, b) => b.admissions - a.admissions || b.fees - a.fees || a.name.localeCompare(b.name));
-    // Same admissions + same fees share a rank
-    rows.forEach((r, i) => {
-      const prev = rows[i - 1];
-      r.rank = prev && prev.admissions === r.admissions && prev.fees === r.fees ? prev.rank : i + 1;
-      r.topCourse = Object.entries(r.courses).sort((a, b) => b[1] - a[1])[0]?.[0] || '';
-      delete r.courses;
-    });
-    const me = rows.find((r) => req.user?.name && namesMatch(r.name, req.user.name, r.branch, req.user.branch || '')) || null;
-    const branches = [...new Set([...pool.values()].map((h) => h.branch).filter(Boolean))].sort();
+    const me = base.rows.find((r) => req.user?.name && namesMatch(r.name, req.user.name, r.branch, req.user.branch || '')) || null;
     res.json({
-      month, branch: branchFilter || 'all', rows, branches,
-      totals: { hrs: rows.length, admissions: rows.reduce((t, r) => t + r.admissions, 0), fees: rows.reduce((t, r) => t + r.fees, 0) },
-      me: me ? { name: me.name, rank: me.rank, admissions: me.admissions } : null,
-      updatedAt: new Date().toISOString()
+      ...base,
+      me: me ? { name: me.name, rank: me.rank, admissions: me.admissions } : null
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -2733,6 +2767,8 @@ router.put('/staff/photo', async (req, res) => {
 
 router.get('/hr/hub-summary', async (req, res) => {
   try {
+    const cached = getHrCache('hub-summary');
+    if (cached) return res.json(cached);
     await syncTeamFromUsers().catch(() => {});
     const istOffset = 330 * 60000;
     const istMidnight = new Date(Math.floor((Date.now() + istOffset) / 86400000) * 86400000 - istOffset);
@@ -2741,10 +2777,10 @@ router.get('/hr/hub-summary', async (req, res) => {
       TeamMember.countDocuments(teamQuery),
       TeamMember.countDocuments({ $and: [teamQuery, { available: { $ne: false } }] }),
       StudentLead.countDocuments({ createdAt: { $gte: istMidnight } }),
-      Demo.countDocuments({ status: { $regex: /^(booked|confirmed)$/i } }),
+      Demo.countDocuments({ status: { $in: ['booked', 'Booked', 'confirmed', 'Confirmed'] } }),
       branchList().then((l) => l.length).catch(() => null)
     ]);
-    res.json({ team, available, leadsToday, demos, branches });
+    res.json(setHrCache('hub-summary', { team, available, leadsToday, demos, branches }));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -3270,7 +3306,7 @@ router.get('/calls/log', async (req, res) => {
     } else if (req.query.scope === 'desk' && (isLead || isHrLeaderUser(req) || /admin/i.test(role))) {
       // HR Department Head / Admin: every counsellor's calls
     } else if (!(isLead && req.query.counselorName === 'all')) query.counselorName = new RegExp(`^${escapeRegex(name.trim())}$`, 'i');
-    const list = await CallLog.find(query).sort({ createdAt: -1 }).limit(500);
+    const list = await CallLog.find(query).sort({ createdAt: -1 }).limit(500).lean();
     res.json({ date, calls: list.length, connected: list.filter((c) => c.connected).length, list });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -4200,6 +4236,9 @@ const findLeadForAdmission = (p) => findLeadByContact({ leadId: p.leadId, email:
 // (same rules the cards used on the loaded page: month = IST calendar month,
 // onboarding done = "n / n", fee pending = balance > 0 or fee status "pending").
 async function studentOverviewStats(query) {
+  const cacheKey = `stStats:${JSON.stringify(query, (_, v) => (v instanceof RegExp ? v.toString() : v))}`;
+  const cached = getHrCache(cacheKey);
+  if (cached) return cached;
   const ist = new Date(Date.now() + 330 * 60000);
   const monthStart = new Date(Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), 1) - 330 * 60000);
   const num = (f) => ({ $convert: { input: f, to: 'double', onError: null, onNull: null } });
@@ -4235,7 +4274,7 @@ async function studentOverviewStats(query) {
   const out = r || { total: 0, admittedThisMonth: 0, onboardingDone: 0, inCourse: 0, placed: 0, onHold: 0, interviewing: 0, feePending: 0 };
   delete out._id;
   out.onboardingInProgress = out.total - out.onboardingDone;
-  return out;
+  return setHrCache(cacheKey, out);
 }
 
 // Who may see which admitted students (role scope + the desk's branch / HR pick).
@@ -5809,6 +5848,9 @@ router.get('/leads/filter-options', async (req, res) => {
 router.get('/hr/lead-counts', async (req, res) => {
   try {
     await ensureStaffNamesLoaded();
+    const countsCacheKey = `lc:${req.user?.name || ''}|${req.user?.role || ''}|${req.user?.branch || ''}|${(req.hrTeamNames || []).join(',')}|${req.originalUrl}`;
+    const cachedCounts = getHrCache(countsCacheKey);
+    if (cachedCounts) return res.json(cachedCounts);
     const { branch, counselor } = req.query;
     const matchConds = [];
     const effectiveCounselor = isScopedHr(req) ? req.user?.name : counselor;
@@ -5991,7 +6033,7 @@ router.get('/hr/lead-counts', async (req, res) => {
       overdue: r.overdue || 0
     }));
 
-    res.json({
+    res.json(setHrCache(countsCacheKey, {
       totalLeads: s.totalLeads || 0,
       newToday: s.newToday || 0,
       overdueCount: s.overdueCount || 0,
@@ -6003,7 +6045,7 @@ router.get('/hr/lead-counts', async (req, res) => {
       admittedCount: s.admittedCount || 0,
       totalStudents: totalStudents || 0,
       byCounselor
-    });
+    }));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -6078,7 +6120,8 @@ router.get('/leads', async (req, res) => {
     ]);
 
     // Board view (?perStage=N): the newest N leads of EVERY stage, so one busy
-    // stage (e.g. hundreds of just-admitted students) can't crowd the others off
+    // stage (e.g. hundreds of just-admitted students) can't crowd the others off.
+    // Single $facet aggregation replaces 12 separate DB round-trips.
     const perStage = Math.min(300, Math.max(0, parseInt(req.query.perStage, 10) || 0));
     if (perStage) {
       const SID = { admittedStudentId: { $nin: [null, ''] } };
@@ -6090,12 +6133,43 @@ router.get('/leads', async (req, res) => {
         ...KNOWN.filter((k) => k !== 'new').map((k) => ({ $and: [NO_SID, { stage: k }] })),
         { $and: [NO_SID, { stage: { $nin: [...KNOWN, null, ''] } }] }
       ];
-      const withQuery = (b) => (Object.keys(query).length ? { $and: [query, b] } : b);
-      const [lists, totalCount, stageCounts] = await Promise.all([
-        Promise.all(buckets.map((b) => StudentLead.find(withQuery(b)).select('-whatsappMessages').sort({ createdAt: -1 }).limit(perStage).lean())),
-        StudentLead.countDocuments(query),
-        stageAggPromise
-      ]);
+      const bucketFacets = Object.fromEntries(
+        buckets.map((b, i) => [`b${i}`, [{ $match: b }, { $limit: perStage }]])
+      );
+      let lists;
+      let totalCount;
+      let stageCounts;
+      if (!stageCond) {
+        const [facetRes] = await StudentLead.aggregate([
+          { $match: query },
+          { $sort: { createdAt: -1 } },
+          { $project: { whatsappMessages: 0 } },
+          {
+            $facet: {
+              ...bucketFacets,
+              totalCount: [{ $count: 'n' }],
+              stageCounts: [{ $group: { _id: '$stage', count: { $sum: 1 } } }]
+            }
+          }
+        ], { allowDiskUse: true });
+        lists = buckets.map((_, i) => facetRes?.[`b${i}`] || []);
+        totalCount = facetRes?.totalCount?.[0]?.n || 0;
+        stageCounts = facetRes?.stageCounts || [];
+      } else {
+        const [facetRes, tc, sc] = await Promise.all([
+          StudentLead.aggregate([
+            { $match: query },
+            { $sort: { createdAt: -1 } },
+            { $project: { whatsappMessages: 0 } },
+            { $facet: bucketFacets }
+          ], { allowDiskUse: true }),
+          StudentLead.countDocuments(query),
+          stageAggPromise
+        ]);
+        lists = buckets.map((_, i) => facetRes?.[0]?.[`b${i}`] || []);
+        totalCount = tc;
+        stageCounts = sc;
+      }
       stageCounts.forEach((row) => {
         const match = stages.find((s) => s.key === row._id);
         if (match) match.count = row.count;
@@ -7255,7 +7329,9 @@ router.get('/demos', async (req, res) => {
           myLeads.map((l) => phoneDigits(l.phone || l.whatsappNumber)).filter((p) => p.length === 10)
         ));
         if (myPhones.length > 0) {
-          demoConds.push({ phone: { $in: myPhones.map((p) => new RegExp(escapeRegex(p) + '$')) } });
+          // Exact phone variants use the { phone: 1 } index instead of scanning thousands of suffix regexes
+          const phoneVariants = myPhones.flatMap((p) => [p, `+91${p}`, `91${p}`, `0${p}`]);
+          demoConds.push({ phone: { $in: phoneVariants } });
         }
         andConditions.push(demoConds.length === 1 ? demoConds[0] : { $or: demoConds });
       }
@@ -7268,7 +7344,10 @@ router.get('/demos', async (req, res) => {
     }
 
     const query = andConditions.length > 0 ? { $and: andConditions } : {};
-    let demos = await Demo.find(query).sort({ createdAt: -1 }).lean();
+    const limitNum = req.query.limit ? Math.min(1000, Math.max(1, parseInt(req.query.limit, 10) || 200)) : 0;
+    let q = Demo.find(query).sort({ createdAt: -1 });
+    if (limitNum) q = q.limit(limitNum);
+    let demos = await q.lean();
     res.json(demos);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -12639,7 +12718,7 @@ router.get('/notifications', async (req, res) => {
       if (recipientName) who.push({ recipientName: new RegExp(`^${escapeRegex(String(recipientName).trim())}$`, 'i') });
     }
     const key = readerKey(req);
-    const list = await Notification.find({ audience, $or: who }).sort({ createdAt: -1 }).limit(Number(limit) || 50);
+    const list = await Notification.find({ audience, $or: who }).sort({ createdAt: -1 }).limit(Number(limit) || 50).lean();
     res.json(list.map((n) => withReadState(n, key)));
   } catch (e) {
     res.status(500).json({ error: e.message });

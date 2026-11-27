@@ -751,7 +751,7 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       const [stR, ldR, dmR] = await Promise.allSettled([
         getStudents({ ...(shouldFilterOnServer ? { hrName: counselorFilter } : {}), ...branchParam, page: targetStudentsPage, limit: PAGE_LIMIT, withStats: 'true' }),
         withRetry(() => getLeads(deskLeadParams)),
-        getDemos(shouldFilterOnServer ? { counselor: counselorFilter, ...branchParam } : (branchParam.branch ? branchParam : undefined))
+        getDemos({ ...(shouldFilterOnServer ? { counselor: counselorFilter } : {}), ...branchParam, limit: LEADS_BOARD_LIMIT })
       ]);
       if (loadSeq !== loadSeqRef.current) return;
 
@@ -798,14 +798,22 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
 
   useEffect(() => {
     loadAllData();
+    let reloadTimer = null;
     const unsub = onDataUpdate((entity) => {
       if (entity === 'leads' || entity === 'students' || entity === 'demos' || entity === 'recordings' || entity === 'closures' || entity === 'placements') {
-        // Go through the ref so the reload uses the current page/filters/view
-        if (reloadDataRef.current) reloadDataRef.current();
-        else loadAllData(true);
+        if (reloadTimer) clearTimeout(reloadTimer);
+        reloadTimer = setTimeout(() => {
+          reloadTimer = null;
+          // Go through the ref so the reload uses the current page/filters/view
+          if (reloadDataRef.current) reloadDataRef.current();
+          else loadAllData(true);
+        }, 300);
       }
     });
-    return unsub;
+    return () => {
+      if (reloadTimer) clearTimeout(reloadTimer);
+      unsub();
+    };
   }, [scopeMode, currentUser?.name, todayKey, scopeKind]);
 
   const handleAddLeadSubmit = async (leadData) => {

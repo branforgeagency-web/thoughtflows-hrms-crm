@@ -2082,6 +2082,11 @@ export const payslipAction = async (id, body) => (await api.post(`/payroll/paysl
 export const payrollBulkAction = async (body) => (await api.post('/payroll/run/bulk-action', body)).data;
 export const deletePayslip = async (id) => (await api.delete(`/payroll/payslips/${id}`)).data;
 export const getMyPayslips = async () => (await api.get('/payroll/my-payslips', { skipCache: true })).data;
+// Payslip downloads: employee requests, Head of Department approves
+export const requestPayslipDownload = async (id, body) => (await api.post(`/payroll/my-payslips/${id}/download-request`, body)).data;
+export const downloadMyPayslip = async (id) => (await api.post(`/payroll/my-payslips/${id}/download`)).data;
+export const getDownloadRequests = async (params) => (await api.get('/payroll/download-requests', { params, skipCache: true })).data;
+export const decideDownloadRequest = async (id, body) => (await api.post(`/payroll/download-requests/${id}/decision`, body)).data;
 // Monthly attendance sheet (LOGIN / LOGOUT / EOD) for payroll
 export const previewAttendanceSheet = async (body) => (await api.post('/payroll/attendance-sheet/preview', body)).data;
 export const saveAttendanceSheet = async (body) => (await api.post('/payroll/attendance-sheet', body)).data;

@@ -91,4 +91,8 @@ const userSchema = new mongoose.Schema({
   timestamps: true
 });
 
+userSchema.index({ department: 1, active: 1, status: 1 });
+userSchema.index({ branch: 1, active: 1 });
+userSchema.index({ role: 1, active: 1 });
+
 export default mongoose.models.User || mongoose.model('User', userSchema);

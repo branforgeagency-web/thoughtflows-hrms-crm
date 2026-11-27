@@ -75,6 +75,15 @@ const isOrgRole = (u) => !isBranchRole(u.role) && (ORG_ROLE_RX.test(u.role || ''
 // People a Branch Head / Business Lead may never see or pay
 const isManagerial = (u) => isBranchRole(u.role) || isDeptHead(u.role) || ORG_ROLE_RX.test(u.role || '') || u.dept === 'admin';
 
+// Who may approve an employee's request to download a payslip:
+// Admin / Founder / Leadership → anyone; a Department Head → own department only.
+export function canDecideDownloadOf(v = {}, slip = {}) {
+  if (!slip || norm(slip.email) === norm(v.email)) return false;
+  if (!isBranchRole(v.role) && (ORG_ROLE_RX.test(v.role || '') || ['admin', 'leadership'].includes(v.dept))) return true;
+  return isDeptHead(v.role) && v.dept === slip.department;
+}
+export const canDecideDownloads = (v = {}) => !isBranchRole(v.role) && (ORG_ROLE_RX.test(v.role || '') || ['admin', 'leadership'].includes(v.dept) || isDeptHead(v.role));
+
 export function payrollAccess(m = {}) {
   // Branch Head / Business Lead: every employee (all branches) — prepare, adjust and
   // submit; approval and marking paid stay with the Department Head / Admin.
@@ -205,10 +214,33 @@ export function computePay(structure, att, adjustments = {}, settings = DEFAULT_
 
 // ---- routes -----------------------------------------------------------------
 export function registerPayrollRoutes(router, { me, dayContext, dayStatus, deptOf, DEPT_LABEL, notify }) {
+  // Speed: payroll settings and the staff list are read on almost every payroll
+  // call — keep them in memory for a short while instead of re-reading Mongo.
+  const settingsCache = { at: 0, value: null };
   async function loadSettings() {
+    if (settingsCache.value && Date.now() - settingsCache.at < 60000) return settingsCache.value;
     const doc = await AppSetting.findOne({ key: SETTINGS_KEY }).lean();
     const v = doc?.value || {};
-    return { ...DEFAULT_PAYROLL_SETTINGS, ...v, ptSlabs: { ...DEFAULT_PAYROLL_SETTINGS.ptSlabs, ...(v.ptSlabs || {}) } };
+    settingsCache.value = { ...DEFAULT_PAYROLL_SETTINGS, ...v, ptSlabs: { ...DEFAULT_PAYROLL_SETTINGS.ptSlabs, ...(v.ptSlabs || {}) } };
+    settingsCache.at = Date.now();
+    return settingsCache.value;
+  }
+
+  const staffCache = { at: 0, list: null, pending: null };
+  async function activeStaff() {
+    if (staffCache.list && Date.now() - staffCache.at < 60000) return staffCache.list;
+    if (!staffCache.pending) {
+      staffCache.pending = User.find({ department: { $not: /student|scholar/i } }).select('name email role department branch status active').lean()
+        .then((users) => {
+          staffCache.list = users
+            .filter((u) => u.email && deptOf(u) !== 'student' && !/inactive|disabled|left|resigned/i.test(u.status || '') && u.active !== false)
+            .map((u) => ({ email: norm(u.email), name: u.name || u.email, role: u.role || '', dept: deptOf(u), branch: u.branch || '', id: String(u._id) }));
+          staffCache.at = Date.now();
+          return staffCache.list;
+        })
+        .finally(() => { staffCache.pending = null; });
+    }
+    return staffCache.pending;
   }
 
   async function viewer(req) {
@@ -219,10 +251,7 @@ export function registerPayrollRoutes(router, { me, dayContext, dayStatus, deptO
   // Employees this viewer may manage (never themselves)
   async function managedEmployees(v, branchFilter = '') {
     if (!['org', 'branch'].includes(v.access.scope)) return [];
-    const users = (await User.find().select('name email role department branch status').lean())
-      .filter((u) => u.email && deptOf(u) !== 'student' && !/inactive|disabled|left|resigned/i.test(u.status || '') && u.active !== false);
-    return users
-      .map((u) => ({ email: norm(u.email), name: u.name, role: u.role || '', dept: deptOf(u), branch: u.branch || '', id: String(u._id) }))
+    return (await activeStaff())
       .filter((e) => e.email !== v.email)
       .filter((e) => v.access.scope === 'org' || (sameBranch(e.branch, v.access.branch) && !isManagerial(e)))
       .filter((e) => !branchFilter || branchFilter === 'all' || (branchFilter === 'none' ? !e.branch : sameBranch(e.branch, branchFilter)))
@@ -243,12 +272,18 @@ export function registerPayrollRoutes(router, { me, dayContext, dayStatus, deptO
     return { from: `${month}-01`, to: `${month}-${String(last).padStart(2, '0')}` };
   };
 
+  const downloadView = (d) => {
+    if (!d || !d.status || d.status === 'none') return { status: 'none' };
+    const expired = d.status === 'approved' && d.validUntil && new Date(d.validUntil) < new Date();
+    return { status: expired ? 'expired' : d.status, reason: d.reason || '', requestedAt: d.requestedAt, decidedBy: d.decidedBy || '', decidedAt: d.decidedAt, note: d.note || '', validUntil: d.validUntil, count: d.count || 0 };
+  };
+
   const slipView = (p) => ({
     id: String(p._id), month: p.month, email: p.email, employeeName: p.employeeName, employeeCode: p.employeeCode, department: p.department,
     deptLabel: DEPT_LABEL[p.department] || p.department, role: p.role, designation: p.designation, branch: p.branch, payType: p.payType,
     structure: p.structure, attendance: p.attendance, earnings: p.earnings, deductions: p.deductions, employer: p.employer || [], employerTotal: p.employerTotal || 0, pf: p.pf || {}, lopAmount: p.lopAmount || 0, perDay: p.perDay || 0, ctc: p.ctc || 0, adjustments: p.adjustments,
     fullGross: p.fullGross, gross: p.gross, totalDeductions: p.totalDeductions, net: p.net, provisional: p.provisional, warnings: p.warnings,
-    status: p.status, paidOn: p.paidOn, paymentRef: p.paymentRef, generatedBy: p.generatedBy, generatedAt: p.generatedAt, history: p.history, updatedAt: p.updatedAt
+    status: p.status, paidOn: p.paidOn, paymentRef: p.paymentRef, download: downloadView(p.download), generatedBy: p.generatedBy, generatedAt: p.generatedAt, history: p.history, updatedAt: p.updatedAt
   });
 
   // Recalculate one draft payslip from attendance (keeps its adjustments)
@@ -298,7 +333,7 @@ export function registerPayrollRoutes(router, { me, dayContext, dayStatus, deptO
     try {
       const v = await viewer(req);
       const settings = await loadSettings();
-      res.json({ me: { name: v.name, email: v.email, role: v.role, branch: v.branch, dept: v.dept }, ...v.access, settings, branches: BRANCH_MASTER.map((b) => b.name) });
+      res.json({ me: { name: v.name, email: v.email, role: v.role, branch: v.branch, dept: v.dept }, ...v.access, canDecideDownloads: canDecideDownloads(v), settings, branches: BRANCH_MASTER.map((b) => b.name) });
     } catch (e) { fail(res, e); }
   });
 
@@ -324,6 +359,7 @@ export function registerPayrollRoutes(router, { me, dayContext, dayStatus, deptO
         ptSlabs: Object.keys(slabs).length ? slabs : DEFAULT_PAYROLL_SETTINGS.ptSlabs
       };
       await AppSetting.findOneAndUpdate({ key: SETTINGS_KEY }, { $set: { value, updatedBy: v.name } }, { upsert: true });
+      settingsCache.at = 0;
       res.json(await loadSettings());
     } catch (e) { fail(res, e); }
   });
@@ -374,7 +410,7 @@ export function registerPayrollRoutes(router, { me, dayContext, dayStatus, deptO
       const employees = await managedEmployees(v, String(req.query.branch || ''));
       const emails = employees.map((e) => e.email);
       const [slips, structures, sheet] = await Promise.all([
-        Payslip.find({ month, email: { $in: emails } }).lean(),
+        Payslip.find({ month, email: { $in: emails } }).slice('history', -12).lean(),
         SalaryStructure.find({ email: { $in: emails }, active: { $ne: false } }).select('email').lean(),
         AttendanceSheet.findOne({ month }).select('fileName uploadedBy updatedAt lastDataDate columns.email').lean()
       ]);
@@ -412,28 +448,33 @@ export function registerPayrollRoutes(router, { me, dayContext, dayStatus, deptO
       const { from, to } = monthRange(month);
       const dates = [];
       for (let d = from; d <= to; d = addDays(d, 1)) dates.push(d);
-      const [ctx, settings, existing, sheet] = await Promise.all([
-        dayContext(employees, from, to),
+      const [settings, existing, sheet] = await Promise.all([
         loadSettings(),
-        Payslip.find({ month, email: { $in: employees.map((e) => e.email) } }),
+        Payslip.find({ month, email: { $in: employees.map((e) => e.email) } }).select('email status adjustments').lean(),
         AttendanceSheet.findOne({ month }).lean()
       ]);
       const sheetBy = new Map((sheet?.columns || []).filter((c) => c.email).map((c) => [c.email, c]));
+      // The app's login register is only needed for people not in the uploaded sheet
+      const fromApp = employees.filter((e) => !sheetBy.has(e.email));
+      const ctx = fromApp.length ? await dayContext(fromApp, from, to) : null;
       const exBy = new Map(existing.map((p) => [p.email, p]));
       let created = 0, updated = 0, locked = 0;
+      const ops = [];
+      const at = new Date();
       for (const emp of employees) {
         const ex = exBy.get(emp.email);
         if (ex && ex.status !== 'draft') { locked += 1; continue; }
         const data = buildSlip({ emp, structure: sBy.get(emp.email), month, ctx, dates, settings, now, existing: ex, by: v, sheet, sheetCol: sheetBy.get(emp.email) || null });
         if (ex) {
-          Object.assign(ex, data);
-          ex.history.push({ by: v.name, byEmail: v.email, at: new Date(), action: 'recalculated' });
-          await ex.save(); updated += 1;
+          ops.push({ updateOne: { filter: { _id: ex._id, status: 'draft' }, update: { $set: data, $push: { history: { $each: [{ by: v.name, byEmail: v.email, at, action: 'recalculated' }], $slice: -60 } } } } });
+          updated += 1;
         } else {
-          await Payslip.create({ ...data, status: 'draft', history: [{ by: v.name, byEmail: v.email, at: new Date(), action: 'generated' }] });
+          ops.push({ insertOne: { document: { ...data, status: 'draft', history: [{ by: v.name, byEmail: v.email, at, action: 'generated' }] } } });
           created += 1;
         }
       }
+      // One round trip to the database instead of one per employee
+      for (let i = 0; i < ops.length; i += 500) await Payslip.bulkWrite(ops.slice(i, i + 500), { ordered: false });
       res.json({ month, created, updated, locked });
     } catch (e) { fail(res, e); }
   });
@@ -518,9 +559,10 @@ export function registerPayrollRoutes(router, { me, dayContext, dayStatus, deptO
       if (!ids.length) throw httpErr(400, 'Select payslips first');
       const slips = await Payslip.find({ _id: { $in: ids } });
       let done = 0; const skipped = [];
-      for (const p of slips) {
-        if (!canTouch(v, p)) { skipped.push(`${p.employeeName}: not in your scope`); continue; }
-        try { await act(v, p, action, req.body || {}); done += 1; } catch (e) { skipped.push(`${p.employeeName}: ${e.message}`); }
+      const allowed = slips.filter((p) => canTouch(v, p) || (skipped.push(`${p.employeeName}: not in your scope`), false));
+      for (let i = 0; i < allowed.length; i += 15) {
+        const results = await Promise.allSettled(allowed.slice(i, i + 15).map((p) => act(v, p, action, req.body || {})));
+        results.forEach((r, k) => { if (r.status === 'fulfilled') done += 1; else skipped.push(`${allowed[i + k].employeeName}: ${r.reason?.message}`); });
       }
       if (done && action === 'submit') notify({ audience: 'leadership', type: 'payroll', title: `Payroll to approve (${done})`, message: `${slips[0]?.month} — ${done} payslip(s) submitted by ${v.name}${v.access.branch ? ` · ${v.access.branch}` : ''}`, createdBy: v.name });
       res.json({ done, skipped });
@@ -546,10 +588,7 @@ export function registerPayrollRoutes(router, { me, dayContext, dayStatus, deptO
   const SHEET_NAMES_KEY = 'attendance_sheet_names'; // remembered "sheet name → staff email"
 
   async function sheetStaff() {
-    const users = (await User.find().select('name email role department branch status active').lean())
-      .filter((u) => u.email && deptOf(u) !== 'student' && !/inactive|disabled|left|resigned/i.test(u.status || '') && u.active !== false);
-    return users.map((u) => ({ email: norm(u.email), name: u.name || u.email, role: u.role || '', dept: deptOf(u), deptLabel: DEPT_LABEL[deptOf(u)] || deptOf(u), branch: u.branch || '' }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+    return (await activeStaff()).map((u) => ({ ...u, deptLabel: DEPT_LABEL[u.dept] || u.dept })).sort((a, b) => a.name.localeCompare(b.name));
   }
 
   function readImportBody(b) {
@@ -662,6 +701,80 @@ export function registerPayrollRoutes(router, { me, dayContext, dayStatus, deptO
       const m = await me(req);
       const list = await Payslip.find({ email: m.email, status: { $in: ['approved', 'paid'] } }).sort({ month: -1 }).limit(36).lean();
       res.json({ payslips: list.map((p) => ({ ...slipView(p), history: undefined, generatedBy: undefined })) });
+    } catch (e) { fail(res, e); }
+  });
+
+  // ---- payslip downloads: employee requests → Head of Department approves ----
+  const DOWNLOAD_HOURS = 48;
+
+  router.post('/payroll/my-payslips/:id/download-request', async (req, res) => {
+    try {
+      const m = await me(req);
+      if (!mongoose.isValidObjectId(req.params.id)) throw httpErr(400, 'Invalid payslip');
+      const p = await Payslip.findById(req.params.id);
+      if (!p || norm(p.email) !== m.email || !['approved', 'paid'].includes(p.status)) throw httpErr(404, 'Payslip not found');
+      const cur = downloadView(p.download);
+      if (cur.status === 'pending') throw httpErr(409, 'Your request is already waiting for approval.');
+      if (cur.status === 'approved') throw httpErr(409, 'Download is already approved — use the Download button.');
+      const reason = String(req.body?.reason || '').trim().slice(0, 300);
+      if (reason.length < 3) throw httpErr(400, 'Tell your Head of Department why you need the payslip (e.g. bank loan, visa).');
+      p.download = { status: 'pending', reason, requestedAt: new Date(), count: p.download?.count || 0 };
+      p.markModified('download');
+      p.history.push({ by: m.name, byEmail: m.email, at: new Date(), action: 'download-requested', note: reason });
+      await p.save();
+      // Tell the heads of this employee's department (and leadership)
+      const heads = (await User.find().select('name role department email').lean()).filter((u) => canDecideDownloadOf({ ...u, email: norm(u.email), dept: deptOf(u) }, p) && isDeptHead(u.role));
+      const msg = { type: 'payroll', title: `Payslip download request: ${p.employeeName}`, message: `${p.month} payslip — "${reason}". Approve in Payroll → Download Requests.`, createdBy: m.name };
+      for (const h of heads) notify({ ...msg, audience: deptOf(h), recipientName: h.name });
+      notify({ ...msg, audience: 'leadership' });
+      res.json(slipView(p.toObject()));
+    } catch (e) { fail(res, e); }
+  });
+
+  // Approved → returns the payslip for printing / PDF and logs the download
+  router.post('/payroll/my-payslips/:id/download', async (req, res) => {
+    try {
+      const m = await me(req);
+      if (!mongoose.isValidObjectId(req.params.id)) throw httpErr(400, 'Invalid payslip');
+      const p = await Payslip.findById(req.params.id);
+      if (!p || norm(p.email) !== m.email || !['approved', 'paid'].includes(p.status)) throw httpErr(404, 'Payslip not found');
+      const cur = downloadView(p.download);
+      if (cur.status !== 'approved') throw httpErr(403, cur.status === 'expired' ? 'Your download approval has expired. Request again.' : 'Download needs approval from your Head of Department.');
+      p.download = { ...p.download, count: (p.download.count || 0) + 1, lastAt: new Date() };
+      p.markModified('download');
+      p.history.push({ by: m.name, byEmail: m.email, at: new Date(), action: 'downloaded' });
+      await p.save();
+      res.json(slipView(p.toObject()));
+    } catch (e) { fail(res, e); }
+  });
+
+  router.get('/payroll/download-requests', async (req, res) => {
+    try {
+      const v = await viewer(req);
+      if (!canDecideDownloads(v)) throw httpErr(403, 'Only a Head of Department or Admin approves payslip downloads.');
+      const status = String(req.query.status || 'pending');
+      const q = status === 'pending' ? { 'download.status': 'pending' } : { 'download.status': { $in: ['pending', 'approved', 'rejected'] } };
+      const list = (await Payslip.find(q).sort({ updatedAt: -1 }).limit(300).lean()).filter((p) => canDecideDownloadOf(v, p));
+      res.json({ requests: list.map((p) => ({ id: String(p._id), month: p.month, employeeName: p.employeeName, email: p.email, deptLabel: DEPT_LABEL[p.department] || p.department, designation: p.designation || p.role, branch: p.branch, net: p.net, download: downloadView(p.download) })) });
+    } catch (e) { fail(res, e); }
+  });
+
+  router.post('/payroll/download-requests/:id/decision', async (req, res) => {
+    try {
+      const v = await viewer(req);
+      if (!mongoose.isValidObjectId(req.params.id)) throw httpErr(400, 'Invalid payslip');
+      const p = await Payslip.findById(req.params.id);
+      if (!p || !canDecideDownloadOf(v, p)) throw httpErr(404, 'Request not found');
+      const decision = req.body?.decision === 'approve' ? 'approved' : req.body?.decision === 'reject' ? 'rejected' : '';
+      if (!decision) throw httpErr(400, 'Choose approve or reject');
+      if (!p.download || !['pending', 'approved'].includes(p.download.status)) throw httpErr(409, 'There is no open request for this payslip.');
+      const now = new Date();
+      p.download = { ...p.download, status: decision, decidedBy: v.name, decidedByEmail: v.email, decidedAt: now, note: String(req.body?.note || '').slice(0, 300), validUntil: decision === 'approved' ? new Date(now.getTime() + DOWNLOAD_HOURS * 3600000) : null };
+      p.markModified('download');
+      p.history.push({ by: v.name, byEmail: v.email, at: now, action: `download-${decision}`, note: p.download.note });
+      await p.save();
+      notify({ audience: p.department, recipientName: p.employeeName, type: 'payroll', title: decision === 'approved' ? `Payslip download approved (${p.month})` : `Payslip download not approved (${p.month})`, message: decision === 'approved' ? `You can download it for the next ${DOWNLOAD_HOURS} hours from My Payslips.` : (p.download.note || 'Contact your Head of Department.'), createdBy: v.name });
+      res.json({ ok: true, download: downloadView(p.download) });
     } catch (e) { fail(res, e); }
   });
 

@@ -21,4 +21,8 @@ const hrTargetSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+hrTargetSchema.index({ period: 1, createdAt: -1 });
+hrTargetSchema.index({ assignedTo: 1, period: 1, createdAt: -1 });
+hrTargetSchema.index({ month: 1, branch: 1, createdAt: -1 });
+
 export default mongoose.models.HrTarget || mongoose.model('HrTarget', hrTargetSchema);

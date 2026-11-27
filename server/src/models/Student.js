@@ -527,5 +527,16 @@ addContactKeys(studentSchema);
 studentSchema.index({ batchName: 1 });
 studentSchema.index({ leadId: 1 });
 studentSchema.index({ email: 1 });
+// HR dashboard, branch desk, leaderboard & fee filters
+studentSchema.index({ counselorAssigned: 1, createdAt: -1 });
+studentSchema.index({ counselor: 1, createdAt: -1 });
+studentSchema.index({ counselorName: 1, createdAt: -1 });
+studentSchema.index({ allocatedTo: 1, createdAt: -1 });
+studentSchema.index({ leadBranch: 1, createdAt: -1 });
+studentSchema.index({ location: 1, createdAt: -1 });
+studentSchema.index({ registeredAt: -1 });
+studentSchema.index({ admissionDate: -1 });
+studentSchema.index({ feeStatus: 1 });
+studentSchema.index({ pendingBalance: 1 });
 
 export default mongoose.models.Student || mongoose.model('Student', studentSchema);

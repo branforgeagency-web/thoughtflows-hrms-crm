@@ -19,5 +19,7 @@ const teamMemberSchema = new mongoose.Schema(
 );
 
 teamMemberSchema.index({ name: 1 });
+teamMemberSchema.index({ departmentCode: 1, branchName: 1 });
+teamMemberSchema.index({ departmentCode: 1, available: 1 });
 
 export default mongoose.models.TeamMember || mongoose.model('TeamMember', teamMemberSchema);

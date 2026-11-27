@@ -245,5 +245,22 @@ addContactKeys(studentLeadSchema);
 studentLeadSchema.index({ admittedStudentId: 1 });
 studentLeadSchema.index({ allocatedTo: 1, createdAt: -1 });
 studentLeadSchema.index({ updatedAt: -1 });
+// HR dashboard pipeline, follow-ups, ownership & filter-bar indexes
+studentLeadSchema.index({ followUpDate: 1, stage: 1 });
+studentLeadSchema.index({ counselorAssigned: 1, stage: 1, createdAt: -1 });
+studentLeadSchema.index({ allocatedTo: 1, stage: 1, createdAt: -1 });
+studentLeadSchema.index({ counselorAssigned: 1, followUpDate: 1 });
+studentLeadSchema.index({ allocatedTo: 1, followUpDate: 1 });
+studentLeadSchema.index({ admittedStudentId: 1, stage: 1, createdAt: -1 });
+studentLeadSchema.index({ spokenBy: 1, createdAt: -1 });
+studentLeadSchema.index({ hrName: 1, createdAt: -1 });
+studentLeadSchema.index({ counselor: 1, createdAt: -1 });
+studentLeadSchema.index({ counselorName: 1, createdAt: -1 });
+studentLeadSchema.index({ addedBy: 1, createdAt: -1 });
+studentLeadSchema.index({ addedByBranch: 1, createdAt: -1 });
+studentLeadSchema.index({ addedVia: 1, branch: 1, createdAt: -1 });
+studentLeadSchema.index({ course: 1 });
+studentLeadSchema.index({ sourceName: 1 });
+studentLeadSchema.index({ sourceBadge: 1 });
 
 export default mongoose.models.StudentLead || mongoose.model('StudentLead', studentLeadSchema);

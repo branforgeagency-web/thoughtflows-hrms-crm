@@ -2,26 +2,49 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { RefreshCw, Download, Search, Calculator, Send, CheckCircle2, Banknote, Undo2, Printer, X, AlertTriangle, Pencil, Trash2, Plus, Users, Wallet, MinusCircle, IndianRupee } from 'lucide-react';
 import {
   getPayrollMe, getPayrollRun, generatePayroll, savePayslipAdjustments, payslipAction, payrollBulkAction, deletePayslip,
-  getSalaryStructures, saveSalaryStructure, savePayrollSettings
+  getSalaryStructures, saveSalaryStructure, savePayrollSettings, getAuthToken
 } from '../../services/api';
 import PaginationBar from '../PaginationBar';
 import { errMsg, downloadCsv, todayKey } from './deskUtils';
 import { rupees, monthLabel, prevMonth, thisMonth, SLIP_STATUS, printPayslip } from './payrollUtils';
 import AttendanceSheetTab from './AttendanceSheetTab';
+import PayrollTotalsDetail from './PayrollTotalsDetail';
+import PayslipDownloadRequests from './PayslipDownloadRequests';
 
 // Payroll — salary from the Attendance & Leave register.
 //   Branch Head / Business Lead: own branch — salaries, generate, adjust, submit.
 //   Department Head / Admin: every branch — plus approve, mark paid, settings.
+// Speed: remember the last payroll data for this browser tab, show it at once
+// when the desk is opened again, and refresh it quietly in the background.
+// Two requests for the same thing at the same time share one network call.
+const payrollCache = { token: '', me: null, run: new Map(), structures: new Map() };
+const resetCacheIfNewLogin = () => {
+  const t = getAuthToken();
+  if (payrollCache.token !== t) Object.assign(payrollCache, { token: t, me: null, run: new Map(), structures: new Map() });
+};
+const inflight = new Map();
+const shared = (key, fn) => {
+  if (!inflight.has(key)) inflight.set(key, fn().finally(() => inflight.delete(key)));
+  return inflight.get(key);
+};
+const fetchRun = (month, branch) => shared(`run|${month}|${branch}`, () => getPayrollRun({ month, branch }).then((r) => { payrollCache.run.set(`${month}|${branch}`, r); return r; }));
+const fetchStructures = (branch) => shared(`st|${branch}`, () => getSalaryStructures({ branch }).then((r) => { payrollCache.structures.set(branch, r); return r; }));
+
 export default function PayrollDesk() {
-  const [access, setAccess] = useState(null);
+  resetCacheIfNewLogin();
+  const [access, setAccess] = useState(payrollCache.me);
   const [error, setError] = useState('');
   const [sub, setSub] = useState('run');
-  useEffect(() => { getPayrollMe().then(setAccess).catch((e) => setError(errMsg(e))); }, []);
+  useEffect(() => {
+    // Ask for "who am I" and this month's payroll together instead of one after the other
+    getPayrollMe().then((a) => { payrollCache.me = a; setAccess(a); }).catch((e) => setError(errMsg(e)));
+    fetchRun(prevMonth(), 'all').catch(() => {});
+  }, []);
 
   if (error) return <Err e={error} />;
   if (!access) return <Loading />;
   if (!access.canPrepare) return <Err e={access.noBranch ? 'No branch is set on your account, so there is no branch payroll to show. Ask Admin to set your branch.' : 'Payroll is managed by Branch Heads, Business Leads and Department Heads.'} />;
-  const subs = [['run', 'Monthly Payroll'], ['sheet', 'Attendance Upload'], ['structures', 'Salary Structures'], ...(access.canEditSettings ? [['settings', 'Payroll Settings']] : [])];
+  const subs = [['run', 'Monthly Payroll'], ['sheet', 'Attendance Upload'], ['structures', 'Salary Structures'], ...(access.canDecideDownloads ? [['downloads', 'Download Requests']] : []), ...(access.canEditSettings ? [['settings', 'Payroll Settings']] : [])];
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -36,6 +59,7 @@ export default function PayrollDesk() {
       </div>
       {sub === 'run' && <RunTab access={access} onOpenSheet={() => setSub('sheet')} />}
       {sub === 'sheet' && <AttendanceSheetTab />}
+      {sub === 'downloads' && <PayslipDownloadRequests />}
       {sub === 'structures' && <StructuresTab access={access} />}
       {sub === 'settings' && <SettingsTab settings={access.settings} onSaved={(s) => setAccess({ ...access, settings: s })} />}
     </div>
@@ -134,10 +158,12 @@ function RunTab({ access, onOpenSheet }) {
   const [picked, setPicked] = useState(new Set());
   const [openId, setOpenId] = useState('');
   const [payForm, setPayForm] = useState(null); // { paidOn, paymentRef }
+  const [detail, setDetail] = useState(null); // { kind, filter } — summary card clicked
 
   const load = useCallback(async () => {
+    setData(payrollCache.run.get(`${month}|${branch}`) || null); // last known figures straight away
     setLoading(true);
-    try { setData(await getPayrollRun({ month, branch })); setError(''); } catch (e) { setError(errMsg(e)); } finally { setLoading(false); }
+    try { setData(await fetchRun(month, branch)); setError(''); } catch (e) { setError(errMsg(e)); } finally { setLoading(false); }
   }, [month, branch]);
   useEffect(() => { load(); setPicked(new Set()); }, [load]);
 
@@ -189,12 +215,14 @@ function RunTab({ access, onOpenSheet }) {
       <Err e={error} /><Ok m={msg} />
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-        {[['Employees', t.employees, Users, 'text-slate-700'], ['Payslips', t.payslips, Wallet, 'text-teal-700'], ['Gross', rupees(t.gross), IndianRupee, 'text-slate-800'],
-          ['Deductions', rupees(t.deductions), MinusCircle, 'text-rose-600'], ['Net payable', rupees(t.net), Banknote, 'text-emerald-700'], ['Waiting approval', t.submitted, Send, 'text-amber-600']].map(([l, v, Icon, tone]) => (
-          <Card key={l} className="p-3.5">
+        {[['employees', 'Employees', t.employees, Users, 'text-slate-700'], ['payslips', 'Payslips', t.payslips, Wallet, 'text-teal-700'], ['gross', 'Gross', rupees(t.gross), IndianRupee, 'text-slate-800'],
+          ['deductions', 'Deductions', rupees(t.deductions), MinusCircle, 'text-rose-600'], ['net', 'Net payable', rupees(t.net), Banknote, 'text-emerald-700'], ['waiting', 'Waiting approval', t.submitted, Send, 'text-amber-600']].map(([k, l, v, Icon, tone]) => (
+          <button key={k} type="button" disabled={!data} onClick={() => setDetail({ kind: k, filter: '' })} title={`Show ${l.toLowerCase()} details`}
+            className="group text-left p-3.5 bg-white rounded-2xl border border-slate-200 cursor-pointer hover:border-teal-400 hover:shadow-md transition disabled:cursor-default">
             <div className="text-[11px] font-bold uppercase text-slate-400 flex items-center gap-1"><Icon className={`w-3.5 h-3.5 ${tone}`} />{l}</div>
             <div className={`text-xl font-black ${tone}`}>{v ?? 0}</div>
-          </Card>
+            <div className="text-[10px] font-semibold text-teal-600 opacity-0 group-hover:opacity-100 transition">View details →</div>
+          </button>
         ))}
       </div>
 
@@ -213,7 +241,7 @@ function RunTab({ access, onOpenSheet }) {
         <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-sm flex gap-2">
           <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
           <div>
-            {data.noStructure.length > 0 && <div><b>{data.noStructure.length}</b> employee(s) have no salary set and are left out: {data.noStructure.slice(0, 6).map((e) => e.name).join(', ')}{data.noStructure.length > 6 ? '…' : ''} — add them in <b>Salary Structures</b>.</div>}
+            {data.noStructure.length > 0 && <div><b>{data.noStructure.length}</b> employee(s) have no salary set and are left out: {data.noStructure.slice(0, 6).map((e) => e.name).join(', ')}{data.noStructure.length > 6 ? '…' : ''} — add them in <b>Salary Structures</b>. <button onClick={() => setDetail({ kind: 'employees', filter: 'noSalary' })} className="underline font-bold cursor-pointer">See full list</button></div>}
             {data.notGenerated.length > 0 && <div><b>{data.notGenerated.length}</b> employee(s) with a salary have no payslip for this month yet — click <b>{slips.length ? 'Recalculate drafts' : 'Generate payroll'}</b>.</div>}
           </div>
         </div>
@@ -283,6 +311,11 @@ function RunTab({ access, onOpenSheet }) {
       </Card>
       {bar}
 
+      {detail && (
+        <PayrollTotalsDetail kind={detail.kind} initialFilter={detail.filter} month={month} data={data} access={access} busy={busy}
+          onClose={() => setDetail(null)} onOpenSlip={(id) => { setDetail(null); setOpenId(id); }}
+          onBulk={(action, ids) => run(() => payrollBulkAction({ action, ids }), (r) => `${r.done} payslip(s) ${action === 'approve' ? 'approved' : 'updated'}.${r.skipped?.length ? ` Skipped: ${r.skipped.slice(0, 3).join('; ')}` : ''}`)} />
+      )}
       {open && <SlipPanel slip={open} access={access} onClose={() => setOpenId('')} onChanged={load} />}
     </div>
   );
@@ -380,7 +413,11 @@ function StructuresTab({ access }) {
   const [only, setOnly] = useState('');
   const [edit, setEdit] = useState(null);
 
-  const load = useCallback(() => getSalaryStructures({ branch }).then((r) => { setRows(r.rows || []); setError(''); }).catch((e) => setError(errMsg(e))), [branch]);
+  const load = useCallback(() => {
+    const hit = payrollCache.structures.get(branch);
+    if (hit) setRows(hit.rows || []);
+    return fetchStructures(branch).then((r) => { setRows(r.rows || []); setError(''); }).catch((e) => setError(errMsg(e)));
+  }, [branch]);
   useEffect(() => { load(); }, [load]);
 
   const ql = q.trim().toLowerCase();
