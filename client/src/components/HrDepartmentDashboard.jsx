@@ -752,23 +752,23 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
       // demos) must never leave the lead board empty. A failed lead read is
       // retried once, and on a second failure the board keeps what it had.
       const withRetry = (fn) => fn().catch(() => sleepMs(1200).then(fn));
-      const [stR, ldR, dmR] = await Promise.allSettled([
-        getStudents({ ...(shouldFilterOnServer ? { hrName: counselorFilter } : {}), ...branchParam, page: targetStudentsPage, limit: PAGE_LIMIT, withStats: 'true' }),
-        withRetry(() => getLeads(deskLeadParams)),
-        getDemos({ ...(shouldFilterOnServer ? { counselor: counselorFilter } : {}), ...branchParam, limit: LEADS_BOARD_LIMIT })
-      ]);
+      // Students and demos are shown the moment each arrives — the desk no
+      // longer waits for the slowest of the three lists before it appears.
+      const studentsP = getStudents({ ...(shouldFilterOnServer ? { hrName: counselorFilter } : {}), ...branchParam, page: targetStudentsPage, limit: PAGE_LIMIT, withStats: 'true' })
+        .then((stRes) => {
+          if (loadSeq !== loadSeqRef.current) return;
+          const stList = Array.isArray(stRes) ? stRes : (Array.isArray(stRes?.students) ? stRes.students : []);
+          setStudents(stList);
+          setStudentsTotalCount(typeof stRes?.totalCount === 'number' ? stRes.totalCount : stList.length);
+          setStudentsTotalPages(stRes?.totalPages || 1);
+          setStudentsStats(stRes?.stats || null);
+        })
+        .catch((e) => console.error('Students load failed:', e));
+      const demosP = getDemos({ ...(shouldFilterOnServer ? { counselor: counselorFilter } : {}), ...branchParam, limit: LEADS_BOARD_LIMIT })
+        .then((dm) => { if (loadSeq === loadSeqRef.current) setDemos(Array.isArray(dm) ? dm : []); })
+        .catch((e) => console.error('Demos load failed:', e));
+      const [ldR] = await Promise.allSettled([withRetry(() => getLeads(deskLeadParams))]);
       if (loadSeq !== loadSeqRef.current) return;
-
-      if (stR.status === 'fulfilled') {
-        const stRes = stR.value;
-        const stList = Array.isArray(stRes) ? stRes : (Array.isArray(stRes?.students) ? stRes.students : []);
-        setStudents(stList);
-        setStudentsTotalCount(typeof stRes?.totalCount === 'number' ? stRes.totalCount : stList.length);
-        setStudentsTotalPages(stRes?.totalPages || 1);
-        setStudentsStats(stRes?.stats || null);
-      } else {
-        console.error('Students load failed:', stR.reason);
-      }
 
       if (ldR.status === 'fulfilled') {
         const ldRes = ldR.value;
@@ -791,8 +791,9 @@ export default function HrDepartmentDashboard({ onClose, currentUser, onLogout, 
         console.error('Leads load failed (keeping the current board):', ldR.reason);
       }
 
-      if (dmR.status === 'fulfilled') setDemos(Array.isArray(dmR.value) ? dmR.value : []);
       setLoading(false);
+      // Keep the returned promise pending until every list is in (callers that await a reload)
+      await Promise.allSettled([studentsP, demosP]);
     } catch (err) {
       console.error('Error fetching HR CRM live data:', err);
       setLoading(false);

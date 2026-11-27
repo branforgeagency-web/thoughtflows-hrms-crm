@@ -9,6 +9,7 @@ import { connectDB } from './config/db.js';
 import apiRoutes from './routes/api.js';
 import { requireStaffToken } from './middleware/auth.js';
 import { compressResponses } from './middleware/compress.js';
+import { requestTiming } from './middleware/timing.js';
 
 dotenv.config();
 
@@ -54,6 +55,7 @@ app.use(cors({
 app.options('*', cors());
 // Compress JSON responses before anything else writes a body. Dashboard list
 // endpoints return multi-MB payloads; gzip/brotli cuts them by ~85-90%.
+app.use(requestTiming());
 app.use(compressResponses());
 
 app.use(express.json({ limit: '75mb', verify: (req, _res, buf) => { req.rawBody = buf; } }));

@@ -3667,7 +3667,9 @@ const branchMatchRx = (branch) => {
 function refreshStaffNames() {
   if (staffNameCache.loading) return staffNameCache.loading;
   staffNameCache.loading = Promise.all([
-    User.find({ $and: [HR_STAFF, ACTIVE_USER] }).select('name branch role department').lean(),
+    // HR staff plus Branch Heads / Business Leads: they own leads and students
+    // too, so their names must block look-alike matches (Sindhu ≠ Sindhuja)
+    User.find({ $and: [{ $or: [HR_STAFF, { role: /branch\s*(head|manager)|branch\s*hr\s*head|business\s*(lead|head)/i }] }, ACTIVE_USER] }).select('name branch role department').lean(),
     branchList().catch(() => BRANCH_MASTER)
   ])
     .then(([rows, branches]) => {
@@ -3726,6 +3728,9 @@ function looseTokenScope(token, self, kind, selfBranch = '') {
   });
 
   if (conflicts.length === 0) return 'free';
+  // The short form IS another staff member's full name ("Sindhu" while matching
+  // for "Sindhuja"): those records are theirs — never borrow them.
+  if (kind !== 'word' && conflicts.some((s) => s.compact !== meCompact && s.compact === t.replace(/\s+/g, ''))) return 'taken';
   if (!myBranchKey) return 'taken';
   const sameOrUnknown = conflicts.some((s) => !s.branchKey || s.branchKey === myBranchKey);
   return sameOrUnknown ? 'taken' : 'branch';
